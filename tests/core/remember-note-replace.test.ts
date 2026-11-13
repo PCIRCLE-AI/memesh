@@ -220,11 +220,10 @@ describe('RememberSchema (transport validation)', () => {
     expect(r.error!.issues[0].path).toEqual(['name']);
   });
 
-  it('rejects a blank note and a structured call missing type', () => {
+  it('rejects a blank note and permits an existing-name append shape without type', () => {
     expect(RememberSchema.safeParse({ note: '  ' }).success).toBe(false);
     const r = RememberSchema.safeParse({ name: 'x' });
-    expect(r.success).toBe(false);
-    expect(r.error!.issues[0].path).toEqual(['type']);
+    expect(r.success).toBe(true);
   });
 
   it('rejects a note that yields more observations than a memory stores, and counts observations', () => {
@@ -445,10 +444,11 @@ describe('remember({ name, replace: true }) inherits the stored type — #333 T4
       .get('still_retypes') as { type: string }).type).toBe('decision');
   });
 
-  it('`type` is still required without `replace` — the relaxation is scoped to the correction call', () => {
+  it('a new name still needs type, even though the schema permits existing-name append', () => {
     const parsed = RememberSchema.safeParse({ name: 'brand_new', title: 'x', observations: ['y'] });
-    expect(parsed.success).toBe(false);
-    expect(parsed.error?.issues.some((i) => i.path[0] === 'type')).toBe(true);
+    expect(parsed.success).toBe(true);
+    expect(() => remember({ name: 'brand_new', title: 'x', observations: ['y'] })).toThrow(/type.*create/i);
+    expect(getDatabase().prepare('SELECT id FROM entities WHERE name = ?').get('brand_new')).toBeUndefined();
   });
 
   it('an EMPTY `type` is still refused — absent and blank are not the same input', () => {

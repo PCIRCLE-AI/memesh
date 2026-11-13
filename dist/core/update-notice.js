@@ -136,12 +136,13 @@ export function resolveUpdateNotice(input) {
     const now = input.now ?? new Date();
     if (input.updateCheckEnabled === false)
         return { kind: 'DISABLED', currentVersion };
-    const marker = readJustUpgradedMarker(dir);
+    const markerDir = input.markerDir ?? dir;
+    const marker = readJustUpgradedMarker(markerDir);
     if (marker) {
         if (marker.to === currentVersion) {
             return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
         }
-        clearJustUpgradedMarker(dir);
+        clearJustUpgradedMarker(markerDir);
     }
     if (!answerIsCurrent(currentVersion, cache, now)) {
         let reason = 'no update check has completed yet';

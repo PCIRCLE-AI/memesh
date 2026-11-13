@@ -4,7 +4,7 @@ import fs from 'fs';
 import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, hasPagesWaiting, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import {
@@ -101,6 +101,7 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number; re
   removeGroupAndOtherAccess(dir);
   guardDatabaseFiles(resolvedPath);
 
+
   // A read-only folder can still be READ when -wal and -shm are both there
   // (sqlite.org/wal.html, section 5). Without them a plain open can only fail
   // ("unable to open database file"). When no -wal holds any pages there is
@@ -112,6 +113,13 @@ export function openDatabase(dbPath?: string, opts: { busyTimeoutMs?: number; re
   // -wal/-shm beside it when the database path is a symlink.
   const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
   const folderWritable = isWritable(realDir);
+  // An explicit diagnostic read must not create an empty WAL/SHM in a writable
+  // directory either. Pending journal pages still require a normal read-only open.
+  if (opts.readOnly && folderWritable && fs.existsSync(realPath) && !hasPagesWaiting(realPath)) {
+    db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: true });
+    return db;
+  }
+
   if (!folderWritable && !fs.existsSync(realPath) && !opts.readOnly) {
     // Nothing to read and nowhere to create it: say so, instead of SQLite's bare "unable to open database file".
     const { notYours, fix } = folderWriteFix(realDir);
@@ -425,8 +433,7 @@ function migrateToCurrentSchema(db: MemeshDatabase, opts: { maintenance: boolean
  * this is the escape hatch: an explicit, always-runs rebuild. `memesh doctor`
  * detects the condition directly and points here.
  */
-export function reindexFts(): { entities: number } {
-  const database = getDatabase();
+export function reindexFts(database: MemeshDatabase = getDatabase()): { entities: number } {
   // Rebuild and marker in ONE immediate transaction, so a failure between them
   // cannot leave a rebuilt index under a stale marker. The marker only moves
   // forward, so that state never reconciles itself.

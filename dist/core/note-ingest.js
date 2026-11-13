@@ -4,7 +4,7 @@ import { createHash } from 'crypto';
 import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
-import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX, decisionLacksReason } from './work-topology.js';
+import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
 import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
@@ -123,11 +123,11 @@ export function ingestNoteDirectory(opts) {
         restored: [],
         markedMissing: [],
         skipped: [],
+        skippedCounts: { tooLarge: 0, noFrontmatter: 0, tooManyObservations: 0, symlink: 0, other: 0 },
         refusedNow: 0,
         more: 0,
     };
     const db = getDatabase();
-    const trustFor = (type, observations) => opts.trusted && !decisionLacksReason(type, observations) ? 'trusted' : 'untrusted';
     const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status, e.type,
             json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
@@ -158,10 +158,25 @@ export function ingestNoteDirectory(opts) {
     catch {
         priorSkips = {};
     }
+    const unchangedRefusals = new Set(files.filter((file) => {
+        const previous = priorSkips[relPath(realDir, file)];
+        if (!previous)
+            return false;
+        try {
+            const stat = fs.lstatSync(file);
+            return stat.isFile() && stat.mtimeMs === previous.mtime && stat.size === previous.size;
+        }
+        catch {
+            return false;
+        }
+    }));
+    files.sort((a, b) => Number(unchangedRefusals.has(a)) - Number(unchangedRefusals.has(b)));
     const nextSkips = {};
     const counted = new Set();
-    const report = (rel, reason) => {
+    const report = (rel, reason, code = 'other') => {
         result.skipped.push({ path: rel, reason });
+        const category = Object.hasOwn(result.skippedCounts, code) ? code : 'other';
+        result.skippedCounts[category]++;
         if (priorSkips[rel]?.reason === reason || counted.has(rel))
             return;
         counted.add(rel);
@@ -170,7 +185,7 @@ export function ingestNoteDirectory(opts) {
     for (const abs of symlinks) {
         const rel = relPath(realDir, abs);
         const reason = 'symlink refused';
-        report(rel, reason);
+        report(rel, reason, 'symlink');
         let st;
         try {
             st = fs.lstatSync(abs);
@@ -179,8 +194,8 @@ export function ingestNoteDirectory(opts) {
             st = null;
         }
         nextSkips[rel] = st
-            ? { mtime: st.mtimeMs, size: st.size, reason }
-            : { mtime: 0, size: 0, reason };
+            ? { mtime: st.mtimeMs, size: st.size, reason, code: 'symlink' }
+            : { mtime: 0, size: 0, reason, code: 'symlink' };
     }
     const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
     const declaredNameAt = new Map();
@@ -204,12 +219,12 @@ export function ingestNoteDirectory(opts) {
     let refunds = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
-        const skip = (reason) => { report(rel, reason); };
+        const skip = (reason, code = 'other') => { report(rel, reason, code); };
         let raw;
         let stat;
-        const contentSkip = (reason) => {
-            skip(reason);
-            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+        const contentSkip = (reason, code = 'other') => {
+            skip(reason, code);
+            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, code };
             declaredNameAt.set(rel, '');
         };
         const unreachableSkip = (reason) => {
@@ -224,13 +239,14 @@ export function ingestNoteDirectory(opts) {
             stat = fs.lstatSync(abs);
         }
         catch (err) {
+            result.retryNeeded = true;
             skip(`unreadable: ${err.code ?? 'error'}`);
             declaredNameAt.set(rel, '');
             continue;
         }
         try {
             if (stat.isSymbolicLink()) {
-                skip('symlink refused');
+                skip('symlink refused', 'symlink');
                 continue;
             }
             const prior = known.get(rel);
@@ -240,9 +256,9 @@ export function ingestNoteDirectory(opts) {
             }
             const priorSkip = priorSkips[rel];
             const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-            if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+            if (priorSkip && Object.hasOwn(result.skippedCounts, priorSkip.code ?? '') && !priorSkip.reportOnly && !nameIsFree
                 && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
-                skip(priorSkip.reason);
+                skip(priorSkip.reason, priorSkip.code);
                 nextSkips[rel] = priorSkip;
                 continue;
             }
@@ -253,7 +269,7 @@ export function ingestNoteDirectory(opts) {
             read++;
             readRels.add(rel);
             if (stat.size > maxBytes) {
-                contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
+                contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`, 'tooLarge');
                 continue;
             }
             const real = fs.realpathSync(abs);
@@ -264,12 +280,13 @@ export function ingestNoteDirectory(opts) {
             raw = fs.readFileSync(real);
         }
         catch (err) {
+            result.retryNeeded = true;
             unreachableSkip(`unreadable: ${err.code ?? 'error'}`);
             continue;
         }
         const parsed = parseFrontmatter(raw.toString('utf8'));
         if (!parsed) {
-            contentSkip('no frontmatter — a note file needs a `---` block with a name');
+            contentSkip('no frontmatter — a note file needs a `---` block with a name', 'noFrontmatter');
             continue;
         }
         const rawName = stringField(parsed.data, 'name');
@@ -291,7 +308,7 @@ export function ingestNoteDirectory(opts) {
             continue;
         }
         if (observations.length > NOTE_MAX_OBSERVATIONS) {
-            contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+            contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`, 'tooManyObservations');
             continue;
         }
         claims.push({
@@ -410,10 +427,9 @@ export function ingestNoteDirectory(opts) {
             ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
             trustOverride: existing
-                ? (existing.trust === 'trusted' && !decisionLacksReason(owner.type, owner.observations) ? 'trusted' : 'untrusted')
-                : trustFor(owner.type, owner.observations),
+                ? (existing.trust === 'trusted' ? 'trusted' : 'untrusted')
+                : (opts.trusted ? 'trusted' : 'untrusted'),
             reinforceConfidence: false,
-            reasonOptional: true,
             provenanceOverride: {
                 source: 'note-file',
                 note_path: owner.rel,
@@ -449,6 +465,8 @@ export function ingestNoteDirectory(opts) {
         (existing ? result.replaced : result.created).push(name);
     }
     if (Object.keys(nextSkips).length > 0) {
+        for (const print of Object.values(nextSkips))
+            print.code ??= 'other';
         db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
     }
     else {

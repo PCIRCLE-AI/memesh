@@ -110,7 +110,7 @@ describe('exportOpenAITools', () => {
     // would empty the memory and is refused).
     expect(tool.function.parameters.anyOf).toEqual([
       { required: ['note'] },
-      { required: ['name', 'type'] },
+      { required: ['name'], properties: { replace: { const: false } } },
       { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
     ]);
     // MCP also advertises the human editor, which the HTTP export cannot open.
@@ -138,13 +138,13 @@ describe('exportOpenAITools', () => {
     expect(RememberSchema.safeParse({ name: 'n', replace: true }).success).toBe(false);
     // `replace` is what makes the third form a form: without it the same
     // call is a new memory with no type, which the export does not declare.
-    expect(RememberSchema.safeParse({ name: 'n', replace: false, observations: ['x'] }).success).toBe(false);
+    expect(RememberSchema.safeParse({ name: 'n', replace: false, observations: ['x'] }).success).toBe(true);
     // Neither form: refused, naming the key.
     const bad = RememberSchema.safeParse({ observations: ['x'] });
     expect(bad.success).toBe(false);
     expect(JSON.stringify(bad.error?.issues)).toMatch(/name is required/);
     // Half of the structured form is not a form.
-    expect(RememberSchema.safeParse({ name: 'n', observations: ['x'] }).success).toBe(false);
+    expect(RememberSchema.safeParse({ name: 'n', observations: ['x'] }).success).toBe(true);
   });
 
   it('memesh_recall has no required fields', () => {

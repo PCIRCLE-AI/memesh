@@ -77,6 +77,7 @@ function utf8Length(text) {
 }
 export const SILENT_HOOK_MIN_RUNS = 5;
 export const CAPTURE_HOOKS = [
+    'messages',
     'post-commit',
     'session-summary',
     'pre-compact',
@@ -87,15 +88,16 @@ export const CAPTURE_HOOKS = [
     'session-start',
     'note-ingest',
     'remember-nudge',
-    'handoff-capture',
     'stop-message-gate',
     'codex-plan-activity',
     'codex-busy-message-notice',
     'prompt-recall',
 ];
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
 export const SKIP_REASONS = {
+    messageIdentityUnavailable: 'conversation-identity-unavailable',
+    messageNoPending: 'no-pending-messages',
     notBash: 'not a Bash tool call',
     notGitCommit: 'not a git commit command',
     commitLineMissing: 'a git commit ran but printed no commit line',
@@ -115,6 +117,15 @@ export const SKIP_REASONS = {
     noGuardMatched: 'no active guard matched this command',
     autoCaptureOff: 'auto-capture is turned off',
     notesLeftForNextRun: 'more note files changed than one run reads, so the rest are read at the next Stop',
+    commitsLeftForNextRun: 'more commits arrived than one run records; the rest are left for the next run',
+    commitsNotStoredWriteFailed: 'a commit was not stored after repeated write failures',
+    forgottenMessageNotStoredAgain: 'a message that had already been forgotten was not stored again',
+    messagesNotStoredWriteFailed: 'messages were not stored because the write kept failing',
+    noteTooLarge: 'a note file was larger than the size limit and was not imported',
+    noteNoFrontmatter: 'a note file had no header block and was not imported',
+    noteTooManyObservations: 'a note file had more observations than the limit and was not imported',
+    noteIsSymlink: 'a note file was a symbolic link and was not imported',
+    noteOtherNotImported: 'a note file was not imported for another recorded reason',
     transcriptReadTimeout: 'the transcript could not be read within the hook\'s time, so its tool calls are not recorded',
     busyNoticeNotCodex: 'not Codex',
     busyNoticeNoSessionId: 'no usable session_id',
@@ -164,8 +175,6 @@ export const SKIP_REASONS = {
     memoryWritten: 'a memory was written since the last Stop',
     noteFileChanged: 'a note file changed since the last Stop',
     noAssistantText: 'the Stop payload and the transcript held no assistant message',
-    handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
-    handoffArchived: 'the handoff memory was archived by forget — left alone',
     notClaudeCodeHost: 'this Stop is not running under Claude Code',
     noRecipientForGate: 'no recipient could be resolved for this session',
     noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
@@ -250,9 +259,9 @@ export const NOT_TRIGGERED_SKIP_REASONS = {
     'session-start': [SKIP_REASONS.noSessionId],
     'note-ingest': [SKIP_REASONS.noNoteChanged],
     'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-    'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
+    'messages',
     'pre-compact',
     'pre-edit-recall',
     'user-prompt-intent',
@@ -312,6 +321,8 @@ export function parseHookOutcomeLine(line) {
     const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
     if (entity)
         record.entity = entity;
+    if (typeof rec.count === 'number' && Number.isSafeInteger(rec.count) && rec.count >= 0)
+        record.count = rec.count;
     return record;
 }
 export const RECORD_TEXT_MAX = 200;
@@ -349,6 +360,19 @@ export function renderableErrorReason(reason) {
     return step ? `${step[1]}: …` : 'an unlabelled error';
 }
 export const RECENT_ERROR_RUNS = 5;
+const NOT_STORED_REASONS = new Map([
+    [SKIP_REASONS.commitsLeftForNextRun, 'commit(s)'],
+    [SKIP_REASONS.commitsNotStoredWriteFailed, 'commit(s)'],
+    [SKIP_REASONS.forgottenMessageNotStoredAgain, 'message(s)'],
+    [SKIP_REASONS.messagesNotStoredWriteFailed, 'message(s)'],
+    [SKIP_REASONS.noteTooLarge, 'note file(s)'],
+    [SKIP_REASONS.noteNoFrontmatter, 'note file(s)'],
+    [SKIP_REASONS.noteTooManyObservations, 'note file(s)'],
+    [SKIP_REASONS.noteIsSymlink, 'note file(s)'],
+    [SKIP_REASONS.noteOtherNotImported, 'note file(s)'],
+    [SKIP_REASONS.notesLeftForNextRun, 'note file(s)'],
+    [SKIP_REASONS.noteFilesRefused, 'note file(s)'],
+]);
 function summarizeOne(hook, records) {
     let writes = 0;
     let skips = 0;
@@ -364,11 +388,25 @@ function summarizeOne(hook, records) {
     let lastErrorReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
-    for (const r of records) {
+    const notStored = new Map();
+    const lockedRuns = new Set();
+    for (const [i, r] of records.entries()) {
         hosts.add(r.host);
         if (lastRunAt === null || r.at >= lastRunAt)
             lastRunAt = r.at;
         const triggered = isTriggeredRecord(r);
+        if (triggered && r.outcome === 'skipped' && r.reason !== undefined && NOT_STORED_REASONS.has(r.reason)) {
+            const total = notStored.get(r.reason) ?? { records: 0, count: null, unknownCount: 0 };
+            total.records++;
+            if (r.count === undefined)
+                total.unknownCount++;
+            else
+                total.count = (total.count ?? 0n) + BigInt(r.count);
+            notStored.set(r.reason, total);
+        }
+        if (r.outcome === 'error' && /^(?:[a-z][a-z -]{0,30}: )?(?:uncaught )?MEMESH_DB_LOCKED$/.test(r.reason ?? '')) {
+            lockedRuns.add(r.run ?? `#${i}`);
+        }
         if (triggered) {
             if (firstTriggeredAt === null || r.at < firstTriggeredAt)
                 firstTriggeredAt = r.at;
@@ -447,6 +485,8 @@ function summarizeOne(hook, records) {
         lastErrorAt,
         lastErrorReason,
         recentErrors,
+        notStored: [...notStored].map(([reason, total]) => ({ ...total, reason, unit: NOT_STORED_REASONS.get(reason), count: total.count?.toString() ?? null })),
+        lockedRuns: lockedRuns.size,
         hosts: [...hosts].sort(),
         silent: SILENT_ELIGIBLE_HOOKS.includes(hook)
             && triggeredRuns >= SILENT_HOOK_MIN_RUNS

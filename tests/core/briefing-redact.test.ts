@@ -22,7 +22,6 @@ import { SNIPPET_FETCH_CHARS } from '../../src/core/work-topology.js';
 import { taskStateLines, taskStateName } from '../../src/core/task-state.js';
 import { buildBriefingIndex } from '../../src/core/briefing-index.js';
 import { toTopologyEntity } from '../../src/core/briefing-pools.js';
-import { sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 // Assembled at runtime so no line in the repository looks like a credential.
@@ -98,10 +97,12 @@ function seedUnredactedRows(): void {
   addObs.run(longRow, `${longUrl} is the old primary`);
   addTag.run(longRow, `project:${project}`);
 
-  // A session handoff written BEFORE #523 (raw SQL): the Stop hook stores a
-  // new one redacted, but this one leads the block for up to 14 days on
-  // both surfaces, and `handoffView` must redact it on display.
-  const handoff = Number(insert.run(sessionHandoffName(project), SESSION_HANDOFF_TYPE, null).lastInsertRowid);
+  // A raw assistant conversation must be redacted on display before its
+  // session tail is clipped on either surface.
+  const handoff = Number(insert.run('conversation:redaction', 'conversation', null).lastInsertRowid);
+  addTag.run(handoff, `project:${project}`);
+  addTag.run(handoff, 'role:assistant');
+  addTag.run(handoff, 'session:redaction');
   addObs.run(handoff, `…was wiring the staging database ${DB_URL} and left the ${['token', TOKEN_VALUE].join('=')} in the env file; next: rotate it and finish the migration script`);
 
   // A task state written BEFORE #523 (raw SQL, so `setTaskState`'s own
@@ -129,8 +130,8 @@ function expectRedactedEverywhere(text: string): void {
   expect(text).not.toContain('mysql://svc:');
   // The task-state line is injected too, and must be clean on both surfaces.
   expect(text).toContain('Goal:');
-  // The legacy handoff leads the block, redacted, on both surfaces.
-  expect(text).toContain('Where the last session left off');
+  // The session tail leads the block, redacted, on both surfaces.
+  expect(text).toContain('Last reply from a recent session');
   expect(text).toContain('finish the migration script');
   // The 5000-character credential: neither the prefix nor the password, in
   // the ranked sections NOR the index, and the memory is still listed.
@@ -151,7 +152,7 @@ function expectRedactedEverywhere(text: string): void {
 }
 
 describe('briefing redaction (#464)', () => {
-  it('#406 a real CLI goal update keeps old done out of CLI briefing and SessionStart', () => {
+  it('#406 a real CLI goal update keeps old done attributed as unknown in briefing and SessionStart', () => {
     const old = new Date(Date.now() - 8 * 86_400_000).toISOString();
     // This legacy raw-SQL fixture must have the project tag a real task write
     // creates; otherwise the CLI correctly refuses the ownership collision.
@@ -183,8 +184,7 @@ describe('briefing redaction (#464)', () => {
     const hook = JSON.parse(hookOut.trim().split('\n').filter(Boolean).at(-1)!).hookSpecificOutput.additionalContext;
     for (const text of [brief, hook]) {
       expect(text).toContain('Fresh goal fixture');
-      expect(text).not.toContain('Ancient done fixture');
-      expect(text).toContain('not shown as current');
+      expect(text).toContain('Had just finished: (unknown date) Ancient done fixture');
     }
     openDatabase(dbPath);
   });
@@ -246,7 +246,7 @@ describe('briefing redaction (#464)', () => {
     expectRedactedEverywhere(injected);
   });
 
-  it('a long credential does not pull a later credential into the snippet, and a huge legacy handoff is redacted within budget', () => {
+  it('a long credential does not pull a later credential into the snippet, and a huge session tail is redacted within budget', () => {
     const db = getDatabase();
     // A long first credential redacts to a short marker, pulling what follows
     // it into the printed snippet; the later URL is redacted with the rest,
@@ -256,9 +256,9 @@ describe('briefing redaction (#464)', () => {
     const row = Number(db.prepare("INSERT INTO entities (name, type, title, status) VALUES ('crossing-window-decision', 'decision', 'crossing window decision', 'active')").run().lastInsertRowid);
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row, crossing);
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row, `project:${project}`);
-    // A handoff written through `remember` before the Stop hook bounded it.
+    // An oversized raw assistant conversation exercises read-time bounding.
     db.prepare('UPDATE observations SET content = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
-      .run(`${'eyJ'.repeat(100_000)} finish the migration script`, sessionHandoffName(project));
+      .run(`${'eyJ'.repeat(100_000)} finish the migration script`, 'conversation:redaction');
     closeDatabase(); // the hook opens its own handle
     const hookOut = execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd }),
@@ -272,7 +272,7 @@ describe('briefing redaction (#464)', () => {
     expect(injected).toContain('crossing window decision');
     expect(injected).not.toContain(pw);
     expect(injected).not.toContain('postgres://u1');
-    expect(injected).toContain('Where the last session left off');
+    expect(injected).toContain('Last reply from a recent session');
     expect(injected).toContain('finish the migration script');
   });
 });

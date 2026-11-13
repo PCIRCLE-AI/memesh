@@ -34,14 +34,8 @@ _PREFETCH_WAIT_SECS = 3
 # ever making sync_turn wait: sync_turn runs on Hermes's main thread.
 _TURN_QUEUE_MAX = 8
 _DEFAULT_BASE_URL = "http://localhost:3737"
-_RECALL_LIMIT = 5
-# Session capture runs synchronously at a session/compression boundary (see
-# Pitfall 5 in docs/platforms/hermes-agent.md); the bound keeps a wedged
-# `memesh` process from holding up Hermes's shutdown.
-# Worst case the host waits at session end: the turn drain (_DRAIN_TIMEOUT_SECS,
-# shared by on_session_end and shutdown) plus the session capture — 5 + 15 =
-# 20 s, the same bound the session-end archive had before turns were queued.
-_CAPTURE_TIMEOUT_SECS = 15.0
+_RECALL_TIMEOUT_SECS = 5.0
+# One turn's capture is a detached `memesh` process; the bound keeps a wedged one from living forever.
 _TURN_TIMEOUT_SECS = 30.0
 # How long session end + shutdown together wait for queued turns (one deadline).
 _DRAIN_TIMEOUT_SECS = 5.0
@@ -110,8 +104,10 @@ class MemeshProvider(MemoryProvider):
 
         self._prefetch_lock = threading.Lock()
         self._prefetch_thread: Optional[threading.Thread] = None
-        self._prefetch_query: Optional[str] = None
-        self._prefetch_result: Optional[str] = None
+        self._prefetch_key: Optional[tuple] = None
+        self._prefetch_generation = 0
+        self._prefetch_result: Optional[dict] = None
+        self._shown_ids: Dict[str, set] = {}
         # One worker drains turns in order, so captures never pile up as
         # concurrent `memesh` processes contending for the SQLite write lock.
         self._turn_queue: "queue.Queue[tuple]" = queue.Queue(maxsize=_TURN_QUEUE_MAX)
@@ -130,9 +126,8 @@ class MemeshProvider(MemoryProvider):
             "to call memesh_recall yourself for that. Saving is on by "
             "default: call memesh_remember for the decisions, preferences, "
             "lessons and facts that come up, without waiting to be asked; "
-            "the only exception is the user explicitly asking you not to "
-            "save. Use memesh_recall/memesh_forget for a specific lookup or "
-            "correction the automatic recall missed — not as a cue to "
+            "use memesh_recall/memesh_forget when the user asks to find or "
+            "remove a specific stored memory, not as a cue to "
             "reorganize or rewrite existing memory files."
         )
 
@@ -173,74 +168,75 @@ class MemeshProvider(MemoryProvider):
 
     # -- recall / prefetch ------------------------------------------------
 
-    def _do_recall(self, query: str) -> str:
+    def _do_recall(self, query: str, session_id: str) -> dict:
+        binary = _resolve_memesh_bin()
+        if binary is None:
+            logger.warning("MeMesh recall skipped: `memesh` CLI not found on PATH")
+            return {"text": "", "ids": []}
         try:
-            resp = self._client.post(
-                "/v1/recall", json={"query": query, "limit": _RECALL_LIMIT}
+            with self._prefetch_lock:
+                exclude = sorted(self._shown_ids.get(session_id, set()))
+            proc = subprocess.run(
+                [binary, "hermes", "prompt-context", "--session", session_id],
+                input=json.dumps({"prompt": query, "exclude": exclude}), capture_output=True,
+                text=True, timeout=_RECALL_TIMEOUT_SECS,
             )
-            resp.raise_for_status()
-            data = resp.json()
-            if not data.get("success"):
-                return ""
-            # API_REFERENCE.md documents `data` as an object with an
-            # `entities` array, but the live HTTP /v1/recall response (memesh
-            # 4.5.1) returns `data` as a bare array of entities directly.
-            # Handle both shapes defensively — see PCIRCLE-AI/memesh#159.
-            payload = data.get("data")
-            if isinstance(payload, list):
-                entities = payload
-            elif isinstance(payload, dict):
-                entities = payload.get("entities", [])
-            else:
-                entities = []
-            if not entities:
-                return ""
-            lines = ["[MeMesh recall]"]
-            for e in entities:
-                obs = "; ".join(e.get("observations", [])[:3])
-                lines.append(f"- ({e.get('type')}) {e.get('name')}: {obs}")
-            return "\n".join(lines)
+            if proc.returncode != 0:
+                raise RuntimeError(f"CLI exited {proc.returncode}")
+            result = json.loads(proc.stdout)
+            context = result.get("text") if isinstance(result, dict) else None
+            if not isinstance(context, str) or len(context.encode("utf-8")) > 4096:
+                raise ValueError("CLI returned invalid or oversized context")
+            ids = result.get("ids")
+            if not isinstance(ids, list) or len(ids) > 2 or any(type(i) is not int or i <= 0 for i in ids):
+                raise ValueError("CLI returned invalid memory IDs")
+            return {"text": context, "ids": ids}
         except Exception as exc:
             logger.warning("MeMesh recall failed: %s", exc)
-            return ""
+            return {"text": "", "ids": []}
 
-    def _start_prefetch(self, query: str) -> None:
+    def _prefetch_request(self, query: str, session_id: str) -> tuple:
         with self._prefetch_lock:
-            if self._prefetch_thread and self._prefetch_thread.is_alive():
-                return
+            return (query, session_id or self._session_id, self._prefetch_generation)
 
+    def _start_prefetch(self, key: tuple) -> None:
         def _run() -> None:
-            result = self._do_recall(query)
+            result = self._do_recall(key[0], key[1])
             with self._prefetch_lock:
-                self._prefetch_query = query
+                self._prefetch_key = key
                 self._prefetch_result = result
 
         with self._prefetch_lock:
+            if self._prefetch_thread and self._prefetch_thread.is_alive():
+                return
             self._prefetch_thread = threading.Thread(target=_run, daemon=True)
             self._prefetch_thread.start()
 
-    def _consume_prefetch_result(self, query: str) -> Optional[str]:
+    def _consume_prefetch_result(self, key: tuple) -> Optional[str]:
         with self._prefetch_lock:
-            if self._prefetch_query == query and self._prefetch_result is not None:
+            if self._prefetch_key == key and self._prefetch_result is not None:
                 result = self._prefetch_result
-                self._prefetch_query = None
+                self._prefetch_key = None
                 self._prefetch_result = None
-                return result
+                if result["text"]:
+                    self._shown_ids.setdefault(key[1], set()).update(result["ids"])
+                return result["text"]
         return None
 
     def queue_prefetch(self, query: str, *, session_id: str = "") -> None:
-        self._start_prefetch(query)
+        self._start_prefetch(self._prefetch_request(query, session_id))
 
     def prefetch(self, query: str, *, session_id: str = "") -> str:
-        cached = self._consume_prefetch_result(query)
+        key = self._prefetch_request(query, session_id)
+        cached = self._consume_prefetch_result(key)
         if cached is not None:
             return cached
-        self._start_prefetch(query)
+        self._start_prefetch(key)
         with self._prefetch_lock:
             thread = self._prefetch_thread
         if thread:
             thread.join(timeout=_PREFETCH_WAIT_SECS)
-        cached = self._consume_prefetch_result(query)
+        cached = self._consume_prefetch_result(key)
         # Slow/unreachable backend: skip injection rather than block the turn.
         # memesh_recall tool remains the backstop.
         return cached or ""
@@ -260,10 +256,9 @@ class MemeshProvider(MemoryProvider):
             return
         sid = session_id or self._session_id
 
-        # Every turn is handed to memesh, but memesh stores it only when the
-        # reply states a decision or a lesson (src/core/turn-signal.ts) —
-        # ordinary chatter is not memory. Never blocks: sync_turn fires every
-        # turn on the host's main thread.
+        # Every turn is handed to memesh, which stores what the user said and what
+        # the assistant answered, each in full (src/core/chat-turn.ts). Never
+        # blocks: sync_turn fires every turn on the host's main thread.
         item = (sid, user_content or "", assistant_content or "")
         # A turn after a drain may be reported again, but it does not buy a
         # second wait: session end + shutdown share one budget. Only a real
@@ -294,15 +289,7 @@ class MemeshProvider(MemoryProvider):
             finally:
                 self._turn_queue.task_done()
 
-    # -- compression / session-end capture ------------------------------------
-    #
-    # At a session or compression boundary the message list goes through the
-    # SAME extractor the Claude Code Stop hook uses (src/core/session-insight.ts):
-    # edited files, errors fixed, a heavy session's commands — stored as
-    # `session-<id>-files/-fixes/-summary`, not as a transcript dump. A
-    # later boundary in the same session appends to those entities; memesh
-    # refuses identical observations, so overlap between the pre-compression
-    # list and the session-end list is not duplicated.
+    # -- capture ---------------------------------------------------------------
 
     def _run_capture(self, args: List[str], payload: Dict[str, Any], timeout: float) -> Optional[Dict[str, Any]]:
         # Writes go through the `memesh` CLI, not `POST /v1/remember`: the
@@ -344,50 +331,21 @@ class MemeshProvider(MemoryProvider):
         if not isinstance(result, dict):
             logger.warning("MeMesh capture output is not a JSON object: %s", proc.stdout[:200])
             return None
-        if result.get("toolResultsNonJson"):
-            logger.info(
-                "MeMesh capture: %s tool result(s) were not JSON, so errors in them were not counted",
-                result["toolResultsNonJson"],
-            )
-        if result.get("unrecognizedTools"):
-            logger.info("MeMesh capture: unrecognized tool names %s", result["unrecognizedTools"])
         logger.info(
             "MeMesh capture %s: %s",
             result.get("outcome"),
-            result.get("reason") or result.get("written") or result.get("name"),
+            result.get("reason") or result.get("names"),
         )
         return result
 
-    def _capture_session(self, messages: Optional[List[Dict[str, Any]]]) -> Optional[Dict[str, Any]]:
-        # Deliberately SYNCHRONOUS, unlike sync_turn(). on_session_end runs
-        # immediately before shutdown(); a detached thread racing that
-        # reliably lost the write (Pitfall 5). These fire once per boundary,
-        # so blocking briefly adds no per-turn latency.
-        if self._agent_context != "primary":
-            logger.debug("MeMesh session capture skipped: not the primary agent (%s)", self._agent_context)
-            return None
-        if not messages:
-            logger.info("MeMesh session capture skipped: no messages")
-            return None
-        return self._run_capture(
-            ["hermes", "capture-session", "--session", self._session_id],
-            {"messages": messages},
-            _CAPTURE_TIMEOUT_SECS,
-        )
-
     def on_pre_compress(self, messages: List[Dict[str, Any]]) -> str:
-        self._capture_session(messages)
-        return (
-            "What this session did so far (files edited, errors fixed) is "
-            "recorded in MeMesh — recall via memesh_recall if needed later — "
-            "so the summary here can stay concise rather than exhaustive."
-        )
+        # Nothing is captured here: every turn is already stored as it happens.
+        return ""
 
     def on_session_end(self, messages: List[Dict[str, Any]]) -> None:
         # shutdown() follows ~1 ms later (Pitfall 5); drain queued turns
-        # first so the session's last decisions are not the ones lost.
+        # first so the session's last turns are not the ones lost.
         self._drain_turns_before_exit()
-        self._capture_session(messages)
 
     def on_session_switch(
         self,
@@ -402,14 +360,16 @@ class MemeshProvider(MemoryProvider):
         # sync_turn/archive helpers — without updating it here, a mid-process
         # /reset, /resume, or /branch would keep tagging new memories with
         # the stale pre-switch session_id.
-        self._session_id = new_session_id
+        with self._prefetch_lock:
+            self._session_id = new_session_id
+            self._prefetch_generation += 1
+            self._prefetch_key = None
+            self._prefetch_result = None
+            if reset:
+                self._shown_ids.pop(new_session_id, None)
         # A new session's exit gets its own drain budget.
         self._drain_deadline = None
         self._drain_warned = False
-        if reset:
-            with self._prefetch_lock:
-                self._prefetch_query = None
-                self._prefetch_result = None
 
     # -- explicit tools -----------------------------------------------------
 
@@ -417,7 +377,7 @@ class MemeshProvider(MemoryProvider):
         return [
             {
                 "name": "memesh_remember",
-                "description": "Store a fact, decision, preference, pattern, or lesson in persistent memory. Saving is on by default: store without waiting to be asked; the only exception is the user explicitly asking not to save.",
+                "description": "Store a fact, decision, preference, pattern, or lesson in persistent memory. Saving is on by default: store without waiting to be asked. Use memesh_forget when the user asks to remove a specific stored memory.",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -433,7 +393,7 @@ class MemeshProvider(MemoryProvider):
                         },
                         "why": {
                             "type": "string",
-                            "description": "For a decision: why it was made and what would make it stop holding (required to create a decision, architecture_decision or design_decision)",
+                            "description": "For a decision: why it was made and what would make it stop holding (optional; a decision without it is stored and shown as no reason recorded)",
                         },
                         "tags": {"type": "array", "items": {"type": "string"}},
                     },
@@ -475,8 +435,8 @@ class MemeshProvider(MemoryProvider):
                     f"memesh provider does not handle tool {tool_name}"
                 )
             if resp.status_code >= 400:
-                # The server's own sentence says what to change (a decision
-                # without `why`); a bare status line does not.
+                # The server's own sentence explains invalid input or an
+                # unavailable write; a bare status line does not.
                 return json.dumps({"success": False, "error": _server_error(resp)})
             resp.raise_for_status()
             return json.dumps(resp.json())

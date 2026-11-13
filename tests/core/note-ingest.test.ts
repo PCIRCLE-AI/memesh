@@ -890,18 +890,16 @@ describe('note-ingest: a name-level refusal is news once too — #324 C3', () =>
     expect(third.refusedNow).toBe(0);
   });
 
-  it('the file is still re-read each run, so the refusal lifts when its cause does', () => {
+  it('a forgotten note memory written again by remember is the user\'s own now, so the file stays refused', () => {
     const dir = makeDir({ 'b.md': note('note_rev', 'Beta', 'decision', 'Beta body.') });
     ingestNoteDirectory({ trusted: false, dir });
     forget({ name: 'note_rev' });
     ingestNoteDirectory({ trusted: false, dir });
     ingestNoteDirectory({ trusted: false, dir });
 
-    // Un-archived without the file changing. A fingerprint that drove the
-    // phase-1 early skip would leave this file refused forever, which is the
-    // trap the unreadable path (C9) documents.
+    // A new write starts the memory over, without the tags that tied it to the note file.
     remember({ name: 'note_rev', type: 'decision', observations: ['Beta body.'] });
     const back = ingestNoteDirectory({ trusted: false, dir });
-    expect(back.skipped, 'the file was never re-read after its memory came back').toHaveLength(0);
+    expect(back.skipped.map((x) => x.reason).join(' ')).toContain('did not come from a note file');
   });
 });

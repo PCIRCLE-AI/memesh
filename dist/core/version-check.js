@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 import { memeshDir } from './paths.js';
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 const DEFAULT_TIMEOUT_MS = 5000;
@@ -221,7 +222,8 @@ export async function checkForUpdate(currentVersion, options = {}) {
     try {
         const [latestOutcome, deprecationOutcome] = await Promise.all([
             new Promise((resolve) => {
-                execFileImpl('npm', ['show', '@pcircle/memesh', 'version'], { timeout: timeoutMs }, (err, stdout) => {
+                const npm = requireNpmInvocation(['show', '@pcircle/memesh', 'version']);
+                execFileImpl(npm.command, npm.args, { timeout: timeoutMs }, (err, stdout) => {
                     if (err) {
                         resolve({ outcome: 'failed', error: err });
                         return;
@@ -233,7 +235,8 @@ export async function checkForUpdate(currentVersion, options = {}) {
                 });
             }),
             new Promise((resolve) => {
-                execFileImpl('npm', ['view', `@pcircle/memesh@${currentVersion}`, 'deprecated'], { timeout: timeoutMs }, (err, stdout, stderr) => {
+                const npm = requireNpmInvocation(['view', `@pcircle/memesh@${currentVersion}`, 'deprecated']);
+                execFileImpl(npm.command, npm.args, { timeout: timeoutMs }, (err, stdout, stderr) => {
                     if (err) {
                         const errText = [
                             stderr,

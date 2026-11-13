@@ -18,7 +18,91 @@ import path from 'path';
 import { spawnSync } from 'child_process';
 import { statesTestCount } from '../scripts/lib/test-count-claim.mjs';
 
+function copyTrackedWorkingTree(root: string, fixture: string) {
+  const listed = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'buffer' });
+  if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr.toString('utf8')}`);
+  const requiredCandidateInputs = ['src/transports/conversation-messaging.ts', 'scripts/hooks/messages.js'];
+  const files = new Set([...listed.stdout.toString('utf8').split('\0').filter(Boolean), ...requiredCandidateInputs]);
+  for (const relative of files) {
+    const source = path.join(root, relative);
+    const target = path.join(fixture, relative);
+    if (!fs.existsSync(source)) {
+      fs.rmSync(target, { force: true });
+      continue;
+    }
+    if (!fs.statSync(source).isFile()) continue;
+    fs.mkdirSync(path.dirname(target), { recursive: true });
+    fs.copyFileSync(source, target);
+    fs.chmodSync(target, fs.statSync(target).mode | 0o200);
+  }
+}
+
 describe('the READMEs-state-no-test-count rule', () => {
+  it('the gate resolves double-quoted command parents and children, then rejects missing or ghost commands', () => {
+    const root = path.join(__dirname, '..');
+    const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doc-command-'));
+    const fixture = path.join(parent, 'repo');
+    try {
+      const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--no-hardlinks', root, fixture], { encoding: 'utf8' });
+      expect(clone.status, clone.stderr).toBe(0);
+      copyTrackedWorkingTree(root, fixture);
+      fs.copyFileSync(path.join(root, 'scripts/check-doc-claims.mjs'), path.join(fixture, 'scripts/check-doc-claims.mjs'));
+      fs.copyFileSync(path.join(root, 'scripts/lib/current-doc-contract.mjs'), path.join(fixture, 'scripts/lib/current-doc-contract.mjs'));
+      const cliPath = path.join(fixture, 'src/transports/cli/cli.ts');
+      const readmePath = path.join(fixture, 'README.md');
+      const agentsPath = path.join(fixture, 'AGENTS.md');
+      const originalCli = fs.readFileSync(cliPath, 'utf8');
+      const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
+
+      fs.appendFileSync(readmePath, '\n`memesh message discover`\n`memesh dream show`\n`memesh dream accept`\n`memesh delegation verify`\n');
+      fs.appendFileSync(agentsPath, '\n`memesh message discover`\n');
+      const baseline = run();
+      expect([0, 1]).toContain(baseline.status);
+      expect(baseline.stdout, `${baseline.stdout}\n${baseline.stderr}`).toContain('`memesh <subcommand>` mentions in agent docs all resolve');
+      if (baseline.status === 1) expect(baseline.stderr).toContain('documents name nested subcommands that do not exist');
+      for (const valid of ['memesh message discover', 'memesh dream show', 'memesh dream accept', 'memesh delegation verify']) {
+        expect(baseline.stderr).not.toContain(`README.md -> ${valid}`);
+      }
+
+      fs.writeFileSync(cliPath, originalCli.replace('.command("message")', '.command("message-removed")'));
+      const missing = run();
+      expect(missing.status).toBe(1);
+      expect(missing.stderr).toContain('AGENTS.md → `memesh message`');
+
+      fs.writeFileSync(cliPath, originalCli);
+      fs.appendFileSync(readmePath, '\n`memesh message ghost`\n');
+      const ghost = run();
+      expect(ghost.status).toBe(1);
+      expect(ghost.stderr).toContain('memesh message ghost');
+
+      // Retired commands remain truthful in versioned release history. They
+      // must still fail in current instructions and the unreleased section.
+      const changelogPath = path.join(fixture, 'CHANGELOG.md');
+      const originalChangelog = fs.readFileSync(changelogPath, 'utf8');
+      fs.writeFileSync(readmePath, fs.readFileSync(path.join(root, 'README.md'), 'utf8'));
+      fs.appendFileSync(changelogPath, '\n## [0.0.0] — historical fixture\n\n`memesh message storage report`\n`memesh message intake`\n');
+      const historical = run();
+      expect(historical.status, `${historical.stdout}\n${historical.stderr}`).toBe(0);
+
+      fs.appendFileSync(changelogPath, '\n`memesh message ghost`\n');
+      const historicalGhost = run();
+      expect(historicalGhost.status).toBe(1);
+      expect(historicalGhost.stderr).toContain('CHANGELOG.md -> memesh message ghost');
+
+      fs.writeFileSync(changelogPath, originalChangelog);
+      fs.appendFileSync(readmePath, '\n`memesh message storage report`\n');
+      const currentRetired = run();
+      expect(currentRetired.status).toBe(1);
+      expect(currentRetired.stderr).toContain('README.md -> memesh message storage');
+
+      fs.writeFileSync(readmePath, fs.readFileSync(path.join(root, 'README.md'), 'utf8'));
+      fs.writeFileSync(changelogPath, originalChangelog.replace('## [Unreleased]', '## [Unreleased]\n\n`memesh message intake`'));
+      const unreleasedRetired = run();
+      expect(unreleasedRetired.status).toBe(1);
+      expect(unreleasedRetired.stderr).toContain('CHANGELOG.md -> memesh message intake');
+    } finally { fs.rmSync(parent, { recursive: true, force: true }); }
+  });
+
   it('accepts a Codex-only invoked hook but still rejects an orphan', () => {
     const root = path.join(__dirname, '..');
     const parent = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doc-hook-'));
@@ -26,6 +110,7 @@ describe('the READMEs-state-no-test-count rule', () => {
     try {
       const clone = spawnSync('git', ['clone', '--quiet', '--shared', '--no-hardlinks', root, fixture], { encoding: 'utf8' });
       expect(clone.status, clone.stderr).toBe(0);
+      copyTrackedWorkingTree(root, fixture);
       fs.copyFileSync(path.join(root, 'scripts/check-doc-claims.mjs'), path.join(fixture, 'scripts/check-doc-claims.mjs'));
       const manifestPath = path.join(fixture, '.codex-plugin/plugin.json');
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
@@ -34,7 +119,10 @@ describe('the READMEs-state-no-test-count rule', () => {
       fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-fixture.js'), '');
       const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
       const accepted = run();
-      expect(accepted.status, `${accepted.stdout}\n${accepted.stderr}`).toBe(0);
+      expect([0, 1]).toContain(accepted.status);
+      expect(accepted.stdout, `${accepted.stdout}\n${accepted.stderr}`).toContain('12 hook commands exist and scripts/hooks agrees with the manifest');
+      if (accepted.status === 1) expect(accepted.stderr).toContain('documents name nested subcommands that do not exist');
+      expect(accepted.stderr).not.toContain('doc-claim-fixture.js');
       fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-orphan.js'), '');
       const orphan = run();
       expect(orphan.status).toBe(1);

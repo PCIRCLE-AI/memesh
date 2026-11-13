@@ -26,13 +26,13 @@ export declare const CODEX_MARKETPLACE_SOURCE = "PCIRCLE-AI/memesh";
 export declare function ownerOnly(target: string): void;
 export declare function ensureOwnerDir(dir: string): void;
 export declare const AUTO_UPDATE_REASONS: {
+    readonly npmUnavailable: "could not start npm";
     readonly policyOff: "policy is off";
     readonly policyOffUnreadableConfig: "policy is off: a config file could not be read, so an explicit off cannot be ruled out";
     readonly policyOffInvalidValue: "policy is off: a setting held a value that is not off, patch, minor or major";
     readonly policyOffUpdateCheck: "policy is off: update checks were turned off (updateCheck=false)";
-    readonly policyOffCi: "no update: this run is inside CI or a container and the setting was not given explicitly";
-    readonly policyOffNoAccountHome: "no update: the account's home directory cannot be determined (no passwd entry) and the setting was not given explicitly";
-    readonly policyOffForeignHome: "no update: this run uses a data directory that is not the account's own ~/.memesh and the setting was not given explicitly";
+    readonly policyOffCi: "no update: this run is inside CI and the setting was not given explicitly";
+    readonly policyOffForeignHome: "no update: HOME differs from the system account home and this environment did not explicitly enable updates";
     readonly channelUnsupported: "no update: this install channel cannot update itself (source checkout, project-local or unknown)";
     readonly registryUnreachable: "no update: the npm registry did not answer";
     readonly upToDate: "already on the newest version for this channel";
@@ -40,7 +40,7 @@ export declare const AUTO_UPDATE_REASONS: {
     readonly sourceNotVerified: "not installed: the package source could not be verified";
     readonly tarballMismatch: "not installed: the downloaded package does not match the verified one";
     readonly dependencyPinFailed: "install ran but its dependencies could not be set to the versions the release pins; the previous version was put back";
-    readonly installNotUndone: "an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then MeMesh may not start)";
+    readonly installNotUndone: "an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then `memesh serve` and the Claude channel runner cannot start; remember, recall and MCP still work)";
     readonly dependenciesNotFetched: "not installed: the release's pinned dependencies could not be fetched and checked (network, registry or a hash that did not match), so the installed version was not touched";
     readonly globalDirUnknown: "not installed: the directory npm keeps global packages in could not be found, so a failed install could not be undone";
     readonly rollbackUnavailable: "not installed: a copy of the installed version could not be made, so a failed install could not be undone";
@@ -94,9 +94,11 @@ export interface PolicyInput {
 }
 export declare function isCi(env: NodeJS.ProcessEnv): boolean;
 export declare function safeAccountHome(): string | null;
+export declare function describeUpdatePolicy(policy: PolicyDecision): string;
 export declare function resolveUpdatePolicy(input: PolicyInput): PolicyDecision;
+export declare function updateControlDir(): string;
 export declare function accountMemeshDir(): string | null;
-export declare function propagateOff(activeConfigDir: string, accountDir: string | null): {
+export declare function propagateOff(activeConfigDir: string, controlDir?: string | null): {
     path: string | null;
     error: string | null;
 };
@@ -155,7 +157,7 @@ export declare function judgeShrinkwrap(text: string, version: string): {
 export declare function sha512Integrity(file: string): string;
 export declare function registerLiveHost(dir: string, pid?: number, logDir?: string): void;
 export declare function liveHostPids(dir: string): number[] | null;
-export declare function backupDatabase(dbPath: string, backupDir: string, tag: string, now?: Date): string | null;
+export declare function backupDatabase(dbPath: string, tag: string): string | null;
 export type StateRead = {
     kind: 'absent';
 } | {
@@ -179,15 +181,18 @@ export declare function readInstalling(dir: string): {
     running: boolean;
 } | null;
 export declare function logAutoUpdateLine(dir: string, line: string): void;
+interface ExecResult {
+    status: number | null;
+    stdout: string;
+    stderr: string;
+    startupError?: string;
+    timedOut?: boolean;
+}
 type Exec = (cmd: string, args: string[], opts?: {
     cwd?: string;
     env?: NodeJS.ProcessEnv;
     timeoutMs?: number;
-}) => {
-    status: number | null;
-    stdout: string;
-    stderr: string;
-};
+}) => ExecResult;
 export interface AutoUpdateDeps {
     env: NodeJS.ProcessEnv;
     accountHome: string | null;
@@ -214,10 +219,12 @@ export interface AutoUpdateDeps {
     now: () => Date;
     readInstalledVersion: () => string | null;
 }
+export declare const defaultExec: Exec;
 export declare function readRegistryTags(exec?: Exec): DistTags | null;
 export declare function sweepWorkDirs(root: string, nowMs?: number): string[];
 export declare function stripMultilineStrings(toml: string): string;
-export declare function codexMarketplaceState(codexHome: string): 'official' | 'foreign' | 'missing' | 'unreadable';
+type CodexMarketplaceQuery = Pick<AutoUpdateDeps, 'exec' | 'env'>;
+export declare function codexMarketplaceState(codexHome: string, query?: CodexMarketplaceQuery): 'official' | 'foreign' | 'missing' | 'unreadable';
 export declare function codexHomeFor(packageRoot: string): string | null;
 export declare function unsafeTarEntries(verbose: string, names: string[]): string[];
 export declare function refreshHermes(deps: AutoUpdateDeps, tarball: string, version: string, expectedIntegrity: string): InstallResult[] | null;

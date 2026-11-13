@@ -5,7 +5,7 @@ import { tmpdir } from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
-import { MAX_PROMPT_CHARS } from '../../scripts/hooks/user-prompt-intent.js';
+import { DatabaseSync } from 'node:sqlite';
 import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
 
 // The hook run as a subprocess, against a throwaway HOME so it never reads or
@@ -14,8 +14,7 @@ import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
 // node-floor-hooks.test.ts.
 
 const HOOK_PATH = path.resolve('scripts/hooks/user-prompt-intent.js');
-const NO_MESSAGE = 'no message was waiting for this session';
-const TOO_LARGE = 'the prompt is larger than the hook accepts';
+const NO_MESSAGE = 'conversation cwd or session absent';
 
 // The host kills the hook at the timeout hooks/hooks.json gives it; a timing test leaves a third of it spare.
 const hookEntry = JSON.parse(readFileSync(path.resolve('hooks/hooks.json'), 'utf8')).hooks.UserPromptSubmit
@@ -65,7 +64,7 @@ describe('Feature: User Prompt Intent Hook', () => {
     readFileSync(ledgerPath(), 'utf8').trim().split('\n').map((line) => JSON.parse(line).reason);
 
   describe('the prompt\'s words decide nothing', () => {
-    it('says nothing about saving, whatever the prompt says, and records only that no message was waiting', () => {
+    it('does not issue save-intent instructions based on the prompt wording', () => {
       expect(SAVE_WORDED_PROMPTS.length).toBeGreaterThan(5);
       for (const prompt of ['hello there', ...SAVE_WORDED_PROMPTS]) {
         for (const input of [{ prompt }, { user_prompt: prompt }]) {
@@ -79,21 +78,24 @@ describe('Feature: User Prompt Intent Hook', () => {
     });
   });
 
-  describe('a prompt over the size the hook accepts', () => {
-    it('accepts exactly 256 K characters and records one character more as skipped (the documented limit)', () => {
-      expect(MAX_PROMPT_CHARS).toBe(256 * 1024);
-      expectNoOp(runHook({ session_id: 'at-limit', cwd: tmpHome, prompt: 'x'.repeat(MAX_PROMPT_CHARS) }));
-      expect(recordedReasons()).toEqual([NO_MESSAGE]);
-      expectNoOp(runHook({ session_id: 'over-limit', cwd: tmpHome, prompt: 'x'.repeat(MAX_PROMPT_CHARS + 1) }));
-      // The oversized prompt has its own record, not a second "no message" one.
-      expect(recordedReasons()).toEqual([NO_MESSAGE, TOO_LARGE]);
+  describe('full prompt capture', () => {
+    it('stores repeated prompts independently, including text above the former size limit', () => {
+      const text = 'x'.repeat(256 * 1024 + 1) + ' END';
+      for (let i = 0; i < 2; i++) expectNoOp(runHook({ session_id: 'full', cwd: tmpHome, prompt: text }));
+      const db = new DatabaseSync(path.join(tmpHome, '.memesh', 'knowledge-graph.db'), { readOnly: true });
+      try {
+        const rows = db.prepare("SELECT o.content FROM entities e JOIN observations o ON o.entity_id=e.id WHERE e.type='conversation'").all();
+        expect(rows).toHaveLength(2);
+        expect(rows.every(row => row.content === text)).toBe(true);
+      } finally { db.close(); }
+      expect(recordedReasons()).toEqual([undefined, undefined]);
     });
 
     it('answers a 1 MB prompt in two thirds of the hook timeout', () => {
       const started = Date.now();
       expectNoOp(runHook({ session_id: 'big', cwd: tmpHome, prompt: `${'記下來\n'.repeat(250_000)}remember this` }));
       expect(Date.now() - started).toBeLessThan(WITHIN_MS);
-      expect(recordedReasons()).toEqual([TOO_LARGE]);
+      expect(recordedReasons()).toEqual([undefined]);
     });
   });
 
@@ -185,12 +187,12 @@ describe('Feature: User Prompt Intent Hook', () => {
   describe('Stdin handling', () => {
     it('handles empty stdin gracefully', () => {
       expectNoOp(runHook(''));
-      expect(recordedReasons()).toEqual([NO_MESSAGE]);
+      expect(recordedReasons()).toEqual(['empty prompt']);
     });
 
     it('handles missing prompt field', () => {
       expectNoOp(runHook({}));
-      expect(recordedReasons()).toEqual([NO_MESSAGE]);
+      expect(recordedReasons()).toEqual(['empty prompt']);
     });
 
     it('handles malformed JSON without blocking, and records it', () => {

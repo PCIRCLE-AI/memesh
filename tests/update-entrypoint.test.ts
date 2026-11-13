@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveUpdateNotice, writeJustUpgradedMarker } from '../src/core/update-notice.js';
 import {
   CLI_NOTICE_THROTTLE_MS,
   MCP_PENDING_RETRY_MS,
@@ -23,6 +24,101 @@ const cache = (dir: string, latest: string | null, extra: Record<string, unknown
   }));
   return file;
 };
+
+describe('invalid policy reaches the actual cached upgrade notice', () => {
+  const dirs: string[] = [];
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+  function fixture() {
+    const root = tmp(); dirs.push(root);
+    const home = path.join(root, 'A'); const dir = path.join(root, 'B'); const account = path.join(root, 'account');
+    for (const d of [home, dir, path.join(account, '.memesh')]) fs.mkdirSync(d, { recursive: true });
+    vi.stubEnv('HOME', home); vi.stubEnv('MEMESH_DIR', dir); vi.stubEnv('MEMESH_DB_PATH', path.join(dir, 'kg.db')); vi.stubEnv('MEMESH_AUTO_UPDATE', undefined);
+    vi.spyOn(os, 'userInfo').mockReturnValue({ homedir: account } as ReturnType<typeof os.userInfo>);
+    cache(dir, '4.10.0');
+    return { dir, account, input: { currentVersion: '4.9.4', entryPoint: 'mcp' as const, now: NOW, refresh: () => { throw new Error('fresh cached notice must not refresh'); }, installSupport: { canSelfUpdate: true, guidance: '' } } };
+  }
+  it('active broken config names the full path, cause and repair without telling a model to update', () => {
+    const f = fixture(); const file = path.join(f.dir, 'config.json'); fs.writeFileSync(file, '{broken');
+    const line = updateNoticeForEntryPoint(f.input);
+    expect(line).toContain('4.10.0 is available'); expect(line).toContain(file);
+    expect(line).toContain('not valid JSON'); expect(line).toContain('Repair');
+    expect(line).toContain('Do not update on your own'); expect(line).not.toContain('`memesh update`');
+  });
+  it('account broken config also carries its own full path and repair', () => {
+    const f = fixture(); const file = path.join(f.account, '.memesh/config.json'); fs.writeFileSync(file, '{broken');
+    const line = updateNoticeForEntryPoint(f.input);
+    expect(line).toContain(file); expect(line).toContain('Repair');
+  });
+  it('explicit updateCheck false stays silent and does not consume the upgrade marker', () => {
+    const f = fixture(); fs.writeFileSync(path.join(f.dir, 'config.json'), '{"updateCheck":false}');
+    writeJustUpgradedMarker(f.dir, '4.9.3', '4.9.4', NOW);
+    expect(updateNoticeForEntryPoint(f.input)).toBeNull();
+    expect(fs.existsSync(path.join(f.dir, 'just-upgraded.json'))).toBe(true);
+  });
+});
+
+describe('upgrade receipts beside a separate database', () => {
+  const roots: string[] = [];
+  const fixture = () => {
+    const root = tmp(); roots.push(root);
+    const home = path.join(root, 'A'); const config = path.join(root, 'B'); const database = path.join(root, 'C');
+    for (const dir of [home, config, database]) fs.mkdirSync(dir);
+    vi.stubEnv('HOME', home); vi.stubEnv('MEMESH_DIR', config); vi.stubEnv('MEMESH_DB_PATH', path.join(database, 'kg.db'));
+    fs.writeFileSync(path.join(config, 'config.json'), '{"updateCheck":true}');
+    const cacheFile = cache(config, '4.9.4');
+    return { home, config, database, cacheFile, marker: path.join(database, 'just-upgraded.json') };
+  };
+  afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('the actual entrypoint announces and claims C once while config, cache and throttle stay in B', () => {
+    const f = fixture();
+    const sentinel = path.join(f.config, 'just-upgraded.json'); fs.writeFileSync(sentinel, 'B sentinel');
+    const cacheBefore = fs.readFileSync(f.cacheFile); const configBefore = fs.readFileSync(path.join(f.config, 'config.json'));
+    writeJustUpgradedMarker(f.database, '4.9.3', '4.9.4', NOW);
+    const refresh = vi.fn(() => false);
+    const input = { currentVersion: '4.9.4', entryPoint: 'cli' as const, now: NOW, refresh, installSupport: null };
+    const line = updateNoticeForEntryPoint(input);
+    expect(line).toContain('4.9.3'); expect(line).toContain('4.9.4'); expect(line).toContain('Upgraded');
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(updateNoticeForEntryPoint(input)).toBeNull();
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('B sentinel');
+    expect(fs.readFileSync(f.cacheFile)).toEqual(cacheBefore);
+    expect(fs.readFileSync(path.join(f.config, 'config.json'))).toEqual(configBefore);
+    expect(fs.existsSync(path.join(f.config, 'last-cli-update-notice.4.9.4.lock'))).toBe(true);
+    expect(fs.readdirSync(f.database)).toEqual([]);
+    expect(fs.readdirSync(f.home)).toEqual([]);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('a stale receipt clears C only, preserving a B marker', () => {
+    const f = fixture();
+    writeJustUpgradedMarker(f.database, '4.9.2', '4.9.3', NOW);
+    writeJustUpgradedMarker(f.config, '4.9.3', '4.9.4', NOW);
+    const sentinel = fs.readFileSync(path.join(f.config, 'just-upgraded.json'));
+    expect(resolveUpdateNotice({ dir: f.config, markerDir: f.database, currentVersion: '4.9.4', cache: JSON.parse(fs.readFileSync(f.cacheFile, 'utf8')), now: NOW }).kind).toBe('UP_TO_DATE');
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(fs.readFileSync(path.join(f.config, 'just-upgraded.json'))).toEqual(sentinel);
+  });
+
+  it('disabled notices do not consume the C receipt', () => {
+    const f = fixture();
+    fs.writeFileSync(path.join(f.config, 'config.json'), '{"updateCheck":false}');
+    writeJustUpgradedMarker(f.database, '4.9.3', '4.9.4', NOW);
+    const before = fs.readFileSync(f.marker);
+    expect(updateNoticeForEntryPoint({ currentVersion: '4.9.4', entryPoint: 'cli', now: NOW, refresh: () => false, installSupport: null })).toBeNull();
+    expect(fs.readFileSync(f.marker)).toEqual(before);
+    expect(fs.existsSync(path.join(f.config, 'last-cli-update-notice.4.9.4.lock'))).toBe(false);
+  });
+
+  it('an explicit entrypoint dir retains its isolated marker contract', () => {
+    const f = fixture();
+    writeJustUpgradedMarker(f.config, '4.9.3', '4.9.4', NOW);
+    writeJustUpgradedMarker(f.database, '4.9.2', '4.9.4', NOW);
+    expect(updateNoticeForEntryPoint({ dir: f.config, currentVersion: '4.9.4', entryPoint: 'cli', now: NOW, refresh: () => false, installSupport: null })).toContain('4.9.3');
+    expect(fs.existsSync(path.join(f.config, 'just-upgraded.json'))).toBe(false);
+    expect(fs.existsSync(f.marker)).toBe(true);
+  });
+});
 
 describe('formatUpdateNoticeLine', () => {
   it('has one line for each state that deserves one, and nothing for the rest', () => {

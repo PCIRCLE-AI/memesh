@@ -7,6 +7,7 @@ export interface HookOutcomeRecord {
     outcome: HookOutcome;
     reason?: string;
     entity?: string;
+    count?: number;
     run?: string;
 }
 export interface HookOutcomeFile {
@@ -20,10 +21,12 @@ export declare const HOOK_OUTCOMES_ROTATE_BYTES: number;
 export declare function serializeHookOutcome(record: HookOutcomeRecord): string;
 export declare function trimHookOutcomeLines(raw: string, max?: number, maxBytes?: number): string;
 export declare const SILENT_HOOK_MIN_RUNS = 5;
-export declare const CAPTURE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "handoff-capture", "stop-message-gate", "codex-plan-activity", "codex-busy-message-notice", "prompt-recall"];
+export declare const CAPTURE_HOOKS: readonly ["messages", "post-commit", "session-summary", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "session-start", "note-ingest", "remember-nudge", "stop-message-gate", "codex-plan-activity", "codex-busy-message-notice", "prompt-recall"];
 export declare const FAIL_ELIGIBLE_HOOKS: readonly ["session-summary"];
-export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact", "handoff-capture"];
+export declare const SILENT_ELIGIBLE_HOOKS: readonly ["post-commit", "session-summary", "pre-compact"];
 export declare const SKIP_REASONS: {
+    readonly messageIdentityUnavailable: "conversation-identity-unavailable";
+    readonly messageNoPending: "no-pending-messages";
     readonly notBash: "not a Bash tool call";
     readonly notGitCommit: "not a git commit command";
     readonly commitLineMissing: "a git commit ran but printed no commit line";
@@ -43,6 +46,15 @@ export declare const SKIP_REASONS: {
     readonly noGuardMatched: "no active guard matched this command";
     readonly autoCaptureOff: "auto-capture is turned off";
     readonly notesLeftForNextRun: "more note files changed than one run reads, so the rest are read at the next Stop";
+    readonly commitsLeftForNextRun: "more commits arrived than one run records; the rest are left for the next run";
+    readonly commitsNotStoredWriteFailed: "a commit was not stored after repeated write failures";
+    readonly forgottenMessageNotStoredAgain: "a message that had already been forgotten was not stored again";
+    readonly messagesNotStoredWriteFailed: "messages were not stored because the write kept failing";
+    readonly noteTooLarge: "a note file was larger than the size limit and was not imported";
+    readonly noteNoFrontmatter: "a note file had no header block and was not imported";
+    readonly noteTooManyObservations: "a note file had more observations than the limit and was not imported";
+    readonly noteIsSymlink: "a note file was a symbolic link and was not imported";
+    readonly noteOtherNotImported: "a note file was not imported for another recorded reason";
     readonly transcriptReadTimeout: "the transcript could not be read within the hook's time, so its tool calls are not recorded";
     readonly busyNoticeNotCodex: "not Codex";
     readonly busyNoticeNoSessionId: "no usable session_id";
@@ -92,8 +104,6 @@ export declare const SKIP_REASONS: {
     readonly memoryWritten: "a memory was written since the last Stop";
     readonly noteFileChanged: "a note file changed since the last Stop";
     readonly noAssistantText: "the Stop payload and the transcript held no assistant message";
-    readonly handoffTooShort: "the last assistant message was too short to be a handoff — the previous one is kept";
-    readonly handoffArchived: "the handoff memory was archived by forget — left alone";
     readonly notClaudeCodeHost: "this Stop is not running under Claude Code";
     readonly noRecipientForGate: "no recipient could be resolved for this session";
     readonly noDatabaseForMessageGate: "no database yet — nothing to check for waiting messages";
@@ -112,7 +122,7 @@ export declare const UNRECOGNISED_REASON = "unrecognised reason";
 export declare function renderableSkipReason(reason: string | undefined): string;
 export declare function isGitCommitCommand(command: string): boolean;
 export declare const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>>;
-export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "stop-message-gate", "codex-plan-activity", "codex-busy-message-notice", "prompt-recall"];
+export declare const UNCLASSIFIED_SKIP_HOOKS: readonly ["messages", "pre-compact", "pre-edit-recall", "user-prompt-intent", "decision-nudge", "guard-check", "stop-message-gate", "codex-plan-activity", "codex-busy-message-notice", "prompt-recall"];
 export declare const NEVER_RAN_GRACE_HOURS = 72;
 export declare function parseHookOutcomes(raw: string | null | undefined, limit?: number): HookOutcomeFile;
 export declare function parseHookOutcomeLine(line: string): HookOutcomeRecord | null;
@@ -137,6 +147,14 @@ export interface HookLivenessSummary {
     lastErrorAt: string | null;
     lastErrorReason: string | null;
     recentErrors: number;
+    notStored: Array<{
+        reason: string;
+        unit: string;
+        records: number;
+        count: string | null;
+        unknownCount: number;
+    }>;
+    lockedRuns: number;
     hosts: HookHost[];
     silent: boolean;
 }

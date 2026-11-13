@@ -2,12 +2,8 @@
 
 // Stop message gate — Claude Code Stop hook (#468).
 //
-// An ordinary Claude Code session has no live channel by default (and the
-// channel itself silently drops events when the launch flag is missing —
-// see docs/platforms/agent-messaging.md), so a session that never polls
-// never learns a message is waiting. This blocks the stop once per waiting
-// message id not yet blocked for in this session, and asks the model to
-// poll, fetch and record intake before finishing.
+// Surface whole pending conversation messages once before Claude Code stops.
+// stdout success is delivery evidence; the bounded ledger prevents re-block loops.
 //
 // Claude-Code-only: Codex runs the same hook script (listed in
 // .codex-plugin/plugin.json) and already has its own native queue wakeup, so
@@ -19,22 +15,19 @@ import {
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
-  HOOK_BUSY_TIMEOUT_MS,
   hookErrorReason,
+  HOOK_BUSY_TIMEOUT_MS,
   isClaudeCodeHost,
   recordHookOutcome,
-  resolveMessageRecipient,
   SKIP_REASONS,
-  waitingMessageLines,
-  waitingMessageRefs,
   hookMessageSessionId,
   SESSION_ID_MISMATCH_REASON,
   writePrivateJson,
-  openMemeshDb,
   hookNodeProblem,
   NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
+import { ConversationMessages } from './_generated/conversation-messages.js';
 
 /** Newest blocked-for ids kept per session — bounds the state file. */
 const MAX_BLOCKED_IDS = 2000;
@@ -44,6 +37,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', (chunk) => { input += chunk; });
 
 let payload = null;
+let store;
 function record(outcome, reason) {
   recordHookOutcome(process.env, { hook: 'stop-message-gate', outcome, reason, payload });
 }
@@ -86,11 +80,9 @@ process.stdin.on('end', () => {
       return exit0();
     }
 
-    const recipient = resolveMessageRecipient(process.env, (label) => {
-      record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`);
-    });
-    if (!recipient) {
-      record('skipped', SKIP_REASONS.noRecipientForGate);
+    const inboxSession = hookMessageSessionId(sessionId);
+    if (inboxSession.mismatch) {
+      record('skipped', SESSION_ID_MISMATCH_REASON);
       return exit0();
     }
 
@@ -99,43 +91,13 @@ process.stdin.on('end', () => {
       record('error', NODE_TOO_OLD_REASON);
       return exit0();
     }
-    if (!existsSync(dbPath)) {
+    if (!existsSync(dbPath) && !existsSync(join(getMemeshDirFromDbPath(), 'messages.db'))) {
       record('skipped', SKIP_REASONS.noDatabaseForMessageGate);
       return exit0();
     }
 
-    let refs;
-    let lines;
-    let db;
-    // Set by either query's own recordFailure callback (waitingMessageRefs /
-    // waitingMessageLines swallow the read error and return `[]`, so an
-    // empty `refs` here is indistinguishable from "nothing waiting" unless
-    // this flag says otherwise). One `error` record already explains the
-    // run; a trailing `skipped: nothingWaitingForGate` would contradict it —
-    // "the inbox could not be read" is not "the inbox was read and is empty".
-    let inboxReadFailed = false;
-    const onInboxReadError = (err) => {
-      inboxReadFailed = true;
-      record('error', `inbox: ${hookErrorReason(err)}`);
-    };
-    try {
-      // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
-      db = openMemeshDb(dbPath, { readOnly: true });
-      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-      // #497: the session leaves out a message meant for another session.
-      const inboxSession = hookMessageSessionId(sessionId);
-      if (inboxSession.mismatch) record('notified', SESSION_ID_MISMATCH_REASON);
-      refs = waitingMessageRefs(db, recipient, inboxSession.sessionId, onInboxReadError);
-      lines = waitingMessageLines(db, recipient, inboxSession.sessionId, onInboxReadError);
-    } finally {
-      try { db?.close(); } catch { /* already closed */ }
-    }
-
-    if (inboxReadFailed) {
-      return exit0();
-    }
-
-    if (refs.length === 0) {
+    store = new ConversationMessages({ busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
+    if (store.hookBatch(sessionId).ids.length === 0) {
       record('skipped', SKIP_REASONS.nothingWaitingForGate);
       return exit0();
     }
@@ -154,12 +116,9 @@ process.stdin.on('end', () => {
       // safe direction here is one extra block, never a silently missed one.
     }
     const blocked = new Set(Array.isArray(state?.blocked) ? state.blocked : []);
-    // NUL-joined, not the id alone: two DIFFERENT projects can reuse the same
-    // message_id string (it is scoped per (project, recipient) — see
-    // agent_message_deliveries' own primary key), and this key must not
-    // conflate them.
-    const ids = refs.map((r) => `${r.project}\u0000${r.message_id}`);
-    const newIds = ids.filter((id) => !blocked.has(id));
+    // New-store message IDs are global; the ledger itself remains per conversation.
+    const batch = store.hookBatch(sessionId, [...blocked]);
+    const newIds = batch.ids;
     if (newIds.length === 0) {
       record('skipped', SKIP_REASONS.alreadyBlockedForGate);
       return exit0();
@@ -187,7 +146,7 @@ process.stdin.on('end', () => {
       if (data.stop_hook_active === true) return exit0();
     }
 
-    const reason = `${lines.join(' ')} Poll, fetch and record intake for each before you stop.`;
+    const reason = batch.text;
     try {
       // writeSync, not console.log/process.stdout.write: stdout is a pipe,
       // and an async write can be cut off by process.exit (see
@@ -204,7 +163,8 @@ process.stdin.on('end', () => {
       return exit0();
     }
 
-    record('notified', 'blocked: waiting message(s) not yet fetched');
+    store.recordHookDelivery(sessionId, newIds, 'Stop');
+    record('notified', 'blocked: whole conversation message(s) delivered');
     return exit0();
   } catch (err) {
     record('error', hookErrorReason(err));
@@ -213,5 +173,6 @@ process.stdin.on('end', () => {
 });
 
 function exit0() {
+  try { store?.close(); } catch { /* already closed */ }
   process.exit(0);
 }

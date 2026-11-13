@@ -133,11 +133,6 @@ export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 /** The observation prefix that carries a decision's reason. */
 export const WHY_PREFIX = 'Why: ';
 
-/** A decision with no observation that starts with `Why: `: it cannot be trusted. */
-export function decisionLacksReason(type: string | undefined, observations: readonly string[]): boolean {
-  return type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX));
-}
-
 /** Days without a read or a new observation after which a decision's line asks for a re-check: the decay threshold. */
 export const UNCONFIRMED_DECISION_DAYS = 30;
 
@@ -446,12 +441,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     // arriving through a recent pool, or a stale `task-state:<old-name>`
     // left behind by a project rename, would otherwise render its goal
     // under "Decisions and direction" as though it were a decision.
-    //
-    // `session-handoff` is dropped the same way: it is never a ranked line
-    // (a later SessionStart block will be its sole renderer). A literal, not
-    // the constant in session-handoff.ts, so this leaf keeps importing
-    // nothing; a test pins the two together.
-    if (e.type === 'task-state' || e.type === 'session-handoff') continue;
+    if (e.type === 'task-state') continue;
     if (e.global) { global.push(e); continue; }
     if (e.noProject) { noProject.push(e); continue; }
     if (e.sharedFrom !== undefined) { shared.push(e); continue; }
@@ -836,6 +826,47 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
     ...safeLines,
     fence,
   ].join('\n');
+}
+
+export const MAX_OPENING_CONTEXT_BYTES = 8000;
+
+/** Charge the actual escaped wrapper, not raw characters. Task fields and all
+ * selected session tails precede optional repository facts, titles and memories. */
+export function buildOpeningContext(
+  taskLines: readonly string[],
+  tailLines: readonly string[],
+  remainingLines: readonly string[],
+  reservedBytes = 0,
+): { text: string; taskLines: string[]; tailLines: string[]; remainingLines: string[] } {
+  const encoder = new TextEncoder();
+  const fits = (lines: readonly string[]) => encoder.encode(buildReferenceContext(lines)).length + reservedBytes <= MAX_OPENING_CONTEXT_BYTES;
+  if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) throw new Error('Invalid opening context reserved byte count');
+  let tasks = [...taskLines];
+  if (!fits([...tasks, ...tailLines])) {
+    // Keep every field (date first), shortening oversized values rather than
+    // dropping later fields or the third session's tail. Ordinary supported
+    // task values pass through unchanged whenever the complete block fits.
+    // The header remains whole. Generated field/date prefixes fit within
+    // 256 units; never shorten those into an unlabelled value or an ellipsis.
+    const shorten = (limit: number) => taskLines.map((line, index) => index === 0 ? line : clip(line, limit));
+    let low = 256, high = MAX_OPENING_CONTEXT_BYTES;
+    if (!fits([...shorten(low), ...tailLines])) throw new Error('Opening context budget cannot fit task dates and session tails');
+    while (low < high) {
+      const limit = Math.ceil((low + high) / 2);
+      if (fits([...shorten(limit), ...tailLines])) low = limit;
+      else high = limit - 1;
+    }
+    tasks = shorten(low);
+  }
+  const kept = [...tasks, ...tailLines];
+  const remaining: string[] = [];
+  for (const line of remainingLines) {
+    const next = [...kept, line];
+    if (!fits(next)) break;
+    kept.push(line);
+    remaining.push(line);
+  }
+  return { text: hasBriefingContent(kept) ? buildReferenceContext(kept) : '', taskLines: tasks, tailLines: [...tailLines], remainingLines: remaining };
 }
 
 // =============================================================================

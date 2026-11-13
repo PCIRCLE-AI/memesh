@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 import { homeDir } from './paths.js';
+import { shellQuote } from './file-mode.js';
 import { compareSemVerPrecedence, parseSemVer, type ParsedSemVer } from './semver.js';
 
 export type InstallChannel = 'npm-global' | 'npm-local' | 'source-checkout' | 'plugin-marketplace' | 'unknown';
@@ -207,7 +209,8 @@ export function getGlobalNpmRoot(
   const { execFileSyncImpl = execFileSync, execPathImpl = process.execPath } = options;
 
   try {
-    const spawned = execFileSyncImpl('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
+    const npm = requireNpmInvocation(['root', '-g']);
+    const spawned = execFileSyncImpl(npm.command, npm.args, { encoding: 'utf8' }).trim();
     if (spawned) return spawned;
   } catch {
     // npm is not reachable from this process — fall through to the layout.
@@ -288,6 +291,13 @@ export function getCurrentInstallChannel(
   return channel;
 }
 
+/** The installed CLI remains reachable when a plugin did not put memesh on PATH. */
+export function pluginUpdateCommand(packageRoot: string): string {
+  const entry = path.join(packageRoot, 'dist', 'transports', 'cli', 'cli.js');
+  const quoted = process.platform === 'win32' ? `"${entry.replace(/"/g, '""')}"` : shellQuote(entry);
+  return `node ${quoted} update`;
+}
+
 /**
  * @param packageRoot - the same root that produced `channel`. Required, not
  *   optional, because the `plugin-marketplace` remediation is only correct
@@ -344,7 +354,7 @@ export function getInstallChannelSupport(
           // nothing. Codex ships its own plugin CLI; use that.
           recommendedCommand: 'memesh update',
           guidance:
-            `Run \`memesh update\`: it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`,
+            `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`${pluginUpdateCommand(packageRoot)}\`): it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`,
         };
       }
       return {
@@ -362,7 +372,7 @@ export function getInstallChannelSupport(
         // users (no npm CLI on PATH) reach the same command via npx.
         recommendedCommand: 'memesh update',
         guidance:
-          `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`node "${path.join(packageRoot, 'dist', 'transports', 'cli', 'cli.js')}" update\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`.`,
+          `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`${pluginUpdateCommand(packageRoot)}\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`.`,
       };
     }
     default:

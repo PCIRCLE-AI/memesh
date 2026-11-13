@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { findPackageRoot } from './package-root.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 
@@ -8,76 +9,22 @@ export function isDamagedDatabaseError(message: string): boolean {
   return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
 }
 
-/**
- * The file names the product gives a backup of the MEMORY database, one prefix per
- * writer: `pre-update-` (auto-update.ts `backupDatabase`), `before-compression-marker-`
- * (lifecycle.ts), `kg-before-` (cli.ts `backUpDatabase`) and
- * `knowledge-graph-before-note-trust-` (note-ingest.ts, through db-copy.ts). The same
- * folder also holds the expired-message archive (`agent-messages-expired*.db`, written by
- * agent-message-expiry.ts) and Hermes provider backups: restoring the archive over the
- * database would replace every memory with expired messages, so only these names count.
- */
-const MEMORY_BACKUP_PREFIXES = ['pre-update-', 'before-compression-marker-', 'kg-before-', 'knowledge-graph-before-note-trust-'];
-
-/** The newest complete memory-database backup in `dir` (a `.tmp` is a backup still being written), or undefined. */
-function newestBackup(dir: string): string | undefined {
-  let newest: { file: string; mtime: number } | undefined;
-  let names: string[];
-  try {
-    names = fs.readdirSync(dir);
-  } catch {
-    return undefined;
-  }
-  for (const name of names) {
-    if (!name.endsWith('.db') || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix))) continue;
-    const file = path.join(dir, name);
-    try {
-      const stat = fs.statSync(file);
-      if (stat.isFile() && stat.size > 0 && (!newest || stat.mtimeMs > newest.mtime)) newest = { file, mtime: stat.mtimeMs };
-    } catch { /* vanished while listing */ }
-  }
-  return newest?.file;
+/** The same repair entry point for doctor, open failures and explicit backup restores. */
+export function repairCommand(databasePath: string, backupPath?: string, nodeFallback = false): string {
+  const quote = process.platform === 'win32'
+    ? (value: string) => `"${value.replace(/"/g, '""')}"`
+    : shellQuote;
+  const command = nodeFallback
+    ? `node ${quote(path.join(findPackageRoot(import.meta.url), 'dist', 'transports', 'cli', 'cli.js'))} repair`
+    : 'memesh repair';
+  return `${command} --database ${quote(databasePath)}${backupPath ? ` --from-backup ${quote(backupPath)}` : ''}`;
 }
 
-/**
- * The shell commands of {@link damagedDatabaseFix}, each one runnable as
- * printed. SQLite keeps recent writes in `<db>-wal` until they are copied into
- * the file, so the copy takes the journal along (or the newest memories are
- * lost), and anything put back in place first removes the old `-wal`/`-shm`
- * (or SQLite replays that stale journal onto the new file and breaks it).
- * `.recover` may not bring the keyword index back intact, so the salvage ends
- * by rebuilding it.
- */
-export function damagedDatabaseSteps(databasePath: string): { copy: string; restore?: string; salvage: string; replace: string } {
-  const q = shellQuote;
-  const db = q(databasePath);
-  const damaged = `${databasePath}.damaged`;
-  const recovered = q(`${databasePath}.recovered.db`);
-  const dropJournal = `rm -f ${q(`${databasePath}-wal`)} ${q(`${databasePath}-shm`)}`;
-  const journalCopies = ['-wal', '-shm'].map((s) => `[ ! -e ${q(databasePath + s)} ] || cp ${q(databasePath + s)} ${q(damaged + s)}`);
-  const backup = newestBackup(path.join(path.dirname(databasePath), 'backups'));
-  return {
-    copy: [`rm -f ${q(`${damaged}-wal`)} ${q(`${damaged}-shm`)}`, `cp ${db} ${q(damaged)}`, ...journalCopies].join('; '),
-    ...(backup ? { restore: `${dropJournal} && cp ${q(backup)} ${db}` } : {}),
-    salvage: `rm -f ${recovered} && sqlite3 ${q(damaged)} .recover | sqlite3 ${recovered}`,
-    replace: `${dropJournal} && mv ${recovered} ${db} && memesh reindex --fts`,
-  };
-}
-
-/**
- * The one fix for a database file whose pages are damaged (it opens, or fails
- * to open, with "malformed"/"not a database"). Moving it aside and starting
- * fresh would throw away whatever is still readable, so the first step is to
- * copy the damaged file, and the restore choice appears only when `backups`
- * beside it holds a complete copy (plain installs have none: only the
- * maintenance commands make one).
- */
+/** One checked repair command; never an unchecked shell pipeline over the original. */
 export function damagedDatabaseFix(databasePath: string): string {
-  const steps = damagedDatabaseSteps(databasePath);
-  const restore = steps.restore
-    ? ` To go back to the newest backup instead (this overwrites the file, which is why the copy comes first): ${steps.restore}.`
-    : '';
-  return `Stop every memesh process, then copy the damaged file and its journal so nothing is lost: ${steps.copy}.${restore} To salvage what is readable: ${steps.salvage}, check the result, then put it in place and rebuild the keyword index: ${steps.replace}.`;
+  return `Stop every memesh process, then run: ${repairCommand(databasePath)}. `
+    + `If memesh is not on PATH: ${repairCommand(databasePath, undefined, true)}. `
+    + 'Repair keeps a verified copy of the database and its journal, salvages readable memories, and checks the result before replacing the file. Restart your AI tools afterwards.';
 }
 
 /**

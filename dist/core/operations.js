@@ -7,7 +7,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
+import { WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
 import { boundReplacedHistory } from './replaced-history.js';
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
@@ -70,8 +70,6 @@ function resolveRememberInput(input) {
             throw new Error('remember needs `name` and `type`, or `note`');
         if (input.type === '')
             throw new Error('remember needs `name` and `type`, or `note`');
-        if (input.type === undefined && !input.replace)
-            throw new Error('remember needs `name` and `type`, or `note`');
         return {
             args: {
                 ...input,
@@ -123,6 +121,9 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         }
     }
     const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+    if (args.projectIsDefault && !args.replace && existing && tagProjects.length === 0 && projectTagsOf(db, existing.id).length === 0) {
+        args = { ...args, project: null };
+    }
     if (tagProjects.some((p) => p.trim() === '')) {
         throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
     }
@@ -153,14 +154,8 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     }
     const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
     if (entityType === undefined) {
-        throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+        throw new Error(`There is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
-    }
-    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted' && args.reasonOptional !== true
-        && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
-        throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
-            + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
-            + 'Pass `why`, or an observation that starts with "Why: ".');
     }
     let replacedVersion;
     let retypedTo;
@@ -185,7 +180,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         if (tags === undefined)
             tags = previousTags;
     }
-    else if (derived && existing) {
+    else if (derived && existing && existing.status !== 'archived') {
         title = undefined;
         const stored = new Set(db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id)
             .map((o) => o.content));

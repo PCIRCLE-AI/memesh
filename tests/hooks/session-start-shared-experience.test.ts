@@ -99,7 +99,7 @@ beforeEach(() => {
   make('b-feedback-record', 'feedback', 'other-b', 'Other product feedback record', 1);
   make('b-commit', 'commit', 'other-b', 'Other commit detail', 1);
   // The handoff of the session before the id changed: filed under the earlier id.
-  kg.createEntity(`session-handoff:${earlierId}`, 'session-handoff', { observations: ['Where the last session left off: finish the widget parser'], tags: [`project:${earlierId}`], trustOverride: 'trusted' });
+  kg.createEntity('conversation:earlier', 'conversation', { observations: ['Where the last session left off: finish the widget parser'], tags: [`project:${earlierId}`, 'role:assistant', 'session:earlier'], trustOverride: 'trusted' });
   closeDatabase();
 });
 
@@ -121,14 +121,14 @@ describe('SessionStart reads the project under every id of its checkout', () => 
     openDatabase(dbPath);
     setTaskState({ project: earlierId, patch: { goal: 'TASKGOALOLD ship v2' } });
     closeDatabase();
-    expect(hookContext('standard')).toContain('TASKGOALOLD ship v2');
+    expect(hookContext('minimal')).toContain('TASKGOALOLD ship v2');
     openDatabase(dbPath);
     const binding = { projectBinding: { project: ownId, ids: getProjectIds(repo) } };
     const read = await handleTool('task_state', {}, undefined, undefined, binding);
     expect(read.content[0].text).toContain('TASKGOALOLD ship v2');
-    // `minimal` (the default) leaves a fresh task state out; `standard` shows it.
+    // Fresh task state is also available at the default minimal level.
     const previousLevel = process.env.MEMESH_BRIEFING;
-    process.env.MEMESH_BRIEFING = 'standard';
+    process.env.MEMESH_BRIEFING = 'minimal';
     try {
       const briefing = await handleTool('briefing', {}, undefined, undefined, binding);
       expect(briefing.content[0].text).toContain('TASKGOALOLD ship v2');
@@ -214,17 +214,17 @@ describe('SessionStart and briefing carry a few shared experiences of other proj
   it('a newer untrusted handoff under another id does not hide the trusted one', () => {
     openDatabase(dbPath);
     // An import brings a handoff back under the current id, untrusted, newer than the earlier one.
-    new KnowledgeGraph(getDatabase()).createEntity(`session-handoff:${ownId}`, 'session-handoff', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`] });
-    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run(`session-handoff:${ownId}`);
+    new KnowledgeGraph(getDatabase()).createEntity('conversation:imported', 'conversation', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`, 'role:assistant', 'session:earlier'] });
+    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run('conversation:imported');
     const pools = selectBriefingPools(getDatabase(), ownId, { projectIds: getProjectIds(repo), projectLimit: 10, global: false, foreign: false });
     closeDatabase();
-    expect(pools.handoff?.text).toContain('finish the widget parser');
+    expect(pools.handoffs[0]?.text).toContain('finish the widget parser');
   });
 
   it('the hook itself (its own copy of the pools) shows the trusted handoff, not a newer untrusted one', () => {
     openDatabase(dbPath);
-    new KnowledgeGraph(getDatabase()).createEntity(`session-handoff:${ownId}`, 'session-handoff', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`] });
-    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run(`session-handoff:${ownId}`);
+    new KnowledgeGraph(getDatabase()).createEntity('conversation:imported', 'conversation', { observations: ['Imported handoff text that must not lead'], tags: [`project:${ownId}`, 'role:assistant', 'session:earlier'] });
+    getDatabase().prepare(`UPDATE entities SET metadata = json_set(COALESCE(metadata, '{}'), '$.trust', 'untrusted', '$.provenance.source', 'import') WHERE name = ?`).run('conversation:imported');
     closeDatabase();
     const context = hookContext();
     expect(context).toContain('finish the widget parser');

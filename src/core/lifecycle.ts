@@ -5,7 +5,7 @@ import { AUTO_CAPTURE_TAG } from './types.js';
 import { isTransientDbError, migrationRetryPending, runOnceMigration } from '../storage/schema.js';
 import { COMPRESSION_WEEK_FORMAT, writeUnmarkedCompressedCounts, type UnmarkedWeeks } from './compression-ledger.js';
 import fs from 'node:fs';
-import path from 'node:path';
+import { copyDatabaseBefore } from './db-copy.js';
 
 const DECAY_INTERVAL_MS = 24 * 60 * 60 * 1000; // 24 hours
 const STALE_THRESHOLD_DAYS = 30;
@@ -537,7 +537,6 @@ export function markCompressedRows(db: MemeshDatabase, opts: { dryRun?: boolean 
 const BACKFILL_LEASE_KEY = `${COMPRESSION_MARKER_KEY}_lease`;
 /** Longer than a backup plus backfill of a large database; a killed holder's claim lapses after this. */
 const BACKFILL_LEASE_MS = 10 * 60 * 1000;
-const BACKUP_PREFIX = 'before-compression-marker-';
 
 /**
  * One process at a time: take the claim if nobody holds an unexpired one.
@@ -567,7 +566,7 @@ function acquireBackfillLease(db: MemeshDatabase): string | undefined {
  * whole database to `<dir>/backups` (VACUUM INTO, which also captures the WAL).
  * The caller decides who may run it (see `openDatabase`: not a hook). Only one
  * process works at a time, through a lease in `memesh_metadata`; one killed
- * midway leaves nothing but a `.tmp` copy, which the next run deletes. The
+ * midway leaves an owner-tagged partial copy, cleaned after its process exits. The
  * backup gets its final name only when complete. No copy, no change: a failed
  * backup leaves the migration pending for the next start. A marking that did
  * not happen removes the copy made for it (the database is unchanged), and a
@@ -598,19 +597,10 @@ export function backfillCompressionMarkers(db: MemeshDatabase): void {
     const plan = markCompressedRows(db, { dryRun: true });
     let backupPath: string | undefined;
     if (plan.marked > 0) {
-      const file = (db.prepare('PRAGMA database_list').all() as Array<{ name: string; file: string }>).find((d) => d.name === 'main')?.file;
       try {
-        if (!file) throw new Error('the database has no file to back up');
-        const backupDir = path.join(path.dirname(file), 'backups');
-        fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-        for (const leftover of fs.readdirSync(backupDir)) {
-          if (leftover.startsWith(BACKUP_PREFIX) && leftover.endsWith('.tmp')) fs.rmSync(path.join(backupDir, leftover), { force: true });
-        }
-        const finalPath = path.join(backupDir, `${BACKUP_PREFIX}${new Date().toISOString().replace(/[:.]/g, '-')}.db`);
-        const partial = `${finalPath}.tmp`;
-        db.prepare('VACUUM INTO ?').run(partial);
-        fs.renameSync(partial, finalPath);
-        backupPath = finalPath;
+        const copy = copyDatabaseBefore(db, 'before-compression-marker');
+        if (copy.kind === 'failed') throw new Error(copy.reason);
+        backupPath = copy.path;
         process.stderr.write(`MeMesh: backed up the database to ${backupPath} before marking records that compression archived.\n`);
       } catch (err) {
         process.stderr.write(`MeMesh: compressed-record marker backfill skipped, no backup could be made (${err instanceof Error ? err.message : String(err)}); it will retry on the next start.\n`);

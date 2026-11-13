@@ -62,6 +62,7 @@ import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-
 import { AgentMessagingError, sendAgentMessage } from './agent-messaging.js';
 import { DEFAULT_DB_FILE } from './paths.js';
 import { sqliteUtcToIso } from './time-utils.js';
+import { ConversationMessages } from './conversation-messages.js';
 import { networkDeliveryOf } from '../network/outbound.js';
 
 /** A pass is due when the last one started this long ago or more. */
@@ -325,6 +326,13 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
     const work = pass;
     if (!tablesExist(work)) return finish('no_message_tables', 'agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing');
 
+    // Preserve the full 14-day message/audit history before any legacy archive or deletion.
+    // Use this pass's actual graph, never an ambient configuration path.
+    if (file !== '' && work.prepare('SELECT 1 FROM agent_messages LIMIT 1').get()) {
+      const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+      messages.close();
+    }
+
     const cutoff = agentMessageExpiryCutoff(clockMs);
     const inFlightCutoff = new Date(clockMs - IN_FLIGHT_GRACE_MS).toISOString();
     const presenceParams = presenceBindings(cutoff, clockMs);
@@ -414,6 +422,9 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
         }
         work.transaction(() => {
           renewLease(work, holder);
+          // Hold the source write lock through refresh and deletion: later audit facts cannot fall between them.
+          const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+          messages.close();
           deleteBatch(work, rows, tally);
           saveRunProgress(work, startedRunId, tally, archiveFile);
         }).immediate();

@@ -5,10 +5,12 @@
 // and stores as session-insight entities in MeMesh.
 //
 import { join } from 'path';
-import { existsSync, readFileSync, writeSync } from 'fs';
+import { createHash, randomUUID } from 'crypto';
+import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, writeSync } from 'fs';
 import {
   AUTO_CAPTURE_TAG,
   captureEntity,
+  captureConversation,
   extractCitedMemoryIds,
   recallSessionPath,
   writePrivateJsonAtomic,
@@ -26,8 +28,55 @@ import {
   truncateTitle,
 } from './_shared.js';
 import { createCodexState, finishCodex, readCodexRow } from './_codex-rollout.js';
-import { runStopHandoff } from './_stop-handoff.js';
 import { runStopNotes } from './_stop-notes.js';
+import { agentMessageTexts, omitAgentMessageText, lastAssistantText, HANDOFF_TRANSCRIPT_TAIL_BYTES } from './_generated/session-handoff.js';
+
+function captureAssistantConversation(data, project) {
+  if (!project || !data.session_id) return;
+  let raw = data.last_assistant_message;
+  const fromPayload = typeof raw === 'string' && raw.trim() !== '';
+  let tail = '';
+  if (typeof data.transcript_path === 'string' && existsSync(data.transcript_path)) {
+    try {
+      const fd = openSync(data.transcript_path, 'r');
+      try {
+        const stat = fstatSync(fd);
+        if (stat.isDirectory()) throw new Error('transcript_path is a directory');
+        const start = Math.max(0, stat.size - HANDOFF_TRANSCRIPT_TAIL_BYTES);
+        const bytes = Buffer.alloc(stat.size - start);
+        let got = 0;
+        while (got < bytes.length) {
+          const n = readSync(fd, bytes, got, bytes.length - got, start + got);
+          if (n === 0) break;
+          got += n;
+        }
+        tail = bytes.subarray(0, got).toString('utf8');
+      } finally { closeSync(fd); }
+    } catch (err) {
+      if (!fromPayload) throw err;
+      recordHookOutcome(process.env, { hook: 'session-summary', outcome: 'error', reason: `quoted agent messages not checked: ${hookErrorReason(err)}`, payload: data });
+    }
+  }
+  if (!fromPayload) raw = lastAssistantText(tail);
+  if (typeof raw !== 'string' || !raw.trim()) {
+    recordHookOutcome(process.env, { hook: 'session-summary', outcome: 'skipped', reason: SKIP_REASONS.noAssistantText, payload: data });
+    return;
+  }
+  // Keep the complete reply, including short acknowledgements and code;
+  // only quoted agent-message text is omitted before it becomes memory.
+  const { texts } = agentMessageTexts(tail);
+  const text = omitAgentMessageText(redactSecrets(raw), [...texts, ...texts.map(t => redactSecrets(t))]).text;
+  const eventId = data.prompt_id ?? data.turn_id;
+  const identity = typeof eventId === 'string' && eventId ? createHash('sha256').update(JSON.stringify([data.session_id, eventId, 'assistant'])).digest('hex') : randomUUID();
+  const result = captureConversation({
+    name: `conversation-${identity}`, type: 'conversation', replace: true,
+    title: text.split('\n').find(line => line.trim())?.trim().slice(0, 120),
+    observations: [text],
+    tags: [AUTO_CAPTURE_TAG, `project:${project}`, `session:${data.session_id}`, 'role:assistant'],
+    sourceHost: hookSourceHost(data),
+  });
+  recordHookOutcome(process.env, { hook: 'session-summary', outcome: result.skipped ? 'skipped' : result.queued ? 'error' : 'wrote', reason: `${result.reason ?? 'stored assistant conversation'}; assistant text from ${fromPayload ? 'payload' : 'transcript'}`, payload: data });
+}
 // Edited file names from Bash and Edit/Write, under one path-shape rule
 // (#495). Generated from src/core/bash-edited-paths.ts — do not hand-edit.
 import { bashEditedFileNames, editedFileName, isPathShapedFileName, listEditedFiles } from './_generated/bash-edited-paths.js';
@@ -352,6 +401,10 @@ process.stdin.on('end', async () => {
     // `note-ingest` / `remember-nudge`, never throws, and only ever yields
     // one line for exit0() to print.
     const stopProject = inputData.cwd ? getProjectName(inputData.cwd) : undefined;
+    if (captureEnabled) {
+      try { captureAssistantConversation(inputData, stopProject); }
+      catch (err) { recordHookOutcome(process.env, { hook: 'session-summary', outcome: 'error', reason: hookErrorReason(err), payload: inputData }); }
+    }
     const stopNotes = await runStopNotes(inputData, {
       captureEnabled,
       project: stopProject,
@@ -359,11 +412,6 @@ process.stdin.on('end', async () => {
     });
     pendingSystemMessage = stopNotes.message;
     settleNudge = stopNotes.settle;
-
-    // Keep the agent's last message as the project's handoff. Ahead of the
-    // early exits below on purpose: a short or read-only turn is still a place
-    // the work stopped, and this records its own outcome under `handoff-capture`.
-    runStopHandoff(inputData, { captureEnabled, project: stopProject });
 
     if (!captureEnabled) {
       record('skipped', SKIP_REASONS.autoCaptureOff);
@@ -457,7 +505,7 @@ process.stdin.on('end', async () => {
     }
 
     // A single fetch is a valid use independently of capture's activity bar.
-    // All privacy/opt-out and transcript readability guards above still apply.
+    // The capture configuration and transcript readability checks above still apply.
     try {
       accountRecallUse(inputData.session_id, getProjectName(cwd), transcriptRawText);
     } catch (err) {

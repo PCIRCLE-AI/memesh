@@ -19,11 +19,7 @@ const require = createRequire(import.meta.url);
 const { getProjectName: mirrorProjectName, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
 const projTag = (name: string) => `project:${mirrorProjectName('/tmp/' + name)}`;
 
-// The fresh task state and the durable-memory index are `standard`-level
-// content. The default level is `minimal`, which injects neither, so a test
-// whose subject is one of them — or the gate that keeps a memory out of the
-// ranked block AND the index — runs at `standard` on purpose instead of leaning
-// on the default.
+// Pin the level explicitly when a test exercises standard.
 const STANDARD = { MEMESH_BRIEFING: 'standard' } as const;
 
 // The other direction: a test about what happens when NOTHING sets the level
@@ -560,23 +556,21 @@ describe('Feature: Session Start Hook', () => {
     }
   });
 
-  // #474: SessionStart tells an agent its own messaging address whenever a
-  // recipient resolves, in both the model-visible field (so the agent can
-  // actually use it as `sender`) and the human-visible one (the same
-  // convention `recipientRejectionLine` already follows). No database is
-  // seeded — the no-database exit path is one of the four `output()` call
-  // sites the address line was wired into, and the cheapest to exercise.
-  it('states the session\'s own messaging address once a recipient resolves', () => {
-    const project = mirrorProjectName('/tmp/testproj');
+  // Conversation messages have their own whole-body hook. A stale principal
+  // override must not restore the retired address/protocol or hide memories.
+  it('preserves project memory without a retired principal address when a recipient is configured', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('project-memory', 'decision');
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'PROJECT_MEMORY_HEAD complete middle PROJECT_MEMORY_TAIL');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('testproj'));
+    db.close();
     const out = runHook({ cwd: '/tmp/testproj' }, { MEMESH_RECIPIENT: 'claude-implementer' });
     const ctx = String((out.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
-    expect(ctx).toContain(`project "${project}"`);
-    expect(ctx).toContain('recipient "claude-implementer"');
-    expect(ctx).toContain('use "claude-implementer" as sender');
-    expect(ctx).toContain('message discover');
-    // Same line in the human-visible banner too, matching the existing
-    // recipientRejectionLine/channelFlagWarningLine convention.
-    expect(out.systemMessage as string).toContain('recipient "claude-implementer"');
+    expect(ctx).toContain('[decision] PROJECT_MEMORY_HEAD complete middle PROJECT_MEMORY_TAIL');
+    for (const text of [ctx, String(out.systemMessage ?? '')]) {
+      expect(text).not.toContain('claude-implementer');
+      expect(text).not.toMatch(/messaging address|as sender|message (?:discover|poll|fetch|intake)/i);
+    }
   });
 
   it('states no messaging address when no recipient resolves', () => {
@@ -647,14 +641,38 @@ describe('Feature: Session Start Hook', () => {
     expect(section, 'index section present').toBeDefined();
     // These rows have no title column: the line carries the name, as the index was judged.
     expect(section.split('\n').filter((l) => l.startsWith('- '))).toEqual([
-      // Written in the same second: ties go by id, as measured.
-      `- idx-decision-older [mem:${older}]`,
+      // Written in the same second: the later write is listed first.
       `- idx-decision-newer [mem:${newer}]`,
+      `- idx-decision-older [mem:${older}]`,
     ]);
     expect(section).not.toContain(`[mem:${c}]`);
     const session = readLatestSessionFile();
     expect(session!.entityIds).toEqual(expect.arrayContaining([older, newer]));
-    expect((session as unknown as { recentPoolIds: number[] }).recentPoolIds).toEqual([older, newer]);
+  });
+
+  it('shows at most ten user conversation titles and never an assistant conversation title', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const project = projTag('conversation-index');
+    for (let i = 0; i < 11; i++) {
+      const id = ins.run(`user-conversation-${i}`, 'conversation').lastInsertRowid as number;
+      obs.run(id, `User conversation ${i}`);
+      tag.run(id, project);
+      tag.run(id, 'role:user');
+    }
+    const assistant = ins.run('assistant-conversation', 'conversation').lastInsertRowid as number;
+    obs.run(assistant, 'Assistant conversation');
+    tag.run(assistant, project);
+    tag.run(assistant, 'role:assistant');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/conversation-index' }, STANDARD);
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Recent user conversation titles:')[1].split('Recently written memories')[0];
+    expect(section.match(/^- /gm)).toHaveLength(10);
+    expect(section).not.toContain('assistant-conversation');
   });
 
   it('#323: a memory shown ONLY through the index is recorded as injected, so citing it is credited', () => {
@@ -739,8 +757,8 @@ describe('Feature: Session Start Hook', () => {
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     const section = injected.split('Recently written memories')[1] ?? '';
     const ids = [...section.matchAll(/ \[mem:(\d+)\]$/gm)].map((m) => Number(m[1]));
-    // Same timestamp for every row: ties go by id, the oldest id first, as measured.
-    expect(ids).toEqual(Array.from({ length: 30 }, (_, i) => i + 1));
+    // Same timestamp for every row: keep the last 30 writes, newest id first.
+    expect(ids).toEqual(Array.from({ length: 30 }, (_, i) => 60 - i));
   }, 30000);
 
   it('#323: a failed index read says so and records an error — never the empty-state line', () => {
@@ -1346,10 +1364,10 @@ syncBuiltinESMExports();
      *  about the default and by the explicit `minimal` test below. */
     function expectMinimalBlock(injected: string, label: string): void {
       // The recent index is shown at every level, minimal included.
-      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence', 'index'] as const) {
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence', 'taskStateFresh', 'index'] as const) {
         expect(injected, `${label} must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
       }
-      for (const key of ['foreign', 'global', 'taskStateFresh', 'workPackage'] as const) {
+      for (const key of ['foreign', 'global', 'workPackage'] as const) {
         expect(injected, `${label} must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
       }
     }
@@ -1372,15 +1390,14 @@ syncBuiltinESMExports();
       const output = runHook({ cwd: PROJECT_CWD }, noSettingEnv());
       const unset = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
       expectMinimalBlock(unset, 'no setting');
-      // Anti-vacuity: the same fixture DOES carry the task state and the index
-      // at `standard`, so their absence above is the level, not the fixture.
+      // Both levels carry the fresh task state and index.
       const standard = injectedContextAt('standard');
       expect(standard).toContain(HEADINGS.taskStateFresh);
       expect(standard).toContain(HEADINGS.index);
       expect(unset, 'no setting must be byte-identical to an explicit minimal').toBe(injectedContextAt('minimal'));
     });
 
-    it('B2: standard adds task state and the durable index, still no global/foreign/notice', () => {
+    it('B2: standard includes task state and the recent index, still no global/foreign/notice', () => {
       seedEverySection();
       const injected = injectedContextAt('standard');
 
@@ -1400,29 +1417,27 @@ syncBuiltinESMExports();
       }
     });
 
-    it('B2: size relation — minimal < standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
+    it('B2: size relation — minimal = standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
       seedEverySection();
       const minimal = injectedContextAt('minimal');
       const standard = injectedContextAt('standard');
       const full = injectedContextAt('full');
 
-      expect(minimal.length).toBeLessThan(standard.length);
+      expect(minimal).toBe(standard);
       expect(standard.length).toBeLessThan(full.length);
       const ratio = standard.length / full.length;
       expect(ratio, `standard (${standard.length}) must be <= 60% of full (${full.length}); measured ${(ratio * 100).toFixed(1)}%`)
         .toBeLessThanOrEqual(0.6);
     });
 
-    it('B3: a stale task state is ONE line at every level; a fresh one is the full block at standard/full', () => {
-      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+    it('B3: an old task state remains visible with its age at every level', () => {
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString();
       seedEverySection({ taskUpdatedAt: staleAt });
-
       for (const level of ['minimal', 'standard', 'full']) {
         const injected = injectedContextAt(level);
-        expect(injected, `${level}: stale must not show the multi-line block`).not.toContain('Stated about');
-        const staleLines = injected.split('\n').filter((l) => l.includes('was last stated') && l.includes('72h'));
-        expect(staleLines, `${level}: exactly one stale line`).toHaveLength(1);
-        expect(staleLines[0]).toContain('memesh task');
+        expect(injected, level).toContain('Stated about');
+        expect(injected, level).toContain('4 days ago');
+        expect(injected, level).toContain('Ship #360');
       }
     });
 
@@ -1438,41 +1453,31 @@ syncBuiltinESMExports();
       const justOver = new Date(Date.now() - 73 * 60 * 60 * 1000).toISOString();
       seedEverySection({ taskUpdatedAt: justOver });
       const staleInjected = injectedContextAt('standard');
-      expect(staleInjected).not.toContain('Stated about');
-      expect(staleInjected).toContain('72h');
+      expect(staleInjected).toContain('Stated about');
+      expect(staleInjected).toContain('3 days ago');
+      expect(staleInjected).toContain('Ship #360');
     });
 
-    // The age parser itself is pinned in tests/core/task-state.test.ts; this
-    // pins the hook's wiring to it: every stored shape whose age cannot be
-    // established renders the one "age could not be established" line and
-    // never the fresh block, at EVERY level: `minimal` is the default, and
-    // the flag must survive there exactly as the stale one does.
+    // Invalid, ambiguous and future timestamps retain the value without a guessed age.
     it.each([
       ['a missing updated_at', { omitTaskUpdatedAt: true }],
       ['an unparseable updated_at', { taskUpdatedAt: 'not-a-date' }],
       ['a future-dated updated_at (+2h)', { taskUpdatedAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() }],
       ['a timezone-less updated_at', { taskUpdatedAt: '2026-09-20T10:00:00' }],
       ['a date-only updated_at', { taskUpdatedAt: '2026-09-20' }],
-    ])('B3: %s is one "age could not be established" line at every level, never the fresh block', (_label, seed) => {
+    ])('B3: %s preserves the task with unknown age at every level', (_label, seed) => {
       seedEverySection(seed);
       for (const level of ['minimal', 'standard', 'full']) {
         const injected = injectedContextAt(level);
-        expect(injected, `${level}: no fresh block`).not.toContain(HEADINGS.taskStateFresh);
-        const flagLines = injected.split('\n').filter((l) => l.includes('age could not be established'));
-        expect(flagLines, `${level}: exactly one age-unknown line`).toHaveLength(1);
-        expect(flagLines[0]).toContain('memesh task');
+        expect(injected, level).toContain(HEADINGS.taskStateFresh);
+        expect(injected, level).toContain('at some point');
+        expect(injected, level).toContain('Ship #360');
+        if ('taskUpdatedAt' in seed) expect(injected, level).not.toContain(seed.taskUpdatedAt);
       }
     });
 
-    // `full` is byte-identical to the output from before levels existed —
-    // except when the task state is stale, since staleness handling replaces
-    // the task-state block at EVERY level including `full`. Only those lines
-    // differ. Before levels a task state was always shown as the multi-line
-    // block, and that renderer is identical to the current one for a FRESH
-    // task state, so the FRESH phase below stands in for "what the
-    // pre-levels output would be" on this fixture, and the test needs no
-    // old build.
-    it('full diverges from a HEAD-equivalent (fresh) run only in the task-state block, for a stale task state', () => {
+    // Age changes the task-state block, while other sections remain unchanged.
+    it('full changes only the task-state block when its date changes', () => {
       seedEverySection();
       const freshCtx = injectedContextAt('full');
       expect(freshCtx, 'fresh must show the multi-line task-state block (HEAD-equivalent)').toContain('Stated about');
@@ -1488,8 +1493,9 @@ syncBuiltinESMExports();
       const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
       seedEverySection({ taskUpdatedAt: staleAt });
       const staleCtx = injectedContextAt('full');
-      expect(staleCtx, 'stale must show the one-line flag, not the multi-line block').not.toContain('Stated about');
-      expect(staleCtx).toContain('72h');
+      expect(staleCtx).toContain('Stated about');
+      expect(staleCtx).toContain('4 days ago');
+      expect(staleCtx).toContain('Ship #360');
       expect(staleCtx).toContain(HEADINGS.workPackage);
 
       // Split each output at the first blank line inside the fence — that
@@ -2022,7 +2028,7 @@ syncBuiltinESMExports();
 });
 
 describe('SessionStart: the session handoff leads the injected context (#434 step 2)', () => {
-  const HEADER = 'Where the last session left off';
+  const HEADER = 'Last reply from a recent session';
   let dir: string;
   let dbFile: string;
   let cwd: string;
@@ -2051,6 +2057,10 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, type).lastInsertRowid as number;
     db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, text, sqliteAgo(hoursAgo));
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+    if (type === 'conversation') {
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'role:assistant');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `session:${name}`);
+    }
     return id;
   }
   let startSequence = 0;
@@ -2065,11 +2075,34 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     return { context: String(out.hookSpecificOutput?.additionalContext ?? ''), banner: String(out.systemMessage ?? '') };
   }
 
+  it('allocates the full opening to supported task fields and three tails before memories, matching compiled briefing', () => {
+    const date = new Date().toISOString();
+    const state = { goal: '界'.repeat(300), next: '次'.repeat(300), blocked: '阻'.repeat(300), done: '完'.repeat(300), stated_at: { goal: date, next: date, blocked: date, done: date } };
+    seed(db => {
+      db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(`task-state:${project}`, 'task-state', JSON.stringify({ task_state: state }));
+      for (let i = 1; i <= 3; i++) addEntity(db, `conversation:budget-${i}`, 'conversation', '答'.repeat(300) + `BUDGET_TAIL_${i}`, `project:${project}`);
+      for (let i = 0; i < 8; i++) addEntity(db, `budget-memory-${i}`, 'decision', `MEMORY_${i} ` + '知'.repeat(200), `project:${project}`);
+    });
+    const { context } = start('full');
+    const cli = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'], {
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: dir, MEMESH_AUTO_UPDATE: 'off', MEMESH_BRIEFING: 'full' }, encoding: 'utf8', timeout: 20000,
+    });
+    expect(cli.status, cli.stderr).toBe(0);
+    const briefing = JSON.parse(cli.stdout.trim());
+    for (const text of [context, briefing.text]) {
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(8000);
+      for (const value of ['界', '次', '阻', '完']) expect(text).toContain(value.repeat(300));
+      expect(text).toContain(date);
+      for (let i = 1; i <= 3; i++) expect(text).toContain(`BUDGET_TAIL_${i}`);
+    }
+    expect(briefing.hasTaskState).toBe(true); expect(briefing.hasHandoff).toBe(true); expect(briefing.empty).toBe(false);
+  });
+
   it.each(['minimal', 'standard', 'full'])('at %s the handoff is the first thing in the fence, once', (level) => {
     let id = 0;
     seed((db) => {
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: we keep one SQLite file.', `project:${project}`);
-      id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'HANDOFF-TEXT: next, open the PR.', `project:${project}`);
+      id = addEntity(db, `conversation:${project}`, 'conversation', 'HANDOFF-TEXT: next, open the PR.', `project:${project}`);
     });
     const { context } = start(level);
     const body = context.slice(context.indexOf('```'));
@@ -2080,7 +2113,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
   });
 
   it('renders the same handoff block as the briefing tool', () => {
-    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'PARITY-TEXT: next, write the notes.', `project:${project}`, 80); });
+    seed((db) => { addEntity(db, `conversation:${project}`, 'conversation', 'PARITY-TEXT: next, write the notes.', `project:${project}`, 80); });
     const hookLines = start('standard').context.split('\n');
     const cli = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'], {
       env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: dir, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'standard' },
@@ -2089,13 +2122,31 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(cli.status, cli.stderr).toBe(0);
     const coreLines = String(JSON.parse(cli.stdout.trim()).text).split('\n');
     const block = (lines: string[]) => { const i = lines.findIndex((l) => l.startsWith(HEADER)); return lines.slice(i, i + 2); };
-    expect(block(hookLines)[0]).toContain('may be out of date');
+    expect(block(hookLines)[0]).toContain('3 days ago');
     expect(block(hookLines)).toEqual(block(coreLines));
   }, 40_000);
 
+  it('shows only the latest reply from each of the three newest sessions', () => {
+    seed((db) => {
+      let firstId = 0;
+      for (let i = 0; i < 4; i++) {
+        const id = addEntity(db, `conversation:tail-${i}`, 'conversation', `TAIL-${i}`, `project:${project}`);
+        if (i === 0) firstId = id;
+      }
+      db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(firstId, 'OK', sqliteAgo(1));
+    });
+    const { context } = start('minimal');
+    expect(context.split(HEADER)).toHaveLength(4);
+    expect(context).toContain('OK');
+    expect(context).toContain('TAIL-3');
+    expect(context).toContain('TAIL-2');
+    expect(context).not.toContain('TAIL-1');
+    expect(context).not.toContain('TAIL-0');
+  });
+
   it('credits a cited handoff: its id is in the injected-set record', () => {
     let id = 0;
-    seed((db) => { id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'CITE-TEXT: next, ship it.', `project:${project}`); });
+    seed((db) => { id = addEntity(db, `conversation:${project}`, 'conversation', 'CITE-TEXT: next, ship it.', `project:${project}`); });
     start('minimal');
     const sessionsDir = path.join(dir, 'sessions');
     const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'));
@@ -2106,7 +2157,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
 
   it('shows no archived (forgotten) handoff', () => {
     seed((db) => {
-      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ARCHIVED-HANDOFF', `project:${project}`);
+      const id = addEntity(db, `conversation:${project}`, 'conversation', 'ARCHIVED-HANDOFF', `project:${project}`);
       db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(id);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
@@ -2117,32 +2168,30 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(start('standard').context, 'the positive control is missing').toContain('DECISION-TEXT');
   });
 
-  it('the banner is honest about a handoff: shown alone, missing, expired, or another project\'s', () => {
+  it('the banner is honest about a handoff: shown alone, old, unknown age, or another project\'s', () => {
     // Handoff only.
-    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ONLY-HANDOFF', `project:${project}`); });
+    seed((db) => { addEntity(db, `conversation:${project}`, 'conversation', 'ONLY-HANDOFF', `project:${project}`); });
     let out = start('minimal');
     expect(out.context).toContain('ONLY-HANDOFF');
     expect(out.banner).not.toMatch(/no memories/);
-    expect(out.banner).toContain('handoff from the last session');
-    // Expired: nothing is shown, and the banner says so; the record says why.
+    expect(out.banner).toContain('tails from 1 recent session(s)');
+    // Old and unknown-age session tails remain visible and the banner stays honest.
     seed((db) => { db.prepare("UPDATE observations SET created_at = ? WHERE content = 'ONLY-HANDOFF'").run(sqliteAgo(15 * 24)); });
     out = start('minimal');
-    expect(out.context).not.toContain('ONLY-HANDOFF');
-    expect(out.banner).toMatch(/no memories/);
-    const records = fs.readFileSync(path.join(dir, 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    // The session's own record is not always the last line any more: the background update check that runs after
-    // the output now records why it was not started (#360). Pick the record that says why the handoff was not shown.
-    const handoffRecord = records.filter((r) => r.hook === 'session-start' && /session handoff not shown/.test(r.reason ?? '')).at(-1);
-    expect(handoffRecord?.reason).toMatch(/session handoff not shown \(expired\)/);
-    expect(handoffRecord?.reason).not.toContain('ONLY-HANDOFF');
+    expect(out.context).toContain('ONLY-HANDOFF');
+    expect(out.banner).toContain('tails from 1 recent session(s)');
+    seed((db) => { db.prepare("UPDATE observations SET created_at = 'invalid' WHERE content = 'ONLY-HANDOFF'").run(); });
+    out = start('minimal');
+    expect(out.context).toContain('age unknown');
+    expect(out.context).toContain('ONLY-HANDOFF');
     // Another project's handoff only.
     seed((db) => {
-      db.prepare("DELETE FROM entities WHERE type = 'session-handoff'").run();
-      addEntity(db, 'session-handoff:elsewhere~' + 'd'.repeat(32), 'session-handoff', 'FOREIGN-ONLY', 'project:elsewhere~' + 'd'.repeat(32));
+      db.prepare("DELETE FROM entities WHERE type = 'conversation'").run();
+      addEntity(db, 'conversation:elsewhere~' + 'd'.repeat(32), 'conversation', 'FOREIGN-ONLY', 'project:elsewhere~' + 'd'.repeat(32));
     });
     out = start('full');
     expect(out.context).not.toContain('FOREIGN-ONLY');
-    expect(out.banner).not.toContain('handoff from the last session');
+    expect(out.banner).not.toContain('tails from 1 recent session(s)');
   });
 
   it('does not credit a [mem:N] that appears inside the handoff\'s own text', () => {
@@ -2156,7 +2205,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
         const id = addEntity(db, `pool-decision-${i}`, 'decision', `POOL-DECISION-${i}`, i === 0 ? 'project:another-project' : `project:${project}`);
         if (i === 0) oldestId = id;
       }
-      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', `We relied on the earlier decision [mem:${oldestId}]`, `project:${project}`);
+      handoffId = addEntity(db, `conversation:${project}`, 'conversation', `We relied on the earlier decision [mem:${oldestId}]`, `project:${project}`);
     });
     const { context } = start('minimal', { MEMESH_SESSION_LIMIT: '10' });
     expect(context, 'the cited decision was rendered after all, so this test proves nothing').not.toContain('POOL-DECISION-0\n');
@@ -2182,7 +2231,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
         if (i === 0) hiddenId = id;
         if (i === 9) shownId = id;
       }
-      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'placeholder', `project:${project}`);
+      handoffId = addEntity(db, `conversation:${project}`, 'conversation', 'placeholder', `project:${project}`);
     });
     const setBody = (body: string) => seed((db) => { db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run(body, handoffId); });
     const run = () => { start('minimal', { MEMESH_SESSION_LIMIT: '10' }); return latestInjected(); };
@@ -2199,8 +2248,8 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     // It cites a pool memory that was never rendered, twice: never credited.
     setBody(`hidden one [mem:${hiddenId}]\nand again [mem:${hiddenId}]`);
     expect(run()).not.toContain(hiddenId);
-    // The handoff is not shown at all (expired): nothing is subtracted, the rendered memory counts.
-    seed((db) => { db.prepare('UPDATE observations SET content = ?, created_at = ? WHERE entity_id = ?').run(`[mem:${shownId}]`, sqliteAgo(15 * 24), handoffId); });
+    // An archived session tail is not shown: the rendered memory still counts.
+    seed((db) => { db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(handoffId); });
     const expired = run();
     expect(expired).toContain(shownId);
     expect(expired).not.toContain(handoffId);
@@ -2208,7 +2257,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
 
   it('shows no handoff that fails the trust gate', () => {
     seed((db) => {
-      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'UNTRUSTED-HANDOFF', `project:${project}`);
+      const id = addEntity(db, `conversation:${project}`, 'conversation', 'UNTRUSTED-HANDOFF', `project:${project}`);
       db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ trust: 'untrusted' }), id);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
@@ -2217,17 +2266,17 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(context).not.toContain('UNTRUSTED-HANDOFF');
   });
 
-  it('shows neither another project\'s handoff nor one past 14 days', () => {
+  it('shows an old session tail but not another project\'s', () => {
     seed((db) => {
-      addEntity(db, 'session-handoff:someone-else~' + 'b'.repeat(32), 'session-handoff', 'FOREIGN-HANDOFF', 'project:someone-else~' + 'b'.repeat(32));
-      addEntity(db, `session-handoff:${project}`, 'session-handoff', 'EXPIRED-HANDOFF', `project:${project}`, 15 * 24);
+      addEntity(db, 'conversation:someone-else~' + 'b'.repeat(32), 'conversation', 'FOREIGN-HANDOFF', 'project:someone-else~' + 'b'.repeat(32));
+      addEntity(db, `conversation:${project}`, 'conversation', 'EXPIRED-HANDOFF', `project:${project}`, 15 * 24);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
     for (const level of ['minimal', 'full']) {
       const { context } = start(level);
-      expect(context, level).not.toContain(HEADER);
+      expect(context, level).toContain(HEADER);
       expect(context).not.toContain('FOREIGN-HANDOFF');
-      expect(context).not.toContain('EXPIRED-HANDOFF');
+      expect(context).toContain('EXPIRED-HANDOFF');
     }
   });
 
@@ -2237,7 +2286,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
       for (let i = 1; i <= 5; i++) addEntity(db, `crowd-other-${i}`, 'decision', `CROWD-OTHER-${i}`, 'project:crowd-elsewhere~' + 'c'.repeat(32));
       db.exec('BEGIN');
       for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 10; i++) {
-        addEntity(db, `session-handoff:old-name-${i}`, 'session-handoff', 'an old handoff', `project:${project}`);
+        addEntity(db, `conversation:old-name-${i}`, 'conversation', 'an old handoff', `project:${project}`);
       }
       db.exec('COMMIT');
     });

@@ -31,24 +31,8 @@ export interface ManifestScope {
   files: string[];
   /** Covered locations that must exist and do not (a directory or a wiring file). */
   missingRequired: string[];
-  /**
-   * Symbolic links found anywhere on the way to, or inside, a covered location: the covered folder itself, a folder
-   * above a wiring file, an entry inside. `npm pack` never ships one, so a healthy install has none; one that is there
-   * was put there afterwards, and a link is the one way a covered path can point outside the package (or at a file
-   * nothing hashes). It is never followed, only reported. The package root itself may be a link (`npm link`, pnpm):
-   * that is how the package is installed, not a change to it.
-   */
-  symlinks: string[];
-  /** Directories that exist but could not be read: what is inside them is unknown, not absent. */
-  unreadable: string[];
-  /**
-   * Folders inside a covered location whose names are ones `npm pack` leaves out of a package (`.git`, `CVS`,
-   * `x.orig`, `._x`...). A file of such a name is harmless litter, but a FOLDER is not: a skill under `skills/CVS/` is
-   * loaded all the same, and it is in no published package. It is not walked; it is reported.
-   */
-  strayFolders: string[];
-  /** Entries that are neither files, folders nor links (named pipes, sockets, devices): nothing can hash them. */
-  special: string[];
+  /** Unsafe or unreadable locations, each with its relative path and reason. Never included in files or read through. */
+  issues: string[];
 }
 
 /**
@@ -56,7 +40,7 @@ export interface ManifestScope {
  * version-control names, editor and OS litter, and the files npm itself keeps out). They are in no installed
  * package, so a copy of the package that has one FILE of such a name (macOS Finder writes `.DS_Store` into any
  * folder it opens) is not tampered with. Matching npm's own list, not a longer one: a name npm would ship is covered.
- * Only files get this pass; see `ManifestScope.strayFolders`.
+ * Only files get this pass: a folder with such a name could still contain a loaded skill, so report it without walking it.
  */
 const PACK_IGNORED_VCS = new Set(['.git', '.svn', '.hg', 'CVS']);
 const PACK_IGNORED_FILE = /^(\.npmignore|\.gitignore|\.npmrc|npm-debug\.log|\.DS_Store|\._.*|\..*\.swp|.*\.orig)$/;
@@ -64,7 +48,7 @@ const isPackIgnoredName = (name: string) => PACK_IGNORED_VCS.has(name) || PACK_I
 
 const isHookFile = (name: string) => /\.(js|mjs)$/i.test(name);
 
-interface Found { files: string[]; symlinks: string[]; unreadable: string[]; strayFolders: string[]; special: string[] }
+type Found = Pick<ManifestScope, 'files' | 'issues'>;
 
 const posix = (relative: string) => relative.split(path.sep).join('/');
 
@@ -96,20 +80,20 @@ function walk(root: string, dir: string, keep: (name: string) => boolean, out: F
     // is a different fact and must not read as empty.
     const code = (err as NodeJS.ErrnoException)?.code;
     if (code === 'ENOENT' || code === 'ENOTDIR') return false;
-    out.unreadable.push(`${posix(path.relative(root, dir))}/`);
+    out.issues.push(`${posix(path.relative(root, dir))}/ (cannot be read)`);
     return true;
   }
   for (const entry of entries) {
     const full = path.join(dir, entry.name);
     const rel = posix(path.relative(root, full));
-    if (entry.isSymbolicLink()) { out.symlinks.push(rel); continue; }
+    if (entry.isSymbolicLink()) { out.issues.push(`${rel} (symbolic link)`); continue; }
     if (entry.isDirectory()) {
-      if (isPackIgnoredName(entry.name)) out.strayFolders.push(`${rel}/`);
+      if (isPackIgnoredName(entry.name)) out.issues.push(`${rel}/ (a folder npm pack never ships)`);
       else walk(root, full, keep, out);
     } else if (entry.isFile()) {
       if (!isPackIgnoredName(entry.name) && keep(entry.name)) out.files.push(rel);
     } else {
-      out.special.push(rel);
+      out.issues.push(`${rel} (not a file)`);
     }
   }
   return true;
@@ -119,12 +103,12 @@ function walk(root: string, dir: string, keep: (name: string) => boolean, out: F
 function walkCovered(root: string, segments: readonly string[], keep: (name: string) => boolean, out: Found): boolean {
   const link = firstLinkOnPath(root, segments);
   if (link === 'absent') return false;
-  if (link !== null) { out.symlinks.push(link); return true; }
+  if (link !== null) { out.issues.push(`${link} (symbolic link)`); return true; }
   return walk(root, path.join(root, ...segments), keep, out);
 }
 
 export function manifestScope(packageRoot: string): ManifestScope {
-  const found: Found = { files: [], symlinks: [], unreadable: [], strayFolders: [], special: [] };
+  const found: Found = { files: [], issues: [] };
   const missingRequired: string[] = [];
   if (!walkCovered(packageRoot, MANIFEST_SKILLS_DIR.split('/'), () => true, found)) missingRequired.push(`${MANIFEST_SKILLS_DIR}/`);
   if (!walkCovered(packageRoot, MANIFEST_HOOKS_DIR.split('/'), isHookFile, found)) missingRequired.push(`${MANIFEST_HOOKS_DIR}/`);
@@ -132,11 +116,11 @@ export function manifestScope(packageRoot: string): ManifestScope {
     const segments = rel.split('/');
     // A link on the way to the file (the folder above it) is reported as that link, and the file is not read through it.
     const linkAbove = firstLinkOnPath(packageRoot, segments.slice(0, -1));
-    if (linkAbove !== null && linkAbove !== 'absent') { found.symlinks.push(linkAbove); continue; }
+    if (linkAbove !== null && linkAbove !== 'absent') { found.issues.push(`${linkAbove} (symbolic link)`); continue; }
     // lstat, like the walk: a wiring file that is a link is reported, not followed.
     let stat: fs.Stats | undefined;
     try { stat = fs.lstatSync(path.join(packageRoot, rel)); } catch { /* absent */ }
-    if (stat?.isSymbolicLink()) found.symlinks.push(rel);
+    if (stat?.isSymbolicLink()) found.issues.push(`${rel} (symbolic link)`);
     else if (stat?.isFile()) found.files.push(rel);
     else missingRequired.push(rel);
   }
@@ -144,9 +128,6 @@ export function manifestScope(packageRoot: string): ManifestScope {
   return {
     files: unique(found.files),
     missingRequired,
-    symlinks: unique(found.symlinks),
-    unreadable: unique(found.unreadable),
-    strayFolders: unique(found.strayFolders),
-    special: unique(found.special),
+    issues: unique(found.issues),
   };
 }

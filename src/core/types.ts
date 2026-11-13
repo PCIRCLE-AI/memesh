@@ -185,14 +185,9 @@ export interface SearchOptions {
 // --- Operation Input Types (what transports pass to core) ---
 
 export interface RememberInput {
-  /**
-   * Internal. A decision may be stored without a `why` (note files keep the text
-   * as written). Not part of the tool schemas, so no transport can set it.
-   */
-  reasonOptional?: boolean;
   /** Required unless `note` is given, in which case it is derived. */
   name?: string;
-  /** Required unless `note` is given, in which case it defaults to `note`. */
+  /** New named memories require a type; an existing name inherits its type when omitted. */
   type?: string;
   /**
    * Free text (#324). The server derives `title` (first line),
@@ -233,9 +228,11 @@ export interface RememberInput {
   // stamps ingested entities the same way).
   sourceHost?: string;
   // Transport-set, never model-set: the project the session is bound to. The
-  // memory is tagged with it, and a name that belongs to another project (or
-  // to none) is refused rather than shared.
+  // memory is tagged with it, and a name filed elsewhere is refused. An
+  // inferred project preserves an existing unfiled memory on append.
   project?: string | null;
+  /** Transport-only: project was inferred, so an append to an existing unfiled memory keeps it unfiled. */
+  projectIsDefault?: boolean;
   // Transport-set (#511): the caller's own project id (`<name>~<hash>`). A
   // `project:<name>` tag naming it by its plain name is stored as the id.
   currentProject?: string;

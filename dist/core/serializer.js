@@ -28,6 +28,7 @@ export const IMPORTABLE_METADATA_KEYS = new Set([
     'source_ids',
 ]);
 export const AUTHORITY_METADATA_KEYS = new Set([
+    'conversationCapturedAt',
     'evidence_for',
     'guard',
     'demo',
@@ -320,6 +321,8 @@ export function importMemories(args, options) {
                         return { kind: 'restored' };
                     }
                     if (args.merge_strategy === 'append') {
+                        if (existing.archived)
+                            kg.createEntity(entity.name, existing.type, { trustOverride: 'untrusted' });
                         const existingText = new Set(existing.observations);
                         const newObservations = observations.map(storedText).filter((o) => !existingText.has(o));
                         const existingTags = new Set(existing.tags);

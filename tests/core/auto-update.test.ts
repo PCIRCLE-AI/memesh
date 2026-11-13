@@ -3,7 +3,7 @@
  * overridden (from any place it can be written), the source verified before
  * install, a backup first, and nothing replaced while a session runs.
  */
-import { describe, it, expect, afterEach, afterAll, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { EventEmitter } from 'node:events';
 import { spawnSync } from 'child_process';
 import fs from 'fs';
@@ -13,7 +13,9 @@ import { DatabaseSync } from 'node:sqlite';
 import { createHash } from 'crypto';
 import {
   AUTO_UPDATE_REASONS,
+  describeUpdatePolicy,
   backupDatabase,
+  readRegistryTags,
   chooseTarget,
   codexMarketplaceState,
   CODEX_RESTORE_FILE,
@@ -27,6 +29,7 @@ import {
   productionDeps,
   propagateOff,
   accountConfigHolding,
+  accountMemeshDir,
   runManualUpdate,
   logAutoUpdateLine,
   refreshHermes,
@@ -69,7 +72,41 @@ function tmp(): string {
   dirs.push(d);
   return d;
 }
+
+/** A runner gets its data directory from its inherited environment; keep that
+ * separate from the account-scoped lock path passed as argv[2]. */
+function runManualFixture(pluginRoot: string, dir: string, options: { reinstall?: boolean } = {}) {
+  const previousDir = process.env.MEMESH_DIR;
+  const previousDbPath = process.env.MEMESH_DB_PATH;
+  process.env.MEMESH_DIR = dir;
+  delete process.env.MEMESH_DB_PATH;
+  try {
+    return runManualUpdate(pluginRoot, dir, options);
+  } finally {
+    if (previousDir === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = previousDir;
+    if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = previousDbPath;
+  }
+}
 afterEach(() => { removeTempDir(...dirs.splice(0)); });
+
+/** Manual commands share the account-scoped update lock, so isolate that
+ * account too; the global afterEach then removes this temporary home. */
+function isolateManualAccountHome() {
+  let restore: (() => void) | null = null;
+  beforeEach(() => {
+    const accountHome = tmp();
+    const previousHome = process.env.HOME;
+    process.env.HOME = accountHome;
+    const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => ({ homedir: accountHome } as ReturnType<typeof os.userInfo>));
+    restore = () => {
+      spy.mockRestore();
+      if (previousHome === undefined) delete process.env.HOME; else process.env.HOME = previousHome;
+    };
+  });
+  afterEach(() => {
+    try { restore?.(); } finally { restore = null; }
+  });
+}
 
 /** An account home whose own .memesh holds the given config (or none). */
 function account(config?: unknown): { home: string; dir: string } {
@@ -81,9 +118,35 @@ function account(config?: unknown): { home: string; dir: string } {
 }
 
 describe('the policy', () => {
+  it('keeps the full diagnostic path while flattening the displayed cause', () => {
+    const file = '/' + 'directory/'.repeat(40) + 'config.json';
+    const message = describeUpdatePolicy({ policy: 'off', source: 'config', reason: AUTO_UPDATE_REASONS.policyOffUnreadableConfig, detail: `${file}:\nnot valid JSON` });
+    expect(message).toContain(file);
+    expect(message).not.toContain('\n');
+    expect(message).toContain('Repair');
+  });
+  it('accepts JSON false as explicit off but keeps string false invalid', () => {
+    const a = account({ autoUpdate: false });
+    expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: a.dir, accountHome: a.home })).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOff });
+    fs.writeFileSync(path.join(a.dir, 'config.json'), '{"autoUpdate":"false"}');
+    const invalid = resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: a.dir, accountHome: a.home });
+    expect(invalid.reason).toBe(AUTO_UPDATE_REASONS.policyOffInvalidValue);
+    expect(invalid.detail).toContain(path.join(a.dir, 'config.json'));
+    expect(invalid.detail).toContain('"false"');
+  });
+
+  it('names the invalid environment setting and bounds its value to one line', () => {
+    const a = account();
+    const invalid = resolveUpdatePolicy({ env: { HOME: a.home, MEMESH_AUTO_UPDATE: 'on\n' + 'x'.repeat(1000) }, activeDir: a.dir, accountHome: a.home });
+    expect(invalid.detail).toContain('MEMESH_AUTO_UPDATE');
+    expect(invalid.detail).toContain('on');
+    expect(invalid.detail).not.toContain('\n');
+    expect(invalid.detail!.length).toBeLessThan(200);
+  });
+
   it('is on (any bump) for the account\'s own ~/.memesh when nothing was set', () => {
     const a = account();
-    expect(resolveUpdatePolicy({ env: {}, activeDir: a.dir, accountHome: a.home })).toMatchObject({ policy: 'major', source: 'default' });
+    expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: a.dir, accountHome: a.home })).toMatchObject({ policy: 'major', source: 'default' });
   });
 
   it.each([
@@ -111,11 +174,11 @@ describe('the policy', () => {
     expect(resolveUpdatePolicy({ env: { MEMESH_AUTO_UPDATE: 'major' }, activeDir: foreign, accountHome: a.home }).policy).toBe('off');
   });
 
-  it('does not apply the default to a data directory that is not the account\'s own', () => {
+  it('keeps the default with the same HOME when data is elsewhere', () => {
     const a = account();
     const foreign = tmp();
-    expect(resolveUpdatePolicy({ env: {}, activeDir: foreign, accountHome: a.home })).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffForeignHome });
-    expect(resolveUpdatePolicy({ env: { MEMESH_DB_PATH: path.join(foreign, 'x.db') }, activeDir: a.dir, accountHome: a.home }).policy).toBe('off');
+    expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: foreign, accountHome: a.home })).toMatchObject({ policy: 'major', source: 'default' });
+    expect(resolveUpdatePolicy({ env: { HOME: a.home, MEMESH_DB_PATH: path.join(foreign, 'x.db') }, activeDir: a.dir, accountHome: a.home }).policy).toBe('major');
   });
 
   it.each([
@@ -137,10 +200,23 @@ describe('the policy', () => {
     expect(resolveUpdatePolicy({ env: { MEMESH_AUTO_UPDATE: value }, activeDir: a.dir, accountHome: a.home }).policy).toBe(lowered);
   });
 
-  it('naming the data directory in the environment is not "the account\'s own": the default does not apply there, even when it is the same directory', () => {
+  it('does not treat a data-directory override as a different HOME', () => {
     const a = account();
-    expect(resolveUpdatePolicy({ env: { MEMESH_DIR: a.dir }, activeDir: a.dir, accountHome: a.home })).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffForeignHome });
-    expect(resolveUpdatePolicy({ env: {}, activeDir: a.dir, accountHome: a.home }).policy).toBe('major'); // control
+    expect(resolveUpdatePolicy({ env: { HOME: a.home, MEMESH_DIR: a.dir }, activeDir: a.dir, accountHome: a.home })).toMatchObject({ policy: 'major', source: 'default' });
+    expect(resolveUpdatePolicy({ env: { HOME: tmp() }, activeDir: a.dir, accountHome: a.home }).policy).toBe('off');
+  });
+
+  it('does not inherit account non-off in another HOME, but accepts its own explicit setting', () => {
+    const a = account({ autoUpdate: 'major' });
+    const home = tmp();
+    const foreign = tmp();
+    const input = { env: { HOME: home }, activeDir: foreign, accountHome: a.home };
+    expect(resolveUpdatePolicy(input)).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffForeignHome });
+    expect(resolveUpdatePolicy({ ...input, activeDir: a.dir }).policy).toBe('off');
+    fs.writeFileSync(path.join(foreign, 'config.json'), '{"autoUpdate":"minor"}');
+    expect(resolveUpdatePolicy(input).policy).toBe('minor');
+    fs.writeFileSync(path.join(a.dir, 'config.json'), '{"autoUpdate":"off"}');
+    expect(resolveUpdatePolicy({ ...input, env: { HOME: home, MEMESH_AUTO_UPDATE: 'major' } }).policy).toBe('off');
   });
 
   it('honours an explicit non-off setting, including in a foreign directory', () => {
@@ -148,6 +224,72 @@ describe('the policy', () => {
     const foreign = tmp();
     fs.writeFileSync(path.join(foreign, 'config.json'), '{"autoUpdate":"minor"}');
     expect(resolveUpdatePolicy({ env: {}, activeDir: foreign, accountHome: a.home })).toMatchObject({ policy: 'minor', source: 'config' });
+  });
+});
+
+describe('Codex marketplace JSON precedes the conservative TOML fallback', () => {
+  const official = 'https://github.com/PCIRCLE-AI/memesh.git';
+  const listed = (source = official, sourceType = 'git', name = 'pcircle-memesh') => JSON.stringify({ marketplaces: [{ name, marketplaceSource: { sourceType, source } }] });
+  function query(stdout: string, status: number | null = 0) {
+    return { env: { HOME: tmp() }, exec: vi.fn(() => ({ status, stdout, stderr: '' })) };
+  }
+  function config(text: string) { const home = tmp(); fs.writeFileSync(path.join(home, 'config.toml'), text); return home; }
+
+  it.each([
+    `[marketplaces.pcircle-memesh]\nsource_type = "git"\nsource = "${official}"\n`,
+    `[marketplaces."pcircle-memesh"]\nsource_type = "git"\nsource = "${official}"\n`,
+    `marketplaces = { pcircle-memesh = { source_type = "git", source = "${official}" } }\n`,
+    `[marketplaces.pcircle-memesh]\nsource_type = 'git'\nsource = '${official}'\n`,
+    `  [marketplaces.pcircle-memesh]\n  source_type = "git"\n  source = "${official}"\n`,
+  ])('uses the native answer for a supported TOML representation: %s', (text) => {
+    const home = config(text); const native = query(listed());
+    expect(codexMarketplaceState(home, native)).toBe('official');
+    expect(native.exec).toHaveBeenCalledWith('codex', ['plugin', 'marketplace', 'list', '--json'], {
+      env: { ...native.env, CODEX_HOME: home }, timeoutMs: 20_000,
+    });
+    expect(fs.readFileSync(path.join(home, 'config.toml'), 'utf8')).toBe(text);
+  });
+
+  it.each([official, 'https://github.com/PCIRCLE-AI/memesh', 'PCIRCLE-AI/memesh'])('accepts only the existing official spelling %s', (source) => {
+    expect(codexMarketplaceState(config(''), query(listed(source)))).toBe('official');
+  });
+  it.each([[official, 'local'], ['https://github.com/other/memesh.git', 'git'], ['PCIRCLE-AI/memesh#other', 'git']])('keeps a foreign source %s (%s)', (source, type) => {
+    expect(codexMarketplaceState(config(OFFICIAL_CODEX_CONFIG), query(listed(source, type)))).toBe('foreign');
+  });
+  it('reports a missing exact name from a nonempty valid list', () => {
+    expect(codexMarketplaceState(config(OFFICIAL_CODEX_CONFIG), query(listed(official, 'git', 'other')))).toBe('missing');
+  });
+  it('does not treat an empty feature-filtered list as permission to replace a foreign marketplace', () => {
+    expect(codexMarketplaceState(config('[marketplaces."pcircle-memesh"]\nsource_type="local"\nsource="/private/dev"'), query('{"marketplaces":[]}'))).toBe('foreign');
+    expect(codexMarketplaceState(config(''), query('{"marketplaces":[]}'))).toBe('missing');
+  });
+  it.each([
+    ['other broken marketplace', 'failed to load marketplace', 1],
+    ['no snapshot', 'marketplace root does not contain a supported manifest', 1],
+    ['invalid TOML', 'TOML parse error', 1],
+    ['old CLI without json', 'unexpected argument --json', 2],
+    ['non JSON success', 'not JSON', 0],
+    ['unknown schema', '{"marketplaces":[{"name":"pcircle-memesh"}]}', 0],
+    ['duplicate name', '{"marketplaces":[' + listed().slice(17, -2) + ',' + listed().slice(17, -2) + ']}', 0],
+  ])('keeps the prior fallback for %s', (_label, stdout, status) => {
+    expect(codexMarketplaceState(config(OFFICIAL_CODEX_CONFIG), query(stdout, status as number))).toBe('official');
+    expect(codexMarketplaceState(config('[marketplaces."pcircle-memesh"]\nsource_type="git"'), query(stdout, status as number))).toBe('foreign');
+  });
+  it('preserves unreadable versus absent when the CLI also fails', () => {
+    const home = tmp(); fs.mkdirSync(path.join(home, 'config.toml'));
+    expect(codexMarketplaceState(home, query('', 1))).toBe('unreadable');
+    expect(codexMarketplaceState(tmp(), query('', 1))).toBe('missing');
+  });
+  it('uses the JSON source in the durable failed-restore record', async () => {
+    const w = fakeWorld({ channel: 'plugin-marketplace', pluginHost: 'codex', codexConfig: '[marketplaces."pcircle-memesh"]\nsource_type="git"' });
+    const original = w.deps.exec;
+    w.deps.exec = (cmd, args, opts) => {
+      if (cmd === 'codex' && args[2] === 'list') return { status: 0, stdout: listed('PCIRCLE-AI/memesh'), stderr: '' };
+      if (cmd === 'codex' && args[1] === 'marketplace' && args[2] === 'add') return { status: 1, stdout: '', stderr: 'synthetic offline' };
+      return original(cmd, args, opts);
+    };
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.codexRestoreFailed });
+    expect(JSON.parse(fs.readFileSync(path.join(w.deps.dir, CODEX_RESTORE_FILE), 'utf8')).original).toBe('PCIRCLE-AI/memesh');
   });
 });
 
@@ -240,10 +382,10 @@ describe('the backup', () => {
     const d = tmp();
     const dbPath = path.join(d, 'knowledge-graph.db');
     const db = new DatabaseSync(dbPath);
-    db.exec('CREATE TABLE t (v TEXT); INSERT INTO t VALUES (\'kept\');');
+    db.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY); CREATE TABLE t (v TEXT); INSERT INTO t VALUES (\'kept\');');
     db.close();
     const made: string[] = [];
-    for (let i = 0; i < 5; i += 1) made.push(backupDatabase(dbPath, path.join(d, 'backups'), '4.12.0', new Date(Date.UTC(2026, 10, 3, 0, 0, i)))!);
+    for (let i = 0; i < 5; i += 1) made.push(backupDatabase(dbPath, '4.12.0')!);
     const left = fs.readdirSync(path.join(d, 'backups'));
     expect(left).toHaveLength(3);
     const copy = new DatabaseSync(made[4], { readOnly: true });
@@ -253,7 +395,7 @@ describe('the backup', () => {
 
   it('has nothing to back up when there is no database yet', () => {
     const d = tmp();
-    expect(backupDatabase(path.join(d, 'missing.db'), path.join(d, 'backups'), '1.0.0')).toBeNull();
+    expect(backupDatabase(path.join(d, 'missing.db'), '1.0.0')).toBeNull();
   });
 });
 
@@ -291,10 +433,11 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
   if (options.codexConfig !== null) fs.writeFileSync(path.join(codexHome, 'config.toml'), options.codexConfig ?? OFFICIAL_CODEX_CONFIG);
   const calls: string[] = [];
   const stagedTarball = 'pcircle-memesh-4.13.0.tgz';
+  const metadataCalls: string[] = [];
   let packedDigest = DIGEST;
   let auditCalls = 0;
   const deps: AutoUpdateDeps = {
-    env: options.env ?? {},
+    env: { HOME: a.home, ...options.env },
     accountHome: a.home,
     dir: a.dir,
     configDir: a.dir,
@@ -313,6 +456,11 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
     readTags: () => (options.tags === undefined ? { latest: '4.13.0' } : options.tags),
     exec: (cmd, args, opts) => {
       const line = `${cmd} ${args.slice(0, 3).join(' ')}`;
+      // This legacy fake represents Codex without JSON support. Keep read-only queries distinct from install steps.
+      if (cmd === 'codex' && args.join(' ') === 'plugin marketplace list --json') {
+        metadataCalls.push(line);
+        return { status: 2, stdout: '', stderr: 'unexpected argument --json' };
+      }
       calls.push(line);
       if (args[0] === 'install' && !args.includes('-g')) {
         fs.writeFileSync(path.join(opts!.cwd!, 'package-lock.json'), JSON.stringify({ packages: { 'node_modules/@pcircle/memesh': { integrity: 'PLACEHOLDER' } } }));
@@ -406,13 +554,31 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
   }
   if (options.withDb) {
     const db = new DatabaseSync(deps.dbPath);
-    db.exec('CREATE TABLE t (v TEXT)');
+    db.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY); CREATE TABLE t (v TEXT)');
     db.close();
   }
-  return { deps, calls, a };
+  return { deps, calls, metadataCalls, a };
 }
 
 describe('runAutoUpdate', () => {
+  it('records a sandbox default skip without consulting the registry, even with account major', async () => {
+    const w = fakeWorld({ config: { autoUpdate: 'major' }, env: { HOME: tmp() } });
+    w.deps.readTags = () => { throw new Error('sandbox must not consult the registry'); };
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.policyOffForeignHome });
+    expect(w.calls).toEqual([]);
+    expect(readAutoUpdateState(w.a.dir)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.policyOffForeignHome });
+  });
+
+  it('reaches the update callback and persists its result by default in a container without passwd', async () => {
+    const w = fakeWorld({ env: { container: 'podman' } });
+    w.deps.accountHome = null;
+    let read = false;
+    w.deps.readTags = () => { read = true; return { latest: '4.12.0' }; };
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate });
+    expect(read).toBe(true);
+    expect(readAutoUpdateState(w.a.dir)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate });
+  });
+
   it('does nothing but record when the policy is off — no registry call, no install', async () => {
     const w = fakeWorld({ config: { autoUpdate: 'off' } });
     let registryAsked = false;
@@ -440,6 +606,52 @@ describe('runAutoUpdate', () => {
     const result = await runAutoUpdate(w.deps);
     expect(result).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified });
     expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
+  });
+
+  it('records a registry npm startup failure as startup failure rather than registry silence', async () => {
+    const w = fakeWorld();
+    w.deps.readTags = () => readRegistryTags(() => ({ status: null, stdout: '', stderr: '', startupError: 'spawn npm ENOENT' }));
+    const result = await runAutoUpdate(w.deps);
+    expect(result).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.npmUnavailable });
+    expect(readAutoUpdateState(w.a.dir)?.detail).toContain('ENOENT');
+    expect(JSON.stringify(result)).not.toContain('registry did not answer');
+  });
+
+  it('retains a rehearsal startup error and never calls it a timeout', async () => {
+    const w = fakeWorld();
+    const exec = w.deps.exec;
+    w.deps.exec = (command, args, opts) => args[0] === 'ci'
+      ? { status: null, stdout: '', stderr: '', startupError: 'could not start npm: spawn npm ENOENT' }
+      : exec(command, args, opts);
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.dependenciesNotFetched });
+    const detail = readAutoUpdateState(w.a.dir)?.detail;
+    expect(detail).toContain('could not start npm');
+    expect(detail).toContain('ENOENT');
+    expect(detail).not.toContain('did not finish in time');
+    expect(w.calls.some((command) => command.startsWith('npm install -g'))).toBe(false);
+  });
+
+  it('keeps the backup beside a separate data database, including pending WAL', async () => {
+    const w = fakeWorld({ env: { MEMESH_AUTO_UPDATE: 'major' } });
+    const data = tmp();
+    w.deps.dbPath = path.join(data, 'knowledge-graph.db');
+    const writer = new DatabaseSync(w.deps.dbPath);
+    try {
+      writer.exec('PRAGMA journal_mode=WAL; CREATE TABLE entities (id INTEGER PRIMARY KEY); INSERT INTO entities VALUES (1)');
+      const before = fs.readFileSync(w.deps.dbPath);
+      const walBefore = fs.readFileSync(`${w.deps.dbPath}-wal`);
+      const result = await runAutoUpdate(w.deps);
+      expect(result).toMatchObject({ outcome: 'installed' });
+      expect(fs.existsSync(path.join(w.deps.dir, 'backups'))).toBe(false);
+      const directory = path.join(data, 'backups');
+      const copies = fs.readdirSync(directory);
+      expect(copies).toHaveLength(1);
+      const copy = new DatabaseSync(path.join(directory, copies[0]), { readOnly: true });
+      try { expect(copy.prepare('SELECT id FROM entities').all()).toEqual([{ id: 1 }]); }
+      finally { copy.close(); }
+      expect(fs.readFileSync(w.deps.dbPath)).toEqual(before);
+      expect(fs.readFileSync(`${w.deps.dbPath}-wal`)).toEqual(walBefore);
+    } finally { writer.close(); }
   });
 
   it('does not install when the backup fails', async () => {
@@ -530,6 +742,7 @@ describe('runAutoUpdate', () => {
   it('leaves a Codex marketplace that is not the official repository alone', async () => {
     const w = fakeWorld({ channel: 'plugin-marketplace', pluginHost: 'codex', codexConfig: '[marketplaces.pcircle-memesh]\nsource_type = "local"\nsource = "/home/me/dev/memesh"\n' });
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.codexMarketplaceForeign });
+    expect(w.metadataCalls).toEqual(['codex plugin marketplace list']);
     expect(w.calls.some((c) => c.startsWith('codex'))).toBe(false);
   });
 
@@ -610,6 +823,39 @@ describe('runAutoUpdate', () => {
 });
 
 describe('Hermes provider copies follow the verified update', () => {
+  it('separates HOME control records from database backups, Hermes registration and the upgrade marker', async () => {
+    const w = fakeWorld({ withDb: true, env: { MEMESH_AUTO_UPDATE: 'major' } });
+    const data = w.a.dir; const home = tmp(); const accountHome = tmp();
+    const control = path.join(home, '.memesh'); fs.mkdirSync(control);
+    w.deps.dir = control; w.deps.liveHostsDir = control;
+    w.deps.env = { HOME: home, MEMESH_AUTO_UPDATE: 'major' }; w.deps.accountHome = accountHome;
+    const source = tmp();
+    fs.writeFileSync(path.join(source, '__init__.py'), '# old provider\n');
+    fs.writeFileSync(path.join(source, 'plugin.yaml'), 'name: memesh\n');
+    const ownTarget = defaultInstallTarget({ HOME: home });
+    const accountTarget = defaultInstallTarget({ HOME: accountHome });
+    const registeredTarget = path.join(tmp(), 'provider');
+    for (const target of [ownTarget, accountTarget, registeredTarget]) installProvider({ sourceDir: source, target, version: '4.12.0', force: false, backupRoot: path.join(data, 'backups'), now: new Date() });
+    registerInstall(data, registeredTarget);
+    fs.mkdirSync(path.join(data, 'backups'), { recursive: true });
+    const savedProvider = path.join(data, 'backups', 'hermes-provider-existing'); fs.writeFileSync(savedProvider, 'saved provider');
+    const accountBefore = fs.readFileSync(path.join(accountTarget, MARKER_FILE));
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
+    expect(readAutoUpdateState(control)).toMatchObject({ outcome: 'installed' });
+    expect(fs.existsSync(path.join(control, 'auto-update.log'))).toBe(true);
+    expect(fs.existsSync(path.join(data, 'auto-update-state.json'))).toBe(false);
+    expect(fs.existsSync(path.join(data, 'auto-update.log'))).toBe(false);
+    expect(fs.readdirSync(path.join(data, 'backups')).some(name => name.startsWith('pre-update-'))).toBe(true);
+    expect(fs.readFileSync(savedProvider, 'utf8')).toBe('saved provider');
+    expect(fs.existsSync(path.join(control, 'backups'))).toBe(false);
+    expect(fs.existsSync(path.join(data, 'hermes-installs.json'))).toBe(true);
+    expect(fs.existsSync(path.join(control, 'hermes-installs.json'))).toBe(false);
+    for (const target of [ownTarget, registeredTarget]) expect(JSON.parse(fs.readFileSync(path.join(target, MARKER_FILE), 'utf8')).version).toBe('4.13.0');
+    expect(fs.readFileSync(path.join(accountTarget, MARKER_FILE))).toEqual(accountBefore);
+    expect(fs.existsSync(path.join(data, 'just-upgraded.json'))).toBe(true);
+    expect(fs.existsSync(path.join(control, 'just-upgraded.json'))).toBe(false);
+  });
+
   /** A provider copy MeMesh installed earlier, in a throwaway HERMES_HOME. */
   function withCopy(version = '4.12.0', world: Partial<Parameters<typeof fakeWorld>[0]> = {}) {
     const hermesHome = tmp();
@@ -751,7 +997,7 @@ describe('the policy, hardened', () => {
       }
     }
     // A directory that simply has no config is still absent.
-    expect(resolveUpdatePolicy({ env: {}, activeDir: a.dir, accountHome: a.home }).policy).toBe('major');
+    expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: a.dir, accountHome: a.home }).policy).toBe('major');
   });
 
   it('does not apply the default inside CI, but honours an explicit setting there', () => {
@@ -761,24 +1007,25 @@ describe('the policy, hardened', () => {
     }
     expect(resolveUpdatePolicy({ env: { CI: 'true', MEMESH_AUTO_UPDATE: 'minor' }, activeDir: a.dir, accountHome: a.home }).policy).toBe('minor');
     for (const env of [{ CI: 'false' }, { CI: '0' }, { CI: '' }, {}]) {
-      expect(resolveUpdatePolicy({ env, activeDir: a.dir, accountHome: a.home }).policy, JSON.stringify(env)).toBe('major');
+      expect(resolveUpdatePolicy({ env: { HOME: a.home, ...env }, activeDir: a.dir, accountHome: a.home }).policy, JSON.stringify(env)).toBe('major');
     }
     expect(isCi({ CI: 'true' })).toBe(true);
     expect(isCi({})).toBe(false);
-    // A container is not a place for a default-on update either: docker and podman set `container`, and it alone is enough.
+    // Containers use the same HOME policy as other runs; container is not a CI signal.
     for (const env of [{ container: 'docker' }, { container: 'podman' }]) {
-      expect(isCi(env), JSON.stringify(env)).toBe(true);
-      expect(resolveUpdatePolicy({ env, activeDir: a.dir, accountHome: a.home }), JSON.stringify(env)).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffCi });
+      expect(isCi(env), JSON.stringify(env)).toBe(false);
+      expect(resolveUpdatePolicy({ env: { HOME: a.home, ...env }, activeDir: a.dir, accountHome: a.home }), JSON.stringify(env)).toMatchObject({ policy: 'major', source: 'default' });
     }
-    expect(AUTO_UPDATE_REASONS.policyOffCi).toContain('CI or a container');
+    expect(AUTO_UPDATE_REASONS.policyOffCi).toContain('CI');
     expect(resolveUpdatePolicy({ env: { container: 'docker', MEMESH_AUTO_UPDATE: 'minor' }, activeDir: a.dir, accountHome: a.home }).policy).toBe('minor');
     expect(isCi({ container: '' })).toBe(false);
   });
 
-  it('with no passwd entry for this uid the account home is unknown: nothing is applied by default, and nothing throws', () => {
+  it('with no passwd entry the current HOME defaults on, except in CI', () => {
     const a = account();
     const decision = resolveUpdatePolicy({ env: {}, activeDir: a.dir, accountHome: null });
-    expect(decision).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffNoAccountHome });
+    expect(decision).toMatchObject({ policy: 'major', source: 'default' });
+    expect(resolveUpdatePolicy({ env: { CI: 'true' }, activeDir: a.dir, accountHome: null }).policy).toBe('off');
     expect(resolveUpdatePolicy({ env: { MEMESH_AUTO_UPDATE: 'patch' }, activeDir: a.dir, accountHome: null }).policy).toBe('patch');
     const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry'); });
     try {
@@ -857,7 +1104,7 @@ describe('the pre-update backup rotation', () => {
     const d = tmp();
     const dbPath = path.join(d, 'knowledge-graph.db');
     const db = new DatabaseSync(dbPath);
-    db.exec('CREATE TABLE t (v TEXT)');
+    db.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY); CREATE TABLE t (v TEXT)');
     db.close();
     const backupDir = path.join(d, 'backups');
     fs.mkdirSync(backupDir);
@@ -868,7 +1115,7 @@ describe('the pre-update backup rotation', () => {
       const t = new Date(Date.UTC(2026, 9, i + 1));
       fs.utimesSync(f, t, t);
     });
-    const made = backupDatabase(dbPath, backupDir, '4.10.0', new Date())!;
+    const made = backupDatabase(dbPath, '4.10.0')!;
     const left = fs.readdirSync(backupDir);
     expect(left).toHaveLength(BACKUPS_KEPT);
     expect(left).toContain(path.basename(made));
@@ -1172,9 +1419,10 @@ describe('dispatch (what starts the runner)', () => {
     return root;
   }
   const withMemeshDir = async <T>(fn: (dir: string) => Promise<T>): Promise<T> => {
-    const dir = tmp();
-    const saved = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
-    process.env.MEMESH_DIR = dir;
+    const home = tmp(); const dir = path.join(home, '.memesh'); fs.mkdirSync(dir);
+    const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.HOME = home;
+    process.env.MEMESH_DIR = tmp();
     delete process.env.MEMESH_DB_PATH;
     try { return await fn(dir); } finally {
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
@@ -1235,12 +1483,12 @@ describe('dispatch (what starts the runner)', () => {
       expect(await dispatchAutoUpdate(tmp(), Date.now(), CAN)).toEqual({ state: 'failed' });
       expect(fs.readFileSync(path.join(dir, 'auto-update.log'), 'utf8')).toContain('runner missing');
     });
-    const file = path.join(tmp(), 'not-a-directory');
+    const home = tmp(); const file = path.join(home, '.memesh');
     fs.writeFileSync(file, 'x');
-    const saved = process.env.MEMESH_DIR;
-    process.env.MEMESH_DIR = file;
+    const saved = process.env.HOME;
+    process.env.HOME = home;
     try { expect(await dispatchAutoUpdate(fakePlugin(), Date.now(), CAN)).toEqual({ state: 'failed' }); } finally {
-      if (saved === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = saved;
+      if (saved === undefined) delete process.env.HOME; else process.env.HOME = saved;
     }
   });
 
@@ -1252,6 +1500,8 @@ describe('dispatch (what starts the runner)', () => {
 });
 
 describe('memesh update (manual): the same verified path, without the policy or the wait', () => {
+  isolateManualAccountHome();
+
   it('installs although updates are off and a session is running, and still verifies and backs up first', async () => {
     const w = fakeWorld({ config: { autoUpdate: 'off' }, withDb: true });
     registerLiveHost(w.a.dir, process.pid);
@@ -1286,21 +1536,21 @@ describe('memesh update (manual): the same verified path, without the policy or 
   const stateWriter = (state: Record<string, unknown>, flag = '--manual') => `
     import fs from 'node:fs'; import path from 'node:path';
     if (process.argv[3] !== ${JSON.stringify(flag)}) process.exit(9);
-    fs.writeFileSync(path.join(path.dirname(process.argv[2]), 'auto-update-state.json'), JSON.stringify({ at: new Date().toISOString(), hermes: null, channel: null, backup: '/b/x.db', waitingSince: null, from: '4.12.0', to: '4.13.0', ...${JSON.stringify(state)} }));
+    fs.writeFileSync(path.join(process.env.MEMESH_DIR, 'auto-update-state.json'), JSON.stringify({ at: new Date().toISOString(), hermes: null, channel: null, backup: '/b/x.db', waitingSince: null, from: '4.12.0', to: '4.13.0', ...${JSON.stringify(state)} }));
   `;
 
   it('runs the runner in the foreground with --manual and reports an install', () => {
     const dir = tmp();
-    const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'installed', reason: 'installed' })), dir);
+    const out = runManualFixture(stubRunner(stateWriter({ outcome: 'installed', reason: 'installed' })), dir);
     expect(out.code).toBe(0);
     expect(out.lines.join('\n')).toContain('4.12.0 → 4.13.0');
   });
 
   it('reports a refusal as a failure with its reason, and "already current" as success', () => {
-    const refused = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified })), tmp());
+    const refused = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified })), tmp());
     expect(refused.code).toBe(1);
     expect(refused.lines.join('\n')).toContain(AUTO_UPDATE_REASONS.sourceNotVerified);
-    const current = runManualUpdate(stubRunner(stateWriter({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate })), tmp());
+    const current = runManualFixture(stubRunner(stateWriter({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate })), tmp());
     expect(current.code).toBe(0);
   });
 
@@ -1313,13 +1563,13 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('calls the runner with --manual, and with --reinstall only when asked (the stub answers to one flag only)', () => {
     const manualOnly = stubRunner(stateWriter({ outcome: 'installed', reason: 'installed' }, '--manual'));
-    expect(runManualUpdate(manualOnly, tmp()).code).toBe(0);
-    expect(runManualUpdate(manualOnly, tmp(), { reinstall: true }).code).toBe(1);
+    expect(runManualFixture(manualOnly, tmp()).code).toBe(0);
+    expect(runManualFixture(manualOnly, tmp(), { reinstall: true }).code).toBe(1);
     const reinstallOnly = stubRunner(stateWriter({ outcome: 'installed', reason: 'installed', from: '4.13.0', to: '4.13.0' }, '--reinstall'));
-    const out = runManualUpdate(reinstallOnly, tmp(), { reinstall: true });
+    const out = runManualFixture(reinstallOnly, tmp(), { reinstall: true });
     expect(out.code).toBe(0);
     expect(out.lines.join('\n')).toContain('Reinstalled 4.13.0');
-    expect(runManualUpdate(reinstallOnly, tmp()).code).toBe(1);
+    expect(runManualFixture(reinstallOnly, tmp()).code).toBe(1);
   });
 
   it.each([
@@ -1330,7 +1580,7 @@ describe('memesh update (manual): the same verified path, without the policy or 
     [AUTO_UPDATE_REASONS.installNotUndone, null, 'some files may be new'],
     [AUTO_UPDATE_REASONS.installFailed, null, 'some files may be new'],
   ])('a failed update tells the truth about this machine in its first line and its second: %s', (reason, still, effect) => {
-    const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
+    const out = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
     expect(out.code).toBe(1);
     const [first] = out.lines;
     expect(first).toContain(reason);
@@ -1350,9 +1600,11 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('names who holds the update lock, since when, and what a waiting automatic update is waiting for', () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, 'auto-update.lock'), `token\n${process.pid}\n${Date.parse('2026-11-08T01:02:03.000Z')}\nauto\n`);
+    const lockDir = accountMemeshDir() ?? dir;
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'auto-update.lock'), `token\n${process.pid}\n${Date.parse('2026-11-08T01:02:03.000Z')}\nauto\n`);
     fs.writeFileSync(path.join(dir, 'auto-update-state.json'), JSON.stringify({ at: '2020-01-01T00:00:00.000Z', outcome: 'waiting', reason: 'waiting', from: '4.12.0', to: '4.13.0', hermes: null, backup: null, channel: null, waitingSince: '2026-11-07T00:00:00.000Z' }));
-    const out = runManualUpdate(stubRunner('process.exit(1);'), dir);
+    const out = runManualFixture(stubRunner('process.exit(1);'), dir);
     const text = out.lines.join('\n');
     expect(out.code).toBe(1);
     expect(text).toContain('an automatic update is already running');
@@ -1364,8 +1616,10 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('a lock whose owner is gone is not "already running"', () => {
     const dir = tmp();
-    fs.writeFileSync(path.join(dir, 'auto-update.lock'), `token\n2147483000\n${Date.now()}\nmanual\n`);
-    const out = runManualUpdate(stubRunner('process.exit(1);'), dir);
+    const lockDir = accountMemeshDir() ?? dir;
+    fs.mkdirSync(lockDir, { recursive: true });
+    fs.writeFileSync(path.join(lockDir, 'auto-update.lock'), `token\n2147483000\n${Date.now()}\nmanual\n`);
+    const out = runManualFixture(stubRunner('process.exit(1);'), dir);
     expect(out.lines.join('\n')).not.toContain('already running');
     expect(out.lines.join('\n')).toContain('without recording a result');
   });
@@ -1386,8 +1640,8 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('a record that cannot be read after a runner that exited 0 is not reported as "another update running"', () => {
     const dir = tmp();
-    const bad = stubRunner("import fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(path.join(path.dirname(process.argv[2]), 'auto-update-state.json'), '{ not json');");
-    const out = runManualUpdate(bad, dir);
+    const bad = stubRunner("import fs from 'node:fs'; import path from 'node:path'; fs.writeFileSync(path.join(process.env.MEMESH_DIR, 'auto-update-state.json'), '{ not json');");
+    const out = runManualFixture(bad, dir);
     expect(out.code).toBe(1);
     expect(out.lines.join('\n')).toContain('its record cannot be read');
     expect(out.lines.join('\n')).not.toContain('already running');
@@ -1395,7 +1649,7 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('a failure after the install began says so, names the backup and the log, and shows the reason in detail (the log is under the data directory it was given)', () => {
     const dir = tmp();
-    const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.readbackFailed, detail: 'npm error EACCES', backup: '/b/pre-update.db' })), dir);
+    const out = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.readbackFailed, detail: 'npm error EACCES', backup: '/b/pre-update.db' })), dir);
     const text = out.lines.join('\n');
     expect(out.code).toBe(1);
     expect(text).toContain('An install step had already run');
@@ -1408,7 +1662,7 @@ describe('memesh update (manual): the same verified path, without the policy or 
   });
 
   it('a failure before anything was installed says nothing was installed', () => {
-    const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified, backup: null })), tmp());
+    const out = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified, backup: null })), tmp());
     const text = out.lines.join('\n');
     expect(text).toContain('Nothing was installed.');
     expect(text).not.toContain('install step had already run');
@@ -1416,11 +1670,11 @@ describe('memesh update (manual): the same verified path, without the policy or 
 
   it('every reason raised after an install step ran is on the list that says so', () => {
     for (const reason of [AUTO_UPDATE_REASONS.installFailed, AUTO_UPDATE_REASONS.readbackFailed, AUTO_UPDATE_REASONS.codexReadbackFailed, AUTO_UPDATE_REASONS.claudeReadbackFailed, AUTO_UPDATE_REASONS.installNotUndone, AUTO_UPDATE_REASONS.codexInstallFailed, AUTO_UPDATE_REASONS.codexRestoreFailed]) {
-      const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
+      const out = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
       expect(out.lines.join('\n'), reason).toContain('An install step had already run');
     }
     for (const reason of [AUTO_UPDATE_REASONS.dependencyPinFailed, AUTO_UPDATE_REASONS.dependenciesNotFetched, AUTO_UPDATE_REASONS.globalDirUnknown, AUTO_UPDATE_REASONS.rollbackUnavailable, AUTO_UPDATE_REASONS.sourceNotVerified, AUTO_UPDATE_REASONS.commitNotOnMain, AUTO_UPDATE_REASONS.commitUnconfirmed, AUTO_UPDATE_REASONS.dependenciesNotPinned, AUTO_UPDATE_REASONS.backupFailed, AUTO_UPDATE_REASONS.codexRemoveFailed, AUTO_UPDATE_REASONS.tarballChanged]) {
-      const out = runManualUpdate(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
+      const out = runManualFixture(stubRunner(stateWriter({ outcome: 'failed', reason })), tmp());
       expect(out.lines.join('\n'), reason).toMatch(reason === AUTO_UPDATE_REASONS.dependencyPinFailed ? /Nothing was changed/ : /Nothing was installed\./);
     }
   });
@@ -1430,7 +1684,7 @@ describe('memesh update (manual): the same verified path, without the policy or 
     const lines: string[] = [];
     const log = vi.spyOn(process.stdout, 'write').mockImplementation(((chunk: unknown) => { lines.push(String(chunk)); return true; }) as typeof process.stdout.write);
     let out: { code: number; lines: string[] };
-    try { out = runManualUpdate(stubRunner(body), tmp()); } finally { log.mockRestore(); }
+    try { out = runManualFixture(stubRunner(body), tmp()); } finally { log.mockRestore(); }
     expect(lines.join('')).not.toContain('raw-runner-line');
     expect(out.lines.join('\n')).not.toContain('raw-runner');
     expect(out.code).toBe(0);
@@ -1546,9 +1800,10 @@ describe.skipIf(process.platform === 'win32')('what MeMesh writes under ~/.memes
   });
 
   it('the dispatch (the path memesh serve and the hooks both take) tightens the directory, the log and the attempt time', async () => {
-    const dir = looseDir();
-    const saved = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
-    process.env.MEMESH_DIR = dir;
+    const home = tmp(); const dir = path.join(home, '.memesh'); fs.renameSync(looseDir(), dir);
+    const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.HOME = home;
+    process.env.MEMESH_DIR = tmp();
     delete process.env.MEMESH_DB_PATH;
     try {
       const root = tmp();
@@ -1569,7 +1824,9 @@ describe.skipIf(process.platform === 'win32')('what MeMesh writes under ~/.memes
     w.deps.dir = dir;
     w.deps.env = { MEMESH_AUTO_UPDATE: 'major' }; // another data directory than the account's own: the setting must be explicit
     w.deps.dbPath = path.join(dir, 'knowledge-graph.db');
-    new DatabaseSync(w.deps.dbPath).close();
+    const database = new DatabaseSync(w.deps.dbPath);
+    database.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY)');
+    database.close();
     registerLiveHost(dir, process.pid);
     expect(mode(path.join(dir, 'live-hosts'))).toBe(0o700);
     expect(mode(path.join(dir, 'live-hosts', `${process.pid}.json`))).toBe(0o600);
@@ -1587,7 +1844,9 @@ describe.skipIf(process.platform === 'win32')('what MeMesh writes under ~/.memes
     w.deps.dir = dir;
     w.deps.env = { MEMESH_AUTO_UPDATE: 'major' }; // another data directory than the account's own: the setting must be explicit
     w.deps.dbPath = path.join(dir, 'knowledge-graph.db');
-    new DatabaseSync(w.deps.dbPath).close();
+    const database = new DatabaseSync(w.deps.dbPath);
+    database.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY)');
+    database.close();
     registerLiveHost(dir, process.pid);
     let waitModeWhileWaiting = 0;
     w.deps.sleep = async () => {
@@ -2058,7 +2317,7 @@ describe('a process id alone is not a running host', () => {
 });
 
 describe('the pre-update backup, when the directory holds something unreadable or odd', () => {
-  const mkDb = (d: string) => { const f = path.join(d, 'knowledge-graph.db'); const db = new DatabaseSync(f); db.exec('CREATE TABLE t (v TEXT)'); db.close(); return f; };
+  const mkDb = (d: string) => { const f = path.join(d, 'knowledge-graph.db'); const db = new DatabaseSync(f); db.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY); CREATE TABLE t (v TEXT)'); db.close(); return f; };
 
   it('a dangling link among the backups does not fail the backup, and is cleaned up once there are too many', () => {
     const d = tmp();
@@ -2071,8 +2330,9 @@ describe('the pre-update backup, when the directory holds something unreadable o
       fs.writeFileSync(f, 'x');
       const t = new Date(Date.UTC(2026, 9, i)); fs.utimesSync(f, t, t);
     }
-    const made = backupDatabase(dbPath, backupDir, '4.2.0', new Date())!;
+    const made = backupDatabase(dbPath, '4.2.0')!;
     expect(fs.existsSync(made)).toBe(true);
+    expect(fs.readdirSync(backupDir).filter((name) => name.endsWith('.db'))).toHaveLength(3);
     expect(fs.readdirSync(backupDir)).not.toContain('pre-update-4.1.0-old.db');
   });
 
@@ -2086,8 +2346,9 @@ describe('the pre-update backup, when the directory holds something unreadable o
       fs.writeFileSync(f, 'x');
       const future = new Date(Date.now() + i * 86_400_000); fs.utimesSync(f, future, future);
     }
-    const made = backupDatabase(dbPath, backupDir, '4.2.0', new Date())!;
+    const made = backupDatabase(dbPath, '4.2.0')!;
     expect(fs.existsSync(made)).toBe(true);
+    expect(fs.readdirSync(backupDir).filter((name) => name.endsWith('.db'))).toHaveLength(3);
   });
 });
 
@@ -2153,7 +2414,7 @@ describe('Codex: where it lives, and what is not known', () => {
       let marketplaceAdds = 0;
       const steps: string[] = [];
       w.deps.exec = (cmd, args, opts) => {
-        if (cmd === 'codex' && args[1] === 'marketplace') steps.push(args[2]);
+        if (cmd === 'codex' && args[1] === 'marketplace' && args[2] !== 'list') steps.push(args[2]);
         if (cmd === 'codex' && args[1] === 'add') return { status: 1, stdout: '', stderr: 'no such plugin' };
         if (cmd === 'codex' && args[2] === 'add') { marketplaceAdds += 1; if (marketplaceAdds === 2 && !restoreWorks) return { status: 1, stdout: '', stderr: 'offline' }; }
         return real(cmd, args, opts);
@@ -2253,12 +2514,14 @@ describe('the v0.3 attestation bundle (what npm 11 publishes) is read like the v
 });
 
 describe('memesh update (manual), what it tells the person', () => {
+  isolateManualAccountHome();
+
   function stubRunner(state: Record<string, unknown>): string {
     const root = tmp();
     fs.mkdirSync(path.join(root, 'scripts', 'hooks'), { recursive: true });
     fs.writeFileSync(path.join(root, 'scripts', 'hooks', 'auto-update-runner.mjs'), `
       import fs from 'node:fs'; import path from 'node:path';
-      fs.writeFileSync(path.join(path.dirname(process.argv[2]), 'auto-update-state.json'), JSON.stringify({ at: new Date().toISOString(), hermes: null, channel: null, backup: null, waitingSince: null, from: '4.12.0', to: '4.13.0', ...${JSON.stringify(state)} }));
+      fs.writeFileSync(path.join(process.env.MEMESH_DIR, 'auto-update-state.json'), JSON.stringify({ at: new Date().toISOString(), hermes: null, channel: null, backup: null, waitingSince: null, from: '4.12.0', to: '4.13.0', ...${JSON.stringify(state)} }));
     `);
     return root;
   }
@@ -2269,22 +2532,22 @@ describe('memesh update (manual), what it tells the person', () => {
   };
 
   it('says that automatic updates are still off when they are, and says nothing of the kind when they are not', () => {
-    const off = withSetting('off', () => runManualUpdate(stubRunner({ outcome: 'installed', reason: 'installed' }), tmp()));
+    const off = withSetting('off', () => runManualFixture(stubRunner({ outcome: 'installed', reason: 'installed' }), tmp()));
     expect(off.code).toBe(0);
     expect(off.lines.join('\n')).toContain('Automatic updates are still off; this was an update you asked for by hand');
-    const on = withSetting('major', () => runManualUpdate(stubRunner({ outcome: 'installed', reason: 'installed' }), tmp()));
+    const on = withSetting('major', () => runManualFixture(stubRunner({ outcome: 'installed', reason: 'installed' }), tmp()));
     expect(on.lines.join('\n')).not.toContain('still off');
-    const offCurrent = withSetting('off', () => runManualUpdate(stubRunner({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate }), tmp()));
+    const offCurrent = withSetting('off', () => runManualFixture(stubRunner({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate }), tmp()));
     expect(offCurrent.lines.join('\n')).toContain('still off');
   });
 
   it('does not print a plain success when MeMesh is current but the Hermes provider could not be refreshed', () => {
     const hermes = [{ path: '/h/plugins/memesh', outcome: 'failed', reason: 'tar exit 2: broken archive', backup: null }];
-    const current = withSetting('major', () => runManualUpdate(stubRunner({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate, hermes }), tmp()));
+    const current = withSetting('major', () => runManualFixture(stubRunner({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.upToDate, hermes }), tmp()));
     expect(current.code).toBe(1);
     expect(current.lines.join('\n')).toContain('tar exit 2: broken archive');
     expect(current.lines.join('\n')).not.toContain('✅');
-    const installed = withSetting('major', () => runManualUpdate(stubRunner({ outcome: 'installed', reason: 'installed', hermes }), tmp()));
+    const installed = withSetting('major', () => runManualFixture(stubRunner({ outcome: 'installed', reason: 'installed', hermes }), tmp()));
     expect(installed.code).toBe(1);
     expect(installed.lines.join('\n')).toContain('✅ Updated');
     expect(installed.lines.join('\n')).toContain('Hermes provider at /h/plugins/memesh was not updated');
@@ -2500,9 +2763,15 @@ describe('the release commit is confirmed to be part of main by the updater itse
   it.skipIf(!nodeUsesEnvProxy())('the real lookup script goes through a proxy with the environment compareEnv gives it, and does not without it', async () => {
     const http = await import('node:http');
     const seen: string[] = [];
-    // Node tunnels even a plain-http address with CONNECT: answer it, then serve the request that arrives inside the tunnel.
+    // Accept both HTTP forwarding and CONNECT; Node versions use different
+    // proxy transports. Both must reach the same expected target.
     const inner = http.createServer((_req, res) => { res.end('{}'); });
     const proxy = http.createServer();
+    proxy.on('request', (req, res) => {
+      const target = new URL(req.url!);
+      seen.push(`${target.hostname}:${target.port || '80'}`);
+      res.end('{}');
+    });
     proxy.on('connect', (req, socket) => { seen.push(req.url ?? ''); socket.write('HTTP/1.1 200 Connection Established\r\n\r\n'); inner.emit('connection', socket); });
     const proxied = await new Promise<number>((resolve) => proxy.listen(0, '127.0.0.1', () => resolve((proxy.address() as { port: number }).port)));
     try {
@@ -2892,9 +3161,10 @@ describe('a log entry is one line', () => {
 
 describe('a dispatch from an install that cannot update itself starts nothing and takes no slot', () => {
   const withDir = async (fn: (dir: string) => Promise<void>) => {
-    const dir = tmp();
-    const saved = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
-    process.env.MEMESH_DIR = dir;
+    const home = tmp(); const dir = path.join(home, '.memesh'); fs.mkdirSync(dir);
+    const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.HOME = home;
+    process.env.MEMESH_DIR = tmp();
     delete process.env.MEMESH_DB_PATH;
     try { await fn(dir); } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
   };
@@ -3034,9 +3304,10 @@ describe('the attempt time is taken when the runner has started', () => {
     return r;
   };
   const withDir = async (fn: (dir: string) => Promise<void>) => {
-    const dir = tmp();
-    const saved = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
-    process.env.MEMESH_DIR = dir;
+    const home = tmp(); const dir = path.join(home, '.memesh'); fs.mkdirSync(dir);
+    const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.HOME = home;
+    process.env.MEMESH_DIR = tmp();
     delete process.env.MEMESH_DB_PATH;
     try { await fn(dir); } finally { for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; } }
   };
@@ -3102,10 +3373,11 @@ describe('what the install steps answer decides the outcome', () => {
   });
 
   it('a log that cannot be opened (a directory is in its place) is said on stderr, and nothing is started', async () => {
-    const dir = tmp();
+    const home = tmp(); const dir = path.join(home, '.memesh'); fs.mkdirSync(dir);
     fs.mkdirSync(path.join(dir, 'auto-update.log'));
-    const saved = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
-    process.env.MEMESH_DIR = dir;
+    const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.HOME = home;
+    process.env.MEMESH_DIR = tmp();
     delete process.env.MEMESH_DB_PATH;
     const root = tmp();
     fs.mkdirSync(path.join(root, 'scripts', 'hooks'), { recursive: true });
@@ -3283,7 +3555,7 @@ describe('a Codex marketplace that an update removed and could not put back is p
     w.deps.exec = (cmd, args, opts) => { if (cmd === 'codex') steps.push(args.join(' ')); return exec(cmd, args, opts); };
     const result = await runAutoUpdate(w.deps);
     expect(result.outcome).toBe('installed');
-    expect(steps[0]).toBe(`plugin marketplace add PCIRCLE-AI/memesh --ref ${RELEASE_COMMIT}`);
+    expect(steps.filter((step) => step !== 'plugin marketplace list --json')[0]).toBe(`plugin marketplace add PCIRCLE-AI/memesh --ref ${RELEASE_COMMIT}`);
     expect(steps.some((x) => x.startsWith('plugin marketplace remove'))).toBe(false); // nothing to remove: it was not there
   });
 

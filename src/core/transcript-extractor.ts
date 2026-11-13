@@ -7,6 +7,7 @@ export interface ConversationTurn {
 
 interface RawEntry {
   type?: string;
+  isMeta?: boolean;
   message?: {
     role?: string;
     content?: unknown;
@@ -62,7 +63,7 @@ function parseConversationContent(content: string): ConversationTurn[] {
       for (const text of textFromAssistantBlocks(entry.message?.content)) {
         turns.push({ role: 'assistant', text });
       }
-    } else if (entry.type === 'user') {
+    } else if (entry.type === 'user' && entry.isMeta !== true) {
       for (const text of textFromUserContent(entry.message?.content)) {
         turns.push({ role: 'user', text });
       }

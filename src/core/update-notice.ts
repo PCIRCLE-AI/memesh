@@ -211,8 +211,10 @@ export function shouldRefreshUpdateCache(
 }
 
 export interface ResolveUpdateNoticeInput {
-  /** `~/.memesh` (or the isolated MEMESH_DIR) — where the receipt marker lives. */
+  /** Config/cache directory; also the marker location unless markerDir is supplied. */
   dir: string;
+  /** The database directory when its upgrade receipt lives separately from config/cache. */
+  markerDir?: string;
   currentVersion: string;
   cache: UpdateCheckCacheLike | null | undefined;
   now?: Date;
@@ -231,14 +233,15 @@ export function resolveUpdateNotice(input: ResolveUpdateNoticeInput): UpdateNoti
   const now = input.now ?? new Date();
   if (input.updateCheckEnabled === false) return { kind: 'DISABLED', currentVersion };
 
-  const marker = readJustUpgradedMarker(dir);
+  const markerDir = input.markerDir ?? dir;
+  const marker = readJustUpgradedMarker(markerDir);
   if (marker) {
     if (marker.to === currentVersion) {
       return { kind: 'JUST_UPGRADED', currentVersion, from: marker.from, to: marker.to };
     }
     // A receipt for some other version (the user jumped versions by hand, or
     // a downgrade) would otherwise sit in ~/.memesh forever. Drop it.
-    clearJustUpgradedMarker(dir);
+    clearJustUpgradedMarker(markerDir);
   }
 
   if (!answerIsCurrent(currentVersion, cache, now)) {

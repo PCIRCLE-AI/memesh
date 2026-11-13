@@ -7,7 +7,6 @@ import { pathToFileURL } from 'url';
 import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
 import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
-  buildReferenceContext,
   hasBriefingContent,
   ensurePrivateDir,
   getDbPath,
@@ -51,18 +50,10 @@ import {
   repoStateLines,
   resolvePluginRoot,
   resolveSessionLimitDetailed,
-  briefingTaskStateLines,
+  taskStateLines,
   resolveBriefingLevel,
-  automaticCodexSessionPrincipal,
-  DEFAULT_CLAUDE_RECIPIENT,
   isClaudeCodeHost,
-  isCodexHost,
-  resolveMessageRecipient,
-  waitingMessageLines,
-  inboxUnreadableHookLine,
   SKIP_REASONS,
-  hookMessageSessionId,
-  SESSION_ID_MISMATCH_REASON,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
   WORK_PACKAGE_NOTICE,
@@ -81,11 +72,10 @@ import {
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
-import { buildRecentIndex } from './_generated/recent-index.js';
+import { buildRecentIndex, recentLine } from './_generated/recent-index.js';
 import { hasTables, MEMORY_READ_TABLES } from './_generated/schema.js';
 import { handoffView } from './_generated/session-handoff.js';
-import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
-import { boundTaskStateLines } from './_generated/work-topology.js';
+import { buildOpeningContext, MAX_OPENING_CONTEXT_BYTES } from './_generated/work-topology.js';
 import { readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
 
@@ -268,12 +258,12 @@ function recordCaught(what, err) {
 function updateNoticeBanner(installedVersion, cache, cacheState) {
   if (!installedVersion) return { kind: 'UNKNOWN_VERSION', lines: [] };
   const notice = resolveUpdateNotice({
-    dir: memeshHomeDir(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+    dir: memeshHomeDir(), markerDir: getMemeshDirFromDbPath(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
   });
   if (notice.kind === 'JUST_UPGRADED') {
     // Take the receipt atomically: two host hooks starting together must not
     // both announce. The loser sees null and says nothing about it.
-    const claimed = claimJustUpgradedMarker(memeshHomeDir());
+    const claimed = claimJustUpgradedMarker(getMemeshDirFromDbPath());
     if (!claimed) return { kind: 'UP_TO_DATE', lines: [] };
     return {
       kind: notice.kind,
@@ -516,7 +506,7 @@ function detectInstallChannelHook(pluginRoot) {
 function buildUpdateNotice(sessionId, currentVersion, cache, channel) {
   if (!sessionId || sessionId === 'unknown' || !cache || cache.currentVersion !== currentVersion) return null;
   const notice = resolveUpdateNotice({
-    dir: memeshHomeDir(), currentVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+    dir: memeshHomeDir(), markerDir: getMemeshDirFromDbPath(), currentVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
   });
   if (notice.kind !== 'UPGRADE_AVAILABLE') return null;
   if (readUpdatePromptClaim(sessionId, currentVersion, cache.latestVersion)
@@ -575,9 +565,6 @@ function pluginHostOf(pluginRoot) {
  */
 function pluginUpgradeLine(pluginRoot) {
   const host = pluginHostOf(pluginRoot);
-  if (host === 'codex') {
-    return `    Run: memesh update   (it checks the release's source and backs up your database first)`;
-  }
   if (host === 'unknown') {
     // Naming one host's command here would be a guess presented as an
     // instruction. Rare — it needs `dist/core/install-channel.js` to be
@@ -585,7 +572,7 @@ function pluginUpgradeLine(pluginRoot) {
     // when wrong upgrade advice costs the most.
     return `    Run: memesh update   (it checks the release's source and backs up your database first)`;
   }
-  return `    Run: memesh update   (it checks the release's source and backs up your database first; no memesh command on your PATH? reinstall from the /plugin UI)`;
+  return `    Run: memesh update   (it checks the release's source and backs up your database first; no memesh command on your PATH? run ${_installChannelMod.pluginUpdateCommand(pluginRoot)})`;
 }
 
 // Don't fire a fresh-check more often than this. Two parallel
@@ -716,7 +703,7 @@ function spawnFreshUpdateCheck(installedVersion) {
  */
 /** One line in auto-update.log for a background path that returns without doing its work: nothing is skipped in silence. */
 function skipNote(reason) {
-  try { _autoUpdateMod?.logAutoUpdateLine(memeshDir, `auto-update: ${reason}`); } catch { /* nowhere to write it */ }
+  try { _autoUpdateMod?.logAutoUpdateLine(_autoUpdateMod.updateControlDir(), `auto-update: ${reason}`); } catch { /* nowhere to write it */ }
 }
 
 let nodeTooOld = false;
@@ -727,11 +714,11 @@ async function runPostBannerUpdateTasks() {
   // This host process is running: the updater waits for it to exit before it
   // replaces any file. Registered before anything below can return early.
   try {
-    // Where every data directory looks (the account's own ~/.memesh): the program an update replaces is shared by all of them.
-    _autoUpdateMod?.registerLiveHost(_autoUpdateMod.accountMemeshDir() ?? memeshDir, undefined, memeshDir);
+    // Every data directory under this HOME shares one host registry.
+    _autoUpdateMod?.registerLiveHost(_autoUpdateMod.updateControlDir());
   } catch (err) {
     // The updater then cannot see this host: leave the reason where the owner can read it.
-    try { _autoUpdateMod?.logAutoUpdateLine(memeshDir, `auto-update: could not register this session's host (${err?.message ?? err}); the updater may not wait for it`); } catch { /* nowhere to write it */ }
+    try { _autoUpdateMod?.logAutoUpdateLine(_autoUpdateMod.updateControlDir(), `auto-update: could not register this session's host (${err?.message ?? err}); the updater may not wait for it`); } catch { /* nowhere to write it */ }
   }
   try {
     // On a Node below the floor the database can never be opened, so there is nothing to update from here.
@@ -1041,17 +1028,6 @@ process.stdin.on('end', async () => {
     // of ANY line instead.
     return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /m, '◉ MeMesh · ')}`;
   };
-  // Also hoisted above both try blocks, same reason: a rejected
-  // MEMESH_RECIPIENT must reach the recall-failure catch's own output() too.
-  let recipientRejectionLine;
-  const withRecipientRejectionWarning = (msg) =>
-    recipientRejectionLine ? `${recipientRejectionLine}\n${msg}` : msg;
-  // #474: same hoisting reason — this session's own messaging address (set
-  // once a recipient resolves, below) must reach every exit path, including
-  // the recall-failure catch, not just the populated-database summary.
-  let addressLine = null;
-  const withAddressLine = (msg) =>
-    addressLine ? `${addressLine}\n${msg}` : msg;
   // Also hoisted above both try blocks, same reason: a launch missing the
   // channel flag is a live-delivery problem this session already has,
   // regardless of how the payload parses or whether a database exists yet.
@@ -1122,44 +1098,6 @@ process.stdin.on('end', async () => {
         reason: `briefing-level: invalid ${source} value ${value}, using ${briefingLevel}`,
       });
     }
-    // Resolved before any early return, so a rejected id is reported even
-    // with no database yet or no entities table. A hook that exits 0 has its
-    // stderr hidden from both the user and the model, so the rejection also
-    // needs a place in the same visible channel the "never seen" hint uses —
-    // `recipientRejectionLine` (hoisted above, with `withCaptureWarning`) is
-    // shown in every exit path below.
-    const recipient = resolveMessageRecipient(process.env, (label, detail) => {
-      recipientRejectionLine = `MEMESH_RECIPIENT ignored: ${detail}`;
-      record({
-        outcome: 'notified',
-        reason: `recipient: MEMESH_RECIPIENT ignored (${label})`,
-      });
-    }, { sessionId: data.session_id, cwd: data.cwd });
-    // Codex follow-up: an AUTOMATIC Codex identity (`codex-thread-<uuid>`) is
-    // a fresh, machine-generated id, unique to this one thread — nobody typed
-    // it, so it has necessarily never been "seen" anywhere before this exact
-    // session, on every single session, forever. Showing the "never seen —
-    // check it for a typo" hint (below) for it would be a permanent, useless
-    // warning a Codex user can never resolve. Recomputed from this session's
-    // own `session_id` rather than threaded through `resolveMessageRecipient`'s
-    // return value, so this can never disagree with what `recipient` actually
-    // is. Exact-match only: a CONFIGURED Codex principal (where "never seen"
-    // is exactly as meaningful as it is for Claude's fallback) is unaffected.
-    const isAutomaticCodexRecipient = Boolean(recipient) && isCodexHost(process.env)
-      && typeof data.session_id === 'string'
-      && recipient === automaticCodexSessionPrincipal({ threadId: data.session_id });
-    // #474: this session's own messaging address, stated once so the agent
-    // can use it as `sender` and knows `message discover` is scoped to this
-    // project. Mutually exclusive with a rejected MEMESH_RECIPIENT above (a
-    // rejection means no recipient resolved). Codex follow-up: `recipient`
-    // above now also resolves for an ordinary Codex plugin session with no
-    // MEMESH_RECIPIENT (`resolveMessageRecipient`'s Codex fallback), so this
-    // line is no longer Claude-only.
-    addressLine = recipient
-      ? `MeMesh messaging address: project ${jsonStringLiteral(projectName)}, recipient "${recipient}" — use `
-        + `"${recipient}" as sender in \`message\` so replies reach you; \`message discover\` with this project `
-        + 'lists other agents here.'
-      : null;
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
     // that is not even that — truncated JSON, a bare array/string/number/null
@@ -1326,10 +1264,10 @@ process.stdin.on('end', async () => {
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
         { skipUpdateBanner: alreadyNoticed },
       );
-      const noDbContext = [addressLine, recipientRejectionLine, workPackageNotice]
+      const noDbContext = [workPackageNotice]
         .filter(Boolean).join('\n\n') || undefined;
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(consent ? `${consent.system}\n${emptySummary}` : emptySummary))),
+        withChannelFlagWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary),
         noDbContext,
         // Nothing was injected (no notice at this level, no database to read
         // from) — record why, the same as the schema-present empty path
@@ -1365,9 +1303,9 @@ process.stdin.on('end', async () => {
     try {
       // The database may exist but be empty, or be mid-creation (see MEMORY_READ_TABLES).
       if (!hasTables(db, MEMORY_READ_TABLES)) {
-        const noEntitiesContext = [addressLine, recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
+        const noEntitiesContext = [workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
-          withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')))),
+          withChannelFlagWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')),
           noEntitiesContext,
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
@@ -1398,17 +1336,13 @@ process.stdin.on('end', async () => {
       const sharedEntities = pools.shared;
       const globalEntities = pools.global;
       const recentEntities = pools.recent;
+      const userConversationTitles = pools.userConversations;
       const lessonCount = pools.lessonCount;
       const topLessons = pools.lessons;
-      // Where the last session in THIS project left off — it leads the block
-      // at every level (same renderer as `briefing`). `handoffHidden` names why
-      // an existing handoff is not shown (a bounded label, never its text), so
-      // session-start's own record can say so instead of reporting an empty project.
-      const handoffRow = pools.handoff;
-      let handoffHidden = pools.handoffHidden ?? null;
-      const handoffShown = handoffView(handoffRow);
-      const handoffBlock = handoffShown.lines;
-      if (handoffRow && handoffBlock.length === 0) handoffHidden = handoffShown.status;
+      // Recent sessions' own last replies, rendered identically to briefing.
+      const handoffRows = pools.handoffs;
+      const handoffViews = handoffRows.map(row => handoffView(row));
+      const handoffBlock = handoffViews.flatMap(view => view.lines);
 
       // Build single-line summary with mid-dot separators. Earlier this
       // was a multi-line tree (├─ / └─); switched to a one-liner so the
@@ -1429,7 +1363,7 @@ process.stdin.on('end', async () => {
         summary = `◉ MeMesh ready · no memories for "${projectLabel(projectName)}" yet`;
       } else {
         const parts = ['◉ MeMesh'];
-        if (handoffBlock.length > 0) parts.push('handoff from the last session');
+        if (handoffBlock.length > 0) parts.push(`tails from ${handoffRows.length} recent session(s)`);
         if (memoryFragments.length > 0) {
           parts.push(`${memoryFragments.join(' + ')} memories`);
         }
@@ -1457,6 +1391,7 @@ process.stdin.on('end', async () => {
       // surfaces agreeing, so neither side restates the numbers.
 
       const memoryLines = [];
+      let taskContextLines = [];
       let memoryAssemblyFailed = false;
       try {
         // One query for every snippet, for the rows that will render.
@@ -1477,59 +1412,7 @@ process.stdin.on('end', async () => {
         // The first of the checkout's ids that has a record (the current one first), as task_state reads it.
         const taskRowStmt = db.prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`);
         const taskRow = projectIds.map((id) => taskRowStmt.get(taskStateName(id))).find(Boolean);
-        // Who this session is comes from `MEMESH_RECIPIENT` (`recipient`,
-        // resolved above). Without it there is no exact recipient and the
-        // shared leaf returns no lines, so a session never sees a message
-        // addressed to anyone else.
-        // #360: briefingTaskStateLines downgrades a stale record to one line
-        // at EVERY level, and only consults `briefingPolicy.taskState` for a
-        // fresh one — `minimal` omits a fresh state entirely, never a stale
-        // flag. The unread-inbox line below is unconditional at every level:
-        // a message waiting for this agent is not "another project's
-        // memory", it is addressed to it. An inbox that cannot be read is
-        // recorded as its own `error` (a label, like the two below), and is
-        // not a failed memory assembly: the rest of the context still ships.
-        const inboxSession = hookMessageSessionId(data.session_id);
-        if (inboxSession.mismatch) record({ outcome: 'notified', reason: SESSION_ID_MISMATCH_REASON });
-        // Under Codex, a delivery already pushed into the thread is not reminded again.
-        let inboxReadError;
-        const inboxLines = waitingMessageLines(db, recipient, inboxSession.sessionId, (err) => {
-          inboxReadError = err;
-          record({
-            outcome: 'error',
-            reason: `inbox: ${hookErrorReason(err)}`,
-          });
-        }, isCodexHost(process.env));
-        if (inboxReadError !== undefined) inboxLines.push(inboxUnreadableHookLine(recipient, inboxReadError));
-        // A rejected MEMESH_RECIPIENT is mutually exclusive with a resolved
-        // `recipient`, so this never collides with the hint below.
-        if (recipientRejectionLine) inboxLines.unshift(recipientRejectionLine);
-        // At SessionStart only, and only when there is nothing else to say
-        // about this recipient: a hint, not a fact (see unknownRecipientHint).
-        // A lookup that fails for any reason other than the tables not
-        // existing yet is recorded as its own `error`, not shown as a hint.
-        // Checked BEFORE `addressLine` is added below — that line is
-        // identity, not a waiting message, and must not make this "nothing
-        // waiting yet" check see a non-empty inbox that isn't there.
-        // `isAutomaticCodexRecipient` (resolved above): a fresh
-        // `codex-thread-<uuid>` id cannot be a typo, so it never reaches this
-        // check at all — see its own comment for why.
-        const isDefaultClaudeRecipient = isClaudeCodeHost(process.env) && recipient === DEFAULT_CLAUDE_RECIPIENT;
-        if (recipient && !isAutomaticCodexRecipient && !isDefaultClaudeRecipient && inboxLines.length === 0) {
-          const everSeen = recipientEverSeenAnywhere(db, recipient, (err) =>
-            record({
-              outcome: 'error',
-              reason: `recipient-seen: ${hookErrorReason(err)}`,
-            }));
-          if (everSeen === false) {
-            inboxLines.push(unknownRecipientHint(recipient));
-            record({ outcome: 'notified', reason: 'recipient: never seen in any project' });
-          }
-        }
-        // #474: mutually exclusive with `recipientRejectionLine` (a rejection
-        // means no recipient, so no address to state). Added last so it
-        // never affects the "nothing waiting yet" check above.
-        if (addressLine) inboxLines.unshift(addressLine);
+        // Whole conversation messages are delivered by the separately declared messages.js hook.
         let taskMetadata = null;
         let taskCorrupted = false;
         if (taskRow?.metadata) {
@@ -1537,18 +1420,18 @@ process.stdin.on('end', async () => {
           catch { taskCorrupted = true; }
         }
         if (taskCorrupted) record({ outcome: 'error', reason: 'task-state: stored record is not valid JSON' });
-        const taskContextLines = taskCorrupted
+        taskContextLines = taskCorrupted
           ? [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${taskStateUnreadableMessage(projectName)}`]
-          : boundTaskStateLines(briefingTaskStateLines(
+          : taskStateLines(
             parseTaskState(taskMetadata),
             projectName,
             new Date(),
-            { includeFresh: briefingPolicy.taskState },
-          ));
+          );
+        const conversationTitleLines = userConversationTitles.length === 0
+          ? []
+          : ['Recent user conversation titles:', ...userConversationTitles.map(recentLine)];
         const stateLines = [
-          ...handoffBlock,
-          ...taskContextLines,
-          ...inboxLines,
+          ...conversationTitleLines,
         ];
 
         // The pools overlap by construction (a lesson tagged to this project
@@ -1569,7 +1452,7 @@ process.stdin.on('end', async () => {
             { entities: recentEntities.map(toEntity), foreign: true },
           ],
           projectName,
-          DEFAULT_TOPOLOGY_BUDGET,
+          { ...DEFAULT_TOPOLOGY_BUDGET, maxChars: MAX_OPENING_CONTEXT_BYTES },
         ));
       } catch (err) {
         // Snippet enrichment is best-effort. A failure here must not stop
@@ -1590,22 +1473,19 @@ process.stdin.on('end', async () => {
 
       // --- The recent index ---------------------------------------
       // The titles of the 30 memories most recently written in this
-      // project's scope, minus the ones that look out of date, once per
+      // project's scope, once per
       // session (src/core/recent-index.ts, run here through its generated
       // copy; `briefing` renders the same section). The unfiltered 30 are
-      // kept in the session's injection record: the prompt hook compares
-      // its matches with them. A read that fails renders as "could not be
+      // A read that fails renders as "could not be
       // read", never as the empty-state line: an empty index is a claim
       // about the user's data.
       let indexLines;
       // The rows the index rendered, so a citation of one is credited like a ranked one.
       const indexEntities = [];
-      let recentPoolIds = [];
       // Shown at every level, `minimal` included.
       try {
         const index = buildRecentIndex(db, projectName, Date.now(), cwdIsDirectory ? projectIds : null);
         indexLines = index.lines;
-        recentPoolIds = index.poolIds;
         indexEntities.push(...index.shown);
       } catch (err) {
         const reason = String(err?.message || err);
@@ -1635,7 +1515,7 @@ process.stdin.on('end', async () => {
       // always closes the block (#323: an empty project shows the empty-state
       // line, not nothing). briefing.test.ts's parity case is what keeps this
       // identical to the tool side.
-      if (memoryLines.length > 0) {
+      if (memoryLines.length > 0 || taskContextLines.length > 0 || handoffBlock.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
         // #360: only spacer-then-index when the index actually has lines to
@@ -1677,7 +1557,14 @@ process.stdin.on('end', async () => {
       // the two sides CAN share the rule.
       // With nothing to show but the notice, the notice goes alone: an empty
       // fence tells the agent nothing.
-      const memoryBlock = hasBriefingContent(memoryLines) ? buildReferenceContext(memoryLines) : undefined;
+      // `output()` prefixes the session-project line and this call may append
+      // the full-level work-package notice. Reserve both separators as well,
+      // so the actual host payload—not only the fenced memory block—fits.
+      const openingReservedBytes =
+        (sessionProjectContext ? Buffer.byteLength(sessionProjectContext, 'utf8') + 2 : 0)
+        + (workPackageNotice ? Buffer.byteLength(workPackageNotice, 'utf8') + 2 : 0);
+      const memoryBlock = hasBriefingContent([...taskContextLines, ...handoffBlock, ...memoryLines])
+        ? buildOpeningContext(taskContextLines, handoffBlock, memoryLines, openingReservedBytes).text : undefined;
       const memoryContext = memoryBlock && workPackageNotice
         ? memoryBlock + '\n\n' + workPackageNotice
         : memoryBlock ?? workPackageNotice;
@@ -1717,13 +1604,13 @@ process.stdin.on('end', async () => {
         // The handoff's text is the agent's own last message: a `[mem:N]` at
         // the end of one of its lines is a citation it wrote, not a memory
         // this hook rendered. One occurrence is removed per such line.
-        const renderedEntityIds = renderedHandles(memoryLines);
-        for (const id of renderedHandles(handoffBlock.slice(1))) {
+        const renderedEntityIds = renderedHandles((memoryBlock ?? '').split('\n'));
+        for (const id of renderedHandles(handoffViews.flatMap(view => view.lines.slice(1)))) {
           const at = renderedEntityIds.indexOf(id);
           if (at >= 0) renderedEntityIds.splice(at, 1);
         }
-        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities, ...indexEntities,
-          ...(handoffBlock.length > 0 ? [handoffRow] : [])];
+        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities, ...indexEntities, ...userConversationTitles,
+          ...handoffRows];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was
         // injected once.
@@ -1731,7 +1618,7 @@ process.stdin.on('end', async () => {
           .map((id) => entitiesById.get(id))
           .filter(Boolean);
 
-        if (allInjected.length > 0 || recentPoolIds.length > 0) {
+        if (allInjected.length > 0) {
           const sessionsDir = join(memeshDir, 'sessions');
           ensurePrivateDir(sessionsDir);
 
@@ -1763,8 +1650,6 @@ process.stdin.on('end', async () => {
               injectedContext: String(memoryContext || summary).slice(0, 120),
               creditedIds: prior?.creditedIds || [],
               sessionCounted: prior?.sessionCounted === true,
-              // The recent index before its filter: what the prompt hook compares its matches with.
-              recentPoolIds,
             });
           } else {
             recordHookOutcome(process.env, { hook: 'session-start', outcome: 'skipped', reason: SKIP_REASONS.noSessionId, payload: data });
@@ -1856,7 +1741,7 @@ process.stdin.on('end', async () => {
       // — guard the concat so an empty injection does not become the LITERAL
       // string "undefined" glued onto a real notice.
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(finalMessage)))),
+        withChannelFlagWarning(withCaptureWarning(finalMessage)),
         memoryContext,
         // A specific, greppable reason for the "genuinely nothing to inject"
         // case, distinct from the generic 'session-start-banner' entity
@@ -1867,12 +1752,8 @@ process.stdin.on('end', async () => {
         // that failure has its own error record, and an empty result it
         // caused must not also be reported as an empty project.
         !memoryContext && !memoryAssemblyFailed
-          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, handoffHidden
-            ? `session handoff not shown (${handoffHidden}); no other project content, no repository state, index excluded`
-            : 'no project content, no repository state, index excluded') }
-          : handoffHidden
-            ? { outcome: 'notified', reason: `session handoff not shown (${handoffHidden})`, entity: memoryContext ? 'session-start-context' : 'session-start-banner' }
-            : null,
+          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
+          : null,
       );
       if (updateNoticeShown) {
         finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
@@ -1962,8 +1843,8 @@ process.stdin.on('end', async () => {
       // outcome — here an error, not the default `wrote`.
       if (captureWarning) captureWarning = captureWarning.replace(RECALL_STILL_WORKS, '');
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)))),
-        recipientRejectionLine ?? addressLine ?? null,
+        withChannelFlagWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)),
+        null,
         { outcome: 'error', reason: hookErrorReason(err) },
       );
     }

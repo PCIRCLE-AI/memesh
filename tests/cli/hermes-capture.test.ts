@@ -36,8 +36,7 @@ describe('memesh hermes: input is refused in its own terms', () => {
     for (const [cmd, body, msg] of [
       ['capture-turn', 'not json', /Error:/],
       ['capture-turn', '{"user": 1}', /stdin must be \{"user"/],
-      ['capture-session', '{"messages": "x"}', /stdin must be \{"messages"/],
-      ['capture-session', '', /stdin is empty/],
+      ['capture-turn', '', /stdin is empty/],
     ] as const) {
       const r = run(['hermes', cmd, '--session', 's1'], body);
       expect(r.code, `${cmd} ${body}`).toBe(1);
@@ -50,6 +49,11 @@ describe('memesh hermes: input is refused in its own terms', () => {
     const r = run(['hermes', 'capture-turn', '--session', 's1'], '{"user":"hi","assistant":"hello"}');
     expect(r.code, r.stderr).toBe(0);
     expect(r.stdout.trim().split('\n')).toHaveLength(1);
-    expect(JSON.parse(r.stdout)).toEqual({ outcome: 'skipped', reason: expect.any(String) });
+    expect(JSON.parse(r.stdout)).toEqual({ outcome: 'wrote', names: [expect.stringMatching(/^hermes-turn-s1-[0-9a-f-]{36}-user$/), expect.stringMatching(/^hermes-turn-s1-[0-9a-f-]{36}-assistant$/)] });
+  });
+
+  it('there is no capture-session command any more', () => {
+    const r = run(['hermes', 'capture-session', '--session', 's1'], '{"messages": []}');
+    expect(r.code).not.toBe(0);
   });
 });

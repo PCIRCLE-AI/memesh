@@ -3,9 +3,11 @@ import { createHash, X509Certificate } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import { DatabaseSync } from '../storage/sqlite.js';
+import { MemeshDatabase } from '../storage/sqlite.js';
+import { backupDirectoryFor, copyDatabaseBefore } from './db-copy.js';
+import { npmInvocation, NpmStartError } from './npm-launch.js';
 import { detectPluginHost, getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
-import { getMemeshDirFromDbPath, memeshDir } from './paths.js';
+import { getMemeshDirFromDbPath, homeDir, memeshDir, redactSecrets } from './paths.js';
 import { updateConfigInDir } from './config.js';
 import { inspectInstall, refreshTargets, refreshInstalls, registryProblemResult, staleInstalls } from './hermes-provider.js';
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
@@ -43,13 +45,13 @@ export function ensureOwnerDir(dir) {
     ownerOnly(dir);
 }
 export const AUTO_UPDATE_REASONS = {
+    npmUnavailable: 'could not start npm',
     policyOff: 'policy is off',
     policyOffUnreadableConfig: 'policy is off: a config file could not be read, so an explicit off cannot be ruled out',
     policyOffInvalidValue: 'policy is off: a setting held a value that is not off, patch, minor or major',
     policyOffUpdateCheck: 'policy is off: update checks were turned off (updateCheck=false)',
-    policyOffCi: 'no update: this run is inside CI or a container and the setting was not given explicitly',
-    policyOffNoAccountHome: 'no update: the account\'s home directory cannot be determined (no passwd entry) and the setting was not given explicitly',
-    policyOffForeignHome: 'no update: this run uses a data directory that is not the account\'s own ~/.memesh and the setting was not given explicitly',
+    policyOffCi: 'no update: this run is inside CI and the setting was not given explicitly',
+    policyOffForeignHome: 'no update: HOME differs from the system account home and this environment did not explicitly enable updates',
     channelUnsupported: 'no update: this install channel cannot update itself (source checkout, project-local or unknown)',
     registryUnreachable: 'no update: the npm registry did not answer',
     upToDate: 'already on the newest version for this channel',
@@ -57,7 +59,7 @@ export const AUTO_UPDATE_REASONS = {
     sourceNotVerified: 'not installed: the package source could not be verified',
     tarballMismatch: 'not installed: the downloaded package does not match the verified one',
     dependencyPinFailed: 'install ran but its dependencies could not be set to the versions the release pins; the previous version was put back',
-    installNotUndone: 'an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then MeMesh may not start)',
+    installNotUndone: 'an install ran, its dependencies could not be set to the versions the release pins, AND the previous version could not be put back: run `memesh update --reinstall` to finish it (until then `memesh serve` and the Claude channel runner cannot start; remember, recall and MCP still work)',
     dependenciesNotFetched: 'not installed: the release\'s pinned dependencies could not be fetched and checked (network, registry or a hash that did not match), so the installed version was not touched',
     globalDirUnknown: 'not installed: the directory npm keeps global packages in could not be found, so a failed install could not be undone',
     rollbackUnavailable: 'not installed: a copy of the installed version could not be made, so a failed install could not be undone',
@@ -116,7 +118,7 @@ function readConfigFile(file) {
 export function isCi(env) {
     const truthy = (v) => v !== undefined && v !== '' && v !== '0' && v.toLowerCase() !== 'false';
     return truthy(env.CI)
-        || ['GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'JENKINS_URL', 'TF_BUILD', 'TRAVIS', 'APPVEYOR', 'CODEBUILD_BUILD_ID', 'TEAMCITY_VERSION', 'DRONE', 'BITBUCKET_BUILD_NUMBER', 'CIRRUS_CI', 'SEMAPHORE', 'container'].some((k) => truthy(env[k]));
+        || ['GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'JENKINS_URL', 'TF_BUILD', 'TRAVIS', 'APPVEYOR', 'CODEBUILD_BUILD_ID', 'TEAMCITY_VERSION', 'DRONE', 'BITBUCKET_BUILD_NUMBER', 'CIRRUS_CI', 'SEMAPHORE'].some((k) => truthy(env[k]));
 }
 export function safeAccountHome() {
     try {
@@ -128,10 +130,30 @@ export function safeAccountHome() {
     }
 }
 function parsePolicy(value) {
+    if (value === false)
+        return 'off';
     if (typeof value !== 'string')
         return null;
     const lowered = value.toLowerCase();
     return lowered === 'off' || lowered === 'patch' || lowered === 'minor' || lowered === 'major' ? lowered : null;
+}
+function policyValue(value) {
+    const text = value !== null && typeof value === 'object' ? (Array.isArray(value) ? '[array]' : '[object]') : JSON.stringify(value);
+    return oneLine(redactSecrets(text ?? String(value))).slice(0, 160);
+}
+export function describeUpdatePolicy(policy) {
+    const cause = oneLine(redactSecrets(`${policy.reason ?? 'policy is off'}${policy.detail ? `. ${policy.detail}` : ''}`));
+    if (policy.reason === AUTO_UPDATE_REASONS.policyOffUpdateCheck)
+        return `${cause}. Automatic updates are also disabled by updateCheck=false; to restore them, use \`memesh config unset updateCheck\`.`;
+    if (policy.reason === AUTO_UPDATE_REASONS.policyOffUnreadableConfig)
+        return `${cause}. Repair the named config file so its settings can be read.`;
+    if (policy.reason === AUTO_UPDATE_REASONS.policyOffInvalidValue) {
+        const fix = policy.source === 'env'
+            ? 'Remove the environment override with `unset MEMESH_AUTO_UPDATE`, or set it to off, patch, minor or major.'
+            : 'Correct or remove autoUpdate in the named file; for the active config, use `memesh config set autoUpdate major` or `memesh config unset autoUpdate`.';
+        return `${cause}. ${fix}`;
+    }
+    return `${cause}.`;
 }
 function samePath(a, b) {
     const real = (p) => { try {
@@ -145,6 +167,7 @@ function samePath(a, b) {
 export function resolveUpdatePolicy(input) {
     const off = (reason, source, detail) => ({ policy: 'off', source, reason, ...(detail ? { detail } : {}) });
     const accountDir = input.accountHome === null ? null : path.join(input.accountHome, '.memesh');
+    const ownHome = input.accountHome === null || samePath(input.env.HOME || homeDir(), input.accountHome);
     const configs = [];
     const seen = [];
     const addConfigDir = (dir, source) => {
@@ -164,7 +187,7 @@ export function resolveUpdatePolicy(input) {
     if (envValue !== undefined) {
         const parsed = parsePolicy(envValue);
         if (parsed === null)
-            return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, 'env');
+            return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, 'env', `MEMESH_AUTO_UPDATE=${policyValue(envValue)}`);
         if (parsed === 'off')
             return off(AUTO_UPDATE_REASONS.policyOff, 'env');
         explicit.push({ policy: parsed, source: 'env' });
@@ -172,7 +195,7 @@ export function resolveUpdatePolicy(input) {
     for (const { file, source } of configs) {
         const read = readConfigFile(file);
         if (read.state === 'unreadable')
-            return off(AUTO_UPDATE_REASONS.policyOffUnreadableConfig, source, `${file}: ${read.why}`);
+            return off(AUTO_UPDATE_REASONS.policyOffUnreadableConfig, source, `${oneLine(file)}: ${read.why}`);
         if (read.state === 'absent')
             continue;
         if (read.raw.updateCheck === false)
@@ -181,33 +204,34 @@ export function resolveUpdatePolicy(input) {
             continue;
         const parsed = parsePolicy(read.raw.autoUpdate);
         if (parsed === null)
-            return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, source);
-        explicit.push({ policy: parsed, source });
+            return off(AUTO_UPDATE_REASONS.policyOffInvalidValue, source, `${oneLine(file)}: autoUpdate=${policyValue(read.raw.autoUpdate)}`);
+        if (parsed === 'off' || ownHome || accountDir === null || !samePath(path.dirname(file), accountDir))
+            explicit.push({ policy: parsed, source });
     }
     const refused = explicit.find((e) => e.policy === 'off');
     if (refused)
         return off(AUTO_UPDATE_REASONS.policyOff, refused.source);
     if (explicit.length > 0)
         return { policy: explicit[0].policy, source: explicit[0].source, reason: null };
-    if (accountDir === null)
-        return off(AUTO_UPDATE_REASONS.policyOffNoAccountHome, 'none');
     if (isCi(input.env))
         return off(AUTO_UPDATE_REASONS.policyOffCi, 'none');
-    const ownData = samePath(input.activeDir, accountDir) && !input.env.MEMESH_DB_PATH && !input.env.MEMESH_DIR;
-    if (!ownData)
+    if (!ownHome)
         return off(AUTO_UPDATE_REASONS.policyOffForeignHome, 'none');
     return { policy: DEFAULT_AUTO_UPDATE_POLICY, source: 'default', reason: null };
+}
+export function updateControlDir() {
+    return path.join(homeDir(), '.memesh');
 }
 export function accountMemeshDir() {
     const home = safeAccountHome();
     return home === null ? null : path.join(home, '.memesh');
 }
-export function propagateOff(activeConfigDir, accountDir) {
-    if (accountDir === null || samePath(accountDir, activeConfigDir))
+export function propagateOff(activeConfigDir, controlDir = updateControlDir()) {
+    if (controlDir === null || samePath(controlDir, activeConfigDir))
         return { path: null, error: null };
-    const file = path.join(accountDir, 'config.json');
+    const file = path.join(controlDir, 'config.json');
     try {
-        updateConfigInDir(accountDir, { autoUpdate: 'off' });
+        updateConfigInDir(controlDir, { autoUpdate: 'off' });
         return { path: file, error: null };
     }
     catch (err) {
@@ -224,7 +248,7 @@ export function accountConfigHolding(activeConfigDir, accountDir) {
     return read.state === 'ok' && read.raw.autoUpdate === 'off' ? { path: file, kind: 'off', why: null } : null;
 }
 export function currentPolicy(env = process.env) {
-    return resolveUpdatePolicy({ env, activeDir: getMemeshDirFromDbPath(), extraConfigDirs: [memeshDir()], accountHome: safeAccountHome() });
+    return resolveUpdatePolicy({ env, activeDir: getMemeshDirFromDbPath(), extraConfigDirs: [memeshDir(), updateControlDir()], accountHome: safeAccountHome() });
 }
 export function chooseTarget(current, tags) {
     const cur = parseSemVer(current);
@@ -440,6 +464,24 @@ export function registerLiveHost(dir, pid = process.ppid, logDir = dir) {
     }
     const root = path.join(dir, LIVE_HOSTS_DIR);
     ensureOwnerDir(root);
+    for (const name of fs.readdirSync(root)) {
+        if (!/^\d+\.json$/.test(name))
+            continue;
+        const previous = Number(name.slice(0, -5));
+        if (!Number.isSafeInteger(previous) || previous <= 1)
+            continue;
+        try {
+            process.kill(previous, 0);
+        }
+        catch (error) {
+            if (error.code === 'ESRCH') {
+                try {
+                    fs.unlinkSync(path.join(root, name));
+                }
+                catch { }
+            }
+        }
+    }
     const hostFile = path.join(root, `${pid}.json`);
     fs.writeFileSync(hostFile, JSON.stringify({ pid, at: new Date().toISOString(), started: processStartTag(pid) }), { mode: 0o600 });
     ownerOnly(hostFile);
@@ -493,19 +535,22 @@ export function liveHostPids(dir) {
     }
     return alive;
 }
-export function backupDatabase(dbPath, backupDir, tag, now = new Date()) {
+export function backupDatabase(dbPath, tag) {
     if (!fs.existsSync(dbPath))
         return null;
+    const backupDir = backupDirectoryFor(dbPath);
     ensureOwnerDir(backupDir);
-    const target = path.join(backupDir, `pre-update-${tag}-${now.toISOString().replace(/[:.]/g, '-')}.db`);
-    const db = new DatabaseSync(dbPath, { readOnly: true });
+    let target;
+    const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
-        db.exec(`VACUUM INTO '${target.replace(/'/g, "''")}'`);
+        const copy = copyDatabaseBefore(db, `pre-update-${tag}`);
+        if (copy.kind === 'failed')
+            throw new Error(copy.reason);
+        target = copy.path;
     }
     finally {
         db.close();
     }
-    fs.chmodSync(target, 0o600);
     const stamped = fs.readdirSync(backupDir)
         .filter((f) => f.startsWith('pre-update-') && f.endsWith('.db'))
         .map((f) => {
@@ -517,9 +562,7 @@ export function backupDatabase(dbPath, backupDir, tag, now = new Date()) {
         }
     })
         .sort((x, y) => x.at - y.at || x.f.localeCompare(y.f));
-    for (const { f } of stamped.slice(0, Math.max(0, stamped.length - BACKUPS_KEPT))) {
-        if (path.join(backupDir, f) === target)
-            continue;
+    for (const { f } of stamped.filter(({ f }) => f !== path.basename(target)).slice(0, Math.max(0, stamped.length - BACKUPS_KEPT))) {
         try {
             fs.unlinkSync(path.join(backupDir, f));
         }
@@ -648,12 +691,31 @@ function appendLog(dir, line) {
     }
     catch { }
 }
-const defaultExec = (cmd, args, opts = {}) => {
+export const defaultExec = (cmd, args, opts = {}) => {
     const r = spawnSync(cmd, args, { cwd: opts.cwd, env: opts.env ?? process.env, encoding: 'utf8', timeout: opts.timeoutMs ?? 8 * 60 * 1000, maxBuffer: 64 * 1024 * 1024 });
-    return { status: r.status, stdout: r.stdout ?? '', stderr: r.stderr ?? '' };
+    const timedOut = r.error?.code === 'ETIMEDOUT';
+    const startupError = r.error && !timedOut && !r.pid ? `could not start ${cmd}: ${r.error.message}` : undefined;
+    return { status: r.status, stdout: r.stdout ?? '', stderr: startupError ?? (r.error ? `${r.error.message}${r.stderr ? `\n${r.stderr}` : ''}` : r.stderr ?? ''), ...(startupError ? { startupError } : {}), ...(timedOut ? { timedOut } : {}) };
 };
+function execNpm(exec, args, opts) {
+    const npm = npmInvocation(args);
+    if (!npm) {
+        const startupError = 'could not start npm: npm-cli.js was not found beside Node';
+        return { status: null, stdout: '', stderr: startupError, startupError };
+    }
+    const result = exec(npm.command, npm.args, opts);
+    if (!result.startupError)
+        return result;
+    const startupError = `could not start npm: ${result.startupError}`;
+    return { ...result, startupError, stderr: startupError };
+}
+function commandFailure(result, label) {
+    return result.startupError || result.stderr.trim() || `${label} ${result.timedOut ? 'did not finish in time' : result.status === null ? 'ended without an exit status' : `exited ${result.status}`}`;
+}
 export function readRegistryTags(exec = defaultExec) {
-    const r = exec('npm', ['view', PACKAGE_NAME, 'dist-tags', '--json'], { timeoutMs: 15_000 });
+    const r = execNpm(exec, ['view', PACKAGE_NAME, 'dist-tags', '--json'], { timeoutMs: 15_000 });
+    if (r.startupError)
+        throw new NpmStartError(r.startupError);
     if (r.status !== 0)
         return null;
     try {
@@ -736,14 +798,16 @@ function stageAndVerify(deps, target) {
     catch { } };
     const fail = (code, detail) => { cleanup(); return { ok: false, code, detail }; };
     fs.writeFileSync(path.join(stage, 'package.json'), JSON.stringify({ name: 'memesh-update-probe', version: '1.0.0', private: true }));
-    const install = deps.exec('npm', ['install', '--ignore-scripts', '--no-audit', '--no-fund', `${PACKAGE_NAME}@${target}`], { cwd: stage });
+    const install = execNpm(deps.exec, ['install', '--ignore-scripts', '--no-audit', '--no-fund', `${PACKAGE_NAME}@${target}`], { cwd: stage });
     if (install.status !== 0)
-        return fail(AUTO_UPDATE_REASONS.sourceNotVerified, 'staging install failed');
-    const pack = deps.exec('npm', ['pack', `${PACKAGE_NAME}@${target}`, '--pack-destination', stage, '--silent'], { cwd: stage });
+        return fail(AUTO_UPDATE_REASONS.sourceNotVerified, commandFailure(install, 'staging install'));
+    const pack = execNpm(deps.exec, ['pack', `${PACKAGE_NAME}@${target}`, '--pack-destination', stage, '--silent'], { cwd: stage });
     const tarball = path.join(stage, pack.stdout.trim().split('\n').pop() ?? '');
     if (pack.status !== 0 || !fs.existsSync(tarball) || !fs.statSync(tarball).isFile())
-        return fail(AUTO_UPDATE_REASONS.tarballMismatch, 'npm pack produced no tarball');
-    const audit = deps.exec('npm', ['audit', 'signatures', '--json', '--include-attestations'], { cwd: stage });
+        return fail(AUTO_UPDATE_REASONS.tarballMismatch, pack.status === 0 ? 'npm pack produced no tarball' : commandFailure(pack, 'npm pack'));
+    const audit = execNpm(deps.exec, ['audit', 'signatures', '--json', '--include-attestations'], { cwd: stage });
+    if (audit.startupError)
+        return fail(AUTO_UPDATE_REASONS.sourceNotVerified, audit.startupError);
     const bytes = fs.readFileSync(tarball);
     const verdict = judgeAuditSignatures(audit.stdout, PACKAGE_NAME, target, {
         tarballSha512Hex: createHash('sha512').update(bytes).digest('hex'),
@@ -755,7 +819,7 @@ function stageAndVerify(deps, target) {
     if (!onMain.ok)
         return fail(onMain.code === 'notOnMain' ? AUTO_UPDATE_REASONS.commitNotOnMain : AUTO_UPDATE_REASONS.commitUnconfirmed, onMain.detail);
     const shrinkwrap = deps.exec('tar', ['-xzOf', tarball, 'package/npm-shrinkwrap.json']);
-    const pinned = shrinkwrap.status === 0 ? judgeShrinkwrap(shrinkwrap.stdout, target) : { ok: false, detail: 'the package has no npm-shrinkwrap.json' };
+    const pinned = shrinkwrap.status === 0 ? judgeShrinkwrap(shrinkwrap.stdout, target) : { ok: false, detail: shrinkwrap.startupError || 'the package has no npm-shrinkwrap.json' };
     if (!pinned.ok)
         return fail(AUTO_UPDATE_REASONS.dependenciesNotPinned, pinned.detail);
     const unpackDir = path.join(stage, 'pinned');
@@ -763,10 +827,10 @@ function stageAndVerify(deps, target) {
     const unpack = deps.exec('tar', ['-xzf', tarball, '-C', unpackDir, '--no-same-owner']);
     const unpacked = path.join(unpackDir, 'package');
     if (unpack.status !== 0 || !fs.existsSync(unpacked))
-        return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, 'the verified package could not be unpacked');
-    const rehearsal = deps.exec('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: unpacked, timeoutMs: PIN_TIMEOUT_MS });
+        return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, unpack.startupError || 'the verified package could not be unpacked');
+    const rehearsal = execNpm(deps.exec, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: unpacked, timeoutMs: PIN_TIMEOUT_MS });
     if (rehearsal.status !== 0)
-        return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, rehearsal.stderr.trim() || `npm ci ${rehearsal.status === null ? 'did not finish in time' : `exited ${rehearsal.status}`}`);
+        return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, commandFailure(rehearsal, 'npm ci'));
     let lockIntegrity;
     try {
         lockIntegrity = JSON.parse(fs.readFileSync(path.join(stage, 'package-lock.json'), 'utf8')).packages?.[`node_modules/${PACKAGE_NAME}`]?.integrity;
@@ -779,7 +843,44 @@ function stageAndVerify(deps, target) {
 export function stripMultilineStrings(toml) {
     return toml.replace(/"""[\s\S]*?"""|'''[\s\S]*?'''/g, '""');
 }
-export function codexMarketplaceState(codexHome) {
+function queryCodexMarketplace(codexHome, query) {
+    if (!query)
+        return undefined;
+    try {
+        const result = query.exec('codex', ['plugin', 'marketplace', 'list', '--json'], {
+            env: { ...query.env, CODEX_HOME: codexHome }, timeoutMs: 20_000,
+        });
+        if (result.status !== 0 || result.startupError || result.timedOut)
+            return undefined;
+        const answer = JSON.parse(result.stdout);
+        if (!Array.isArray(answer?.marketplaces))
+            return undefined;
+        if (answer.marketplaces.length === 0)
+            return undefined;
+        const entries = answer.marketplaces;
+        if (!entries.every((entry) => {
+            if (!entry || typeof entry !== 'object')
+                return false;
+            const item = entry;
+            return typeof item.name === 'string' && typeof item.marketplaceSource?.sourceType === 'string'
+                && typeof item.marketplaceSource.source === 'string';
+        }))
+            return undefined;
+        const matches = entries.filter((entry) => entry.name === CODEX_MARKETPLACE);
+        return matches.length > 1 ? undefined : matches[0]?.marketplaceSource ?? null;
+    }
+    catch {
+        return undefined;
+    }
+}
+export function codexMarketplaceState(codexHome, query) {
+    const listed = queryCodexMarketplace(codexHome, query);
+    if (listed === null)
+        return 'missing';
+    if (listed !== undefined)
+        return listed.sourceType === 'git' && (listed.source === `https://github.com/${CODEX_MARKETPLACE_SOURCE}.git`
+            || listed.source === `https://github.com/${CODEX_MARKETPLACE_SOURCE}`
+            || listed.source === CODEX_MARKETPLACE_SOURCE) ? 'official' : 'foreign';
     let text;
     try {
         text = stripMultilineStrings(fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8'));
@@ -803,7 +904,7 @@ export function codexMarketplaceState(codexHome) {
 function codexDecision(deps) {
     if (deps.codexHome === null)
         return { state: 'missing', skip: AUTO_UPDATE_REASONS.codexHomeUnknown };
-    const state = codexMarketplaceState(deps.codexHome);
+    const state = codexMarketplaceState(deps.codexHome, deps);
     if (state === 'foreign')
         return { state, skip: AUTO_UPDATE_REASONS.codexMarketplaceForeign };
     if (state === 'unreadable')
@@ -828,7 +929,10 @@ function codexConfigFingerprint(codexHome) {
         return err.code === 'ENOENT' ? 'absent' : 'unreadable';
     }
 }
-function codexMarketplaceSource(codexHome) {
+function codexMarketplaceSource(codexHome, query) {
+    const listed = queryCodexMarketplace(codexHome, query);
+    if (listed !== undefined)
+        return listed?.source ?? null;
     try {
         const text = stripMultilineStrings(fs.readFileSync(path.join(codexHome, 'config.toml'), 'utf8'));
         const table = new RegExp(`^\\[marketplaces\\.${CODEX_MARKETPLACE}\\]\\s*$([\\s\\S]*?)(?=^\\[|(?![\\s\\S]))`, 'm').exec(text);
@@ -874,13 +978,13 @@ function repairCodexMarketplace(deps) {
     };
     if (record === 'damaged')
         return drop('the record could not be read, so nothing is restored from it');
-    const state = codexMarketplaceState(deps.codexHome);
+    const state = codexMarketplaceState(deps.codexHome, deps);
     if (state !== 'missing')
         return drop(`the marketplace is ${state} now, so there is nothing to put back`);
     if (codexConfigFingerprint(deps.codexHome) !== record.configAfter)
         return drop('config.toml changed after the failed restore, so the missing marketplace is not ours to put back');
     const added = deps.exec('codex', ['plugin', 'marketplace', 'add', record.source], { env: { ...deps.env, CODEX_HOME: deps.codexHome } });
-    if (added.status === 0 && codexMarketplaceState(deps.codexHome) === 'official') {
+    if (added.status === 0 && codexMarketplaceState(deps.codexHome, deps) === 'official') {
         appendLog(deps.dir, `auto-update: the Codex marketplace ${record.marketplace} that a failed update had removed was put back (${record.source})`);
         try {
             fs.rmSync(file, { force: true });
@@ -898,7 +1002,7 @@ function updateCodexPlugin(deps, codexHome, commit, target, wasMissing = false) 
     const restore = () => {
         codex('marketplace', 'remove', CODEX_MARKETPLACE);
         if (wasMissing)
-            return codexMarketplaceState(codexHome) === 'missing';
+            return codexMarketplaceState(codexHome, deps) === 'missing';
         return codex('marketplace', 'add', CODEX_MARKETPLACE_SOURCE).status === 0;
     };
     if (!wasMissing) {
@@ -949,7 +1053,7 @@ function claudeRegistryRecords(deps, commit, version) {
     }
 }
 function installGlobal(deps, tarball) {
-    const root = deps.exec('npm', ['root', '-g']);
+    const root = execNpm(deps.exec, ['root', '-g']);
     const rootDir = root.status === 0 ? root.stdout.trim() : '';
     if (rootDir === '')
         return { ok: false, reason: AUTO_UPDATE_REASONS.globalDirUnknown, detail: root.stderr };
@@ -994,14 +1098,14 @@ function installGlobal(deps, tarball) {
             return { ok: false, reason, detail: `the previous version was put back; npm said: ${detail.trim()}` };
         return { ok: false, reason: AUTO_UPDATE_REASONS.installNotUndone, detail: `a copy of the previous version is at ${rollbackDir}; npm said: ${detail.trim()}` };
     };
-    const install = deps.exec('npm', ['install', '-g', '--ignore-scripts', tarball]);
+    const install = execNpm(deps.exec, ['install', '-g', '--ignore-scripts', tarball]);
     if (install.status !== 0)
         return failed(AUTO_UPDATE_REASONS.installFailed, install.stderr);
     if (!fs.existsSync(path.join(installedDir, 'npm-shrinkwrap.json')))
         return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, 'the installed package has no npm-shrinkwrap.json');
-    const pin = deps.exec('npm', ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: installedDir, timeoutMs: PIN_TIMEOUT_MS });
+    const pin = execNpm(deps.exec, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: installedDir, timeoutMs: PIN_TIMEOUT_MS });
     if (pin.status !== 0)
-        return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, pin.stderr.trim() || `npm ci ${pin.status === null ? 'did not finish in time' : `exited ${pin.status}`}`);
+        return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, commandFailure(pin, 'npm ci'));
     if (had) {
         try {
             fs.rmSync(rollbackDir, { recursive: true, force: true });
@@ -1030,8 +1134,8 @@ export function unsafeTarEntries(verbose, names) {
     return bad;
 }
 export function refreshHermes(deps, tarball, version, expectedIntegrity) {
-    const targets = refreshTargets(deps.dir, deps.env, deps.accountHome);
-    const problem = registryProblemResult(deps.dir);
+    const targets = refreshTargets(path.dirname(deps.dbPath), deps.env, deps.env.HOME ?? homeDir());
+    const problem = registryProblemResult(path.dirname(deps.dbPath));
     if (targets.length === 0)
         return problem ? [problem] : null;
     const ours = targets.filter((p) => { const state = inspectInstall(p).state; return state === 'managed' || state === 'absent'; });
@@ -1069,7 +1173,7 @@ export function refreshHermes(deps, tarball, version, expectedIntegrity) {
         const realSource = fs.realpathSync(sourceDir);
         if (realSource !== path.join(realWork, 'package', 'extensions', 'hermes-memesh'))
             return failAll('refused: the extracted provider is not where it was expected');
-        return refreshInstalls({ sourceDir, version, memeshDir: deps.dir, env: deps.env, accountHome: deps.accountHome, now: deps.now(), log: (line) => appendLog(deps.dir, `auto-update: ${line}`) });
+        return refreshInstalls({ sourceDir, version, memeshDir: path.dirname(deps.dbPath), env: deps.env, accountHome: deps.env.HOME ?? homeDir(), now: deps.now(), log: (line) => appendLog(deps.dir, `auto-update: ${line}`) });
     }
     catch (err) {
         return failAll(`failed: ${(err instanceof Error ? err.message : String(err)).slice(0, 160)}`);
@@ -1103,7 +1207,7 @@ export async function runAutoUpdate(deps) {
     try {
         const policyNow = () => deps.manual
             ? { policy: 'major', source: 'default', reason: null }
-            : resolveUpdatePolicy({ env: deps.env, activeDir: deps.dir, extraConfigDirs: [deps.configDir], accountHome: deps.accountHome });
+            : resolveUpdatePolicy({ env: deps.env, activeDir: path.dirname(deps.dbPath), extraConfigDirs: [deps.configDir, deps.dir], accountHome: deps.accountHome });
         const decision = policyNow();
         if (decision.policy === 'off')
             return finish('skipped', decision.reason ?? AUTO_UPDATE_REASONS.policyOff, decision.detail);
@@ -1125,8 +1229,8 @@ export async function runAutoUpdate(deps) {
         if (!target) {
             if (readAutoUpdateState(deps.dir)?.reason === AUTO_UPDATE_REASONS.installNotUndone)
                 return finish('failed', AUTO_UPDATE_REASONS.installNotUndone, 'still unfinished from the earlier attempt');
-            const stale = staleInstalls(deps.dir, deps.env, deps.currentVersion, deps.accountHome);
-            const unreadableList = registryProblemResult(deps.dir);
+            const stale = staleInstalls(path.dirname(deps.dbPath), deps.env, deps.currentVersion, deps.env.HOME ?? homeDir());
+            const unreadableList = registryProblemResult(path.dirname(deps.dbPath));
             if (stale.length > 0) {
                 const current = stageAndVerify(deps, deps.currentVersion);
                 if (current.ok) {
@@ -1160,7 +1264,7 @@ export async function runAutoUpdate(deps) {
         let staged = first;
         try {
             try {
-                backup = backupDatabase(deps.dbPath, path.join(deps.dir, 'backups'), deps.currentVersion, deps.now());
+                backup = backupDatabase(deps.dbPath, deps.currentVersion);
             }
             catch (err) {
                 return finish('failed', AUTO_UPDATE_REASONS.backupFailed, err instanceof Error ? err.message : String(err));
@@ -1234,7 +1338,7 @@ export async function runAutoUpdate(deps) {
                 const { skip, state: codexState } = codexDecision(deps);
                 if (skip || deps.codexHome === null)
                     return finish('skipped', skip ?? AUTO_UPDATE_REASONS.codexHomeUnknown);
-                const originalSource = codexMarketplaceSource(deps.codexHome);
+                const originalSource = codexMarketplaceSource(deps.codexHome, deps);
                 const failure = updateCodexPlugin(deps, deps.codexHome, staged.gitCommit, target, codexState === 'missing');
                 if (failure?.kind === 'step' && !failure.restored && !failure.untouched) {
                     try {
@@ -1265,7 +1369,7 @@ export async function runAutoUpdate(deps) {
             }
             hermes = refreshHermes(deps, staged.tarball, target, staged.integrity);
             try {
-                writeJustUpgradedMarker(deps.dir, deps.currentVersion, target, deps.now());
+                writeJustUpgradedMarker(path.dirname(deps.dbPath), deps.currentVersion, target, deps.now());
             }
             catch { }
             return finish('installed', waitedOut ? AUTO_UPDATE_REASONS.installedAfterWait : AUTO_UPDATE_REASONS.installed);
@@ -1275,7 +1379,7 @@ export async function runAutoUpdate(deps) {
         }
     }
     catch (err) {
-        return finish('failed', AUTO_UPDATE_REASONS.installFailed, err instanceof Error ? err.message : String(err));
+        return finish('failed', err instanceof NpmStartError ? AUTO_UPDATE_REASONS.npmUnavailable : AUTO_UPDATE_REASONS.installFailed, err instanceof Error ? err.message : String(err));
     }
 }
 function removeRetiredFiles(dir) {
@@ -1291,7 +1395,7 @@ function defaultCanSelfUpdate(root) {
     return { ok: support.canSelfUpdate, label: support.label };
 }
 export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) {
-    const dir = getMemeshDirFromDbPath();
+    const dir = updateControlDir();
     let fd = -1;
     let claim = null;
     const say = (line) => {
@@ -1372,7 +1476,9 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
             catch { }
             return { state: 'failed' };
         }
-        const lockPath = path.join(dir, 'auto-update.lock');
+        const lockDir = updateControlDir();
+        ensureOwnerDir(lockDir);
+        const lockPath = path.join(lockDir, 'auto-update.lock');
         const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true });
         return await new Promise((resolve) => {
             let settled = false;
@@ -1446,16 +1552,18 @@ export function describeLockHolder(dir) {
         return null;
     }
 }
-export function runManualUpdate(pluginRoot, dir = getMemeshDirFromDbPath(), options = {}) {
+export function runManualUpdate(pluginRoot, dir = updateControlDir(), options = {}) {
     const runnerPath = path.join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
     const logPath = path.join(dir, LOG_FILE);
     if (!fs.existsSync(runnerPath)) {
         return { code: 1, lines: [`❌ The update runner is missing (${runnerPath}); reinstall MeMesh.`] };
     }
     ensureOwnerDir(dir);
+    const lockDir = updateControlDir();
+    ensureOwnerDir(lockDir);
     const before = readAutoUpdateState(dir)?.at ?? null;
     const offBeforeRun = currentPolicy().policy === 'off';
-    const ran = spawnSync(process.execPath, [runnerPath, path.join(dir, 'auto-update.lock'), options.reinstall ? '--reinstall' : '--manual'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', env: process.env });
+    const ran = spawnSync(process.execPath, [runnerPath, path.join(lockDir, 'auto-update.lock'), options.reinstall ? '--reinstall' : '--manual'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', env: process.env });
     const read = inspectAutoUpdateState(dir);
     const state = read.kind === 'ok' ? read.state : null;
     const fresh = state !== null && state.at !== before;
@@ -1472,7 +1580,7 @@ export function runManualUpdate(pluginRoot, dir = getMemeshDirFromDbPath(), opti
                     `   Log: ${logPath}`,
                 ] };
         }
-        const holder = describeLockHolder(dir);
+        const holder = describeLockHolder(lockDir);
         const waiting = readAutoUpdateState(dir);
         if (holder !== null && holder.running && ran.status !== 0) {
             const what = holder.label === 'manual' ? 'an update you started by hand' : 'an automatic update';
@@ -1508,15 +1616,17 @@ export function runManualUpdate(pluginRoot, dir = getMemeshDirFromDbPath(), opti
     const still = !installRan && fresh_.from ? ` (still on ${fresh_.from})` : '';
     return { code: 1, lines: [`❌ Not updated${still}: ${fresh_.reason}`, ...(fresh_.detail ? [`   ${fresh_.detail}`] : []), effect, `   Log: ${logPath}`, ...offNote] };
 }
-export function startReinstall(pluginRoot, dir = getMemeshDirFromDbPath()) {
+export function startReinstall(pluginRoot, dir = updateControlDir()) {
     const runnerPath = path.join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
     if (!fs.existsSync(runnerPath))
         throw new Error(`The update runner is missing at ${runnerPath}; reinstall MeMesh.`);
     ensureOwnerDir(dir);
+    const lockDir = updateControlDir();
+    ensureOwnerDir(lockDir);
     const logPath = path.join(dir, LOG_FILE);
     const fd = fs.openSync(logPath, 'a', 0o600);
     try {
-        const child = spawn(process.execPath, [runnerPath, path.join(dir, 'auto-update.lock'), '--reinstall'], { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true });
+        const child = spawn(process.execPath, [runnerPath, path.join(lockDir, 'auto-update.lock'), '--reinstall'], { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true });
         child.unref();
     }
     finally {
@@ -1531,8 +1641,8 @@ export function productionDeps(packageRoot, currentVersion) {
     return {
         env: process.env,
         accountHome: safeAccountHome(),
-        dir: getMemeshDirFromDbPath(),
-        liveHostsDir: accountMemeshDir() ?? getMemeshDirFromDbPath(),
+        dir: updateControlDir(),
+        liveHostsDir: updateControlDir(),
         configDir: memeshDir(),
         dbPath: process.env.MEMESH_DB_PATH ?? path.join(memeshDir(), 'knowledge-graph.db'),
         packageRoot,

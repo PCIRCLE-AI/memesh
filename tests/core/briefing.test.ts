@@ -39,7 +39,7 @@ import { executeAgentMessageAction } from '../../src/transports/agent-messaging.
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { DEFAULT_TOPOLOGY_BUDGET, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
-import { HANDOFF_MAX_CHARS, sessionHandoffName, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
+import { HANDOFF_MAX_BYTES, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
@@ -74,7 +74,7 @@ afterEach(() => {
 });
 
 // `assembleBriefing` reads MEMESH_BRIEFING at call time, and the default level
-// is `minimal`: no fresh task state, no durable-memory index. A test whose
+// is `minimal`: fresh task state is shown. A test whose
 // subject is one of those (or the gate that keeps a memory out of the ranked
 // sections AND the index) pins `standard` on purpose instead of leaning on the
 // default; a test about the default clears the variable on purpose.
@@ -433,7 +433,7 @@ describe('assembleBriefing', () => {
     });
 
     it('an unread message and a FRESH task state: hasTaskState is true', async () => {
-      atStandard(); // a fresh state is rendered at standard/full only
+      atStandard();
       seed();
       setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
       await sendOneUnread();
@@ -443,9 +443,8 @@ describe('assembleBriefing', () => {
       expect(result.hasTaskState).toBe(true);
     });
 
-    it('an unread message and a STALE task state: hasTaskState is true — the one-line flag leads the block', async () => {
-      // The stale flag is shown at every level, so no level is pinned: this is
-      // the default (`minimal`), which renders nothing for a FRESH state.
+    it('an unread message and an old task state: hasTaskState is true with the dated goal', async () => {
+      // Old dated state is shown at the default minimal level.
       withNoLevelSetting();
       vi.stubEnv('MEMESH_DIR', tmpDir); // no config.json there: nothing sets the level
       seed();
@@ -454,12 +453,13 @@ describe('assembleBriefing', () => {
       await sendOneUnread();
       const result = assembleBriefing(PROJECT, RECIPIENT);
       expect(result.level).toBe('minimal');
-      expect(result.text).toContain('was last stated');
+      expect(result.text).toContain('4 days ago');
+      expect(result.text).toContain('Ship A1c');
       expect(result.text).toContain('1 message waiting');
       expect(result.hasTaskState).toBe(true);
     });
 
-    it('the same fresh state is not rendered at minimal, so hasTaskState follows what the block shows', async () => {
+    it('the same fresh state is rendered at minimal and counts as task state', async () => {
       withNoLevelSetting();
       vi.stubEnv('MEMESH_DIR', tmpDir);
       seed();
@@ -467,9 +467,9 @@ describe('assembleBriefing', () => {
       await sendOneUnread();
       const result = assembleBriefing(PROJECT, RECIPIENT);
       expect(result.level).toBe('minimal');
-      expect(result.text).not.toContain('Stated about');
+      expect(result.text).toContain('Ship A1c');
       expect(result.text).toContain('1 message waiting');
-      expect(result.hasTaskState).toBe(false);
+      expect(result.hasTaskState).toBe(true);
     });
 
     // The CLI (`briefing --json`) and the MCP tool both return `assembleBriefing`'s
@@ -534,7 +534,7 @@ describe('assembleBriefing', () => {
       expect(result.index.lines.join('\n')).not.toContain(hash);
     });
 
-    it('the stale flag and the unreadable-record line', () => {
+    it('the old dated state and the unreadable-record line', () => {
       const { id, label, hash } = idFor('label-flags');
       setTaskState({ project: id, patch: { goal: 'Ship it' } });
       new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(id), (meta) => ({
@@ -542,7 +542,9 @@ describe('assembleBriefing', () => {
         task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: new Date(Date.now() - 100 * 3_600_000).toISOString(), stated_at: { goal: new Date(Date.now() - 100 * 3_600_000).toISOString() } },
       }));
       const stale = assembleBriefing(id);
-      expect(stale.text).toContain(`Task state for "${label}" was last stated`);
+      expect(stale.text).toContain(`Stated about "${label}"`);
+      expect(stale.text).toContain('4 days ago');
+      expect(stale.text).toContain('Ship it');
       expect(stale.text).not.toContain(hash);
 
       getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(id));
@@ -607,9 +609,13 @@ describe('assembleBriefing', () => {
         task_state: { ...(meta.task_state as Record<string, unknown>), updated_at: updatedAt, stated_at: { goal: updatedAt } },
       }));
       setUpdatedAt(new Date(Date.now() - 100 * 3_600_000).toISOString());
-      expect(literalIn(assembleBriefing(id).text, 'Task state for ', ' was last stated')).toBe(label);
+      expect(literalIn(assembleBriefing(id).text, 'Stated about ', ' (each field has its own date):')).toBe(label);
+      expect(assembleBriefing(id).text).toContain('4 days ago');
+      expect(assembleBriefing(id).text).toContain('Ship it');
       setUpdatedAt('not a timestamp');
-      expect(literalIn(assembleBriefing(id).text, 'Task state for ', ' has a missing, unreadable, or future-dated timestamp')).toBe(label);
+      expect(literalIn(assembleBriefing(id).text, 'Stated about ', ' (each field has its own date):')).toBe(label);
+      expect(assembleBriefing(id).text).toContain('(unknown date) Ship it');
+      expect(assembleBriefing(id).text).not.toContain('not a timestamp');
 
       getDatabase().prepare('UPDATE entities SET metadata = ? WHERE name = ?').run('{not json', taskStateName(id));
       const unreadable = assembleBriefing(id);
@@ -948,15 +954,6 @@ describe('assembleBriefing', () => {
     // the spawned hook's env and this process's env, since assembleBriefing
     // reads process.env directly.
     //
-    // The task state this fixture sets below (a few lines down,
-    // `setTaskState({...})`) is FRESH — stated moments before the hook runs,
-    // well inside the 72h window. This matters for what "full byte-identical
-    // to the output from before levels existed" can honestly claim: that
-    // claim holds ONLY when the task state is fresh (or absent). A STALE or
-    // unknown-age task state renders as a one-line flag at every level,
-    // including `full` — see the dedicated stale-task-state test in
-    // tests/hooks/session-start.test.ts. The docs qualify the claim the
-    // same way.
     const cwd = path.join(tmpDir, 'proj');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -1152,8 +1149,8 @@ describe('assembleBriefing', () => {
   // The DEFAULT, on all three real surfaces at once. Nothing sets the level —
   // no MEMESH_BRIEFING, a config with no `briefing` key — so what each surface
   // assembles is what a new install gets: this project's own sections, and
-  // neither the fresh task state nor the durable-memory index.
-  it('with no briefing setting at all, hook, real CLI and MCP tool assemble at minimal — no task state, no index — and agree byte for byte', async () => {
+  // the fresh task state and durable-memory index.
+  it('with no briefing setting at all, hook, real CLI and MCP tool assemble at minimal — with task state and index — and agree byte for byte', async () => {
     const cwd = path.join(tmpDir, 'proj-default-level');
     fs.mkdirSync(cwd, { recursive: true });
     const project = getProjectName(cwd);
@@ -1200,8 +1197,8 @@ describe('assembleBriefing', () => {
       for (const [surface, block] of [['hook', injected], ['CLI', cliJson.text], ['MCP', mcp.text]] as const) {
         expect(block, `${surface}: this project's decision`).toContain('Ship the smaller default');
         expect(block, `${surface}: this project's lesson`).toContain('A default nobody chose must be the small one');
-        expect(block, `${surface}: no fresh task state by default`).not.toContain('Stated about');
-        expect(block, `${surface}: no stated goal by default`).not.toContain('Prove the default level');
+        expect(block, `${surface}: fresh task state by default`).toContain('Stated about');
+        expect(block, `${surface}: stated goal by default`).toContain('Prove the default level');
         expect(block, `${surface}: the recent index at the default level`).toContain('Recently written memories');
       }
       expect(injected, 'hook and CLI must be byte-equal at the default level').toBe(cliJson.text);
@@ -1657,8 +1654,8 @@ describe('assembleBriefing', () => {
     // Written AFTER the decisions: the highest id wins every score tie for the
     // recent pool's five places.
     remember({
-      name: 'session-handoff:other-project', type: 'session-handoff', title: 'Where the last session left off',
-      observations: ['Stopped right before the release step.'], tags: ['project:other-project'],
+      name: 'conversation:other-project', type: 'conversation', title: 'Where the last session left off',
+      observations: ['Stopped right before the release step.'], tags: ['project:other-project', 'role:assistant', 'session:other'],
     });
     const { text } = assembleBriefing(PROJECT);
     for (let i = 1; i <= 5; i++) expect(text, `decision ${i} was pushed out by the handoff`).toContain(`Other project decision ${i}`);
@@ -1667,16 +1664,41 @@ describe('assembleBriefing', () => {
 });
 
 describe('the session handoff leads every briefing (#434 step 2)', () => {
-  const HEADER = 'Where the last session left off';
+  const HEADER = 'Last reply from a recent session';
   const sqliteAgo = (hours: number) => new Date(Date.now() - hours * 3_600_000).toISOString().replace('T', ' ').slice(0, 19);
   function seedHandoff(project: string, text: string, opts: { hoursAgo?: number; status?: string; metadata?: string | null; name?: string } = {}) {
     const db = getDatabase();
     const id = db.prepare('INSERT INTO entities (name, type, status, metadata) VALUES (?, ?, ?, ?)')
-      .run(opts.name ?? sessionHandoffName(project), SESSION_HANDOFF_TYPE, opts.status ?? 'active', opts.metadata ?? null).lastInsertRowid as number;
+      .run(opts.name ?? `conversation:${project}`, 'conversation', opts.status ?? 'active', opts.metadata ?? null).lastInsertRowid as number;
     db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, text, sqliteAgo(opts.hoursAgo ?? 1));
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${project}`);
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'role:assistant');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'session:test-session');
     return id;
   }
+
+  it('retains a legacy handoff as an ordinary memory, not a session tail', () => {
+    remember({ name: `session-handoff:${PROJECT}`, type: SESSION_HANDOFF_TYPE, title: 'Legacy memory remains', observations: ['legacy content'], tags: [`project:${PROJECT}`] });
+    const result = assembleBriefing(PROJECT);
+    expect(result.hasHandoff).toBe(false);
+    expect(result.text).toContain('Legacy memory remains');
+  });
+
+  it('selects the newest observation from each of at most three sessions', () => {
+    const db = getDatabase();
+    for (let i = 0; i < 4; i++) {
+      const id = seedHandoff(PROJECT, `TAIL-${i}`, { name: `conversation:session-${i}` });
+      db.prepare("UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = 'session:test-session'").run(`session:${i}`, id);
+    }
+    const id = seedHandoff(PROJECT, 'LATEST-ZERO', { name: 'conversation:latest-zero' });
+    db.prepare("UPDATE tags SET tag = 'session:0' WHERE entity_id = ? AND tag = 'session:test-session'").run(id);
+    const result = assembleBriefing(PROJECT);
+    expect(result.text).toContain('LATEST-ZERO');
+    expect(result.text).toContain('TAIL-3');
+    expect(result.text).toContain('TAIL-2');
+    expect(result.text).not.toContain('TAIL-1');
+    expect(result.text).not.toContain('TAIL-0');
+  });
 
   it.each(['minimal', 'standard', 'full'])('at %s it comes first, once, with its age and handle — and counts as no ranked entity', (level) => {
     vi.stubEnv('MEMESH_BRIEFING', level);
@@ -1694,13 +1716,13 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     expect(firstContent, 'the handoff is not the first thing in the fence').toContain(HEADER);
   });
 
-  it('leads the stated task state too', () => {
+  it('follows the stated task state', () => {
     atStandard();
     setTaskState({ project: PROJECT, patch: { goal: 'TASK-GOAL: ship step 2' } });
     seedHandoff(PROJECT, 'HANDOFF-BEFORE-TASK');
     const { text } = assembleBriefing(PROJECT);
     expect(text).toContain('TASK-GOAL');
-    expect(text.indexOf('HANDOFF-BEFORE-TASK')).toBeLessThan(text.indexOf('TASK-GOAL'));
+    expect(text.indexOf('TASK-GOAL')).toBeLessThan(text.indexOf('HANDOFF-BEFORE-TASK'));
   });
 
   it('never shows another project\'s handoff, an archived one, or one that fails the trust gate', () => {
@@ -1714,7 +1736,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
       ['imported', { metadata: JSON.stringify({ provenance: { source: 'import' } }) }],
       ['unreadable metadata', { metadata: '{not json' }],
     ] as const) {
-      getDatabase().prepare('DELETE FROM entities WHERE name = ?').run(sessionHandoffName(PROJECT));
+      getDatabase().prepare('DELETE FROM entities WHERE name = ?').run(`conversation:${PROJECT}`);
       seedHandoff(PROJECT, `GATED-${label}`, opts);
       const result = assembleBriefing(PROJECT);
       expect(result.hasHandoff, label).toBe(false);
@@ -1723,13 +1745,15 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     expect(assembleBriefing(PROJECT).text).not.toContain('OTHER-PROJECT-HANDOFF');
   });
 
-  it('says a handoff over 72 hours old may be out of date, and drops one over 14 days old', () => {
+  it('keeps old and unknown-age session tails visible', () => {
     seedHandoff(PROJECT, 'OLDISH-HANDOFF', { hoursAgo: 80 });
-    expect(assembleBriefing(PROJECT).text).toContain(`${HEADER} (3 days ago — may be out of date; check it against the repository)`);
+    expect(assembleBriefing(PROJECT).text).toContain('OLDISH-HANDOFF');
     getDatabase().prepare("UPDATE observations SET created_at = ? WHERE content = 'OLDISH-HANDOFF'").run(sqliteAgo(15 * 24));
+    expect(assembleBriefing(PROJECT).text).toContain('OLDISH-HANDOFF');
+    getDatabase().prepare("UPDATE observations SET created_at = 'invalid' WHERE content = 'OLDISH-HANDOFF'").run();
     const result = assembleBriefing(PROJECT);
-    expect(result.hasHandoff).toBe(false);
-    expect(result.text).not.toContain('OLDISH-HANDOFF');
+    expect(result.hasHandoff).toBe(true);
+    expect(result.text).toContain('age unknown');
   });
 
   it('dates the handoff by its newest text, not by when the entity was first created', () => {
@@ -1773,9 +1797,11 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     const db = getDatabase();
     db.exec('BEGIN');
     for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 10; i++) {
-      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(`session-handoff:old-name-${i}`, SESSION_HANDOFF_TYPE).lastInsertRowid;
+      const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(`conversation:old-name-${i}`, 'conversation').lastInsertRowid;
       db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'an old handoff');
       db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `project:${PROJECT}`);
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'role:assistant');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `session:crowd-${i}`);
     }
     db.exec('COMMIT');
     // The ranked sections only — the durable index below them lists the
@@ -1791,16 +1817,16 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
       remember({ name: `room-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `ROOM-DECISION-${i}`, observations: ['kept'], tags: [`project:${PROJECT}`] });
     }
     remember({
-      name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE,
-      observations: [`${'long remembered filler line. '.repeat(300)}\nHANDOFF-END: next, run the migration.`], tags: [`project:${PROJECT}`],
+      name: 'conversation:room', type: 'conversation',
+      observations: [`${'long remembered filler line. '.repeat(300)}\nHANDOFF-END: next, run the migration.`], tags: [`project:${PROJECT}`, 'role:assistant', 'session:room'],
     });
     const result = assembleBriefing(PROJECT);
     expect(result.hasHandoff).toBe(true);
     expect(result.text).toContain('HANDOFF-END: next, run the migration.');
     for (let i = 1; i <= 5; i++) expect(result.text, `decision ${i} lost its room`).toContain(`ROOM-DECISION-${i}`);
     const block = result.text.slice(result.text.indexOf(HEADER));
-    const handoffText = block.slice(block.indexOf('\n') + 1, block.indexOf('\n\n'));
-    expect(handoffText.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
+    const handoffText = block.slice(0, block.indexOf('\n\n'));
+    expect(Buffer.byteLength(handoffText, 'utf8')).toBeLessThanOrEqual(HANDOFF_MAX_BYTES);
   });
 
   it.each(['minimal', 'standard'])('at %s the whole memory block stays within its budget with an oversized remembered handoff', (level) => {
@@ -1808,7 +1834,7 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     for (let i = 1; i <= 30; i++) {
       remember({ name: `budget-decision-${i}`, type: 'decision', why: 'one reader is enough; revisit if a second appears', title: `Budget decision ${i} with a reasonably long title to use space`, observations: ['x'.repeat(150)], tags: [`project:${PROJECT}`] });
     }
-    remember({ name: sessionHandoffName(PROJECT), type: SESSION_HANDOFF_TYPE, observations: ['y'.repeat(9_000)], tags: [`project:${PROJECT}`] });
+    remember({ name: 'conversation:budget', type: 'conversation', observations: ['y'.repeat(9_000)], tags: [`project:${PROJECT}`, 'role:assistant', 'session:budget'] });
     const result = assembleBriefing(PROJECT);
     expect(result.hasHandoff).toBe(true);
     const inner = result.text.slice(result.text.indexOf('\n', result.text.indexOf('```')) + 1, result.text.lastIndexOf('\n```'));
@@ -2310,19 +2336,25 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     for (const [label, text] of [['core', briefing], ['hook', context.slice(0, context.indexOf(WORK_PACKAGE_NOTICE))]] as const) {
       const body = fenceBody(text);
       expect(body.length, label).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
-      expect(body, label).toContain('may be out of date');                    // the handoff is kept whole
+      expect(body, label).toContain('Last reply from a recent session');                    // the handoff is kept whole
       // The hook lists unread messages from every project; core's briefing only the current one's.
       if (label === 'hook') expect(body, label).toMatch(/- … \(\d+ more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
       expect(body, label).toContain(newestDecision);                          // decisions still get room
     }
   }, 60_000);
 
-  it('entityCount counts the ranked lines actually shown when the state lines were capped (core)', () => {
-    const { newestDecision } = seedCrowded(6, 0);
+  it('entityCount counts only ranked lines rendered after priority state allocation (core)', () => {
+    seedCrowded(6, 0);
     // A long exact recipient with an unread message in THIS project: core's one notice line
     // pushes max handoff + max task state over the state cap.
     const recipient = `r"q\\${'r'.repeat(190)}`;
     const db = getDatabase();
+    for (let i = 0; i < 2; i++) {
+      const id = add(`cap-session-${i}`, 'conversation', 'session', { obs: [ts(1)] });
+      db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('x'.repeat(1000), id);
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'role:assistant');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `session:cap-${i}`);
+    }
     for (const field of ['next', 'blocked', 'done']) {
       db.prepare(`UPDATE entities SET metadata = json_set(metadata, '$.task_state.${field}', ?, '$.task_state.stated_at.${field}', ?) WHERE name = ?`)
         .run(`${field} ${'狀態😀 '.repeat(200)}`, new Date().toISOString(), taskStateName(project));
@@ -2334,22 +2366,23 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     vi.stubEnv('MEMESH_BRIEFING', 'full');
     const result = assembleBriefing(project, recipient);
     const body = fenceBody(result.text);
-    expect(body.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
-    expect(body, 'fixture did not reach the state cap').toMatch(/more lines? of session state not shown here/);
-    expect(body).toContain(newestDecision);
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(8000);
+    expect(body.split('Last reply from a recent session')).toHaveLength(4);
+    expect(result.hasTaskState).toBe(true); expect(result.hasHandoff).toBe(true); expect(result.empty).toBe(false);
     const shownRanked = ranked(body).split('\n').filter((l) => l.startsWith('- [')).length;
-    expect(shownRanked).toBeGreaterThan(0);
+    // KT: oversized priority state may use all room; memories have no reserved minimum.
     expect(result.entityCount).toBe(shownRanked);
   }, 60_000);
 
   /** Stale Unicode handoff, oversized RAW task state, long Unicode titles in every section. */
   function seedCrowded(decisions: number, notes: number) {
     const emoji = '決策😀';
-    add('session-handoff-row', SESSION_HANDOFF_TYPE, 'handoff', { obs: [ts(100 / 24)] });
+    const handoffId = add('session-handoff-row', 'conversation', 'handoff', { obs: [ts(100 / 24)] });
     const db = getDatabase();
-    db.prepare('UPDATE entities SET name = ? WHERE name = ?').run(sessionHandoffName(project), 'session-handoff-row');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(handoffId, 'role:assistant');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(handoffId, 'session:crowded');
     db.prepare('UPDATE observations SET content = ? WHERE entity_id = (SELECT id FROM entities WHERE name = ?)')
-      .run(`${'交接😀 '.repeat(200)}`.slice(0, HANDOFF_MAX_CHARS), sessionHandoffName(project));
+      .run(`${'交接😀 '.repeat(200)}`, 'session-handoff-row');
     setTaskState({ project, patch: { goal: 'placeholder', next: 'Run both readers' } });
     // Written past every write-side check.
     const hugeGoal = `${'目標😀 '.repeat(1500)}END`;
@@ -2362,36 +2395,41 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     return { hugeGoal, newestDecision: `${emoji.repeat(30)} 0` };
   }
 
-  it('F5: at full, a crowded project fits one 4000-character block on each reader, warnings kept, state untouched', () => {
-    const { hugeGoal, newestDecision } = seedCrowded(40, 60);
+  it('F5: at full, priority state fits 8000 UTF-8 bytes on each reader and stored state is untouched', () => {
+    const { hugeGoal } = seedCrowded(40, 60);
     const { context } = runHook('full', 30);
     const hookBlock = context.slice(0, context.indexOf(WORK_PACKAGE_NOTICE));
     for (const [label, text] of [['core', core('full')], ['hook', hookBlock]] as const) {
       const body = fenceBody(text);
-      expect(body.length, label).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+      expect(Buffer.byteLength(label === 'hook' ? context : text), label).toBeLessThanOrEqual(8000);
       expect(text, label).not.toMatch(LONE_SURROGATE);
-      expect(body, label).toContain('may be out of date');     // stale handoff warning kept
+      expect(body, label).toContain('Last reply from a recent session');     // stale handoff warning kept
       expect(body, label).toContain('目標😀');                   // oversized goal shown shortened…
       expect(body, label).not.toContain('END');
       expect(body, label).toContain('Run both readers');        // …and the rest of the state still shows
-      expect(body, label).toContain(newestDecision);
+      expect(body, label).toContain('stated 20');
     }
     // Display-only: the stored task state is untouched.
     expect(getTaskState(project).state.goal).toBe(hugeGoal.trim());
   }, 60_000);
 
-  it('F6/F7: on a crowded project hook (sessionLimit 30) and core agree byte for byte, and the hook credits exactly what it rendered', () => {
+  it('F6/F7: both readers keep priority tails within their whole 8000-byte context and credit retained handles', () => {
     seedCrowded(40, 60);
     const briefing = core('full');
     const { context, record } = runHook('full', 30);
-    expect(fenceBody(briefing).length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
+    expect(Buffer.byteLength(briefing, 'utf8')).toBeLessThanOrEqual(8000);
     const noticeAt = context.indexOf(WORK_PACKAGE_NOTICE);
     expect(noticeAt).toBeGreaterThan(-1);
-    expect(context.slice(0, noticeAt).replace(/\n\n$/, '')).toBe(briefing);
-    // Lessons survive 40 decisions on both readers (the hook's separate lesson pool, now in core too).
-    expect(ranked(briefing)).toContain('Lessons from');
+    const hookMemory = context.slice(0, noticeAt).replace(/\n\n$/, '');
+    expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(8000);
+    const tail = (text: string) => {
+      const lines = text.split('\n'), at = lines.findIndex(line => line.startsWith('Last reply from a recent session'));
+      return lines.slice(at, at + 2);
+    };
+    expect(tail(hookMemory)).toEqual(tail(briefing));
+    for (const text of [briefing, hookMemory]) { expect(text).toContain('Run both readers'); expect(text).toContain('stated 20'); }
     const handles = new Set([...context.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
-    expect(handles.size).toBeGreaterThan(10);
+    expect(handles.size).toBeGreaterThan(0);
     expect(new Set(record.entityIds)).toEqual(handles);
   }, 60_000);
 });

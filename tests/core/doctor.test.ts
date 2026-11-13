@@ -2,12 +2,16 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createHash } from 'crypto';
-import { execFileSync, spawnSync } from 'child_process';
+import { execFileSync, spawnSync, spawn } from 'child_process';
+import { once } from 'node:events';
+import { DatabaseSync } from 'node:sqlite';
+import { openDatabase, closeDatabase, isDatabaseOpen } from '../../src/db.js';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { damagedDatabaseFix, diagnoseDatabaseFailure } from '../../src/core/database-diagnosis.js';
 import { formatDoctorReport, hoursSince, runDoctor as runDoctorImpl, hostFixState, withHostFix } from '../../src/core/doctor.js';
 import { manifestScope } from '../../src/core/manifest-scope.js';
 import { PLUGIN_REFRESH_COMMANDS } from '../../src/core/install-channel.js';
+import { AUTO_UPDATE_REASONS } from '../../src/core/auto-update.js';
 import { formatUpdateCheckStatus, type UpdateCheck } from '../../src/core/version-check.js';
 
 // "Is the codex command on PATH" is answered by the real machine PATH otherwise: a developer box with Codex installed would change
@@ -427,6 +431,45 @@ afterEach(() => {
 });
 
 describe('doctor', () => {
+  it('reports an actual exclusive database lock within four seconds without changing stored rows', async () => {
+    const packageRoot = createPackageRoot(); tempRoots.push(packageRoot);
+    const dbPath = path.join(packageRoot, 'held.db');
+    const seed = new DatabaseSync(dbPath);
+    seed.exec("CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES ('persisted');"); seed.close();
+    const before = fs.readFileSync(dbPath);
+    const holder = spawn(process.execPath, ['-e', `
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec("BEGIN EXCLUSIVE; UPDATE sentinel SET value='not committed';");
+      process.stdout.write('locked\\n');
+      process.stdin.resume();
+      process.stdin.on('end', () => { db.exec('ROLLBACK'); db.close(); });
+    `, dbPath], { stdio: ['pipe', 'pipe', 'pipe'] });
+    const previous = process.env.MEMESH_DB_PATH;
+    try {
+      expect(String((await once(holder.stdout, 'data'))[0])).toContain('locked');
+      process.env.MEMESH_DB_PATH = dbPath;
+      const start = performance.now();
+      const result = await runDoctor({
+        packageRoot, packageVersion: '4.13.0',
+        getUpdateCheckImpl: async () => makeUpdateCheck(),
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getCurrentInstallChannelImpl: () => 'unknown',
+        getInstallChannelSupportImpl: () => ({ channel: 'unknown', label: 'fixture', canSelfUpdate: false, recommendedCommand: '', guidance: '' }),
+        nativeBindingProbeImpl: () => ({ ok: true }), resolveShellMemeshImpl: () => null,
+      });
+      expect(performance.now() - start).toBeLessThan(4_000);
+      expect(result.checks.find((check) => check.id === 'database')?.summary).toMatch(/^Another process has the database locked/);
+    } finally {
+      if (previous === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = previous;
+      const closed = once(holder, 'close'); holder.stdin.end(); await closed;
+      expect(() => process.kill(holder.pid!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+    }
+    expect(fs.readFileSync(dbPath)).toEqual(before);
+    const readback = new DatabaseSync(dbPath, { readOnly: true });
+    try { expect(readback.prepare('SELECT value FROM sentinel').get()?.value).toBe('persisted'); } finally { readback.close(); }
+  }, 12_000);
+
   it('reports PASS when local install checks all succeed', async () => {
     const packageRoot = createPackageRoot();
     tempRoots.push(packageRoot);
@@ -1293,6 +1336,35 @@ describe('doctor', () => {
     });
     return result.checks.find((c) => c.id === 'skills-manifest');
   }
+
+  it('rejects a manifest-listed file outside the safe covered scope without reading it', async () => {
+    const packageRoot = createPackageRoot(); tempRoots.push(packageRoot);
+    const target = path.join(packageRoot, 'outside-scope.txt'); fs.writeFileSync(target, 'not a skill or hook');
+    const file = path.join(packageRoot, 'dist', 'skills-manifest.json');
+    const manifest = JSON.parse(fs.readFileSync(file, 'utf8'));
+    manifest.entries.push({ path: 'outside-scope.txt', sha256: createHash('sha256').update(fs.readFileSync(target)).digest('hex') });
+    fs.writeFileSync(file, JSON.stringify(manifest));
+    const read = vi.fn(fs.readFileSync);
+    const row = await manifestRowReading(packageRoot, read as typeof fs.readFileSync);
+    expect(row).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(row?.summary).toContain('outside-scope.txt (not in the safe covered scope)');
+    expect(read.mock.calls.some(([file]) => String(file) === target)).toBe(false);
+  });
+
+  it.skipIf(process.platform === 'win32').each(['file', 'ancestor'])('does not read a manifest-listed skill through a %s link', async (kind) => {
+    const packageRoot = createPackageRoot(); tempRoots.push(packageRoot);
+    const outside = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-link-read-')); tempRoots.push(outside);
+    const target = path.join(packageRoot, 'skills', 'memesh', 'SKILL.md');
+    const replaced = kind === 'file' ? target : path.join(packageRoot, 'skills');
+    const copy = path.join(outside, kind === 'file' ? 'SKILL.md' : 'skills');
+    fs.cpSync(replaced, copy, { recursive: true });
+    fs.rmSync(replaced, { recursive: true }); fs.symlinkSync(copy, replaced);
+    const read = vi.fn(fs.readFileSync);
+    const row = await manifestRowReading(packageRoot, read as typeof fs.readFileSync);
+    expect(row).toMatchObject({ status: 'fail', code: 'skills-manifest.verify-failed' });
+    expect(read.mock.calls.some(([file]) => String(file) === target), 'doctor read bytes through the link').toBe(false);
+    expect(row?.summary).toContain('symbolic link');
+  });
 
   describe.skipIf(process.platform === 'win32')('a covered folder that is itself a symbolic link, or a link on the way to a covered file', () => {
     const linkTo = (packageRoot: string, rel: string) => {
@@ -3771,7 +3843,8 @@ describe('database failure diagnostics (F15)', () => {
       expect(dbCheck!.fix).toBeTruthy();
       // A non-empty file that fails with SQLITE_CORRUPT is damaged, not unusable:
       // the advice is to copy it first, then salvage, never to move it aside.
-      expect(dbCheck!.fix).toMatch(/cp .*\.damaged/);
+      expect(dbCheck!.fix).toContain('memesh repair');
+      expect(dbCheck!.fix).toContain('verified copy');
       expect(dbCheck!.fix).not.toMatch(/mv .*\.backup/);
     } finally {
       if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
@@ -3781,6 +3854,40 @@ describe('database failure diagnostics (F15)', () => {
 });
 
 describe('database lifecycle preservation (F16 — regression)', () => {
+  it('preserves the actual shared singleton timeout during and after default doctor reads', async () => {
+    const packageRoot = createPackageRoot(); tempRoots.push(packageRoot);
+    const dbPath = path.join(packageRoot, 'shared.db');
+    const previous = process.env.MEMESH_DB_PATH;
+    process.env.MEMESH_DB_PATH = dbPath;
+    const db = openDatabase(dbPath);
+    const timeout = () => db.prepare('PRAGMA busy_timeout').get()?.timeout;
+    try {
+      expect(timeout()).toBe(30_000);
+      let checkedDuringDoctor = false;
+      await runDoctor({
+        packageRoot, packageVersion: '4.13.0',
+        getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
+        getUpdateCheckImpl: async () => {
+          checkedDuringDoctor = true;
+          expect(timeout()).toBe(30_000);
+          return makeUpdateCheck();
+        },
+        getCurrentInstallChannelImpl: () => 'unknown',
+        getInstallChannelSupportImpl: () => ({ channel: 'unknown', label: 'fixture', canSelfUpdate: false, recommendedCommand: '', guidance: '' }),
+        nativeBindingProbeImpl: () => ({ ok: true }), resolveShellMemeshImpl: () => null,
+      });
+      expect(checkedDuringDoctor).toBe(true);
+      expect(isDatabaseOpen()).toBe(true);
+      expect(openDatabase(dbPath)).toBe(db);
+      expect(timeout()).toBe(30_000);
+      db.exec("CREATE TABLE doctor_shared_sentinel(value TEXT); INSERT INTO doctor_shared_sentinel VALUES ('still writable');");
+      expect(db.prepare('SELECT value FROM doctor_shared_sentinel').get()?.value).toBe('still writable');
+    } finally {
+      closeDatabase();
+      if (previous === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = previous;
+    }
+  });
+
   // Regression: in v4.1.4 release testing, calling /v1/doctor in the
   // running HTTP server caused doctor to close the global database
   // connection mid-flight. Subsequent /v1/* requests then returned 500
@@ -4056,7 +4163,7 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       }
     }
 
-    it('PASSes (nothing to do) when the cache is on the verified release and the marketplace branch has moved ahead, same version', async () => {
+    it('PASSes when cache and marketplace commits differ without claiming release provenance was checked', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const registry = registryWith(packageRoot, { installPath: packageRoot, version: '4.8.2', gitCommitSha: 'a'.repeat(40) });
@@ -4066,9 +4173,9 @@ describe('shell CLI on PATH check (plugin-without-global gotcha)', () => {
       expect(check?.code).toBe('plugin-cache.behind-marketplace');
       expect(check?.summary).toContain('aaaaaaaa');
       expect(check?.summary).toContain('bbbbbbbb');
-      expect(check?.summary).toContain('Nothing to do');
-      // Not damage, and not something to "refresh": the cache stays on the release that was verified. The old advice ran the
-      // unpinned upgrade script, which installed the marketplace's current (unreleased, unchecked) branch.
+      expect(check?.summary).toContain('has not checked whether this installation was built from a release');
+      expect(check?.summary).toContain('memesh update --reinstall');
+      expect(check?.summary).not.toContain('release MeMesh verified');
       expect(check?.fix).toBeUndefined();
       expect(check?.summary).not.toContain('upgrade-plugin');
       expect(check?.summary).not.toContain('marketplace upgrade');
@@ -5374,6 +5481,52 @@ describe('doctor rows that had no assertion', () => {
   });
 
   describe('message-capability probe', () => {
+    it('runs the real subprocess boundary with private paths and no inherited host or credential hints', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      const owner = isolateMemeshDir();
+      const sentinel = path.join(owner, 'sentinel');
+      fs.writeFileSync(sentinel, 'synthetic owner data');
+      const marker = path.join(packageRoot, 'observed.json');
+      const hints = {
+        MEMESH_DB_PATH: path.join(owner, 'owner.db'), USERPROFILE: owner,
+        CLAUDE_CONFIG_DIR: owner, CODEX_HOME: owner, XDG_CONFIG_HOME: owner,
+        CLAUDE_CODE_SESSION_ID: 'outer-session', CODEX_THREAD_ID: 'outer-thread',
+        ANTHROPIC_API_KEY: 'synthetic-secret', ACME_PROVIDER_API_TOKEN: 'synthetic-namespaced-secret',
+      };
+      for (const [key, value] of Object.entries(hints)) setEnv(key, value);
+      for (const relative of ['dist/transports/cli/doctor-message-probe.js', 'dist/mcp/server.js',
+        'dist/transports/mcp/handlers.js', 'dist/host-adapters/codex-app-server.js',
+        'dist/host-adapters/claude-channel.js', 'dist/host-adapters/acp-client.js']) {
+        const file = path.join(packageRoot, relative);
+        fs.mkdirSync(path.dirname(file), { recursive: true });
+        fs.writeFileSync(file, '');
+      }
+      fs.writeFileSync(path.join(packageRoot, 'dist/transports/cli/doctor-message-probe.js'), `
+        const fs = await import('node:fs'), path = await import('node:path'), { default: assert } = await import('node:assert/strict');
+        try {
+        const env = process.env;
+        assert.equal(process.cwd(), fs.realpathSync(env.HOME));
+        assert.equal(env.USERPROFILE, env.HOME);
+        assert.equal(env.MEMESH_DIR, path.join(env.HOME, '.memesh'));
+        assert.equal(env.MEMESH_DB_PATH, path.join(env.MEMESH_DIR, 'knowledge-graph.db'));
+        for (const key of ${JSON.stringify(Object.keys(hints).filter(k => !['MEMESH_DB_PATH', 'USERPROFILE'].includes(k)))}) assert.equal(env[key], undefined, key);
+        assert.deepEqual(JSON.parse(fs.readFileSync(path.join(env.MEMESH_DIR, 'config.json'), 'utf8')), { updateCheck: false, autoUpdate: 'off' });
+        fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ home: env.HOME, pid: process.pid }));
+        } catch (error) {
+          fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ fixtureError: String(error) }));
+          throw error;
+        }
+      `);
+      const check = row(await runDoctorImpl(options(packageRoot, { probeMessageCapability: true })), 'message-capability');
+      expect(check.status, check.summary + (fs.existsSync(marker) ? fs.readFileSync(marker, 'utf8') : '')).toBe('pass');
+      const observed = JSON.parse(fs.readFileSync(marker, 'utf8')) as { home: string; pid: number };
+      expect(fs.existsSync(observed.home)).toBe(false);
+      expect(() => process.kill(observed.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+      expect(fs.readFileSync(sentinel, 'utf8')).toBe('synthetic owner data');
+      expect(fs.existsSync(hints.MEMESH_DB_PATH)).toBe(false);
+    });
+
     it('is opt-in information and does not invoke a subprocess probe ordinarily', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
@@ -5403,7 +5556,7 @@ describe('doctor rows that had no assertion', () => {
 
       expect(check.status).toBe('pass');
       expect(check.informational).toBeFalsy();
-      expect(check.summary).toContain('ten-action message schema');
+      expect(check.summary).toContain('four-action message schema');
       expect(check.summary).toContain('No live router socket');
     });
 
@@ -5589,15 +5742,15 @@ describe('doctor rows that had no assertion', () => {
       expect(check.summary).toContain('quick integrity check failed');
       expect(check.summary).toContain('btreeInitPage() returns error code 11');
       // No backups folder in a plain install: never point at one.
-      expect(check.fix).toMatch(/^Stop every memesh process, then copy the damaged file/);
-      expect(check.fix).toContain('.damaged');
-      expect(check.fix).toMatch(/\.recover \| sqlite3 /);
+      expect(check.fix).toMatch(/^Stop every memesh process, then run: memesh repair/);
+      expect(check.fix).toContain('verified copy');
+      expect(check.fix).not.toMatch(/\.recover \|/);
       expect(check.fix).not.toMatch(/backups/);
       expect(check.fix).not.toMatch(/mv .*\.backup/);
       expect(report.checks.filter((c) => c.id === 'database')).toHaveLength(1);
     });
 
-    it('offers the restore only when backups holds a complete copy, names it, and warns that it overwrites', async () => {
+    it('keeps backup validation inside repair rather than recommending a file by name', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);
       const dir = isolateMemeshDir();
@@ -5610,9 +5763,9 @@ describe('doctor rows that had no assertion', () => {
       const backup = path.join(dir, 'backups', 'before-compression-marker-x.db');
       fs.writeFileSync(backup, 'SQLite format 3\0');
       const check = row(await damaged(), 'database');
-      expect(check.fix).toContain(backup);
+      expect(check.fix).not.toContain(backup);
       expect(check.fix).not.toContain('.restore');
-      expect(check.fix).toMatch(/overwrites the file, which is why the copy comes first/);
+      expect(check.fix).toContain('memesh repair');
     });
 
     it('collapses a multi-line quick_check verdict to one bounded line', async () => {
@@ -5674,11 +5827,11 @@ describe('doctor rows that had no assertion', () => {
         () => true,
         (() => ({ mode: 0o100644, size: 4096 })) as never,
       );
-      expect(fix).toMatch(/^Stop every memesh process, then copy the damaged file/);
+      expect(fix).toMatch(/^Stop every memesh process, then run: memesh repair/);
       expect(fix).not.toMatch(/mv .*\.backup/);
     });
 
-    it('copies the -wal/-shm journal with the damaged file, and removes the stale one before anything is put back', () => {
+    it('delegates journal preservation and checked replacement to the repair command', () => {
       // Recent writes live only in <db>-wal until SQLite folds them in: a copy
       // without it loses them, and a file moved in beside the old journal gets
       // that journal replayed onto it and breaks.
@@ -5686,10 +5839,10 @@ describe('doctor rows that had no assertion', () => {
       tempRoots.push(dir);
       const db = path.join(dir, 'knowledge-graph.db');
       const fix = damagedDatabaseFix(db);
-      expect(fix).toContain(`cp '${db}-wal' '${db}.damaged-wal'`);
-      expect(fix).toContain(`cp '${db}-shm' '${db}.damaged-shm'`);
-      expect(fix).toContain(`rm -f '${db}-wal' '${db}-shm' && mv '${db}.recovered.db' '${db}'`);
-      expect(fix).toContain('memesh reindex --fts');
+      expect(fix).toContain('memesh repair');
+      expect(fix).toContain('verified copy of the database and its journal');
+      expect(fix).not.toContain('.recover |');
+      expect(fix).toContain('checks the result before replacing the file');
     });
 
     it('names a held lock as a lock even when the error carries a repair of its own', () => {
@@ -5743,13 +5896,19 @@ describe('doctor rows that had no assertion', () => {
 });
 
 describe('doctor: automatic updates', () => {
-  async function auto(state: Record<string, unknown> | null, support: Record<string, unknown> = { label: 'npm global', canSelfUpdate: false }, extra: { setup?: (dataDir: string) => void; policy?: string } = {}) {
+  async function auto(state: Record<string, unknown> | null, support: Record<string, unknown> = { label: 'npm global', canSelfUpdate: false }, extra: { setup?: (dataDir: string, lockDir: string) => void; policy?: string } = {}) {
     const root = createPackageRoot();
     tempRoots.push(root);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-au-'));
     tempRoots.push(dataDir);
-    if (state) fs.writeFileSync(path.join(dataDir, 'auto-update-state.json'), JSON.stringify(state));
-    extra.setup?.(dataDir);
+    const accountHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-account-'));
+    tempRoots.push(accountHome);
+    const accountHomeSpy = vi.spyOn(os, 'userInfo').mockImplementation(() => ({ homedir: accountHome } as ReturnType<typeof os.userInfo>));
+    const savedHome = process.env.HOME;
+    process.env.HOME = accountHome;
+    const controlDir = path.join(accountHome, '.memesh'); fs.mkdirSync(controlDir);
+    if (state) fs.writeFileSync(path.join(controlDir, 'auto-update-state.json'), JSON.stringify(state));
+    extra.setup?.(controlDir, controlDir);
     const saved = process.env.MEMESH_DB_PATH;
     const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
     process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
@@ -5768,6 +5927,8 @@ describe('doctor: automatic updates', () => {
       });
       return result.checks.find((check) => check.id === 'auto-update');
     } finally {
+      accountHomeSpy.mockRestore();
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
       if (saved === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = saved;
       if (savedPolicy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = savedPolicy;
     }
@@ -5775,6 +5936,60 @@ describe('doctor: automatic updates', () => {
 
   it('reports the setting and that nothing has run yet', async () => {
     expect(await auto(null)).toMatchObject({ status: 'pass', summary: expect.stringContaining('off') });
+  });
+
+  it('names only the two unbundled entry points when pinned dependencies were not restored', async () => {
+    const row = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'failed', reason: AUTO_UPDATE_REASONS.installNotUndone });
+    expect(row?.fix).toContain('memesh serve');
+    expect(row?.fix).toContain('Claude channel runner');
+    expect(row?.fix).toContain('remember, recall and MCP still work');
+    expect(row?.fix).not.toContain('MeMesh may not start');
+    expect(AUTO_UPDATE_REASONS.installNotUndone).toContain('remember, recall and MCP still work');
+  });
+
+  it('advises a proxy-capable Node for a simulated old Node release-check failure, not the same failing update', async () => {
+    const descriptor = Object.getOwnPropertyDescriptor(process.versions, 'node')!;
+    const previous = process.env.HTTPS_PROXY;
+    try {
+      Object.defineProperty(process.versions, 'node', { value: '22.16.0', configurable: true });
+      process.env.HTTPS_PROXY = 'http://127.0.0.1:9';
+      const row = await auto({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'failed', reason: AUTO_UPDATE_REASONS.commitUnconfirmed }, { channel: 'npm-global', label: 'npm global', canSelfUpdate: true, recommendedCommand: 'memesh update' });
+      expect(row?.fix).toContain('22.21'); expect(row?.fix).toContain('Node 24');
+      expect(row?.fix).toContain('proxy'); expect(row?.fix).not.toContain('memesh update');
+    } finally {
+      Object.defineProperty(process.versions, 'node', descriptor);
+      if (previous === undefined) delete process.env.HTTPS_PROXY; else process.env.HTTPS_PROXY = previous;
+    }
+  });
+
+  it('names the bad setting, value or read cause and how the person can fix it', async () => {
+    const invalid = await auto(null, undefined, { policy: 'on' });
+    expect(invalid?.status).toBe('warn');
+    expect(invalid?.summary).toContain('MEMESH_AUTO_UPDATE');
+    expect(invalid?.summary).toContain('"on"');
+    expect(invalid?.summary).toContain('unset MEMESH_AUTO_UPDATE');
+    let file = '';
+    const broken = await auto(null, undefined, { policy: 'major', setup: (dir) => {
+      file = path.join(dir, 'config.json'); fs.writeFileSync(file, '{broken');
+    } });
+    expect(broken?.status).toBe('warn');
+    expect(broken?.summary).toContain(file);
+    expect(broken?.summary).toContain('not valid JSON');
+    expect(broken?.summary).toContain('Repair');
+  });
+
+  it('treats JSON false as intentional off and explains the updateCheck coupling', async () => {
+    const setting = (value: string) => ({ policy: 'major', setup: (dir: string) => fs.writeFileSync(path.join(dir, 'config.json'), value) });
+    expect(await auto(null, undefined, setting('{"autoUpdate":false}'))).toMatchObject({ status: 'pass', summary: expect.stringContaining('off') });
+    const disabled = await auto(null, undefined, setting('{"updateCheck":false}'));
+    expect(disabled?.status).toBe('pass');
+    expect(disabled?.summary).toContain('updateCheck');
+    expect(disabled?.summary).toContain('unset updateCheck');
+  });
+
+  it('warns when an invalid or unreadable policy prevents updating without an explicit off', async () => {
+    expect(await auto(null, undefined, { policy: 'invalid' })).toMatchObject({ status: 'warn', summary: expect.stringContaining('not off, patch, minor or major') });
+    expect(await auto(null, undefined, { policy: 'major', setup: (dir) => fs.writeFileSync(path.join(dir, 'config.json'), '{broken') })).toMatchObject({ status: 'warn', summary: expect.stringContaining('could not be read') });
   });
 
   it('shows the last attempt, and warns only when it failed', async () => {
@@ -5790,7 +6005,10 @@ describe('doctor: automatic updates', () => {
 
   describe('an update that died, a lock left behind, a wait that ran over', () => {
     const base = { at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', channel: 'npm-global', backup: null, outcome: 'skipped', reason: 'policy is off' };
-    const lockFile = (dir: string, pid: number, label: string) => fs.writeFileSync(path.join(dir, 'auto-update.lock'), `token\n${pid}\n${Date.now() - 60_000}\n${label}\n`);
+    const lockFile = (dir: string, pid: number, label: string) => {
+      fs.mkdirSync(dir, { recursive: true });
+      fs.writeFileSync(path.join(dir, 'auto-update.lock'), `token\n${pid}\n${Date.now() - 60_000}\n${label}\n`);
+    };
     const marker = (dir: string, pid: number) => fs.writeFileSync(path.join(dir, 'auto-update-installing.json'), JSON.stringify({ at: '2026-11-03T00:00:00.000Z', from: '4.12.0', to: '4.13.0', pid, started: null }));
     const GONE = 2_147_483_000;
 
@@ -5810,11 +6028,11 @@ describe('doctor: automatic updates', () => {
     });
 
     it('a lock whose owner is gone is said so, with who started it; one whose owner runs is just reported', async () => {
-      const orphan = await auto(null, undefined, { setup: (d) => lockFile(d, GONE, 'manual') });
+      const orphan = await auto(null, undefined, { setup: (_dataDir, lockDir) => lockFile(lockDir, GONE, 'manual') });
       expect(orphan).toMatchObject({ status: 'warn', code: 'auto-update.lock-orphan' });
       expect(orphan?.summary).toContain('manual update');
       expect(orphan?.fix).toContain('takes the lock over');
-      const live = await auto({ ...base }, undefined, { setup: (d) => lockFile(d, process.pid, 'auto') });
+      const live = await auto({ ...base }, undefined, { setup: (_dataDir, lockDir) => lockFile(lockDir, process.pid, 'auto') });
       expect(live?.status).toBe('pass');
       expect(live?.summary).toContain('An update is running now');
     });
@@ -5886,8 +6104,10 @@ describe('doctor: automatic updates', () => {
     tempRoots.push(root);
     const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-au-bad-'));
     tempRoots.push(dataDir);
-    fs.writeFileSync(path.join(dataDir, 'auto-update-state.json'), '{ not json');
-    const saved = { db: process.env.MEMESH_DB_PATH, policy: process.env.MEMESH_AUTO_UPDATE };
+    const home = path.join(dataDir, 'home'); const control = path.join(home, '.memesh'); fs.mkdirSync(control, { recursive: true });
+    fs.writeFileSync(path.join(control, 'auto-update-state.json'), '{ not json');
+    const saved = { home: process.env.HOME, db: process.env.MEMESH_DB_PATH, policy: process.env.MEMESH_AUTO_UPDATE };
+    process.env.HOME = home;
     process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
     process.env.MEMESH_AUTO_UPDATE = 'off';
     try {
@@ -5906,6 +6126,7 @@ describe('doctor: automatic updates', () => {
       expect(check).toMatchObject({ status: 'warn', code: 'auto-update.state-unreadable' });
       expect(check?.summary).not.toContain('No attempt has run yet');
     } finally {
+      if (saved.home === undefined) delete process.env.HOME; else process.env.HOME = saved.home;
       if (saved.db === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = saved.db;
       if (saved.policy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = saved.policy;
     }
@@ -5948,7 +6169,7 @@ describe('doctor: automatic updates', () => {
     expect(without?.summary).not.toContain('Note:');
   });
 
-  it('does not crash where the system has no passwd entry for this user, and says why nothing is applied by default', async () => {
+  it('does not crash where the system has no passwd entry and reports the default on policy', async () => {
     const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
     const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry for this uid'); });
     try {
@@ -5972,7 +6193,8 @@ describe('doctor: automatic updates', () => {
           resolveShellMemeshImpl: () => null,
         });
         const row = result.checks.find((check) => check.id === 'auto-update');
-        expect(row?.summary).toContain('no passwd entry');
+        expect(row?.summary).toMatch(/^Automatic updates are on\b/);
+        expect(row?.summary).not.toContain('no passwd entry');
       } finally {
         if (savedDb === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = savedDb;
       }

@@ -47,6 +47,16 @@
               "timeout": 10
             }
           ]
+        },
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js",
+              "timeout": 10
+            }
+          ]
         }
       ],
       "SessionEnd": [
@@ -139,6 +149,16 @@
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/prompt-recall.js",
               "timeout": 5
+            }
+          ]
+        },
+        {
+          "matcher": "*",
+          "hooks": [
+            {
+              "type": "command",
+              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js",
+              "timeout": 10
             }
           ]
         }

@@ -282,6 +282,7 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
 const currentDocs = checkCurrentDocumentationContracts({
   architecture: read('docs/ARCHITECTURE.md'),
   handlers: read('src/transports/mcp/handlers.ts'),
+  conversationMessaging: read('src/transports/conversation-messaging.ts'),
   httpServer: read('src/transports/http/server.ts'),
   retiredRoutes: read('src/transports/http/retired-routes.ts'),
   operations: read('src/core/operations.ts'),
@@ -525,7 +526,7 @@ if (!hasBearerAuth) {
   });
 
   const cliSrc = read('src/transports/cli/cli.ts');
-  const cliCommands = new Set([...cliSrc.matchAll(/\.command\('([\w-]+)/g)].map(m => m[1]));
+  const cliCommands = new Set([...cliSrc.matchAll(/\.command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\1/g)].map(m => m[2]));
   // pin/unpin register through a helper whose `.command(name)` is dynamic;
   // their literal names are in the registerPinCommand calls.
   for (const m of cliSrc.matchAll(/registerPinCommand\('([\w-]+)'/g)) cliCommands.add(m[1]);
@@ -563,15 +564,15 @@ if (!hasBearerAuth) {
   // registered twice — top-level and under `dream` — which is why the child
   // sets are per-parent rather than one flat set.
   const parentVars = new Map(
-    [...cliSrc.matchAll(/const (\w+)\s*=\s*program\s*\.\s*command\('([\w-]+)'/g)].map(m => [m[1], m[2]]),
+    [...cliSrc.matchAll(/const (\w+)\s*=\s*program\s*\.\s*command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\2/g)].map(m => [m[1], m[3]]),
   );
   const childrenOf = new Map();
   for (const [varName, parentName] of parentVars) {
     const re = new RegExp(
-      `(?:^|\\n)(?:const\\s+\\w+\\s*=\\s*)?${varName}\\s*\\.\\s*command\\('([\\w-]+)`,
+      `(?:^|\\n)(?:const\\s+\\w+\\s*=\\s*)?${varName}\\s*\\.\\s*command\\(\\s*(['"])([\\w-]+)(?:\\s+[^'"]*)?\\1`,
       'g',
     );
-    childrenOf.set(parentName, new Set([...cliSrc.matchAll(re)].map(m => m[1])));
+    childrenOf.set(parentName, new Set([...cliSrc.matchAll(re)].map(m => m[2])));
   }
   // Absence is not evidence: an extraction that stopped matching would report
   // "no bad nested commands found" forever.
@@ -614,11 +615,15 @@ if (!hasBearerAuth) {
   // retired remain truthful there. Keep this list exact: other invented or
   // misspelled historical commands must still fail the gate.
   const retiredHistoricalNested = new Set(['dream run', 'dream conflicts']);
+  const retiredConversationNested = new Set(['message storage', 'message intake']);
   for (const [label, text] of nestedTargets) {
+    const versionedHistoryStart = label === 'CHANGELOG.md'
+      ? text.search(/^## \[\d+\.\d+\.\d+[^\]]*\]/m) : -1;
     for (const m of text.matchAll(nestedRe)) {
       nestedMentions++;
       const pair = `${m[1]} ${m[2]}`;
-      const historicalRetirement = label === 'CHANGELOG.md' && retiredHistoricalNested.has(pair);
+      const historicalRetirement = label === 'CHANGELOG.md' && (retiredHistoricalNested.has(pair)
+        || (versionedHistoryStart >= 0 && m.index >= versionedHistoryStart && retiredConversationNested.has(pair)));
       if (!childrenOf.get(m[1]).has(m[2]) && !historicalRetirement) badNested.push(`${label} -> ${m[0]}`);
     }
   }

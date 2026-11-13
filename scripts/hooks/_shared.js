@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
@@ -40,7 +40,6 @@ import {
   gitRepoRoot,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
-import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
 export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, jsonStringLiteral, projectLabel, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
@@ -178,7 +177,7 @@ export function recordGuardFires(dbPath, lessonIds) {
   }
 }
 import { isAutoInjectable, jsonStringLiteral } from './_generated/work-topology.js';
-export { parseTaskState, taskStateLines, taskStateName, briefingTaskStateLines, STALE_TASK_STATE_HOURS } from './_generated/task-state.js';
+export { parseTaskState, taskStateLines, taskStateName } from './_generated/task-state.js';
 // #360 — the one briefing-level policy, shared with the `briefing` tool via
 // src/core/briefing-level.ts (this is the generated mirror; see that file).
 export {
@@ -204,7 +203,7 @@ export function sessionProjectLine(projectName) {
   const id = jsonStringLiteral(projectName);
   return `MeMesh project for this session: ${id}. Pass project: ${id} to remember, learn and recall `
     + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson). '
-    + 'Saving is on by default; only an explicit request from the user not to save is an exception.';
+    + 'Saving is on by default.';
 }
 
 // The hook-only work-package notice's literal text — ONE declaration,
@@ -443,9 +442,7 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
 /**
  * Auto-captured SESSION-SNAPSHOT types — the transient rollups `pre-compact.js`
  * and `session-summary.js` restate on every PreCompact / Stop, purely as
- * session bookkeeping ("N tool calls", "compaction reason: auto"), and the
- * session handoff `_stop-handoff.js` restates on every Stop (the agent's last
- * message, which names files in passing). Not the
+ * session bookkeeping ("N tool calls", "compaction reason: auto"). Not the
  * same set as `AUTO_CAPTURE_TAG`: that tag also marks `commit` entities,
  * which can genuinely be about the file being edited, so it is too broad for
  * this exclusion.
@@ -461,7 +458,7 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
  * include `commit` (and some include `session_keypoint`, `workflow_checkpoint`
  * etc.), which this exclusion must NOT touch.
  */
-export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary', SESSION_HANDOFF_TYPE]);
+export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary']);
 
 // The schema and its migration toolkit come from src/storage/schema.ts via
 // the generated copy — the SAME bytes core's openDatabase executes. The
@@ -918,7 +915,10 @@ export const NODE_TOO_OLD_REASON = 'uncaught NODE_TOO_OLD';
  */
 export function hookNodeProblem(hook) {
   const problem = nodeSupportProblem();
-  if (!problem) return null;
+  if (!problem) {
+    replayPendingConversations();
+    return null;
+  }
   try { process.stderr.write(`[memesh ${hook}] ${problem}\n`); } catch { /* stderr gone */ }
   return problem;
 }
@@ -1004,6 +1004,10 @@ function bringHookDbCurrent(db, opts) {
 
 export function openHookDb(env = process.env, opts = {}) {
 
+  if (!opts.pendingReplay) replayPendingConversations(env);
+  const waitMs = !opts.conversation || conversationDeadline === null ? HOOK_BUSY_TIMEOUT_MS : Math.min(HOOK_BUSY_TIMEOUT_MS, conversationDeadline - Date.now());
+  if (waitMs <= 0) throw Object.assign(new Error('conversation database lock budget exhausted'), { code: 'MEMESH_DB_LOCKED' });
+
   // Path helpers read process.env directly (no-arg). The `env` parameter
   // is kept on this signature for backward compatibility with callers
   // and is consulted directly only for the DB-PATH dirname check below
@@ -1034,14 +1038,14 @@ export function openHookDb(env = process.env, opts = {}) {
   //
   // It is set BEFORE the WAL switch below, not after: the switch used to run
   // under the constructor's 30s wait and could outlast the hook's own limit.
-  db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+  db.pragma(`busy_timeout = ${waitMs}`);
   // Several hooks fire in the same second on a data folder that does not exist
   // yet and collide on the WAL switch (see retryWhileLocked). The bring-current
   // step is idempotent, so it is repeated inside this hook's own 2s budget; past
   // it the error carries code MEMESH_DB_LOCKED and the hook records it as its
   // outcome (hookErrorReason), never a silent skip.
   try {
-    retryWhileLocked(() => bringHookDbCurrent(db, opts), HOOK_BUSY_TIMEOUT_MS, `${dbPath} (data folder ${dbDir})`);
+    retryWhileLocked(() => bringHookDbCurrent(db, opts), waitMs, `${dbPath} (data folder ${dbDir})`);
   } catch (err) {
     try { db.close(); } catch { /* already closing down */ }
     throw err;
@@ -1065,6 +1069,95 @@ export function openHookDb(env = process.env, opts = {}) {
     } catch { /* stderr gone */ }
   }
   return { db, dbPath };
+}
+
+// Each pending event has its own owner-private file. Concurrent hooks can
+// replay the same event safely: captureEntity's unique name makes the write
+// idempotent, and removing one file cannot remove another hook's new event.
+let replayingConversations = false;
+let replayAttempted = false;
+let conversationDeadline = null;
+function pendingConversationDir(env) {
+  return join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'pending-conversations');
+}
+
+function writeConversation(db, event) {
+  return db.transaction(() => writeConversationLocked(db, event)).immediate();
+}
+
+function writeConversationLocked(db, event) {
+  if (event.tags.includes('role:user')) {
+    const ids = event.observations[0].match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [];
+    const project = event.tags.find(t => t.startsWith('project:'))?.slice(8);
+    const knownMessage = db.prepare('SELECT 1 FROM agent_messages WHERE message_id = ? AND project = ?');
+    if (ids.some(id => knownMessage.get(id, project))) return { skipped: true, reason: 'known MeMesh message, not user speech' };
+  }
+  const previous = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(event.name);
+  const priorTime = parseEntityMetadata(previous?.metadata)?.conversationCapturedAt;
+  if (typeof priorTime === 'number' && typeof event.capturedAt === 'number' && priorTime > event.capturedAt) {
+    return { skipped: true, reason: 'a newer version of this conversation event is already stored' };
+  }
+  const result = captureEntity(db, event);
+  if (!result) throw new Error('conversation entity could not be resolved');
+  if (result.archived) return { ...result, skipped: true, reason: 'conversation event is archived' };
+  if (!result.archived && typeof event.capturedAt === 'number') {
+    const row = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(result.id);
+    const metadata = { ...parseEntityMetadata(row?.metadata), conversationCapturedAt: event.capturedAt };
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), result.id);
+  }
+  return result;
+}
+
+export function replayPendingConversations(env = process.env) {
+  if (replayingConversations || replayAttempted || !isAutoCaptureEnabled(env)) return;
+  replayAttempted = true;
+  const dir = pendingConversationDir(env);
+  if (!existsSync(dir)) return;
+  conversationDeadline = Date.now() + HOOK_BUSY_TIMEOUT_MS;
+  replayingConversations = true;
+  let db;
+  try {
+    ({ db } = openHookDb(env, { fts: true, pendingReplay: true, conversation: true }));
+    const deadline = conversationDeadline;
+    for (const file of readdirSync(dir)) {
+      if (!/^[0-9a-f]{32}\.json$/.test(file) || Date.now() >= deadline) continue;
+      const path = join(dir, file);
+      let event;
+      try { event = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        throw err;
+      }
+      db.pragma(`busy_timeout = ${Math.max(1, deadline - Date.now())}`);
+      writeConversation(db, event);
+      try { unlinkSync(path); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    }
+  } catch (err) {
+    try { process.stderr.write(`[memesh pending-conversations] ${hookErrorReason(err)}\n`); } catch {}
+  } finally {
+    if (db) try { db.close(); } catch {}
+    replayingConversations = false;
+  }
+}
+
+/** Capture a complete, already attributed event; only lock contention queues it. */
+export function captureConversation(event, env = process.env) {
+  const safe = redactTextValues({ ...event, capturedAt: Date.now() });
+  conversationDeadline ??= Date.now() + HOOK_BUSY_TIMEOUT_MS;
+  let db;
+  try {
+    ({ db } = openHookDb(env, { fts: true, conversation: true }));
+    return writeConversation(db, safe);
+  } catch (err) {
+    if (!/locked|busy/i.test(String(err.code) + ' ' + String(err.message))) throw err;
+    const dir = pendingConversationDir(env);
+    ensurePrivateDir(dir);
+    // Immutable version files: a drainer that read OLD must never unlink NEW.
+    const key = createHash('sha256').update(JSON.stringify(safe)).digest('hex').slice(0, 32);
+    writePrivateJsonAtomic(join(dir, `${key}.json`), safe);
+    return { queued: true, reason: 'database locked; redacted conversation pending replay' };
+  } finally {
+    if (db) try { db.close(); } catch {}
+  }
 }
 
 /**
@@ -1275,10 +1368,13 @@ const HOOK_RUN_ID = randomBytes(8).toString('hex');
  * hooks recorded those as `wrote`, each with its own comment saying it was not
  * a memory, and the answer to that question was inflated by all six.
  *
- * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
+ * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, count?: unknown, payload?: object}} info
  */
-export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
+export function recordHookOutcome(env, { hook, outcome, reason, entity, count, payload }) {
+  // Also covers early-exit hooks which do not open a database at all.
+  // Ordinary read/capture paths replay before their work via the helpers above.
   try {
+    if (!nodeSupportProblem()) replayPendingConversations(env);
     // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
     // the database it describes. A test (or a user) that points
     // MEMESH_DB_PATH somewhere else would otherwise split the evidence — a
@@ -1301,6 +1397,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     // JSONL file is a permanent, exportable copy.
     if (reason) record.reason = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(reason)), 200);
     if (entity) record.entity = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(entity)), 200);
+    if (Number.isSafeInteger(count) && count >= 0) record.count = count;
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path. O_NOFOLLOW: the directory
@@ -1346,9 +1443,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
  * @returns {string}
  */
 export function hookErrorReason(err) {
-  const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
-  const e = err && typeof err === 'object' ? err : null;
-  return `uncaught ${label(e?.code) ?? label(e?.name) ?? 'error'}`;
+  return `uncaught ${hookCaughtReason(err)}`;
 }
 
 /**
@@ -1359,6 +1454,13 @@ export function hookErrorReason(err) {
 export function hookCaughtReason(err) {
   const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
   const e = err && typeof err === 'object' ? err : null;
+  // Node SQLite reports a generic code with the SQLite result in errcode.
+  // Extended result codes retain the primary code in their low eight bits.
+  if (e?.code === 'ERR_SQLITE_ERROR' && Number.isInteger(e.errcode) && e.errcode > 0 && e.errcode <= 0x7fffffff
+      && [5, 6].includes(e.errcode & 0xff)) return 'MEMESH_DB_LOCKED';
+  if (typeof e?.code === 'string' && /^SQLITE_(?:BUSY(?:_RECOVERY|_SNAPSHOT|_TIMEOUT)?|LOCKED(?:_SHAREDCACHE|_VTAB)?)$/.test(e.code)) {
+    return 'MEMESH_DB_LOCKED';
+  }
   return label(e?.code) ?? label(e?.name) ?? 'error';
 }
 
@@ -1865,47 +1967,6 @@ export function deriveCaptureTitle(name, observations) {
 }
 
 /**
- * `localHandoff` (the Stop hook's session handoff only): the replacement just
- * restated every word the entity holds with text this machine's agent wrote,
- * so marks that described OLDER text no longer apply. An `import` stamps
- * `trust: 'untrusted'` and `provenance.source: 'import'`, and without this the
- * handoff stays hidden from every later session although each Stop rewrites
- * it. Only those two marks change; every other key (forgotten_observation_hashes
- * among them) is kept. The import provenance becomes this run's `sourceHost`,
- * or no host at all when the host is unknown — never a guessed one. Runs
- * inside captureEntity's transaction, so a failure rolls the replacement back
- * with it. A replacement that stored nothing —
- * every new line filtered as forgotten — throws, which also rolls back: the
- * old text stays, and it keeps its marks.
- */
-function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
-  if (type !== SESSION_HANDOFF_TYPE || !replace) throw new Error('localHandoff applies only to replacing a session handoff');
-  if (written === 0) throw new Error('the handoff replacement stored no text');
-  const raw = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(id)?.metadata;
-  const parsed = parseEntityMetadata(raw);
-  const corrupt = !parsed && raw != null;
-  if (corrupt) {
-    // Same healing, and the same trace, as the title path above: unparseable
-    // metadata holds nothing that can be kept, and left alone it would hide
-    // the handoff from every session.
-    try { process.stderr.write(`MeMesh: healed corrupted metadata for entity ${id}. Original value was unparseable; replaced with {}.\n`); } catch { /* stderr gone */ }
-  }
-  const meta = parsed ?? {};
-  let changed = corrupt;
-  if (meta.trust === 'untrusted') { delete meta.trust; changed = true; }
-  if (meta.provenance?.source === 'import') { meta.provenance = sourceHost ? { source_host: sourceHost } : {}; changed = true; }
-  else if (sourceHost && meta.provenance?.source_host !== sourceHost) {
-    meta.provenance = { ...meta.provenance, source_host: sourceHost };
-    changed = true;
-  }
-  else if (!sourceHost && meta.provenance?.source_host !== undefined) {
-    delete meta.provenance.source_host;
-    changed = true;
-  }
-  if (changed) db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
-}
-
-/**
  * Single owner of the hook-side entity write dance: upsert entity, append
  * observations + tags, and — critically — keep the contentless `entities_fts`
  * index in sync so the memory is recallable via the FTS keyword hot path.
@@ -1941,7 +2002,7 @@ function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
  *   could not be resolved; `archived: true` if the target was archived —
  *   nothing was written, by design
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false, sourceHost = null }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, sourceHost = null }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -1960,10 +2021,10 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }));
+  return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, sourceHost }));
 }
 
-function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, localHandoff, sourceHost }) {
+function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, sourceHost }) {
   // #523: every hook write is redacted here, once, before anything below
   // reads or compares the text — the post-commit hook stored a commit
   // subject like `set token=… for staging` verbatim as title and first
@@ -2015,15 +2076,6 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   // its separate restore behavior.
   if (!isNew && row.status === 'archived') {
     return { id, isNew: false, archived: true };
-  }
-
-  // The handoff's name is `session-handoff:<project>`, and nothing stops a user
-  // from storing a different kind of memory under it. The Stop hook must not
-  // overwrite that memory (nor clear its trust marks): refuse BEFORE anything
-  // is changed. The throw rolls back the transaction, the hook records an
-  // error, and the row stays exactly as it was.
-  if (localHandoff && !isNew && row.type !== type) {
-    throw new Error(`"${name}" is stored as type ${row.type}, not ${type}; the Stop hook leaves it alone`);
   }
 
   // Title update on an EXISTING entity — INSERT OR IGNORE never touches
@@ -2173,7 +2225,6 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     { observationsText: allObsText, title: currentTitle },
   );
 
-  if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length, sourceHost);
 
   // `observationsWritten` is what actually landed, which is no longer the same
   // as `observations.length` once the dedupe above can drop rows. A caller

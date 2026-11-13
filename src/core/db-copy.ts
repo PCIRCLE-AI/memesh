@@ -20,6 +20,11 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 /** Copies kept per kind of change; older ones are removed. */
 export const DB_COPIES_KEPT = 3;
 
+/** Backups follow the database, independently of the account control directory. */
+export function backupDirectoryFor(dbPath: string): string {
+  return path.join(path.dirname(dbPath), 'backups');
+}
+
 export type DbCopyOutcome =
   | { kind: 'ready'; path: string }
   | { kind: 'failed'; reason: string };
@@ -33,7 +38,7 @@ export type DbCopyOutcome =
 export function copyDatabaseBefore(db: MemeshDatabase, prefix: string, inCopy?: (schema: string) => void): DbCopyOutcome {
   const location = db.location();
   if (!location) return { kind: 'failed', reason: 'the database has no file path, so no copy can be made' };
-  const directory = path.join(path.dirname(location), 'backups');
+  const directory = backupDirectoryFor(location);
   const stamp = new Date().toISOString().replace(/[:.]/g, '-');
   const unique = randomUUID().slice(0, 8);
   // The stamp first, so names sort by time; the suffix keeps two copies of one millisecond apart.

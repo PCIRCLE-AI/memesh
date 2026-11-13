@@ -816,6 +816,13 @@ async function main(): Promise<void> {
     return;
   }
   const input = await readHookInput();
+  if (fs.existsSync(path.join(dataDir, 'pending-conversations'))) {
+    // This callback also runs on SessionEnd, when no memory hook follows it.
+    // Reuse the hook writer instead of maintaining a second replay path.
+    const sharedHook = new URL('../../scripts/hooks/_shared.js', import.meta.url);
+    const { replayPendingConversations } = await import(sharedHook.href);
+    replayPendingConversations(process.env);
+  }
   const ending = validateCodexSessionEnd(input, { PLUGIN_ROOT: process.env.PLUGIN_ROOT }, fs.realpathSync);
   if (ending) {
     failureLead = 'session end failed.';

@@ -18,7 +18,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { redactMemoryText, redactShownTogether } from './paths.js';
 import { rankEntities } from './scoring.js';
-import { SESSION_HANDOFF_TYPE, sessionHandoffName } from './session-handoff.js';
+import { HANDOFF_SESSION_LIMIT } from './session-handoff.js';
 import { folderNoteMayTravel, ownFolderNote } from './project-scope.js';
 import { INDEX_CANDIDATE_CAP, INDEX_EXCLUDED_TYPES, INDEX_SNIPPET_FETCH_CHARS, type IndexCandidate } from './briefing-index.js';
 import {
@@ -27,6 +27,7 @@ import {
   EVIDENCE_LAYER_TYPES,
   GLOBAL_TOPOLOGY_LIMIT,
   LESSON_TYPE_LIST,
+  NOTE_FILE_PROVENANCE,
   PREFERENCE_TYPES,
   SHARED_FEEDBACK_TYPE,
   SHARED_TOPOLOGY_LIMIT,
@@ -44,6 +45,8 @@ import {
 const LESSON_POOL_LIMIT = 50;
 const LESSON_LIMIT = 5;
 const RECENT_LIMIT = 5;
+/** User-authored conversation titles shown at session start. */
+export const USER_CONVERSATION_TITLE_LIMIT = 10;
 /** Memories that belong to no project shown to every project's session. */
 const NO_PROJECT_LIMIT = 5;
 /** Recent commits shown after the project's own memories. They take none of its slots. */
@@ -181,13 +184,11 @@ const RECENCY_SQL = `COALESCE(
 
 /** The handoff row of one project: its newest observation, active. Exported
  *  with BriefingPools and PoolOptions because selectBriefingPools' signature uses them. */
-export interface HandoffRow { id: number; name: string; metadata: string | null; text: string; observedAt: string }
+export interface HandoffRow { id: number; name: string; metadata: string | null; text: string; observedAt: string; sessionId: string }
 
 export interface BriefingPools {
-  /** Where the last session in this project left off, if it may be shown. */
-  handoff: HandoffRow | undefined;
-  /** Why an existing handoff row is not in `handoff`: 'untrusted', or undefined. */
-  handoffHidden: 'untrusted' | undefined;
+  /** The latest assistant conversation from each of up to three project sessions. */
+  handoffs: HandoffRow[];
   /** Every trusted lesson in the window (≤ LESSON_POOL_LIMIT), for a count. */
   lessonCount: number;
   lessons: PoolRow[];
@@ -199,6 +200,8 @@ export interface BriefingPools {
   shared: PoolRow[];
   global: PoolRow[];
   recent: PoolRow[];
+  /** Recent user-authored conversation rows for the opening title list. */
+  userConversations: PoolRow[];
 }
 
 export interface PoolOptions {
@@ -227,24 +230,41 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const tagMarks = projectTags.map(() => '?').join(',');
   const columns = candidateColumns(cols);
 
-  // The newest trusted handoff under any id of this project: a handoff is one memory per
-  // project id, replaced at every Stop, so the one under an earlier id is read until
-  // the next Stop writes the current one. An untrusted one (an import) never hides it.
-  const handoffs = guarded('handoff', [] as HandoffRow[], () => db.prepare(
-    `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt
-     FROM entities e JOIN observations o ON o.entity_id = e.id
-     WHERE e.name IN (${ids.map(() => '?').join(',')}) AND e.type = ?${active(cols)}
-     ORDER BY o.id DESC`,
-  ).all(...ids.map(sessionHandoffName), SESSION_HANDOFF_TYPE) as unknown as HandoffRow[], options.onError);
-  const handoff = handoffs.find((row) => trustedForAutoContext(row.metadata));
+  // Read complete assistant conversations instead of writing another project
+  // record. Iterate newest observations first, stopping after three sessions;
+  // many turns from one session cannot crowd the other sessions out.
+  const handoffs = guarded('handoff', [] as HandoffRow[], () => {
+    const rows: HandoffRow[] = [];
+    const seen = new Set<string>();
+    const candidates = db.prepare(
+      `SELECT e.id, e.name, e.metadata, o.content AS text, o.created_at AS observedAt,
+         substr(s.tag, 9) AS sessionId
+       FROM observations o JOIN entities e ON e.id = o.entity_id
+       JOIN tags s ON s.entity_id = e.id AND s.tag LIKE 'session:%' AND length(s.tag) > 8
+       WHERE e.type = 'conversation'${active(cols)}${nonGlobal(cols)}
+         AND EXISTS (SELECT 1 FROM tags p WHERE p.entity_id = e.id AND p.tag IN (${tagMarks}))
+         AND EXISTS (SELECT 1 FROM tags r WHERE r.entity_id = e.id AND r.tag = 'role:assistant')
+         AND NOT EXISTS (SELECT 1 FROM tags r WHERE r.entity_id = e.id AND r.tag = 'role:user')
+         AND NOT EXISTS (SELECT 1 FROM tags s2 WHERE s2.entity_id = e.id AND s2.tag LIKE 'session:%' AND s2.tag <> s.tag)
+       ORDER BY o.id DESC`,
+    ).iterate(...projectTags);
+    for (const candidate of candidates) {
+      const row = candidate as unknown as HandoffRow;
+      if (seen.has(row.sessionId) || !trustedForAutoContext(row.metadata) || !row.text.trim()) continue;
+      seen.add(row.sessionId);
+      rows.push(row);
+      if (rows.length === HANDOFF_SESSION_LIMIT) break;
+    }
+    return rows;
+  }, options.onError);
 
   const projectRows = db.prepare(
     `SELECT DISTINCT ${columns}
      FROM entities e JOIN tags t ON t.entity_id = e.id
-     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${nonGlobal(cols)}
+     WHERE t.tag IN (${tagMarks})${active(cols)} AND e.type <> 'conversation' AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(...projectTags, SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
+  ).all(...projectTags, ...EVIDENCE_TYPE_LIST, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[];
   // Decisions first (#434 step 3): the project's newest trusted decision-layer
   // rows take slots before the score-ordered candidates fill the rest.
   const decisions = guarded('decisions', [] as PoolRow[], () => (db.prepare(
@@ -290,10 +310,10 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   // does not ride into every project's session.
   const noProject = selectPool(db.prepare(
     `SELECT ${columns} FROM entities e
-     WHERE ${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG} AND e.type <> ?${active(cols)}${nonGlobal(cols)}
+     WHERE ${NO_PROJECT_TAG} AND NOT ${HOST_SCOPED_TAG} AND e.type <> 'conversation'${active(cols)}${nonGlobal(cols)}
      ORDER BY e.id DESC
      LIMIT ?`,
-  ).all(SESSION_HANDOFF_TYPE, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], NO_PROJECT_LIMIT);
+  ).all(TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], NO_PROJECT_LIMIT);
 
   // How the user works is shared between projects: a few preferences, and feedback, from the
   // user's own memory folder, that belong to ANOTHER project, in a
@@ -314,14 +334,14 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
          WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%' AND pt.tag NOT IN (${tagMarks})
          ORDER BY pt.tag LIMIT 1) AS source_project
      FROM entities e
-     WHERE e.type <> ?${active(cols)}${nonGlobal(cols)}
+     WHERE 1=1${active(cols)}${nonGlobal(cols)}
        AND (e.type IN (${PREFERENCE_TYPES.map(() => '?').join(',')}) OR e.type = ?)
        AND ${ownFolderNote('e')}
        AND EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag LIKE 'project:%')
        AND NOT EXISTS (SELECT 1 FROM tags pt WHERE pt.entity_id = e.id AND pt.tag IN (${tagMarks}))
      ORDER BY recency IS NULL, recency DESC, e.id DESC
      LIMIT ?`,
-  ).all(...projectTags, SESSION_HANDOFF_TYPE, ...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
+  ).all(...projectTags, ...PREFERENCE_TYPES, SHARED_FEEDBACK_TYPE, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[])
     .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata)).slice(0, SHARED_TOPOLOGY_LIMIT), options.onError);
 
   // `global` is an explicit storage scope, not a project tag: its own bounded
@@ -341,16 +361,28 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
   const recent = options.foreign
     ? selectPool(db.prepare(
       `SELECT ${columns} FROM entities e
-       WHERE NOT ${NO_PROJECT_TAG} AND e.type <> ? AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${active(cols)}${nonGlobal(cols)}
+       WHERE NOT ${NO_PROJECT_TAG} AND e.type <> 'conversation' AND e.type NOT IN (${EVIDENCE_TYPE_LIST.map(() => '?').join(',')})${active(cols)}${nonGlobal(cols)}
          AND (EXISTS (SELECT 1 FROM tags rt WHERE rt.entity_id = e.id AND rt.tag IN (${tagMarks})) OR ${folderNoteMayTravel('e')})
        ORDER BY e.id DESC
        LIMIT ?`,
-    ).all(SESSION_HANDOFF_TYPE, ...EVIDENCE_TYPE_LIST, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
+    ).all(...EVIDENCE_TYPE_LIST, ...projectTags, TOPOLOGY_CANDIDATE_CAP) as unknown as CandidateRow[], RECENT_LIMIT)
     : [];
 
+  // A conversation is not ranked work context. The opening shows only the
+  // user's own titles; assistant replies stay available to recall and S2's
+  // handoff path, but do not crowd this list.
+  const userConversations = (db.prepare(
+    `SELECT DISTINCT ${columns}
+     FROM entities e JOIN tags t ON t.entity_id = e.id
+     WHERE t.tag IN (${tagMarks}) AND e.type = 'conversation'
+       AND EXISTS (SELECT 1 FROM tags role WHERE role.entity_id = e.id AND role.tag = 'role:user')${active(cols)}${nonGlobal(cols)}
+     ORDER BY e.id DESC
+     LIMIT ?`,
+  ).all(...projectTags, USER_CONVERSATION_TITLE_LIMIT) as unknown as CandidateRow[])
+    .map(toPoolRow).filter((row) => trustedForAutoContext(row.metadata));
+
   return {
-    handoff,
-    handoffHidden: handoffs.length > 0 && handoff === undefined ? 'untrusted' : undefined,
+    handoffs,
     lessonCount: lessonRows.length,
     lessons: lessonRows.slice(0, LESSON_LIMIT),
     project,
@@ -358,6 +390,7 @@ export function selectBriefingPools(db: MemeshDatabase, projectName: string, opt
     shared,
     global,
     recent,
+    userConversations,
   };
 }
 
@@ -430,7 +463,9 @@ export function readSnippets(db: MemeshDatabase, ids: readonly number[]): Map<nu
  * what went wrong.
  */
 export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Snippet>, now: number = Date.now()): TopologyEntity {
-  const signal = parseMetadata(row.metadata)?.signal_score;
+  const metadata = parseMetadata(row.metadata);
+  const signal = metadata?.signal_score;
+  const fromNote = (metadata?.provenance as { source?: unknown } | undefined)?.source === NOTE_FILE_PROVENANCE;
   const snippet = snippets.get(row.id);
   const decision = row.type !== null && DECISION_TYPES.has(row.type);
   // #464: redacted like the index, so a memory that is in both cannot be
@@ -460,7 +495,11 @@ export function toTopologyEntity(row: PoolRow, snippets: ReadonlyMap<number, Sni
     // Confirmed when last read (a recall stamps last_accessed_at) or added to:
     // the newest observation, which every decision type has (`recency` only
     // the decision layer).
-    ...(decision ? { why, unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now) } : {}),
+    ...(decision ? {
+      // The user's note is kept as written, without asking it to supply a tool field.
+      ...(!fromNote || why !== null ? { why } : {}),
+      unconfirmedDays: unconfirmedDaysSince([row.last_accessed_at, snippet?.lastAddedAt, row.recency, row.created_at], now),
+    } : {}),
   };
 }
 

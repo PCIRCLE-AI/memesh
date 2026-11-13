@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 import { memeshDir } from './paths.js';
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 
@@ -422,9 +423,10 @@ export async function checkForUpdate(
   try {
     const [latestOutcome, deprecationOutcome] = await Promise.all([
       new Promise<LatestOutcome>((resolve) => {
+        const npm = requireNpmInvocation(['show', '@pcircle/memesh', 'version']);
         execFileImpl(
-          'npm',
-          ['show', '@pcircle/memesh', 'version'],
+          npm.command,
+          npm.args,
           { timeout: timeoutMs },
           (err, stdout) => {
             if (err) {
@@ -439,9 +441,10 @@ export async function checkForUpdate(
         );
       }),
       new Promise<DeprecationOutcome>((resolve) => {
+        const npm = requireNpmInvocation(['view', `@pcircle/memesh@${currentVersion}`, 'deprecated']);
         execFileImpl(
-          'npm',
-          ['view', `@pcircle/memesh@${currentVersion}`, 'deprecated'],
+          npm.command,
+          npm.args,
           { timeout: timeoutMs },
           (err, stdout, stderr) => {
             if (err) {

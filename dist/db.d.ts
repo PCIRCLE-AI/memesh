@@ -12,7 +12,7 @@ export declare function openInitialisedDatabase(resolvedPath: string, opts?: {
     immutableFile?: string;
     readOnly?: boolean;
 }): MemeshDatabase;
-export declare function reindexFts(): {
+export declare function reindexFts(database?: MemeshDatabase): {
     entities: number;
 };
 export declare function closeDatabase(): void;

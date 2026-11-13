@@ -1,14 +1,15 @@
 #!/usr/bin/env node
 
-// Codex PostToolUse: surface newly waiting inbox messages once per thread.
+// Codex PostToolUse: deliver whole pending conversation messages once per thread.
 import { closeSync, constants, existsSync, fstatSync, lstatSync, openSync, readFileSync, readSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'node:fs';
 import { join } from 'node:path';
 import {
-  ensurePrivateDir, getDbPath, getMemeshDirFromDbPath, HOOK_BUSY_TIMEOUT_MS,
-  hookErrorReason, hookMessageSessionId, isCodexHost, openMemeshDb,
-  recordHookOutcome, resolveMessageRecipient, SKIP_REASONS, waitingMessageRefs, writePrivateJson, hookNodeProblem, NODE_TOO_OLD_REASON,
+  ensurePrivateDir, getDbPath, getMemeshDirFromDbPath,
+  hookErrorReason, hookMessageSessionId, isCodexHost, HOOK_BUSY_TIMEOUT_MS,
+  recordHookOutcome, SKIP_REASONS, writePrivateJson, hookNodeProblem, NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { pruneSessionState, SESSION_ID_RE } from './_stop-notes.js';
+import { ConversationMessages } from './_generated/conversation-messages.js';
 
 let input = '';
 // Mirror the router startup lock's owner/PID and inode checks. Contenders
@@ -62,7 +63,7 @@ process.stdin.setEncoding('utf8');
 process.stdin.on('data', chunk => { input += chunk; });
 process.stdin.on('end', () => {
   let payload;
-  let lockPath, lock;
+  let lockPath, lock, store;
   const record = (outcome, reason) => recordHookOutcome(process.env, { hook: 'codex-busy-message-notice', outcome, reason, payload });
   try {
     payload = JSON.parse(input);
@@ -71,13 +72,12 @@ process.stdin.on('end', () => {
     if (!SESSION_ID_RE.test(sessionId)) { record('skipped', SKIP_REASONS.busyNoticeNoSessionId); return; }
     const session = hookMessageSessionId(sessionId);
     if (session.mismatch) { record('skipped', SKIP_REASONS.busyNoticeSessionMismatch); return; }
-    const recipient = resolveMessageRecipient(process.env, undefined, { sessionId, cwd: payload.cwd });
     const dbPath = process.env.MEMESH_DB_PATH ?? getDbPath();
-    if (recipient && hookNodeProblem('codex-busy-message-notice')) {
+    if (hookNodeProblem('codex-busy-message-notice')) {
       record('error', NODE_TOO_OLD_REASON);
       return;
     }
-    if (!recipient || !existsSync(dbPath)) { record('skipped', SKIP_REASONS.busyNoticeNoRecipient); return; }
+    if (!existsSync(dbPath) && !existsSync(join(getMemeshDirFromDbPath(), 'messages.db'))) { record('skipped', SKIP_REASONS.busyNoticeNoRecipient); return; }
     const dir = join(getMemeshDirFromDbPath(), 'codex-busy-message-notice');
     const statePath = join(dir, `${sessionId}.json`);
     ensurePrivateDir(dir);
@@ -87,31 +87,20 @@ process.stdin.on('end', () => {
     let state;
     try { state = JSON.parse(readFileSync(statePath, 'utf8')); } catch { state = {}; }
     const seen = new Set(Array.isArray(state.notified) ? state.notified.filter(id => typeof id === 'string') : []);
-    let db;
-    let failed = false;
-    let refs;
-    try {
-      db = openMemeshDb(dbPath, { readOnly: true });
-      db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-      // Notice-only accepts do not exclude an unread message; a body pushed
-      // to this live thread does, as in the existing Codex reminder path.
-      refs = waitingMessageRefs(db, recipient, session.sessionId, err => { failed = true; record('error', `inbox: ${hookErrorReason(err)}`); }, true, [...seen]);
-    } finally { try { db?.close(); } catch { /* already closed */ } }
-    if (failed) return;
-    if (refs.length === 0) { record('skipped', SKIP_REASONS.busyNoticeNothingWaiting); return; }
+    store = new ConversationMessages({ busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
+    const batch = store.hookBatch(sessionId, [...seen]);
+    const fresh = batch.ids;
+    if (fresh.length === 0) { record('skipped', SKIP_REASONS.busyNoticeNothingWaiting); return; }
     pruneSessionState(dir, Date.now());
-    const fresh = refs;
     const previous = [...seen];
-    for (const ref of fresh) seen.add(ref.message_id);
+    for (const id of fresh) seen.add(id);
     const save = ids => { const tmp = `${statePath}.${process.pid}.tmp`; writePrivateJson(tmp, { notified: ids }); renameSync(tmp, statePath); };
     save([...seen]);
-    const projects = new Map();
-    for (const ref of fresh) projects.set(ref.project, (projects.get(ref.project) ?? 0) + 1);
-    const lines = [...projects].map(([project, count]) => `${count} new message(s) waiting in project ${JSON.stringify(project)}.`);
-    const additionalContext = `MeMesh: ${lines.join(' ')} Poll and fetch each using its project and recipient ${JSON.stringify(recipient)}; for a session-targeted delivery use session ${JSON.stringify(sessionId)} as recipient.`;
+    const additionalContext = batch.text;
     try { writeSync(1, `${JSON.stringify({ hookSpecificOutput: { hookEventName: 'PostToolUse', additionalContext } })}\n`); }
     catch (error) { try { save(previous); } catch { /* preserve original error */ } throw error; }
-    record('notified', 'new waiting message(s)');
+    store.recordHookDelivery(sessionId, fresh, 'PostToolUse');
+    record('notified', 'whole conversation message(s) delivered');
   } catch (error) { record('error', hookErrorReason(error)); }
-  finally { if (lock) releaseLock(lockPath, lock); }
+  finally { try { store?.close(); } finally { if (lock) releaseLock(lockPath, lock); } }
 });

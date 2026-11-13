@@ -9,11 +9,10 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import {
   RECENT_INDEX_SIZE,
   RECENT_TITLE_CHARS,
-  STALE_PENDING_MAX_DAYS,
-  STALE_SUPERSEDE_TAU,
   buildRecentIndex,
 } from '../../src/core/recent-index.js';
 import { PROMPT_RECALL_MAX_LINES, selectPromptRecall } from '../../src/core/prompt-recall.js';
+import { selectBriefingPools, USER_CONVERSATION_TITLE_LIMIT } from '../../src/core/briefing-pools.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-recent-index-');
@@ -72,7 +71,7 @@ function put(row: Row): void {
 const shownIds = (asOf = AS_OF, project: string | null = PROJECT) => buildRecentIndex(getDatabase(), project, asOf).shown.map((r) => r.id);
 
 describe('the session-start recent index', () => {
-  it('lists the 30 most recently written memories, newest observation first, ties by id', () => {
+  it('lists the 30 most recently written memories, newest observation first, ties by newest id', () => {
     // 35 memories, one written a minute apart; 5 and 6 share a second.
     for (let i = 1; i <= 35; i++) {
       const at = `2026-11-01 10:${String(i).padStart(2, '0')}:00`;
@@ -81,8 +80,8 @@ describe('the session-start recent index', () => {
     const ids = shownIds();
     expect(RECENT_INDEX_SIZE).toBe(30);
     expect(ids).toHaveLength(30);
-    // Newest first: 35..7 (29 of them), then the tie at 10:05 broken by id: 5 makes 30, 6 is cut.
-    expect(ids).toEqual([...Array.from({ length: 29 }, (_, i) => 35 - i), 5]);
+    // Newest first: 35..7 (29 of them), then the later write at 10:05: 6 makes 30, 5 is cut.
+    expect(ids).toEqual([...Array.from({ length: 29 }, (_, i) => 35 - i), 6]);
   });
 
   it('a memory with no observation yet at the time asked about is not listed', () => {
@@ -91,18 +90,13 @@ describe('the session-start recent index', () => {
     expect(shownIds()).toEqual([2]);
   });
 
-  it('superseded: a newer decision of the same project with the same topic words replaces the older memory', () => {
-    // A newer decision sharing 2 of 8 topic words (0.25 >= 0.2) replaces the older one.
+  it('keeps older memories even when a newer decision has overlapping title words', () => {
     put({ id: 29898, type: 'decision', title: 'Upgrade plan: Codex implements reviews', created: '2026-11-01 12:29:25' });
     put({ id: 30405, type: 'decision', title: 'Upgrade plan moves to Claude now', created: '2026-11-02 04:25:07' });
-    // 2 of 12 shared (0.17): kept at tau 0.2.
     put({ id: 30078, type: 'decision', title: 'Local cloud link starts after phases one to three', created: '2026-11-01 17:39:56', observed: ['2026-11-01 17:44:13'] });
     put({ id: 37161, type: 'decision', title: 'Stop cloud work; local does not depend on it', created: '2026-11-02 19:22:27' });
     const index = buildRecentIndex(getDatabase(), PROJECT, AS_OF);
-    expect(STALE_SUPERSEDE_TAU).toBe(0.2);
-    expect(index.removed).toEqual([{ id: 29898, reason: 'superseded' }]);
-    expect(index.shown.map((r) => r.id)).toEqual([37161, 30405, 30078]);
-    // The pool keeps it: a prompt's top-2 is compared with the unfiltered 30.
+    expect(index.shown.map((r) => r.id)).toEqual([37161, 30405, 30078, 29898]);
     expect(index.poolIds).toContain(29898);
   });
 
@@ -113,27 +107,15 @@ describe('the session-start recent index', () => {
     expect(shownIds().sort()).toEqual([1, 2, 3]);
   });
 
-  it('waiting: a waiting or temporary title nothing was written to since is out of date, at any age', () => {
-    // The wordings the filter knows: 等 KT, 暫維持, 未解.
+  it('keeps pending and blocked titles in the opening index', () => {
     put({ id: 17338, title: 'Slice 0 完成，等 KT 合併進 main', created: '2026-10-03 14:40:17', observed: ['2026-10-07 14:24:02'] });
     put({ id: 26262, title: 'Slice 1 完成，等 KT 合併與裁決起點', created: '2026-10-08 01:42:19' });
     put({ id: 26666, title: '派單改成推薦候選清單；第一版暫維持人工派單', created: '2026-10-08 19:25:56' });
     put({ id: 5102, title: 'B1-B4 出貨。未解：分群按週不按語意', created: '2026-09-19 17:00:38' });
-    // Written to one hour before: still more than 0 days.
     put({ id: 9, title: 'Release is pending review', created: '2026-11-02 23:00:00' });
     put({ id: 10, title: 'Release shipped', created: '2026-11-02 22:00:00' });
     const index = buildRecentIndex(getDatabase(), PROJECT, AS_OF);
-    expect(STALE_PENDING_MAX_DAYS).toBe(0);
-    expect(index.removed.map((r) => [r.id, r.reason]).sort()).toEqual([[17338, 'waiting'], [26262, 'waiting'], [26666, 'waiting'], [5102, 'waiting'], [9, 'waiting']].sort());
-    expect(index.shown.map((r) => r.id)).toEqual([10]);
-  });
-
-  it('what the filter removes is not replaced by the next memory', () => {
-    for (let i = 1; i <= 31; i++) put({ id: i, title: i === 31 ? 'waiting for review' : `Distinct subject q${i}`, created: `2026-11-01 10:${String(i).padStart(2, '0')}:00` });
-    const index = buildRecentIndex(getDatabase(), PROJECT, AS_OF);
-    expect(index.poolIds).toHaveLength(30);
-    expect(index.shown).toHaveLength(29);
-    expect(index.shown.map((r) => r.id)).not.toContain(1);
+    expect(index.shown.map((r) => r.id)).toEqual([9, 10, 26666, 26262, 17338, 5102]);
   });
 
   it('scope: this project and its id from before hashes, and no-project memories; never another project (global or not), a host-scoped, untrusted, feedback, captured or archived one', () => {
@@ -152,9 +134,10 @@ describe('the session-start recent index', () => {
     put({ id: 12, created: at, title: 'Captured', tags: [`project:${PROJECT}`, 'source:auto-capture'] });
     put({ id: 13, created: at, title: 'Archived', status: 'archived' });
     put({ id: 14, created: at, title: 'Task', type: 'task-state' });
-    expect(shownIds()).toEqual([1, 2, 3]);
+    put({ id: 15, created: at, title: 'Assistant conversation', type: 'conversation', tags: [`project:${PROJECT}`, 'role:assistant'] });
+    expect(shownIds()).toEqual([3, 2, 1]);
     // From the other project's side, only its own (the global one included) and the no-project one.
-    expect(shownIds(AS_OF, OTHER)).toEqual([3, 4, 5]);
+    expect(shownIds(AS_OF, OTHER)).toEqual([5, 4, 3]);
   });
 
   it('a project whose folder has the same name is another project: neither index shows the other one\'s memories', () => {
@@ -178,25 +161,11 @@ describe('the session-start recent index', () => {
       put({ id: 2, created: at, title: 'Under the path id', tags: [`project:${repo.pathId}`] });
       put({ id: 3, created: at, title: 'Under the legacy id', tags: [`project:${LEGACY}`] });
       put({ id: 4, created: at, title: 'Another proj repository', tags: [`project:${SAME_NAME}`] });
-      expect(buildRecentIndex(getDatabase(), repo.remoteId, AS_OF, repo.dir).shown.map((r) => r.id)).toEqual([1, 2, 3]);
+      expect(buildRecentIndex(getDatabase(), repo.remoteId, AS_OF, repo.dir).shown.map((r) => r.id)).toEqual([3, 2, 1]);
       // Without the folder only the id itself and its legacy form are known.
-      expect(shownIds(AS_OF, repo.remoteId)).toEqual([1, 3]);
+      expect(shownIds(AS_OF, repo.remoteId)).toEqual([3, 1]);
       // A folder that is not the asked project's checkout adds nothing (the hash-less id is every `proj~` id's legacy form).
-      expect(buildRecentIndex(getDatabase(), SAME_NAME, AS_OF, repo.dir).shown.map((r) => r.id)).toEqual([3, 4]);
-    } finally {
-      repo.cleanup();
-    }
-  });
-
-  it('superseded treats every id of one checkout, and its legacy id, as one project', () => {
-    const repo = checkout();
-    try {
-      put({ id: 1, type: 'decision', title: 'Upgrade plan: Codex implements reviews', created: '2026-11-01 12:29:25', tags: [`project:${repo.pathId}`] });
-      put({ id: 2, type: 'decision', title: 'Upgrade plan moves to Claude now', created: '2026-11-02 04:25:07', tags: [`project:${repo.remoteId}`] });
-      put({ id: 3, type: 'decision', title: 'Cloud link starts after phase three', created: '2026-11-01 12:00:00', tags: [`project:${LEGACY}`] });
-      put({ id: 4, type: 'decision', title: 'Cloud link waits for phase three review', created: '2026-11-02 05:00:00', tags: [`project:${repo.remoteId}`] });
-      expect(buildRecentIndex(getDatabase(), repo.remoteId, AS_OF, repo.dir).removed.sort((a, b) => a.id - b.id))
-        .toEqual([{ id: 1, reason: 'superseded' }, { id: 3, reason: 'superseded' }]);
+      expect(buildRecentIndex(getDatabase(), SAME_NAME, AS_OF, repo.dir).shown.map((r) => r.id)).toEqual([4, 3]);
     } finally {
       repo.cleanup();
     }
@@ -243,12 +212,24 @@ describe('the session-start recent index', () => {
 
   it('an empty graph gives no section at all', () => {
     const index = buildRecentIndex(getDatabase(), PROJECT, AS_OF);
-    expect(index).toEqual({ poolIds: [], shown: [], removed: [], lines: [] });
+    expect(index).toEqual({ poolIds: [], shown: [], lines: [] });
   });
 
-  it('when every recent memory is out of date it says so instead of listing nothing', () => {
-    put({ id: 1, created: '2026-11-01 10:00:00', title: 'Still waiting for KT' });
-    expect(buildRecentIndex(getDatabase(), PROJECT, AS_OF).lines[1]).toMatch(/^- The 1 most recent memories all look out of date/);
+  it('keeps at most ten user conversation titles for opening, never assistant conversation rows', () => {
+    const graph = new KnowledgeGraph(getDatabase());
+    for (let i = 0; i < 11; i++) {
+      graph.createEntity(`user-${i}`, 'conversation', {
+        title: `User title ${i}`, observations: [`User title ${i}`], tags: [`project:${PROJECT}`, `role:user`],
+      });
+    }
+    graph.createEntity('assistant-only', 'conversation', {
+      title: 'Assistant title', observations: ['Assistant title'], tags: [`project:${PROJECT}`, 'role:assistant'],
+    });
+    const pools = selectBriefingPools(getDatabase(), PROJECT, { projectLimit: 5, global: false, foreign: false });
+    expect(USER_CONVERSATION_TITLE_LIMIT).toBe(10);
+    expect(pools.userConversations).toHaveLength(10);
+    expect(pools.userConversations.map((row) => row.title)).not.toContain('Assistant title');
+    expect(pools.project.map((row) => row.name)).not.toContain('assistant-only');
   });
 });
 
@@ -264,35 +245,13 @@ describe('the per-prompt top-2', () => {
     expect(hit.text.split('\n').filter((l) => /^- .* \[mem:\d+\]$/.test(l))).toHaveLength(2);
   });
 
-  it('a waiting match is dropped and not replaced by the third match', () => {
+  it('a pending match remains available to prompt recall', () => {
     kg().createEntity('a', 'reference', { title: 'Zebrafish quokka is pending', observations: ['zebrafish quokka marmot pending'], tags });
-    kg().createEntity('b', 'reference', { title: 'Zebrafish quokka notes', observations: ['zebrafish quokka marmot notes'], tags });
-    kg().createEntity('c', 'reference', { title: 'Zebrafish quokka extra', observations: ['zebrafish quokka marmot extra'], tags });
     getDatabase().prepare("UPDATE entities SET created_at = '2026-01-01 00:00:00'").run();
     getDatabase().prepare("UPDATE observations SET created_at = '2026-01-01 00:00:00'").run();
-    const all = selectPromptRecall(getDatabase(), 'zebrafish quokka marmot', { project: PROJECT, maxLines: 3 });
-    const top = all.ids.slice(0, 2);
     const hit = selectPromptRecall(getDatabase(), 'zebrafish quokka marmot', { project: PROJECT });
     const pendingId = (getDatabase().prepare("SELECT id FROM entities WHERE name = 'a'").get() as { id: number }).id;
-    if (top.includes(pendingId)) {
-      expect(hit.ids).toEqual(top.filter((id) => id !== pendingId));
-      expect(hit.removed).toEqual([{ id: pendingId, reason: 'waiting' }]);
-    } else {
-      expect(hit.ids).toEqual(top);
-    }
-    expect(hit.ids).toHaveLength(top.includes(pendingId) ? 1 : 2);
-  });
-
-  it('a match a newer decision in the session index replaces is dropped', () => {
-    put({ id: 900, type: 'decision', title: 'Upgrade plan moves to Claude now', created: '2026-11-02 04:25:07' });
-    kg().createEntity('codex-implements', 'decision', { title: 'Upgrade plan: Codex implements reviews', observations: ['zebrafish quokka marmot plan'], tags });
-    getDatabase().prepare("UPDATE entities SET created_at = '2026-11-01 12:29:25' WHERE name = 'codex-implements'").run();
-    getDatabase().prepare("UPDATE observations SET created_at = '2026-11-01 12:29:25' WHERE entity_id = (SELECT id FROM entities WHERE name = 'codex-implements')").run();
-    const without = selectPromptRecall(getDatabase(), 'zebrafish quokka marmot', { project: PROJECT, minCoverage: 0.1, createdBefore: AS_OF });
-    expect(without.ids).toHaveLength(1);
-    const withPool = selectPromptRecall(getDatabase(), 'zebrafish quokka marmot', { project: PROJECT, minCoverage: 0.1, createdBefore: AS_OF, recentPool: [900] });
-    expect(withPool.ids).toEqual([]);
-    expect(withPool.reason).toBe('stale');
+    expect(hit.ids).toContain(pendingId);
   });
 
   it('an already shown match is dropped and not replaced', () => {
@@ -302,10 +261,10 @@ describe('the per-prompt top-2', () => {
     expect(again.ids).toEqual([first.ids[1]]);
   });
 
-  it('a line is `- <title> [mem:<id>]` with no type label', () => {
+  it('a prompt line includes title, content and recall handle with no type label', () => {
     kg().createEntity('zebra-one', 'decision', { title: 'Zebrafish quokka rule', observations: ['zebrafish quokka marmot'], tags });
     const hit = selectPromptRecall(getDatabase(), 'zebrafish quokka marmot', { project: PROJECT });
-    expect(hit.text).toContain(`- Zebrafish quokka rule [mem:${hit.ids[0]}]`);
+    expect(hit.text).toContain(`- Zebrafish quokka rule — zebrafish quokka marmot [mem:${hit.ids[0]}]`);
     expect(hit.text).not.toContain('[decision]');
   });
 

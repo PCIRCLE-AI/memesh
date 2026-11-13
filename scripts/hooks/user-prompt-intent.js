@@ -3,13 +3,12 @@
 // User Prompt Intent — UserPromptSubmit hook
 //
 // Runs on every prompt and does only deterministic work:
-//   - tells the agent about messages waiting for this session's recipient;
 //   - on a Node that cannot run MeMesh, records why and stays silent;
-//   - records a prompt over MAX_PROMPT_CHARS as skipped;
+//   - stores the full user prompt, with secrets redacted;
 //   - leaves a hook-outcome record on every exit path.
-// It does not read the prompt's words. Saving is on by default, and whether
-// the user asked not to save is the model's call, from the `remember` tool
-// description. (The file keeps its old name: renaming it would move the
+// It does not classify the prompt's words. Saving is on by default; users can
+// request removal of specific memories through the existing `forget` tool.
+// (The file keeps its old name: renaming it would move the
 // install paths.)
 //
 // Defensive: never blocks user prompts, even on hook failure. Errors are
@@ -17,18 +16,38 @@
 // swallowed — stderr does not affect prompt submission.
 
 import { pathToFileURL } from 'url';
+import { createHash, randomUUID } from 'crypto';
 import {
+  AUTO_CAPTURE_TAG,
+  captureConversation,
+  getProjectName,
+  hookSourceHost,
+  isAutoCaptureEnabled,
+  redactSecrets,
   hookErrorReason,
   SKIP_REASONS,
   recordHookOutcome,
-  unreadMessageLines,
-  SESSION_ID_MISMATCH_REASON,
 } from './_shared.js';
 import { hookNodeProblem, NODE_TOO_OLD_REASON } from './_shared.js';
 import { realpathSync } from 'fs';
 
-/** Longest prompt (in characters) the hook accepts; a larger one is recorded as skipped. */
-export const MAX_PROMPT_CHARS = 256 * 1024;
+export function captureUserConversation(data, env = process.env) {
+  if (!isAutoCaptureEnabled(env)) return { skipped: true, reason: SKIP_REASONS.autoCaptureOff };
+  const prompt = data.prompt ?? data.user_prompt;
+  if (typeof prompt !== 'string' || !prompt.trim()) return { skipped: true, reason: 'empty prompt' };
+  if (!data.cwd || typeof data.session_id !== 'string' || !data.session_id) return { skipped: true, reason: 'conversation cwd or session absent' };
+  const text = redactSecrets(prompt);
+  const eventId = data.prompt_id ?? data.turn_id;
+  const identity = typeof eventId === 'string' && eventId ? createHash('sha256').update(JSON.stringify([data.session_id, eventId, 'user'])).digest('hex') : randomUUID();
+  return captureConversation({
+    name: `conversation-${identity}`,
+    type: 'conversation',
+    title: text.split('\n').find(line => line.trim())?.trim().slice(0, 120),
+    observations: [text],
+    tags: [AUTO_CAPTURE_TAG, `project:${getProjectName(data.cwd)}`, `session:${data.session_id}`, 'role:user'],
+    sourceHost: hookSourceHost(data, env),
+  }, env);
+}
 
 function logError(scope, msg) {
   // Hooks may write to stderr without blocking prompt submission. Use this
@@ -98,40 +117,19 @@ if (isMainModule) {
       }
 
       payload = data;
-      // On a Node that cannot run MeMesh the reminders below would send the agent to tools that always fail.
+      // A Node that cannot run MeMesh cannot capture this prompt.
       if (hookNodeProblem('user-prompt-intent')) {
         record('error', NODE_TOO_OLD_REASON);
         return process.exit(0);
       }
-      // Claude Code sends `prompt`; `user_prompt` is the older name. The text itself is never read.
-      const prompt = data.prompt ?? data.user_prompt ?? '';
-      const promptSkipped = typeof prompt === 'string' && prompt.length > MAX_PROMPT_CHARS;
-      if (promptSkipped) record('skipped', SKIP_REASONS.promptTooLarge);
-      // Messages waiting for the recipient this session declared in
-      // MEMESH_RECIPIENT, or — under Claude Code with the channel configured,
-      // or under Codex with no MEMESH_RECIPIENT at all — the owner-private
-      // host fallback (resolveMessageRecipient).
-      // Read-only and not memory capture, so it is not gated by autoCapture.
-      // Empty when neither source names a recipient. An inbox that cannot be
-      // read is recorded as an `error` of its own (a label, never the
-      // message), next to whatever this prompt's outcome turns out to be, so
-      // a skip below cannot be read as "nothing was waiting". A rejected
-      // MEMESH_RECIPIENT is also recorded, as `notified`.
-      const inboxLines = unreadMessageLines(
-        process.env,
-        (err) => record('error', `inbox: ${hookErrorReason(err)}`),
-        (label) => record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`),
-        { sessionId: data.session_id, cwd: data.cwd },
-        () => record('notified', SESSION_ID_MISMATCH_REASON),
-      );
-      if (inboxLines.length === 0) {
-        // An oversized prompt already has its own record.
-        if (!promptSkipped) record('skipped', SKIP_REASONS.noMessageWaiting);
-        return process.exit(0);
+      // The separately declared messages.js hook delivers whole conversation messages.
+      try {
+        const captured = captureUserConversation(data);
+        record(captured.skipped ? 'skipped' : captured.queued ? 'error' : 'wrote', captured.reason);
+      } catch (err) {
+        logError('user-prompt-intent', `capture: ${err?.message || err}`);
+        record('error', `capture: ${hookErrorReason(err)}`);
       }
-      const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: inboxLines.join('\n') } };
-      process.stdout.write(JSON.stringify(out));
-      record('notified', undefined, 'hint:inbox');
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);

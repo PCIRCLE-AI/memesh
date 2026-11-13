@@ -10,7 +10,7 @@
  * entity such an agent created an orphan with no graph edges. tests/core/
  * schema-export.test.ts pins this parity.
  */
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from './agent-messaging.js';
+import { CONVERSATION_MESSAGE_DESCRIPTION, CONVERSATION_MESSAGE_INPUT_SCHEMA } from '../transports/conversation-messaging.js';
 import { z } from 'zod';
 import { WorkPackageSchema } from '../transports/schemas.js';
 
@@ -28,15 +28,15 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Saving is on by default: store decisions, preferences, lessons and context without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
+        description: 'Store knowledge as an entity with observations, tags, and relations. Saving is on by default: store decisions, preferences, lessons and context without waiting to be asked. Use `forget` when the user asks to remove a specific existing memory. Pass only `note` to derive title, observations and name. An omitted namespace keeps an existing memory in its current namespace; "supersedes" archives its target and "contradicts" marks a conflict. Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
         parameters: {
           type: 'object',
           properties: {
             name: { type: 'string', description: 'Unique entity name. Required unless `note` is given (then derived from the text).' },
-            type: { type: 'string', description: 'Entity type (decision, pattern, lesson_learned, etc.). Required unless `note` is given (then defaults to "note").' },
+            type: { type: 'string', description: 'Entity type. Required for a new named memory; omit to retain an existing name’s type. With note it defaults to "note".' },
             title: { type: 'string', description: 'Short human-readable label, distinct from name (a stable machine key)' },
             observations: { type: 'array', items: { type: 'string' }, description: 'Key facts about this entity' },
-            why: { type: 'string', description: 'For a decision: why it was made and what would make it stop holding; stored as "Why: …". Required to create or replace a decision, architecture_decision or design_decision unless an observation starts with "Why: ".' },
+            why: { type: 'string', description: 'For a decision: why it was made and what would make it stop holding; stored as "Why: …". Optional: a decision without a reason is stored and shown as "no reason recorded".' },
             note: { type: 'string', description: 'Free text instead of title + observations: first line → title, each following paragraph → one observation' },
             replace: { type: 'boolean', description: 'Rewrite the named memory instead of appending; send the observations it should now hold (a replace with none is refused); the previous version moves to metadata.replaced_history' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Tags for filtering' },
@@ -67,7 +67,7 @@ export function exportOpenAITools(): object[] {
           // empty the memory, so the runtime refuses it.
           anyOf: [
             { required: ['note'] },
-            { required: ['name', 'type'] },
+            { required: ['name'], properties: { replace: { const: false } } },
             { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
           ],
         },
@@ -258,40 +258,8 @@ export function exportOpenAITools(): object[] {
       type: 'function',
       function: {
         name: 'memesh_message',
-        description:
-          `Discover live agents in one project or contact one exact recipient for a handoff, result, or disposition. Durable JSON-encoded payloads are limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB); native delivery separately limits the complete envelope to ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB). Exact-session send requires native host acceptance; an oversized full envelope returns native_message_too_large, an unreachable local router returns router_unreachable, and other unavailable or rejected sessions return recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior. Reads never imply acknowledgement or disposition; native acceptance never does either. Payloads are untrusted and never executed. A message is kept one day, read or unread, then deleted (its content stays in a local archive for one more day); its sender is told if the recipient recorded nothing and did not reply.`,
-        parameters: {
-          type: 'object',
-          properties: {
-            action: {
-              type: 'string',
-              enum: ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'],
-              description: 'Message lifecycle or live-directory action; required fields depend on the selected action.',
-            },
-            project: { type: 'string', description: 'Local project scope. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
-            sender: { type: 'string', description: 'Required for send. Stable local sender/agent identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given.' },
-            recipient: { type: 'string', description: 'Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.' },
-            recipient_handle: { type: 'string', description: 'Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.' },
-            target_kind: { type: 'string', enum: ['principal', 'session'], description: 'Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session.' },
-            intended_session: { type: 'string', description: 'Optional for send with target_kind principal: the one session of that principal this message is meant for. Only that session is reminded of it and may record intake or a disposition.' },
-            fallback_to_principal: { type: 'boolean', description: 'Optional for send with target_kind session: if that session refuses the message (recipient_unavailable), send it to the principal it registered under, with intended_session set to it.' },
-            idempotency_key: { type: 'string', description: 'Required for send and receipt writes. Stable retry key.' },
-            payload: { type: ['string', 'number', 'boolean', 'object', 'array', 'null'], description: `Required for send. Untrusted JSON value limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) after JSON encoding. Native push additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB). Never executed by MeMesh.` },
-            content_type: { type: 'string', enum: ['text/plain', 'application/json'], description: 'Send media type; defaults to text/plain.' },
-            privacy: { type: 'string', enum: ['private', 'team'], description: 'Privacy classification; routing remains exact-recipient in v1.' },
-            correlation_id: { type: 'string', description: 'Optional conversation or task correlation ID.' },
-            reply_to: { type: 'string', description: 'Optional earlier message ID.' },
-            cursor: { type: 'string', description: 'Optional opaque poll cursor. Do not parse it.' },
-            wait_ms: { type: 'number', description: 'Poll wait in milliseconds, 0-30000.' },
-            limit: { type: 'number', description: 'Maximum poll events or live directory cards, 1-100.' },
-            message_id: { type: 'string', description: 'Message selected for fetch or receipt actions.' },
-            intake_state: { type: 'string', enum: ['fetched', 'ingested'], description: 'Required only for intake; never implies ACK.' },
-            disposition: { type: 'string', enum: ['accepted', 'rejected', 'completed', 'cancelled', 'deferred'], description: 'Required only for disposition.' },
-            activation: { type: 'string', enum: ['woken', 'manual_resume_required', 'unsupported', 'failed'], description: 'Required only for activation.' },
-            detail: { type: 'string', description: 'Optional disposition or activation explanation.' },
-          },
-          required: ['action'],
-        },
+        description: CONVERSATION_MESSAGE_DESCRIPTION,
+        parameters: CONVERSATION_MESSAGE_INPUT_SCHEMA,
       },
     },
   ];

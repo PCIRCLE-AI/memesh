@@ -28,6 +28,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { binTargets, hookCommands } from './lib/executable-targets.mjs';
 import { isMain } from './lib/verify-core.mjs';
+import { buildIsolatedSuiteEnv } from './lib/isolated-env.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const rootOption = process.argv.indexOf('--root');
@@ -274,12 +275,11 @@ async function main() {
   const routerTokenFile = path.join(gateRoot, 'r.token');
 
   const baseEnv = {
-    ...process.env,
+    ...buildIsolatedSuiteEnv(process.env, { runtimeHome: gateRoot }),
     MEMESH_DIR: memeshDir,
     MEMESH_DB_PATH: memeshDbPath,
     MEMESH_AUTO_UPDATE: '0',
   };
-  delete baseEnv.MEMESH_HOST_CONFIG;
 
   // Two distinct kinds of finding, reported and counted separately: an
   // entry point that did not start (counted against `checked`) and a

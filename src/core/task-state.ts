@@ -284,29 +284,6 @@ export function taskStateLines(
 // #360 — the briefing surfaces' stale-task-state rule
 // =============================================================================
 //
-// A task state nobody has revisited in a long time reads as current when it
-// is not — the exact failure that cost this block its "Where X was left off"
-// heading (see the comment above `taskStateLines`): a stale claim shown with
-// full confidence. The fix there was to attribute rather than assert; this
-// goes one step further and stops showing the claim at all once it is old
-// enough that an agent acting on it is more likely to be wrong than right.
-//
-// This does NOT change `taskStateLines` above. `memesh task` (the CLI's own
-// "what does this say" command) renders directly through it, and a human who
-// just typed `memesh task` must see the actual value — telling them to
-// "run `memesh task`" to see what `memesh task` just printed would be
-// circular. Staleness only applies to the two INJECTION surfaces (the
-// SessionStart hook and the `briefing` tool/CLI), so it lives in a separate
-// function those two call instead.
-/**
- * A task state whose last change is older than this is not injected as
- * current. 72 hours (three days): long enough that a goal stated on a Friday
- * still reads on the following Monday, short enough that "not revisited
- * since" reliably means "may no longer be true" rather than "normal weekend
- * gap". Applies at every briefing level, `full` included (#360).
- */
-export const STALE_TASK_STATE_HOURS = 72;
-
 /**
  * Codex review round 1, item 3: a clock is never perfectly synchronised.
  * Without an allowance, a task state stated one second ago on a host whose
@@ -438,83 +415,4 @@ function resolveTaskStateAge(updatedAt: string | undefined, now: Date): { known:
   const hours = (now.getTime() - then) / 3_600_000;
   if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60)) return { known: false };
   return { known: true, hours: Math.max(0, hours) };
-}
-
-/** The one-line stale flag: names the age, and the command that shows the
- *  full (possibly still-true) record — `memesh task`, the CLI command that
- *  renders `taskStateLines` directly, unaffected by this staleness rule. */
-function staleTaskStateLine(project: string, hours: number): string {
-  const days = Math.floor(hours / 24);
-  const age = days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? '' : 's'} ago`;
-  return `Task state for ${jsonStringLiteral(projectLabel(project))} was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
-}
-
-/** The one-line "we cannot tell how old this is" flag — deliberately
- *  different wording from `staleTaskStateLine` above: that one names a
- *  known age past the threshold, this one names the ABSENCE of a
- *  trustworthy age (missing, unparseable, or too far in the future). An
- *  agent reading hook-outcomes.jsonl or the block itself must be able to
- *  tell the two apart without opening the code. */
-function taskStateAgeUnknownLine(project: string): string {
-  return `Task state for ${jsonStringLiteral(projectLabel(project))} has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
-}
-
-/**
- * The task-state lines for an INJECTED briefing (SessionStart hook, the
- * `briefing` tool/CLI) — the ONE function both call, so they cannot disagree
- * about the stale rule or about what a level does to a fresh state.
- *
- *   - no state recorded            -> []
- *   - age unknown (missing/         -> ONE line (regardless of `includeFresh`
- *     unparseable/future beyond        — same reasoning as the stale case:
- *     the skew allowance)              an agent still benefits from being
- *                                       told a record exists but could not
- *                                       be trusted, over believing there was
- *                                       never one stated at all)
- *   - state older than the         -> ONE line (regardless of `includeFresh`
- *     threshold ("stale")             — see the module comment above)
- *   - state fresh, includeFresh    -> the full block (`taskStateLines`)
- *   - state fresh, !includeFresh   -> [] (the level does not show task state
- *                                       at all — e.g. `minimal`)
- *
- * `includeFresh` is the ONLY lever a briefing level has over task state
- * (`briefing-level.ts`'s `BriefingLevelPolicy.taskState`): neither flag line
- * is gated by it, for the same reason in both cases.
- * With per-field dates, these rules apply to each field independently. A
- * mixed record injects its fresh fields plus a notice about omitted fields;
- * the full CLI read still shows all fields with their own dates (#406).
- */
-export function briefingTaskStateLines(
-  state: TaskState,
-  project: string,
-  now: Date = new Date(),
-  { includeFresh = true }: { includeFresh?: boolean } = {},
-): string[] {
-  if (isEmptyTaskState(state)) return [];
-  if (state.stated_at !== undefined) {
-    const present = TASK_STATE_FIELDS.filter((field) => state[field]);
-    const ages = present.map((field) => resolveTaskStateAge(fieldStatedAt(state, field), now));
-    const fresh = present.filter((_, index) => ages[index].known && ages[index].hours <= STALE_TASK_STATE_HOURS);
-    if (fresh.length === 0) {
-      if (ages.some((age) => !age.known)) return [taskStateAgeUnknownLine(project)];
-      return [staleTaskStateLine(project, Math.min(...ages.map((age) => age.known ? age.hours : Infinity)))];
-    }
-    const shown: TaskState = { updated_at: state.updated_at, stated_at: state.stated_at };
-    // Redact the entire field set before omitting stale fields; a credential
-    // can straddle a fresh and an old field in a legacy stored record.
-    const redacted = redactShownTogether(present.map((field) => state[field] as string));
-    present.forEach((field, index) => { if (fresh.includes(field)) shown[field] = redacted[index] as string; });
-    const lines = includeFresh ? taskStateLines(shown, project, now) : [];
-    const omitted = present.filter((field) => !fresh.includes(field));
-    if (omitted.length > 0) {
-      lines.push(`Task state for ${jsonStringLiteral(projectLabel(project))} has older or unknown-age fields (${omitted.join(', ')}) not shown as current. Run \`memesh task\` to see or update them.`);
-    }
-    return lines;
-  }
-  const age = resolveTaskStateAge(state.updated_at, now);
-  if (!age.known) return [taskStateAgeUnknownLine(project)];
-  if (age.hours > STALE_TASK_STATE_HOURS) {
-    return [staleTaskStateLine(project, age.hours)];
-  }
-  return includeFresh ? taskStateLines(state, project, now) : [];
 }

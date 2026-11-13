@@ -90,16 +90,8 @@ export function checkRuntime(ctx: NetworkContext, timeoutMs: number = CHECK_TIME
  * kills npm itself. Node's Windows installs keep it beside node.exe. If it is not
  * there, npm counts as not found rather than falling back to a shell.
  */
-export function npmInvocation(
-  args: string[],
-  platform: NodeJS.Platform = process.platform,
-  execPath: string = process.execPath,
-  exists: (file: string) => boolean = fs.existsSync,
-): { command: string; args: string[] } | null {
-  if (platform !== 'win32') return { command: 'npm', args };
-  const cli = path.win32.join(path.win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-  return exists(cli) ? { command: execPath, args: [cli, ...args] } : null;
-}
+export { npmInvocation } from '../core/npm-launch.js';
+import { npmInvocation } from '../core/npm-launch.js';
 
 function runNpmCi(ctx: NetworkContext, directory: string): void {
   // --include=optional: the native files are optional packages, and a user's

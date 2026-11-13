@@ -40,17 +40,17 @@ The `ref` is strict and kind-specific. A digest ref has `project`, sorted unique
 
 ### remember
 
-Store knowledge as an entity with observations, tags, and relations. Saving is on by default: the agent stores decisions, preferences, lessons and context without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content.
+Store knowledge as an entity with observations, tags, and relations. Saving is on by default: the agent stores decisions, preferences, lessons and context without waiting to be asked. When the user asks to remove a specific existing memory, identify it with `recall` and use `forget` on that memory or the selected observation.
 
 Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.
 
 If `remember` is called again with an existing `name`, MeMesh treats it as an append-style upsert: new observations are appended, tags are deduped, and the original entity type is retained. With `replace: true` it rewrites the entity instead (see below).
 
-**Project over MCP.** A memory belongs to one project, or to none. `project: "<id>"` or a `project:<id>` tag names the project (a `project:` tag with no id names nothing, and is refused beside the bound project). `project: false` stores a memory that belongs to no project — a preference, a general lesson — with no project tag and no binding needed. With neither (a `null` `project` counts as not given), the MCP tool files the memory under the session's bound project — `MEMESH_PROJECT_ROOT` (an absolute path to an existing directory) from the launch, or the client's workspace roots when they all name one project — and adds its `project:` tag; with no bound project the call is refused with `workspace_unavailable` (or `workspace_ambiguous`), naming these options. A `project` that contradicts a project tag, and two different project tags, are refused. A name is one memory for every project, so a write that names a project — by argument, tag or binding — is refused on a name, or a `supersedes` target, that belongs to another project or to no project; a write with no project is refused on one that belongs to a project. Use a different name. A refused call writes nothing. The same ownership check, the two-tag refusal and the tag-contradiction refusal apply to the CLI and the HTTP API when they carry a project tag; otherwise they keep their own defaults.
+**Project over MCP.** A memory belongs to one project, or to none. `project: "<id>"` or a `project:<id>` tag names the project; `project: false` stores a memory with no project tag. Without either, a new memory uses the session's bound project (`MEMESH_PROJECT_ROOT` or the client's matching workspace roots); without a usable binding the call is refused. When appending to an existing unfiled memory, omitting both the project and project tag keeps it unfiled. An explicit project or tag cannot move that memory, and a memory or `supersedes` target owned by another project remains protected. A contradictory or second project tag is refused, and a refused call writes nothing. The unfiled exception applies only to append, not `replace`.
 
-**Project over the CLI.** `memesh remember` files the memory under the current directory's project, as MCP does for its bound one, unless `--tags` names a `project:<id>`; `--no-project` files it under no project. Detail such as a commit therefore stays in its project, while decisions, lessons and preferences that are not untrusted and not from a memory folder are found from every project by type.
+**Project over the CLI.** A new `memesh remember` memory uses the current directory's project unless `--project`, `--no-project` or a `project:` tag specifies otherwise. An append to an existing unfiled memory with no explicit project or project tag stays unfiled, even in a Git project. Explicit scope changes and writes to another project's memory are refused.
 
-Two forms. **Structured**: `name` + `type`, with `title` / `observations`. **Note**: `note` alone (free text), with optional `type`, `tags`, `name`, `why` — the server derives the rest:
+Two forms. **Structured**: `name` + `type` for a new memory, with `title` / `observations`; an existing name can omit `type` and retain its stored type. **Note**: `note` alone (free text), with optional `type`, `tags`, `name`, `why` — the server derives the rest:
 
 - `title` = the first non-empty line (a leading `#` heading or list marker is dropped; a line over 200 characters is cut to its first sentence, then to 200). When the line had to be cut, the full original line is *also* kept as the first observation — nothing the caller wrote is dropped, so a long first line ends up in the response twice: shortened as the title, in full as an observation;
 - `observations` = the remaining paragraphs, one each (blank-line separated; a paragraph made only of list items gives one observation per item). A one-line note keeps its line as the single observation;
@@ -66,14 +66,14 @@ The note is cleaned before anything is derived from it: control characters (othe
 | Parameter | Type | Required | Description |
 |-----------|------|----------|-------------|
 | `name` | string | Unless `note` | Unique entity name (e.g., `"auth-decision"`, `"jwt-pattern"`). Derived from the text when `note` is given without one |
-| `type` | string | Unless `note` | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson_learned"`). Defaults to `"note"` with `note`. `lesson` and `mistake` are stored as `lesson_learned` (#451) |
+| `type` | string | New named memory without `note` | Entity type (e.g., `"decision"`, `"pattern"`, `"lesson_learned"`). An existing name keeps its type when omitted; `note` defaults to `"note"`. `lesson` and `mistake` are stored as `lesson_learned` (#451) |
 | `note` | string | No | Free text instead of `title` + `observations` (see above) |
 | `replace` | boolean | No | Rewrite the named memory instead of appending (see above); needs `observations` or `note`. Default `false` |
 | `title` | string | No | Short human-readable label shown wherever the memory is listed (e.g. `"Why we dropped JWT"`), max 200 characters — longer is **rejected**, not truncated, so the caller can shorten it themselves. On an entity that already exists, supplying this replaces the title; omitting it leaves the title it already has. Whitespace-only counts as omitted. |
 | `observations` | string[] | No | Key facts or observations about this entity |
-| `why` | string | For a new decision | Why a decision was made AND what would make it stop holding. Stored as the observation `Why: <text>` (redacted like the others) and shown after the decision's title in `briefing` and at session start. Creating, or `replace`-ing, a memory of type `decision`, `architecture_decision` or `design_decision` without it — and without an observation that starts with `Why: ` — is refused with a message naming both halves; adding to an existing decision does not need it. A decision written by an untrusted writer — a note file from a folder that is not your own memory folder, or an `import` without `--trust` — is never refused for lacking it: it is stored and `recall`able, and appears in the briefing only once it is trusted. An accepted dream proposal is not refused either; it is briefed as "(no reason recorded)". A reason typed with its own `Why: ` label is stored with one label, not two |
-| `tags` | string[] | No | Tags for filtering (tags that start with `source:` are reserved for MeMesh and refused over MCP, HTTP and the CLI; e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope — except that a `project:<name>` tag naming the call's own project by its plain name is stored as the id, unless a memory the call updates or supersedes is already filed under the plain tag (see `retagged` below; #511). Over MCP, omit the project tag to file the memory under the session's bound project; at most one project tag |
-| `project` | string \| `false` | No | MCP only. The project id, or `false` for a memory with no project. Omitted or `null`: a `project:` tag, else the bound project (see above) |
+| `why` | string | Optional | Why a decision was made and what would make it stop holding. Stored as `Why: <text>` and shown with the decision. A decision without a reason is stored and labelled "no reason recorded"; the missing reason does not change its trust. |
+| `tags` | string[] | No | Tags for filtering (tags that start with `source:` are reserved for MeMesh and refused over MCP, HTTP and the CLI; e.g., `"project:<id>"`, where `<id>` is the `project` field of the `briefing` result (CLI: `memesh briefing --json`), `"topic:database"`). A plain repository name is a different project scope — except that a `project:<name>` tag naming the call's own project by its plain name is stored as the id, unless a memory the call updates or supersedes is already filed under the plain tag (see `retagged` below; #511). Over MCP, a new memory without a project tag uses the bound project; an append to an existing unfiled memory remains unfiled. At most one project tag |
+| `project` | string \| `false` | No | MCP only. The project id, or `false` for a memory with no project. Omitted or `null`: a `project:` tag, else the bound project, except an append to an existing unfiled memory stays unfiled (see above) |
 | `relations` | object[] | No | Relations to other entities |
 | `namespace` | string | No | Namespace scope: `"personal"` (default), `"team"`, or `"global"`. On an entity that already exists, supplying this **moves** it; omitting it leaves the namespace it already has. |
 
@@ -128,11 +128,11 @@ it. Do not read `derived.title` as the stored title — that is the title the
 text would have produced, which on an existing memory is exactly the one that
 was not used.
 
-With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title` + the `observations` to keep, which can be copied from `derived.observations`; without observations the call is refused). `derived.observations` is only what the note produced: it does not include the `Why:` line, so a replace that corrects a `decision` must send `why` again. `type` is required on a call that omits `note` **except** on a `replace` with a `name`: that call keeps the type the memory already has, so a correction does not have to restate it. Pass a `type` there only to reclassify — `replace` rewrites the stored type when it differs from what you pass, compared with the canonical form of what you pass: `type: "lesson"` does not retype a memory stored as `lesson_learned`, and it does retype one an older version stored as `lesson` (#451). On a `replace` whose `name` does not exist there is no stored type to inherit, so `type` is required to create it. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
+With `note`, the response also carries `derived: { name, type, title, observations }` — the shape the server derived, so a wrong title can be corrected with one more call (`name` + `replace: true` + `title` + the `observations` to keep, which can be copied from `derived.observations`; without observations the call is refused). `derived.observations` is only what the note produced: it does not include the `Why:` line, so send `why` again when the replacement should retain that reason. A call naming an existing memory can omit `type` and retain its stored type; a new named memory without `note` requires `type`. Pass a `type` there only to reclassify — `replace` rewrites the stored type when it differs from what you pass, compared with the canonical form of what you pass: `type: "lesson"` does not retype a memory stored as `lesson_learned`, and it does retype one an older version stored as `lesson` (#451). On a `replace` whose `name` does not exist there is no stored type to inherit, so `type` is required to create it. With `replace: true` the response also carries `replaced: true` when an existing memory was rewritten, `false` when there was nothing to replace.
 
 Five more fields are conditional. `retagged` appears when a `project:<name>` tag named the call's own project by its plain name (MCP: the `project` argument or the bound project; CLI: the current directory's project) while that project's id is `<name>~<hash>`: the tag was stored as the full id, and `retagged` is `{ from, to }`, each a whole tag (`"project:<name>"`, `"project:<name>~<hash>"`). It is absent when a memory the call updates or supersedes already carries the plain tag, which then stays as written (#511). `relationsCreated` lists the relations actually created — report from it rather than subtracting errors from what you asked for. `superseded` lists the names archived because a `supersedes` relation pointed at them. `relationErrors` is included when a relation target does not exist; the entity is still stored. `movedFromNamespace` appears only when the call MOVED a memory that already existed, naming the scope it came from, and pairs with `metadata.previous_namespace` so the move can be reversed.
 
-**Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. Memories the hooks capture on their own (commits, session summaries, the session handoff) are stamped with the host that ran the hook, `claude-code` or `codex` — the same host the hook's outcome record names — and carry no host when the hook cannot tell. A locally replaced session handoff is the exception: its source follows the latest writer, and briefing/SessionStart name a known Claude Code or Codex source in the handoff heading. Legacy handoffs without a known source retain their original heading. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
+**Write provenance.** Every entity created through `remember` or `learn` carries `metadata.provenance.source_host` — which surface wrote it. It is **not an input parameter** on any transport (a provenance field the caller's model could fill in is not provenance); the transport sets it: the MCP server stamps the client's self-declared `initialize` name (`claude-code`, `codex`, `gemini-cli`, …; `mcp` when the client declares none), the CLI stamps `cli`, and the HTTP API stamps `http`. The stamp lands on first insert only — appending to an existing entity from another host does not rewrite it. Memories the hooks capture on their own (commits, session summaries, assistant conversations) are stamped with the host that ran the hook, `claude-code` or `codex` — the same host the hook's outcome record names — and carry no host when the hook cannot tell. Session tails name a known source host in their heading when available. The field is returned wherever entity `metadata` is returned (e.g. `recall` results).
 
 **Supersedes behavior:** When a relation has type `"supersedes"`, the target entity is automatically archived. This enables knowledge evolution — new designs replace old ones without losing history.
 
@@ -769,7 +769,7 @@ The MCP tool files the lesson under `project` when given, else under the session
 
 ### task_state
 
-Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project; fresh state is injected at the top of the next session's context at `standard`/`full` — see **Briefing levels** below for detail — while `minimal`, the default, never shows a fresh state and a stale or unknown-age one instead gets a one-line status at every level, `minimal` included, and `memesh task` (no arguments) always shows every stored field regardless of level — with credential-shaped text and home-directory paths redacted. The JSON forms (see below) redact credential-shaped text and return paths as stored.
+Read or update where the work stands on a project: the goal, the next step, what is blocked, and what was just finished. There is exactly one state per project; state is injected at every briefing level, including the default `minimal`, with each field attributed to its date or labelled unknown. `memesh task` (no arguments) shows every stored field regardless of level, with credential-shaped text and home-directory paths redacted. The JSON forms (see below) redact credential-shaped text and return paths as stored.
 
 Call it with **no arguments** to read. Any field present is a write. Each written field has credential-shaped substrings replaced with `***REDACTED***` before it is stored — in the stored record, the title and the history alike — and every field is redacted again when it is read or shown — the briefing and session-start lines, `memesh task` and `memesh task --json`, this tool's read form and `GET /v1/task-state` all return the redacted fields, and so does the state a write answers with (this tool with fields, `memesh task … --json`) — so a task state stored before this rule cannot carry one into the agent's context either (#523). Restating a field still compares against, and overwrites, the stored text.
 
@@ -785,7 +785,7 @@ Call it with **no arguments** to read. Any field present is a write. Each writte
 | `blocked` | string | No | What is standing in the way |
 | `done` | string | No | What was just finished |
 
-Each field has its own date in `state.stated_at`. Changing `goal` does not refresh an untouched `done`, `next`, or `blocked`; clearing a field also removes its date. The CLI's complete text shows each field's date. At `standard`/`full`, briefing and SessionStart show only fields with a known date no older than 72 hours (allowing five minutes of clock skew), and flag omitted old or unknown-age fields at every level. Legacy records without `stated_at` retain their original shared `updated_at`; the first changed write preserves a valid original shared timestamp as `legacy_updated_at` provenance. Untouched legacy fields keep their values but their individual dates remain unknown: a shared timestamp cannot prove when each field was stated. Only explicitly changed fields receive a new individual date. Subsequent changes do not refresh the preserved legacy provenance.
+Each field has its own date in `state.stated_at`. Changing `goal` does not refresh an untouched `done`, `next`, or `blocked`; clearing a field also removes its date. The CLI, briefing and SessionStart show each field with its date or an unknown-date label at every level, including old fields. Invalid or more than five minutes future-dated timestamps do not receive a guessed age. Legacy records without `stated_at` retain their original shared `updated_at`; the first changed write preserves a valid original shared timestamp as `legacy_updated_at` provenance. Untouched legacy fields keep their values but their individual dates remain unknown: a shared timestamp cannot prove when each field was stated. Only explicitly changed fields receive a new individual date. Subsequent changes do not refresh the preserved legacy provenance.
 
 Passing an **empty string** clears a field — that is how a blocker is removed once it is resolved. Omitting a field leaves it untouched, which is a different thing.
 
@@ -831,7 +831,7 @@ Passing an **empty string** clears a field — that is how a blocker is removed 
 
 ### briefing
 
-The `briefing` tool returns an eligible project handoff ahead of ranked memories, together with project decisions, lessons, knowledge, recent activity, up to five memories that belong to no project (preferences, general lessons; every level), up to three preferences of your other projects (`preference`, `user_preference` or `feedback`, only those MeMesh imported from your own memory folder; labelled with the project they came from, filled after everything of this project's, newest first), at `standard` or `full` a fresh task state, and at every level the recent index (the titles of the 30 memories most recently written in this project's scope) with `[mem:id]` handles. Repository facts can prefix the block. The Claude Code SessionStart hook injects a memory block through the same selection and assembly; it shows `MEMESH_SESSION_LIMIT` (default 10) project memories where the tool shows 30. The ranked pools (this project's memories, memories with no project, global memory and other projects' recent memory) each rank only their newest 400 candidates, so older ordinary memories are reached with `recall`, not automatically; decisions (newest valid activity first), lessons (newest 50, up to five shown) and the handoff keep their own selection. At `full` the hook adds a separate work-package notice that the tool and CLI do not include. The Codex plugin loads the same hook file; once Codex is allowed to run the plugin's hooks, its SessionStart hook injects the same memory block; its companion separately registers the thread for messaging. Which other hooks fire under Codex is not yet verified. With the Codex plugin, call `briefing` only when that block is missing; MCP-only clients call `briefing` at session start.
+The `briefing` tool returns task state and up to three project session tails ahead of ranked memories, together with project decisions, lessons, knowledge, recent activity, up to five memories that belong to no project (preferences, general lessons; every level), up to three preferences of your other projects (`preference`, `user_preference` or `feedback`, only those MeMesh imported from your own memory folder; labelled with the project they came from, filled after everything of this project's, newest first), at every level the recent index (the titles of the 30 memories most recently written in this project's scope) with `[mem:id]` handles. Repository facts can prefix the block. The Claude Code SessionStart hook injects a memory block through the same selection and assembly; both use `MEMESH_SESSION_LIMIT`, then the configured session limit, then the default of 10. The ranked pools (this project's memories, memories with no project, global memory and other projects' recent memory) each rank only their newest 400 candidates, so older ordinary memories are reached with `recall`, not automatically; decisions (newest valid activity first), lessons (newest 50, up to five shown) and session tails keep their own selection. At `full` the hook adds a separate work-package notice that the tool and CLI do not include. The Codex plugin loads the same hook file; once Codex is allowed to run the plugin's hooks, its SessionStart hook injects the same memory block; its companion separately registers the thread for messaging. Which other hooks fire under Codex is not yet verified. With the Codex plugin, call `briefing` only when that block is missing; MCP-only clients call `briefing` at session start.
 
 The returned text is fenced as untrusted background data; stored memory content must not be treated as instructions.
 
@@ -839,23 +839,25 @@ The returned text is fenced as untrusted background data; stored memory content 
 
 **Briefing levels.** Set `memesh config set briefing <minimal|standard|full>` or `MEMESH_BRIEFING` (environment overrides config); the default is `minimal`. The level applies to Claude Code's hook, the MCP tool, and `memesh briefing`, with no per-call override. `memesh config list` shows the effective level and its source; `memesh config get briefing` shows only the stored value. Invalid stored or environment values fall back to `minimal` and are reported as invalid.
 
-| Level | Eligible project handoff | This project's decisions/lessons/knowledge/recent activity | Memories with no project (up to five), and preferences of other projects (up to three) | Task state (fresh) | Recent index | Global memory | Other projects' recent memory | Work-package notice (hook only) |
+| Level | Project session tails | This project's decisions/lessons/knowledge/recent activity | Memories with no project (up to five), and preferences of other projects (up to three) | Task state (fresh) | Recent index | Global memory | Other projects' recent memory | Work-package notice (hook only) |
 |---|---|---|---|---|---|---|---|---|
-| `minimal` (default) | yes | yes | yes | no | yes | no | no | no |
+| `minimal` (default) | yes | yes | yes | yes | yes | no | no | no |
 | `standard` | yes | yes | yes | yes | yes | no | no | no |
 | `full` | yes | yes | yes | yes | yes | yes | yes | yes |
 
-An eligible handoff leads the saved-memory portion at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity, and up to five memories that belong to no project (every level, under their own heading; never global ones, which have their own pool at `full`), and your preferences from other projects: at most three (`preference`, `user_preference` and `feedback`, only those MeMesh imported from your own memory folder), newest first, each labelled `(from <project>)`, in their own section after everything of this project's, so they take only what is left. Only notes of a memory folder are shown unasked, and only what MeMesh itself vouches for: that a note came from such a folder is set by the note importer alone (a tag or a type an agent writes proves nothing, and an agent that rewrites an imported note, with `remember` or the memory tool, loses that mark). The folder holds what you and the agent wrote there; a note whose file was deleted is not shown. Another project's decisions and lessons, and any preference an agent wrote, would let one project's captured text steer another if they were put in front of it unasked (a preference that applies everywhere is stored with no project, which has its own pool); they stay one `recall` away. Another project's commits, session summaries, handoffs, notes and any other `feedback` never appear. The project's own memories are read under every id its checkout has been filed under, and its handoff is the newest trusted one under any of them (an untrusted one, such as an import, never hides it). The recent index (the titles of the 30 memories most recently written in this project's scope) closes the block at every level. `standard` adds fresh task state. `full` also adds global memory and other projects' recent activity; of another project's memory-folder notes it too shows only the preferences and feedback. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
+Task state precedes session tails at every level; repository facts, when present, prefix the block. `minimal` otherwise includes this project's decisions, lessons, knowledge, and recent activity, and up to five memories that belong to no project (every level, under their own heading; never global ones, which have their own pool at `full`), and your preferences from other projects: at most three (`preference`, `user_preference` and `feedback`, only those MeMesh imported from your own memory folder), newest first, each labelled `(from <project>)`, in their own section after everything of this project's, so they take only what is left. Only notes of a memory folder are shown unasked, and only what MeMesh itself vouches for: that a note came from such a folder is set by the note importer alone (a tag or a type an agent writes proves nothing, and an agent that rewrites an imported note, with `remember` or the memory tool, loses that mark). The folder holds what you and the agent wrote there; a note whose file was deleted is not shown. Another project's decisions and lessons, and any preference an agent wrote, would let one project's captured text steer another if they were put in front of it unasked (a preference that applies everywhere is stored with no project, which has its own pool); they stay one `recall` away. At `minimal` and `standard`, another project's detail does not appear in the ranked sections. The project's own memories are read under every id its checkout has been filed under, and session tails select the latest trusted assistant conversation per session across those ids (an untrusted one, such as an import, never hides a trusted one). The recent index (the titles of the 30 memories most recently written in this project's scope) closes the block at every level. `standard` uses the same memory selection as `minimal`. `full` also adds global memory and other projects' recent activity; of another project's memory-folder notes it too shows only the preferences and feedback. The work-package notice at `full` belongs only to the Claude Code SessionStart hook, not to the MCP tool or CLI.
 
 A decision (`decision`, `architecture_decision`, `design_decision`) is shown with its latest `Why:` observation after the title — `- [decision] SQLite for local-first storage — Why: PostgreSQL is too heavy to deploy for one user; revisit if we add a hosted tier [mem:12]` — or with `(no reason recorded)` when it has none; a decision whose only observation is its reason shows that reason once. When nobody has read it (`recall` stamps it) or added to it (its newest observation, whatever the decision type) for 30 days, the line also says `(unconfirmed N days: re-check before relying)`; a `recall` that returns it clears that. The durable-memory catalog (`briefing --index`) marks its decision lines the same way; the recent index shows titles only. The markers and the `[mem:id]` handle are never cut. When a decision line is longer than its budget (160 characters in the ranked block, 120 in the catalog, counted after the `- [type] ` prefix and including the markers and handle) the title is clipped first, down to 40 characters, and only then the reason, so the reason gets room before the title does (it is still cut when it is very long, and in the index's 120 characters little room is left for it once the unconfirmed note is shown).
 
-The saved-memory lines inside the fence share one 4000 UTF-16 code-unit limit across the eligible handoff, displayed task state and unread-inbox notice (when addressed to an exact recipient), ranked memories and global memory at `full`. Repository facts before the saved-memory lines, the recent index after them, the fence/preface, and the hook-only work-package notice are outside that limit. The displayed task state is shortened to at most 1200 code units (320 per line); `memesh task` still reads the complete stored record. Recent trusted project decision-layer memories (`decision`, `milestone`, `pattern`, `technical_pattern`, `product_improvement`, `goal`, `plan`) take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. A lesson that has a fix (an observation starting `Fix: `, the form `learn` stores; the latest one when there are several) is shown as `Fix: … — <title, else first observation>`, without repeating the fix when the title or first observation is the fix itself. Each line's text after its `- [type] ` prefix is cut to 160 characters, so a long fix can leave no room for the title or error after it, and a very long fix is itself cut; the shared limit above never shortens a line, it leaves whole lines out, so a lesson that has a fix is not guaranteed to be shown. Other memories, and lessons without a fix, show their title or first non-empty observation as before. Memory lines may be omitted when the shared limit fills.
+Opening context and briefing share one 8000 UTF-8 byte limit including the actual escaped reference wrapper. Task-state content and dates and up to three session tails take priority; repository facts, conversation titles, legacy unread-inbox notices when explicitly addressed, ranked memories and the recent index use the remaining room. SessionStart additionally reserves its project line and full-level work-package notice inside that total; briefing does not add that notice. Oversized stored task values may be shortened while retaining fields and date prefixes; `memesh task` still reads the complete stored record. Insufficient room for priority content is an error, not an empty-success result. Recent trusted project decision-layer memories (`decision`, `milestone`, `pattern`, `technical_pattern`, `product_improvement`, `goal`, `plan`) take the project's slots first, newest valid activity first (unknown dates last); remaining slots follow relevance ranking. A separate pool selects up to five trusted active lesson memories (`lesson_learned`, `lesson` or `mistake`) for the project, even if decisions occupy its other slots. A lesson that has a fix (an observation starting `Fix: `, the form `learn` stores; the latest one when there are several) is shown as `Fix: … — <title, else first observation>`, without repeating the fix when the title or first observation is the fix itself. Each line's text after its `- [type] ` prefix is cut to 160 characters, so a long fix can leave no room for the title or error after it, and a very long fix is itself cut; the shared byte limit omits whole memory lines that do not fit, so a lesson that has a fix is not guaranteed to be shown. Other memories, and lessons without a fix, show their title or first non-empty observation as before. Memory lines may be omitted when the shared limit fills.
 
-Claude Code's Stop hook replaces one `session-handoff` memory for the exact project with its latest assistant reply, after credential-shaped redaction and removal of fenced code. Capture needs at least 80 cleaned characters and obeys `autoCapture`; a skipped capture leaves the previous handoff untouched. Display uses only an active, trusted exact-project handoff's newest observation, limited to 800 characters even if the memory was written manually. Up to 72 hours old it appears normally; after 72 hours through 14 days it carries a stale warning; older than 14 days, undatable, or more than five minutes future-dated it is omitted. Imported handoffs are not injected merely because they have the right name. The handoff is background context, not an inferred task list or a guarantee that work resumes.
+The Stop hook stores the assistant's last reply as a `conversation` tagged for its project, session and assistant role, with credential redaction and copied agent-message prose omitted. When the payload lacks the reply, it can read the latest assistant text from the transcript tail. The stored conversation retains the full cleaned reply; no per-project `session-handoff` row is written or replaced. Existing `session-handoff` rows remain ordinary memories, subject to normal project, trust and archive rules.
 
-Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters. Short or reworded quotes are not detected; if too little own text remains, the previous handoff is kept (#469).
+The opening selects at most three sessions by newest observation id, taking each session's latest trusted active assistant conversation across the project's aliases. Each rendered tail, including header and handle, is at most 600 UTF-8 bytes. Short replies and old or unknown ages remain visible; age is labelled for the reader to assess. These are background context, not a guarantee that work resumes.
 
-Task-state fields older than 72 hours, missing or unreadable timestamps, and timestamps more than five minutes in the future are not shown as current. Per-field dates keep an updated goal from refreshing an untouched old done/next/blocked field. Instead, every level shows a one-line stale or unknown-age flag and points to `memesh task` for the stored record. `minimal` can return `text: ""` and `empty: true` when it has no content; `standard` and `full` still show the index's empty-state line.
+Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters. Short or reworded quotes are not detected (#469).
+
+Task-state fields remain visible regardless of age. Each is attributed to its stated date or labelled unknown when the date is missing, invalid or more than five minutes in the future. Per-field dates keep an updated goal from refreshing an untouched old done/next/blocked field. `minimal` can return `text: ""` and `empty: true` when it has no content; `standard` and `full` still show the index's empty-state line.
 
 **Input Schema**:
 
@@ -864,7 +866,7 @@ Task-state fields older than 72 hours, missing or unreadable timestamps, and tim
 | `project` | string | No | Project name. When omitted, the session's bound project: `MEMESH_PROJECT_ROOT` (an absolute path to an existing directory) from the launch, or the client's workspace roots (`roots/list`) when they all name one project. They must agree. Unbound, an invalid `MEMESH_PROJECT_ROOT`, a workspace root that is not an existing local directory, or advertised roots that could not be read → `workspace_unavailable`; disagreement → `workspace_ambiguous`. The server's own working directory is never used. An explicit `project` is used as given. |
 | `recipient` | string | No | Exact logical recipient, in the same canonical form the `message` tool uses — NFC, never a filesystem path — because this counts the same inbox key. When supplied, reports only that recipient's deliveries for the project that have no `intake` receipt yet, excluding deliveries addressed to a different session of the same principal (#497); a caller with no session identity (for example the CLI run from an ordinary shell) therefore sees a count that leaves out every delivery addressed to one particular session. Fetching a message does not clear it; only recording `intake` does. If the inbox exists but cannot be read, the block says it could not be read, includes the reason (the SQLite error, on one line, at most 200 characters) and says to run `memesh doctor`, instead of reporting that nothing is waiting. At zero unread, the block also says so explicitly if this exact recipient id has never been addressed in this project either (a durable delivery, or a registered principal or session, live or not) — distinct from a real, quiet inbox, so a typo'd recipient is never indistinguishable from "nothing waiting". Omit for generic context; generic briefing never reports unread activity. |
 
-**Response** (shown at level `standard`, which has a task state and the index to show; at the default, `minimal`, `hasTaskState` is `false` for a fresh task state and `text` carries neither it nor the index):
+**Response** (shown at level `standard`, which has a task state and the index to show; the default `minimal` also displays task state and the recent index):
 
 ```json
 {
@@ -883,23 +885,23 @@ At `minimal` on a project with nothing to show, the response has `text: ""` and 
 
 `bytes`/`tokens` above are shown as `"…"` because the `lines` they measure are abbreviated in this example — they are only reproducible for a fully spelled-out set of lines (see the `GET /v1/briefing-index` response below for one).
 
-`hasTaskState` is `true` exactly when a task-state line is included: the fresh state (at `standard`/`full`), the one-line stale flag, or the unreadable-record line. `hasHandoff` is `true` exactly when an eligible handoff is displayed. The unread-message reminder that `recipient` adds rides beside them but is not a task state and does not count.
+`hasTaskState` is `true` exactly when a task-state line is included: a dated or unknown-date state at any level, or the unreadable-record line. `hasHandoff` is `true` exactly when a session tail is displayed. The unread-message reminder that `recipient` adds rides beside them but is not a task state and does not count.
 
 **Project names in the text.** `project` returns the full project ID (`<label>~<32 lowercase hex>` for current IDs). Headings use only the readable label; `project:` tags, entity names, `--project`, and unread-message routing use the full ID.
 
-`entityCount` counts the ranked memory lines actually rendered into the block (the shared limit can cut candidates), excluding the handoff, task-state block, and recent index. `index` is always computed and returned regardless of level; it is the durable-memory catalog, not the recent index inside `text`. `level` is the resolved level this result was assembled at. Also available as `memesh briefing` on the CLI, for agents whose only integration is a shell.
+`entityCount` counts the ranked memory lines actually rendered into the block (the shared limit can cut candidates), excluding the session tails, task-state block, and recent index. `index` is always computed and returned regardless of level; it is the durable-memory catalog, not the recent index inside `text`. `level` is the resolved level this result was assembled at. Also available as `memesh briefing` on the CLI, for agents whose only integration is a shell.
 
-**The recent index.** At every level the block closes with the titles of the 30 memories most recently written in this project's scope, newest first (newest observation, else creation; ties by id; a memory needs at least one observation). Scope is the one prompt-time recall searches: this project (its id, the other id its checkout is known by when the session's folder is known — remote and path — and the hash-less id from before ids carried a hash; another folder with the same name is another project, and case counts) and memories with no project and no `platform:*`/`agent:*` tag; never another project's memory, even a `global`-namespace one; trusted rows only (imported, untrusted or unreadable metadata is left out); no `source:auto-capture` rows; no evidence-layer types, `task-state`, `session-handoff`, `digest`, `release-notice`, `feedback` or `engineering_feedback`. Each line is `- <title> [mem:<id>]`: the title, else the name, redacted, then cut to 120 characters; no type label, no summary. Before it is shown, a memory is left out when a newer decision of the same project in the same 30 shares at least 0.2 of its topic words (English words and Chinese character pairs of its title and name, Jaccard), or when its title says it is waiting or temporary (`pending`, `waiting`, `TODO`, `WIP`, `blocked`, 等待, 等 KT, 待合併, 暫時, 未解, 尚未, ...) and nothing was written to it since; nothing is put in its place. The unfiltered 30 ids are kept in the session's injection record, and the prompt-time recall hook compares its matches with them. The section is absent when the scope holds no memory. It is not cut by the 4000-character limit below; its own ceiling is at most 30 lines of at most 139 characters (4,199 with line breaks), plus its heading (ids of up to 10 digits).
+**Opening indexes and prompt content.** The opening remains a bounded overview with recent user-conversation titles (up to ten); captured assistant replies do not join that title list. Any displayed `[mem:id]` is a reference, not proof that the full observations were read. A matching prompt can therefore bring the memory content even when its title appeared at opening: up to two selected memories, at most one assistant conversation, within 4096 UTF-8 bytes including the data notice, fences and handles. Truncated content is marked with its recall ID. Trust, scope and archived-status checks still apply; pending or blocked title words do not hide a memory. Prompt-hook content is deduplicated separately from the opening citation ledger. See [Prompt Recall](../ARCHITECTURE.md#prompt-recall-scriptshooksprompt-recalljs).
 
 **The durable-memory catalog.** `memesh briefing --index` prints a capped catalog of this project's durable memories, regardless of the configured level (`--index --json` for structured output); it is the result's `index` field and `GET /v1/briefing-index`, and it is not injected. Use `recall` for questions or more results.
 
-- One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints), `task-state`, and `session-handoff` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id). A decision's line also carries its latest `Why:` reason or `(no reason recorded)`, and `(unconfirmed N days: re-check before relying)` after 30 days without a read or a new observation, exactly as in the ranked block; the index keeps its own 120-character cap on the text after the `- [type] ` prefix, and those marks are never cut from it.
+- One line per durable memory — every type except the evidence layer (`EVIDENCE_LAYER_TYPES` in `src/core/work-topology.ts`: commits, session insights and summaries, keypoints, session identity, weekly summaries, checkpoints), and `task-state` — as `- [type] title — first observation [mem:id]`, newest activity first (the later of creation and the newest observation; ties by id). A decision's line also carries its latest `Why:` reason or `(no reason recorded)`, and `(unconfirmed N days: re-check before relying)` after 30 days without a read or a new observation, exactly as in the ranked block; the index keeps its own 120-character cap on the text after the `- [type] ` prefix, and those marks are never cut from it.
 - Scope: active `project:<name>` rows outside the `global` namespace; imported or untrusted rows are excluded from automatic injection.
 - Titles and snippets have credential-shaped secrets and user paths redacted — in the ranked sections above the index as well as in the index itself (#464). Both `briefing` and the SessionStart hook redact in the row reads and row-to-line mapping they share (`src/core/briefing-pools.ts`), with `redactMemoryText` (`src/core/paths.ts`), because the line builder `topologyLine` is bundled for the browser and cannot; the whole first observation is redacted before it is shortened for the line, so a credential longer than the shortening window does not leak its prefix. Every memory line also has runs of non-whitespace C0/C1 control characters, DEL, and bidi override/isolate characters replaced with a space (`stripControlChars` in `src/core/work-topology.ts`) before it reaches `lines`, whether read through `text`, the standalone `index` field, or `GET /v1/briefing-index` (#374). The heading and empty-state line use the project's readable label without redaction; the `N more` command prints a literal `"project:…"` placeholder rather than a real project name.
 - Memories with no change for 180 days are counted in one `N older memories … — recall to see` line instead of listed.
-- The standalone index (`--index` and the response's `index` field) allows at most 40 memory lines and 3072 UTF-8 bytes. The index injected into a `standard`/`full` briefing also fits the remaining room in the shared 4000-unit block, so it may show fewer lines. When capped, `- N more — memesh recall --tag "project:…"` signals additional matches; replace the literal placeholder with the actual project tag before running it. A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
+- The standalone index (`--index` and the response's `index` field) allows at most 40 memory lines and 3072 UTF-8 bytes. The recent index in a briefing is a separate list of titles. When capped, `- N more — memesh recall --tag "project:…"` signals additional matches; replace the literal placeholder with the actual project tag before running it. A `+` after a count means the 2000-row candidate window was full, so the count is a lower bound.
 - The footer reports `(index cost: N lines, B bytes ≈ T tokens; cap 40 lines / 3072 bytes)`. `B` covers the whole section including footer, `T = ceil(B / 4)`, and `index.bytes` / `index.tokens` report the same values.
-- With no durable memories, `standard`/`full` show `- No durable memories (decisions, lessons, patterns, references) for "<label>" yet.`. At `minimal`, a project with no eligible handoff, ranked memories, or stale-state flag can return empty text; a fresh task state alone is not shown. Repository facts appear only when other content is present.
+- With no durable memories, `standard`/`full` show `- No durable memories (decisions, lessons, patterns, references) for "<label>" yet.`. At `minimal`, a project with no session tails, ranked memories, or task-state lines can return empty text. Repository facts appear only when other content is present.
 - SessionStart records the index's rendered ids with the injected set, so a `[mem:id]` citation of an index line is credited like a ranked one. If the hook cannot read the index it says so in the block and records an `error` outcome; it never shows the empty-state line for a failed read.
 
 **Examples**:
@@ -1011,81 +1013,20 @@ Status returns the proposal state, source IDs, review timestamps/reason, and `ac
 
 ### message
 
-Discover live registrations or exchange durable exact-recipient messages between local hosts connected to the same MeMesh SQLite instance. One tool owns both surfaces so every transport uses the same validation and state semantics. `discover` and a principal-target `send`/`fetch` are independent: an empty `discover` result does not predict whether that will work, since durable store-and-forward to a named recipient needs neither the router nor any live registration — but an exact `target_kind: "session"` send still needs both.
+The MCP conversation action is one of `discover`, `send`, `read`, or `status`. Host identity supplies the sender; callers do not provide project, sender, privacy, idempotency, target kind, payload, or legacy receipt fields.
 
-**When to use it:** use `discover` when you know the project but not the right live recipient; use `send` to hand off work, ask for a result, or report a disposition. For `target_kind: "session"`, MeMesh hands the message to the exact active native host and returns only after `host_accept`: the Claude Code channel gets the bounded full envelope; the Claude inbox and Codex CLI queue send only a short notice naming the message, whose body the agent then fetches from the inbox. An oversized full envelope returns `native_message_too_large`; if the sender's connection to the local router fails or times out it returns `router_unreachable` (an invalid socket path, or a protocol or identity error from a reachable router, is returned as is); an absent, stopped, disconnected, or otherwise rejected exact session returns `recipient_unavailable`. Durable state remains available for scoped recovery in each case, but a failed exact-session native delivery is not automatically replayed when that session later registers. Principal targets retain durable store-and-forward behavior. A briefing can surface `N messages waiting for "<recipient>" in project "<project>"` only when the caller supplies that exact recipient; generic briefing has no recipient identity and remains quiet, and so do the SessionStart and prompt hooks unless they resolve a recipient: `MEMESH_RECIPIENT` when set (an explicitly empty value turns the reminders off); otherwise, under Claude Code, the `principal_id` in the owner-private `hosts/claude.json` when that file exists (an existing file that is unreadable, not owner-private or names no valid `principal_id` gives no recipient), or the default principal `claude-code` when the file does not exist; under Codex, the principal the Codex session companion registers (`codex-thread-<thread id>` unless `hosts/codex-session.json` configures one) (#474 — an older file's `project` field, if any, is not read; they can report deliveries waiting for exactly that recipient, OR a `target_kind: "session"` delivery addressed to a session that is registered under that recipient as its principal AND live right now — a connection with no disconnect and an unexpired lease; a session that has disconnected or let its lease expire is not surfaced (#490); a hook that names its own session counts only a delivery addressed to that session or the sessions it replaced with `/clear` (#566)). Under Claude Code, a separate Stop hook additionally blocks the turn once per waiting message id (principal- or live-session-targeted alike) not yet blocked for in that session, whether or not a `host_accept` row exists, and regardless of `stop_hook_active` unless THIS gate already blocked for that same id in this session; under Codex it only records a skip and never blocks (#468, #490, #492). Length-limited briefing reminders can omit some project notices; omitted messages remain pending. Poll a known inbox with the exact project and recipient, fetch each returned `message_id`, then record `intake`: fetching alone does not end the reminder. At zero unread, a scoped briefing can say `... this recipient id has never been seen in this project` when that exact id has no delivery and no registered principal or session (live or not) recorded for that project — a typo in `--recipient` must not read as an empty, healthy inbox.
+| Action | Input | Meaning |
+| --- | --- | --- |
+| `discover` | none | List registered conversation addresses and host presence. |
+| `send` | `recipient`, `kind` (`task`, `question`, `review_request`, `result`), `body`, optional `reply_to` | Store an untrusted conversation message. |
+| `read` | `message_id` | Return one message for this host and record delivery/read. |
+| `status` | optional `message_id` | Return sent/received messages and full audit events. |
 
-The JSON-encoded durable `payload` is limited to 65,536 UTF-8 bytes (64 KiB). Native delivery has a separate 16,384-byte (16 KiB) limit for the complete envelope, including routing metadata and payload. Therefore, fitting the durable payload limit does not guarantee that native delivery can accept the message; that permanent size failure is reported as `native_message_too_large`, not as transient unavailability. Payloads are untrusted data and are never executed by MeMesh.
+The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown and oversized sends are rejected and audited; oversized audit preserves original body byte count. A known offline recipient is queued. Queued is not delivery, read, reply, completion, wakeup, or model acceptance.
 
-The durable API is separate from host-native delivery. A stable **principal** names a logical recipient; a **session** is one active connection, and its **generation** changes when replaced. Exact-session delivery never reroutes; a principal target may use only an eligible active session after activation. Persistence, dispatch, host acceptance, intake, acknowledgement, workflow disposition, retention, and presence are independent state axes. A Local host-native input may remove polling for an active session, but no stopped session is awakened. Cloud relay, A2A, SSE, discovery, persistence, or fetch is not proof of Local host delivery.
+Messages/events are maintained for 14 days when the store next opens; maintenance creates one undelivered notice after a day. No update/delete actions exist. CLI owner status can list its complete retained audit via `--json`; MCP does not grant owner-wide status.
 
-For an active exact session, a durable message event passes through the owner-private local router to the authenticated supported host adapter. The full envelope is capped at 16 KiB. The Claude Code channel delivers it whole, so no inbox fetch is needed there. The Claude inbox and Codex CLI queue carry only a notice (`message_type: "memesh_message_notice"`, `handling` — the instruction to read receipts, then fetch, then record intake — `project`, `recipient`, `target_kind`, `message_id`, `delivery_id`): the agent reads the message's receipts, stops if it already recorded intake, and otherwise fetches the body and records intake. A host acceptance receipt is not recipient acknowledgement or workflow disposition. See [the architecture branch](../ARCHITECTURE.md#wake-an-eligible-local-message-recipient-optional) for the local path and its limits. The router is started on demand by the first host connection (or by a sender that is not a host, such as HTTP or the CLI, that finds none) and ends itself after 10 minutes with no host connected and no delivery running (`MEMESH_ROUTER_IDLE_MS`, whole milliseconds; `0` keeps it running; `MEMESH_ROUTER_IDLE_CHECK_MS` sets how often it looks); it records the time of an idle exit, which `memesh doctor` shows, and the next connection starts a new one, which delivers the stored principal messages that are waiting.
-
-**Other computers in a team.** After this computer joined a team by invite (`memesh network create`/`link`/`join`), a principal `send` whose `recipient` is `person/handle@machine` or `person/principal@machine` (split at the last `@`, then the first `/`), where the machine is a member of the team's signed roster and the person is that member's, is stored here as usual and forwarded by the network bridge to that machine through the relay or directly. The `delivery_note` says so; while that machine is offline the message is retried for up to one day from its creation, then expires like any other message (see "Message lifetime"): the bridge's retries stop no later than the moment it expires, and its delivery row is removed with it. Only the message row crosses; memory, work summaries and provenance do not. The receiving machine stores it through its own `send` path with the sender written from its roster as `person/sender@machine`, and a reply to it goes back the same way. A wrong person for that machine, this machine's own name, `target_kind: "session"`, `intended_session` and `fallback_to_principal` are refused. If this computer has not joined, or the machine is not a member, the recipient is an ordinary local name, as before. A refused (`project_unknown`, for a project the other machine does not have) or expired message is reported to its sender as a local message from `memesh-network`. `receipts` for such a message adds a fact with `receipt_kind: "network"` and a `network` block: `state` (`pending`, `delivered`, `rejected`, `expired`), `attempts`, `last_error_code`, `delivered_at`, `path` (`relay` or `direct`). `status` for such a message reads the same fact instead of a local host accept: `handed_to_network` (handed to the cross-machine transport, not yet confirmed delivered, including while it is retried), `delivered_to_machine` (the other machine took it; the agent there has not yet recorded intake, an ack or a disposition) or `not_delivered` (refused or expired); an `intake`, `ack`, `disposition` or reply that comes back still gives `handed_to_agent` or `replied`. `discover` also returns other members' live agents for this project as cards with `remote: true` and a full `address`, and no work summary; if those cannot be read, the router cards come back with a `network_note`.
-
-The `action` field is one of:
-
-| Action | Required fields | Meaning |
-|--------|-----------------|---------|
-| `send` | `project`, `sender`, one of `recipient` or `recipient_handle`, `idempotency_key`, `payload` | Transactionally create one canonical message, one recipient delivery, and one notification event. JSON-encoded payloads are capped at 64 KiB; the complete native envelope is capped separately at 16 KiB. Exact-session success additionally requires native `host_accept`; an oversized envelope returns `native_message_too_large`, a sender that cannot reach the router, even after starting it, returns `router_unreachable`, and other unavailable or rejected sessions return `recipient_unavailable`, with scoped recovery state retained in all cases. Principal targets retain durable store-and-forward behavior. Exact retries return the same IDs; a conflicting retry is rejected. |
-| `discover` | `project`, optional `limit` (default 50, max 100) | Read currently live registrations in one project from the router. Returns router data (`session_id`, `principal_id`, `host_kind`, `project`, `model` (always `null`), live or configured `work_summary` or `null`, `active`, `generation`, and `lease_expires_at_ms`); performs no message or receipt operation and fails explicitly when the router is unavailable. Supported hosts refresh activity at heartbeat, normally within about 30 seconds; unavailable fields are omitted. |
-| `poll` | `project`, `recipient` | Read a bounded batch after an optional opaque `cursor`. `wait_ms` is 0–30000 and `limit` is 1–100. Events contain routing metadata, never the payload. |
-| `fetch` | `project`, `recipient`, `message_id` | Return the payload routed to that principal or exact session. Optional `target_kind` defaults to `principal`; exact-session fetches must pass `session`. Fetch is a read and does not imply intake or ACK. A message whose content was removed after the retention period still returns, with a `note` saying so and the machine-readable marker in `payload`. |
-| `intake` | receipt base plus `intake_state` | Record `fetched` or `ingested` without implying ACK. Refused with `intended_for_other_session` for a delivery with an `intended_session`, unless the caller is that session (MCP and CLI read it from `CLAUDE_CODE_SESSION_ID`, else `CODEX_THREAD_ID`; HTTP has none). Codex sets `CODEX_THREAD_ID` only for its shell commands, so a Codex session records it with `memesh message intake`. For a `target_kind: "session"` delivery, a caller that is another registered session of the project is refused the same way; a caller with no session id, or an unregistered one, is not. |
-| `ack` | receipt base | Optional. Record explicit recipient acknowledgement; an agent only needs to record `intake`. For a delivery with an `intended_session`, a call that names another session is refused with `intended_for_other_session` (a call with no session id is not). Inbox/MCP acknowledgement does not require or imply host-native acceptance. |
-| `disposition` | receipt base plus `disposition` | Optional. Record `accepted`, `rejected`, `completed`, `cancelled`, or `deferred`. Same `intended_session` rule as `intake`. |
-| `activation` | receipt base plus `activation` | Record `woken`, `manual_resume_required`, `unsupported`, or `failed`. For a delivery with an `intended_session`, a call that names another session is refused with `intended_for_other_session` (a call with no session id, such as the router's own, is not). |
-| `status` | `project`, `recipient`, `message_id` | Read where one message stands, from what MeMesh recorded (host accepts and delivery attempts) and from any `intake`, `ack`, `disposition` or reply the agent made (the message's sender may read this too, never the payload or the receipts; other principals are refused): `queued` (stored; no notice confirmed in the recipient's conversation), `accepted` (a host took the notice: the Claude Code inbox showed it in the conversation; the Claude Code Channel handed it over and queued it, which MeMesh cannot see shown; Codex queued it for the thread), `handed_to_agent` (the agent recorded `intake`, an `ack` or a `disposition`) or `replied` (a message in the project links to it with `reply_to`, is sent by its recipient — for a message to a session, the principal that owns the session — and is addressed back to its sender or to a session of the sender's principal; sender names are labels the senders chose). For a recipient on another computer (`person/handle@machine`) there is no local host accept, so the status comes from the network delivery fact instead: `handed_to_network`, `delivered_to_machine` or `not_delivered` (see "Other computers in a team" above). Also returns a short `note` of one or two sentences, the last `last_failure` code while queued, and `delivery_state`. A notice that Claude Code holds back for its user (for example because the sender does not state its permission mode and the session bypasses prompts, the two sessions' permission modes differ, or a `crossSessionInbound` setting says to hold) is not an accept: the message stays `queued` with `last_failure: "notice_held"` (Claude Code is waiting for its user to approve or deny it; MeMesh cannot see which; within the same MCP process it does not send the same notice again, and reads on from where it stopped, so a notice the user approves later is shown as `accepted` the next time the host is handed it; if the conversation record cannot be read on from where the hold stopped (it grew by more than 1 MiB between two hand-overs, was replaced, shrank or changed owner) the notice is sent once more, and this process never sends it a third time: a notice sent again that is then neither confirmed nor held stays unconfirmed, and a hold that cannot be followed a second time, or that this process forgot to stay within its limit of 500 holds, stays held; because Claude Code's hold line shows only the start of a notice, a notice that merely arrives late while another is held is reported as held until the next hand-over, and one that Claude Code dropped stays reported as held until the MCP server restarts, the message waiting in the inbox meanwhile) or `"notice_not_confirmed"`, and appears at the session's next prompt or turn end. `last_failure` is `transcript_unavailable` or `transcript_not_found` when MeMesh could not read the session's conversation record, so it cannot tell whether the notice arrived; `frame_too_large` means the notice was certainly not sent (the envelope did not fit the host's frame); any other code (for example `host_outcome_timeout`) means the notice may or may not have been delivered. It never means the model read the message. |
-| `receipts` | `project`, `recipient`, `message_id` | Read one ordered audit projection containing public receipt facts plus any host acceptance, host-native ACK, and workflow facts for the authorized delivery. Each row identifies its `fact_source`. The `host_accept` row also carries `delivery_state`, observed when the receipts are read: `observed_at`, `intake` (`recorded` or `pending`) and `target_session` — `live` or `not_live` for a session-target or `intended_session` delivery (with that `session`), `unknown` when no registry row names that session, `not_applicable` for a plain principal delivery. `not_live` is only that observation, not a lost message: MeMesh does not resend or reroute it; a MeMesh send cannot wake or resume that session; resume it in its own host (which may not succeed at once) and read receipts again, or the sender may send again to the principal, knowing the original session may still take the first message if it comes back. |
-
-`project`, `recipient`, and the `actor` derived from `recipient` are scope identifiers: they are canonicalised to Unicode NFC and trimmed on every action, read and write, and a value spelled as an absolute filesystem path (`/root`, `C:\work`, `\\host\share`) is refused with an error naming the field and a valid value. Project identity is derived from a working directory and can never take that shape. Nothing else is rewritten — comparison is exact, case included, no prefix is treated as a namespace, and an identifier that merely contains a separator is accepted. `sender` is provenance rather than routing: it is trimmed but otherwise stored as given (no NFC normalisation, no path refusal). It is not the sender's live session id; to reply to one exact sender session, run `discover` for the project, select the current card's `session_id`, and send to that id with `target_kind: "session"`. If the card disappears or its generation changes, fail closed and retain the durable reply for scoped recovery; never infer a session id from sender labels or payload text.
-
-The receipt base is `project`, `recipient`, `message_id`, and a stable `idempotency_key`. `disposition` and `activation` also accept an optional bounded `detail` string. Sessions of one principal share its inbox. A call that names a session registered under a different principal than the message's (a session message belongs to the principal its session is registered under) is refused by `intake`, `ack`, `disposition`, `activation`, `status`, `fetch`, `receipts` and `poll` in the words used for a message that does not exist (`poll` shows such a session an empty inbox); the message's sender may still read `status` of what it sent. For a message meant for one session (`intended_session`), another session of the same principal is refused by `intake`, `disposition`, `ack` and `activation` with `intended_for_other_session`, while `status`, `fetch` and `receipts` stay open to every session of the principal. This is cooperative, not a security boundary, and it is not "only the recipient can write". It is NOT applied to: a call with no session id (HTTP never has one); a session id nobody registered (an MCP server keeps the id it started with across `/clear`); an id from another project; a caller that only claims to be the recipient (`recipient`, `sender` and the receipt `actor` are names the caller supplies); and any local process that opens the database file. A receipt's `actor` is the recipient the call names, except for the router's own `activation` receipts (actor `memesh-router`); the receipt's `detail.caller_session` is the session that made the call, or `null`, and is not part of the idempotency check, so the same key sent again from another session returns the same receipt. A session id must be ASCII (a non-ASCII one is refused at registration, at send and in `CLAUDE_CODE_SESSION_ID` / `CODEX_THREAD_ID`). An `intended_session` written in other letters than its registration is stored as registered (an id nobody registered, in lower case), and session ids are compared without regard to case; two registrations that differ only in case are two sessions, and an id written exactly as one of them names that one.
-
-In a `message` response, `created_at` (on a sent message, an event, a fetched payload, a receipt and a fact) and `accepted_at` (on a native acceptance) are ISO 8601 UTC, `YYYY-MM-DDTHH:MM:SSZ`, for example `2026-09-21T20:35:59Z`. `delivery_state.observed_at` is ISO 8601 UTC with milliseconds.
-
-Additional `send` fields:
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `recipient_handle` | string | One of this or `recipient` | A project-scoped session handle from discover, also resolvable for an offline registered session. Claude and Codex CLI sessions route to their principal with `intended_session`; other hosts route to the exact session. A missing or ambiguous handle returns `handle_not_found` or `handle_ambiguous` before writing; use an available handle or an exact session ID. A literal `recipient` is never interpreted as a handle. |
-| `target_kind` | `principal` \| `session` | No | Defaults to `principal`. A `session` target is bound to that exact active session, waits for native acceptance, and never reroutes to a replacement. |
-| `intended_session` | string | No | Only with `target_kind: "principal"`. The one session of that principal the message is meant for: a Claude Code session id or an ordinary Codex CLI thread id (the `session_id` its hooks receive). A session the router registered through any other host (`acp`, `codex-app-server`) is refused, since nothing there could say which session it is when it records intake; an id the router never registered is allowed. Only that session is reminded of it (hooks, Stop gate, `briefing`), only it can record `intake` or a `disposition` (anyone else, including an HTTP caller, gets `intended_for_other_session`), and the router pushes it only to that session's connection. Part of the idempotency request. |
-| `fallback_to_principal` | boolean | No | Only with `target_kind: "session"`. If that session refuses the message (`recipient_unavailable`), send it to the principal the session registered under, with `intended_session` set to it, and return that message with a `fallback` field naming the refused one; `fallback.intended_session_connected` says whether that session is connected now, and when it is not, `fallback.note` says only it can take the message in when it next runs (#518). A session that never registered has no known principal, and a refused session registered through a host that cannot be named is refused, so in both cases the send still fails with `recipient_unavailable`, saying so. `router_unreachable` does not trigger it. |
-| `content_type` | `text/plain` \| `application/json` | No | Defaults to `text/plain`; text payloads must be strings. |
-| `privacy` | `private` \| `team` | No | Retained message metadata; defaults to `private`. Delivery remains exact-recipient in both cases. |
-| `correlation_id` | string | No | Conversation or task correlation without changing routing. |
-| `reply_to` | message ID | No | Links this message to another message without changing delivery. |
-
-Discover cards include a `handle` built from the project name before `~`, the host kind, and the last four session ID characters. The handle names a host, not a model; older routers may omit it. CLI send accepts `--recipient-handle` in place of `--recipient`.
-
-Payload JSON is limited to 65,536 UTF-8 bytes. Sender-host provenance is supplied by the transport and cannot be provided in tool arguments. An opaque cursor is scoped to its exact project and recipient; an unknown or foreign cursor is rejected.
-
-`send` allows at most 30 new logical messages between the same two participants in one project within 10 minutes, counting both directions. Known sessions keep different conversations separate, and `/clear` session aliases count as one session. When either participant lacks a session for comparison, its principal name is used. Exact retries return the original message even at the limit; automatic `fallback_to_principal` counts only the original send. Host-supplied sender-session and fallback metadata are stored in provenance but do not change a retry's identity.
-
-Successful `send` results include `delivery_note`: principal delivery confirms storage and says whether a session of the recipient is connected at that moment (when the send names `intended_session`, whether that session is; if it is not, only it can take the message in, and a session id that never registered here or belongs to another principal is called out as such; a fallback result is the exception: read `fallback.intended_session_connected`), and exact-session delivery confirms adapter acceptance; neither means the recipient or model has read or accepted the message. When an existing message is reused, the result's `message_id` is the previous message's and the note identifies it and says no new message was created; an unconfirmed notification may still be attempted again. A retry that first creates a principal fallback instead reports that new stored message. Fallback results retain their `fallback` details; when the intended session is not connected, `fallback.note` explains that only it can take the message in, separate from the principal-delivery note.
-
-| Send error | Meaning and next step |
-|---|---|
-| `conversation_loop_suspected` | The pair has already sent 30 messages within 10 minutes. No new message, delivery, event or idempotency row is stored. Ask your user before continuing. MCP and CLI include this code in their error text; HTTP returns status 400 with `errorCode: "operation.failed"` and the code in `error`. |
-
-Exact-recipient routing is not per-agent authentication or an ACL. A caller that can access the local MeMesh instance can assert a logical recipient ID, so all callers on a shared instance must be cooperative, trusted workspace participants. HTTP bearer authentication protects instance access; it does not establish a separate cryptographic identity for each agent.
-
-`poll` is a bounded compatibility and diagnostic read, not the normal active-session push path. It does not resume a stopped model session, and no action executes payload content. Poll clients persist `next_cursor`, fetch explicitly, and record only receipt facts that actually occurred; verified active host adapters receive the authorized envelope from the Local router without polling.
-
-**Message lifetime.** A message is kept one day from `created_at`, read or unread, then deleted with its delivery, receipt, acknowledgement and workflow records. MeMesh runs this itself while its router, MCP server or `memesh serve` is running; there is nothing to call. Past one day a message is already absent from `poll`, `fetch`, `status`, `receipts`, `intake`, `ack`, `disposition` and the unread count in a briefing, whether or not it has been removed from disk yet.
-
-- When nobody on the recipient's side recorded anything for a message or answered it, its sender gets one durable message from `memesh` (what counts as recorded or answered, including replies from sessions and `fallback_to_principal` copies, is stated once in the [Local Agent Messaging Guide](../platforms/agent-messaging.md#bounded-storage-and-audit-retention)) (`content_type: application/json`, `payload.kind: "message_expired"`, `payload.summary`, and `payload.messages[]` with `message_id`, `recipient`, `created_at` and `expired_at`, up to 20, and `not_listed` for the rest). It is one message per project and sender for each cleanup run, however many batches the run takes. The sender reads it with `poll` and `fetch` on its own recipient id. For a message sent to `person/handle@machine` on another computer the notice does not claim what the recipient did: its `summary` says it was not delivered (with the last error code) or was delivered to that computer with no reply seen here, and the listed message carries a `network` object (`state`, `code`, `machine`). A message for which the sender already received the bridge's refused or not-delivered message from `memesh-network` is left out of it. A message the recipient acted on or replied to expires without a notice; a notice that expires unread produces no further notice. The first start of a MeMesh with this rule on an existing database begins deleting the messages older than a day, never-read ones included, and sends these notices. Each run deletes at most 20,000 messages and runs again every five minutes until none is left; a message with a delivery in progress in the last ten minutes waits for the next run, and nothing is deleted when the database cannot be written or is locked, or the archive cannot be written.
-- `fetch`, `status`, `intake`, `ack`, `disposition` and `receipts` for an expired `message_id` fail with `message_expired: ...` (the id, when it was sent, when it expired) when the caller is the message's sender or recipient; anyone else gets "not available". `send` with `reply_to` set to an expired id fails the same way, and stores nothing, only when the sender of the reply is the expired message's sender or recipient and it is within the 30 days MeMesh remembers the id; a reply from anyone else, to an unknown id, or after the 30 days is stored as before. Retrying a reply that was already stored returns it. MeMesh keeps an expired message's id, sender, recipient and send time (no content) for 30 days.
-- A `send` that repeats the `idempotency_key` of an expired message creates a new message.
-- A `poll` cursor stays valid after the events it pointed at are deleted; it continues from where it was.
-- Before a message is deleted it is copied, with every record deleted with it (for a message to another computer, the network bridge's delivery row too), into `backups/agent-messages-expired.db` beside the database file (for a database file other than `knowledge-graph.db`, say `work.db`, its own `backups/agent-messages-expired-work.db`), and removed from the archive a day after it was copied, so its content exists for about two days in all. If the archive cannot be written or checked, nothing is deleted. To put archived messages back (as new messages with a fresh day, changing nothing else), run the command in docs/platforms/agent-messaging.md; it finds the files from `MEMESH_DB_PATH` or `MEMESH_DIR`.
-- The same run clears session presence records and ended connections older than one day; live sessions are untouched.
-
-The CLI exposes storage accounting:
-
-- `memesh message storage report` reports logical payload, unresolved rows, rows already past their day and waiting for deletion (`expired_pending_message_count`), cursor/session/presence/dispatch/acceptance counts, reusable SQLite pages, main/WAL file sizes and the last cleanup (`last_expiry_pass`). `memesh doctor` shows the same last cleanup and warns when it fails or falls behind.
-- `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES=<non-negative integer>` enables an owner-selected hard logical-payload quota. Over-quota sends fail atomically, storing nothing, with `Agent message storage quota exceeded. Review stored messages and the owner-configured quota before retrying.` (internal code `storage_quota_exceeded`, not shown in the error text). A value that is not a non-negative integer makes every send fail. It is not a whole-file disk quota: metadata, indexes, reusable pages, and WAL bytes remain visible through the storage report and require an owner disk/headroom policy. No quota is enabled by default.
+`POST /v1/message` retains a separate legacy HTTP agent-message lifecycle. Its project routing, polling, fetching, receipts, limits, and host adapters are not aliases for this MCP schema; see `src/transports/agent-messaging.ts` and the HTTP section.
 
 ## Data Model
 
@@ -1141,6 +1082,71 @@ Safety note: non-loopback binds are blocked by default. To expose the HTTP serve
 
 Read-only data folder: if the folder that holds the database cannot be written (a read-only mount, changed permissions) and the database can be read without writing to the folder (a clean WAL database, or one in rollback mode with no `-journal`), the server still starts, opens the database read-only and serves reads. It says so on stderr, with the `chmod` that undoes it; every write route (`remember`, `forget`, `learn`, `import`, ...) answers with an error that names the folder and that `chmod`, and once the folder is writable again the running server notices, reopens the database and works normally without a restart. If the database cannot be read without writing to the folder (pages waiting in a `-wal` with no `-shm` to read them through, or an unfinished transaction in a `-journal`), the server refuses to start and prints the same `chmod`: reading around them would show changes that were never committed or miss ones that were.
 
+### Legacy HTTP agent messages
+
+`POST /v1/message` remains a legacy HTTP compatibility API, distinct from the
+four-action MCP/CLI conversation schema. Its request is project-scoped and
+uses legacy agent-message fields: `send` includes project, sender, recipient,
+an idempotency key and payload; `poll` reads recipient events; `fetch` returns
+an authorized payload; and `intake`, `ack`, `disposition`, `activation`,
+`status`, and `receipts` record or read legacy lifecycle facts. HTTP responses
+wrap its result as `{ success: true, data }`.
+
+Legacy routing is cooperative rather than a per-agent ACL: HTTP bearer
+authentication protects the instance, but it does not prove a caller identity.
+Its data and lifecycle scopes are the legacy project/recipient fields, not the
+conversation host identity. Legacy messages are retained for one day by its
+maintenance path; that retention and its payload/native limits do not apply to
+the 14-day conversation store. Do not put legacy fields into a conversation
+MCP or CLI call.
+
+
+| Legacy HTTP action | Required request fields in addition to `action` |
+| --- | --- |
+| `discover` | `project`; optional `limit` (1–100) |
+| `send` | `project`, `sender`, `recipient` or `recipient_handle`, `idempotency_key`, `payload` |
+| `poll` | `project`, `recipient`; optional scoped `cursor`, `wait_ms` (0–30000), `limit` (1–100) |
+| `fetch` | `project`, `recipient`, `message_id`; optional `target_kind` |
+| `intake` | Receipt base plus `intake_state` (`fetched` or `ingested`) |
+| `ack` | Receipt base |
+| `disposition` | Receipt base plus `disposition` (`accepted`, `rejected`, `completed`, `cancelled`, `deferred`) |
+| `activation` | Receipt base plus `activation` (`woken`, `manual_resume_required`, `unsupported`, `failed`) |
+| `status` | `project`, `recipient`, `message_id` |
+| `receipts` | `project`, `recipient`, `message_id` |
+
+The receipt base is `project`, `recipient`, `message_id`, and a stable
+`idempotency_key`. HTTP supplies no native host-session identity, so intake
+for a message bound to an `intended_session` is refused with
+`intended_for_other_session`; preserve the message rather than asserting
+another session's receipt. Optional `privacy` in this legacy schema is
+retained routing metadata, not a memory refusal or automatic clearing mode.
+
+
+The legacy `send` request requires `action`, `project`, `sender`, an exact
+`recipient` (or a resolvable `recipient_handle`), `idempotency_key`, and
+`payload`. Additional legacy send fields are listed below. A receipt write
+uses project, recipient, message_id and its own stable idempotency_key;
+intake also names intake_state. Fetch/read operations do not themselves
+record intake. Caller-supplied legacy identifiers are cooperative scope, not
+cryptographic authorization.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `recipient_handle` | string | One of this or `recipient` | A project-scoped session handle from discover, also resolvable for an offline registered session. Claude and Codex CLI sessions route to their principal with `intended_session`; other hosts route to the exact session. A missing or ambiguous handle returns `handle_not_found` or `handle_ambiguous` before writing; use an available handle or an exact session ID. A literal `recipient` is never interpreted as a handle. |
+| `target_kind` | `principal` \| `session` | No | Defaults to `principal`. A `session` target is bound to that exact active session, waits for native acceptance, and never reroutes to a replacement. |
+| `intended_session` | string | No | Only with `target_kind: "principal"`. The one session of that principal the message is meant for: a Claude Code session id or an ordinary Codex CLI thread id (the `session_id` its hooks receive). A session the router registered through any other host (`acp`, `codex-app-server`) is refused, since nothing there could say which session it is when it records intake; an id the router never registered is allowed. Only that session is reminded of it (hooks, Stop gate, `briefing`), only it can record `intake` or a `disposition` (anyone else, including an HTTP caller, gets `intended_for_other_session`), and the router pushes it only to that session's connection. Part of the idempotency request. |
+| `fallback_to_principal` | boolean | No | Only with `target_kind: "session"`. If that session refuses the message (`recipient_unavailable`), send it to the principal the session registered under, with `intended_session` set to it, and return that message with a `fallback` field naming the refused one; `fallback.intended_session_connected` says whether that session is connected now, and when it is not, `fallback.note` says only it can take the message in when it next runs (#518). A session that never registered has no known principal, and a refused session registered through a host that cannot be named is refused, so in both cases the send still fails with `recipient_unavailable`, saying so. `router_unreachable` does not trigger it. |
+| `content_type` | `text/plain` \| `application/json` | No | Defaults to `text/plain`; text payloads must be strings. |
+| `privacy` | `private` \| `team` | No | Retained message metadata; defaults to `private`. Delivery remains exact-recipient in both cases. |
+| `correlation_id` | string | No | Conversation or task correlation without changing routing. |
+| `reply_to` | message ID | No | Links this message to another message without changing delivery. |
+
+Legacy JSON payloads are limited to 65,536 UTF-8 bytes. The older native
+transport separately caps its full envelope at 16,384 bytes; these bounds
+do not replace the new conversation envelope's 8,000-byte cap. Poll cursors
+belong to their exact legacy project and recipient. Retired CLI commands
+are not a way to call this HTTP schema.
+
 ### Authentication
 
 **Authentication on a remote bind.** A non-loopback bind requires a bearer token on every `/v1` request — MeMesh generates one before it starts listening, so there is no unauthenticated window:
@@ -1187,7 +1193,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/learn | Record structured lesson from mistake or discovery; requires `project` (`400` without it) |
 | POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
-| GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long; the project's session handoff is not listed), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (0–1000000; skip that many of the newest matches, to page) and `?status=all|active` (default `active`; `all` includes archived). `project` is at most 300 characters. |
+| GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (0–1000000; skip that many of the newest matches, to page) and `?status=all|active` (default `active`; `all` includes archived). `project` is at most 300 characters. |
 | GET | /v1/entities/:name | Get single entity |
 | GET | /v1/config | Get current supported non-model config fields |
 | GET | /v1/update-status | Current/latest package version, freshness state, and update guidance |
@@ -1313,11 +1319,10 @@ outright with `400` (`z.enum`).
 
 `autoUpdate` is the largest version bump MeMesh may install by itself:
 `off` | `patch` | `minor` | `major`. It is `major` (every version) when
-nothing was set and MeMesh is using the account's own `~/.memesh`. An explicit
+nothing was set and HOME is the system account's home (also when the system has no account-home entry). Data-directory overrides and containers do not change this default. CI and a different test/sandbox HOME default to `off`; that environment can explicitly enable updates, but cannot inherit a non-off setting from the account's config. An explicit
 `off` is never overridden: it counts wherever it is written (the environment, the
 active config, or the account's own `~/.memesh/config.json`), a config that cannot
-be read counts as `off`, and a run that uses another HOME or data directory
-without setting it explicitly does not update, and neither does a run inside CI or on a system where the account's home directory cannot be determined (no passwd entry). The config that `memesh config set` writes counts even when it sits in a different directory than the database, and one that cannot be read at all (a directory that cannot be entered, a path through a file, a dangling symlink) counts as off. The setting is read again after any wait, before anything is installed. `updateCheck: false` also stops
+be read counts as `off`. The config that `memesh config set` writes counts even when it sits in a different directory than the database, and one that cannot be read at all (a directory that cannot be entered, a path through a file, a dangling symlink) counts as off. The setting is read again after any wait, before anything is installed. `updateCheck: false` also stops
 updates. `MEMESH_AUTO_UPDATE` can lower or raise the limit for one run but cannot
 override an `off` set anywhere.
 
@@ -1359,8 +1364,12 @@ hosts that registered themselves, so sessions that were already open before the
 first automatic update are invisible to it; the first update may therefore run
 alongside them. `memesh doctor` shows a waiting update and how many of the 3
 days it has used. Each attempt writes
-`auto-update-state.json` and `auto-update.log` beside the database, and
-`memesh doctor` reports the last one. Turn it off with
+`auto-update-state.json` and `auto-update.log` under `HOME/.memesh`, together
+with the host registry, attempt records and update lock. These control records
+follow HOME even when `MEMESH_DIR` or `MEMESH_DB_PATH` selects another database;
+the system account's config is only read for policy checks. Database backups
+remain beside the database, as do the Hermes registry and just-upgraded marker.
+`memesh doctor` reports the last attempt. Turn it off with
 `memesh config set autoUpdate off`.
 
 `memesh update` is the same path started by hand, for npm-global and plugin
@@ -1589,7 +1598,7 @@ The response is path- and secret-redacted like `GET /v1/doctor`.
 
 ### GET /v1/projects
 
-Lists distinct projects extracted from entity tags (`project:*`) and lesson names. Only active memories count, and a project's session handoff is not counted. The list is sorted by `count`, largest first.
+Lists distinct projects extracted from entity tags (`project:*`) and lesson names. Only active memories count. The list is sorted by `count`, largest first.
 
 **Response:**
 
@@ -1749,35 +1758,36 @@ curl -s http://localhost:3737/v1/health
 
 ## CLI Commands
 
+### Database repair
+
+If doctor reports database damage, stop all AI tools and run `memesh repair`.
+Use `--database <path>` for another database or `--from-backup [path]` to restore
+a verified memory backup. Without a backup path, repair selects the newest
+readable backup by its contents. It preserves a verified damaged copy and WAL,
+salvages into a new file, rebuilds keyword search, validates the result, and
+checks for an exclusive SQLite lock before replacing the original. A built-in
+`node:sqlite` path handles missing or unsuccessful system `sqlite3` recovery and
+reports that fallback. Unreadable tables are listed; an unrecoverable memory
+table is refused rather than replaced with an empty database. Restart AI tools
+after repair. On a failure before installation, repair preserves the original;
+if installation fails after SQLite opens it writable, repair restores the
+verified original and WAL. Keep the reported damaged copy until satisfied.
+
 ### memesh message
 
-The CLI exposes the same local lifecycle as the MCP and HTTP `message` surface:
-
 | Command | Purpose |
-|---------|---------|
-| `memesh message discover` | List the live registrations in one project: `--project <name>` (required) and `--limit <n>` (1–100, default 50). It sends, fetches and acknowledges nothing |
-| `memesh message send` | Durably send one exact-recipient untrusted JSON payload (64 KiB max); exact-session native envelopes have a separate 16 KiB cap and report `native_message_too_large` distinctly. `--intended-session <id>` and `--fallback-to-principal` are the `send` fields of the same names |
-| `memesh message watch` | Emit `ready`, then one bounded `events` or `timeout` JSONL record with `next_cursor` |
-| `memesh message fetch` | Fetch one authorized payload without acknowledging it |
-| `memesh message intake` | Record `fetched` or `ingested` |
-| `memesh message ack` | Optional: record explicit acknowledgement |
-| `memesh message disposition` | Optional: record workflow disposition independently from ACK |
-| `memesh message activation` | Record host activation independently from ACK/disposition |
-| `memesh message status` | Show where one message stands: queued, accepted, handed to the agent, replied, or for another computer, its network delivery |
-| `memesh message receipts` | Read receipt facts for an authorized message |
-
-Run `memesh message <command> --help` for flags. `watch` returns after one bounded batch; the caller persists the opaque cursor and owns restart/backoff policy.
-
-For CLI `send`, the initial payload is stdin-only so it does not leak through that command's process listing or shell history. `--payload` is deliberately rejected. When the recipient is a native Codex session, MeMesh queues only a short notice (`message_type`, `handling`, `project`, `recipient`, `target_kind`, `message_id`, `delivery_id`) through Codex's own `--message` argument, which same-user process inspection may observe while the short-lived queue command runs; the body is never on that command line, and the agent fetches it from the inbox.
+| --- | --- |
+| `memesh message discover` | List registered conversation addresses and host presence. |
+| `memesh message send` | Send `--recipient` with `--kind <kind>`; body comes from `--payload-stdin`, optional `--reply-to <message-id>`. |
+| `memesh message read` | Read an addressed message by `--message-id`; records delivery/read. |
+| `memesh message status` | Inspect sent/received audit; `--message-id` optional, `--json` complete CLI output. |
 
 ```bash
-printf '%s' '{"kind":"handoff","text":"review ready"}' | memesh message send \
-  --project demo --sender author --recipient reviewer --target-kind session \
-  --idempotency-key handoff-1 \
-  --content-type application/json --payload-stdin
+printf '%s' 'Please review this change.' | memesh message send \
+  --recipient reviewer --kind review_request --payload-stdin
 ```
 
-`--target-kind` accepts `principal` (the default) or `session` on both `send` and `fetch`. An exact-session payload must be fetched with the same target kind and is never exposed through a principal fetch.
+Do not use legacy project, sender, target-kind, privacy, idempotency, payload, or receipt flags. The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends are rejected and audited, known offline recipients are queued. Queued is not delivered, read, replied, or completed. Legacy HTTP `POST /v1/message` is separate compatibility behavior.
 
 ### memesh feedback
 
@@ -1838,16 +1848,9 @@ previous version in `metadata.replaced_history`, as described under
 **Replace** above. Correcting a memory this way does **not** need `--type`:
 the memory keeps the type it has. Pass `--type` only to reclassify — a type
 that differs from what is stored rewrites it, so `--replace` doubles as how
-you reclassify a memory. `--type` is still required when `--name` is used
-without `--replace`, and on a `--replace` whose name does not exist yet,
-where there is no stored type to keep.
+you reclassify a memory. An append to an existing name can also omit `--type`; a new named memory without free text requires it.
 
-**Project.** Like `memesh learn`, `memesh remember` files the memory under the
-current directory's project. `--project <name>` names another one, and
-`--no-project` stores the memory with no project. A `project:` tag in `--tags`
-decides by itself, as it does over MCP. The output says which project it used.
-Writing to a memory that already belongs to a different project is refused, the
-same rule MCP applies.
+**Project.** Like `memesh learn`, `memesh remember` files a new memory under the current directory's project. `--project <name>` names another one, and `--no-project` stores it with no project. A `project:` tag in `--tags` decides by itself, as it does over MCP. An append to an existing unfiled memory with neither an explicit project nor project tag stays unfiled. Explicit project changes, `--replace` across scope, and writes to another project's memory are refused.
 
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
@@ -2039,25 +2042,16 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   plus its last 5 not-triggered ones (so a flood of irrelevant runs cannot push
   the evidence out). `runs` counts the runs in that window (records that share a `run` id count once; a record without one counts as one run); `triggeredRuns` leaves out skips where the hook's
   trigger did not apply (post-commit on a Bash call that is not a git commit).
-  `silent` is true only for post-commit, session-summary, pre-compact and handoff-capture, when
+  `silent` is true only for post-commit, session-summary and pre-compact, when
   `triggeredRuns` is at least 5 and `writes` is 0.
   `notifies` counts runs that told someone something and stored nothing, so
   `runs` is not `writes + skips + errors`. It does not rescue a hook from `silent`
   either, and none of these hooks that `silent` applies to ever notifies.
 - `types` — auto-capture entities per type, this week (`last7`) against the
   week before (`prev7`); `stopped` means the type wrote last week and nothing
-  this week. The single per-project `session-handoff` entity is excluded from this trend because each Stop replaces the same row.
+  this week. Historical `session-handoff` records remain identifiable in producer counts.
 - `neverRan` — session-summary when it has neither an outcome record nor a
   heartbeat 72 hours after tracking began.
-
-If the first silent-hook finding is `handoff-capture` repeatedly skipping an
-archived handoff, Doctor says the handoff was archived with `forget` and, instead of the usual reinstall advice, says how to turn it back on.
-When the inspected outcome window identifies exactly one complete,
-shell-safe handoff name, it offers a `memesh remember --name … --type
-session-handoff --obs restart --project …` command (the project the handoff's name carries); otherwise it directs you to find the
-exact archived name with `memesh recall session-handoff --include-archived`
-before restoring it. Doctor inspects a bounded recent outcome window, so a
-missing warning does not prove every project's handoff is current.
 
 `status` is `FAIL` for `neverRan` (but `PASS_WITH_CONCERNS` when no capture hook is confirmed wired, or when there are no outcome records yet while older hooks are still capturing), `PASS_WITH_CONCERNS` for a hook still
 failing (an `error` record among its 5 most recent runs that its trigger
@@ -2104,8 +2098,8 @@ memesh doctor --journey [--json]
 ```
 
 Runs the install journey once and exits: store a note (`memesh remember`),
-search for it (`memesh recall`), send a message to a local agent
-(`memesh message send`) and read it back (`memesh message fetch`). Each step
+search for it (`memesh recall`), send between two synthetic registered
+conversations (`memesh message send`) and read the body back (`memesh message read`). Each step
 runs this package's own CLI entry (`node <package>/dist/transports/cli/cli.js`,
 not whichever `memesh` comes first on your `PATH`) as its own process, so a
 broken package fails here and not on first use. Given together with `--fix`,
@@ -2124,15 +2118,17 @@ and `ComSpec`, on every platform (the last three matter on Windows, where
 Node needs `SystemRoot`); a relative temp folder is made absolute first. The
 journey itself sets `HOME` and `USERPROFILE` to the throwaway folder, `MEMESH_DIR`
 and `MEMESH_DB_PATH` inside it, `MEMESH_AUTO_CAPTURE=false`, and on Windows
-`APPDATA` and `LOCALAPPDATA` inside it. No other variable crosses, so nothing in
-your shell can send the journey at your real `~/.memesh`, a running router or a
-host's config.
+`APPDATA` and `LOCALAPPDATA` inside it. No other variable crosses from your shell, so its settings cannot redirect the
+journey to your real `~/.memesh`, a running router or a host configuration.
+The two message steps receive only their own generated synthetic session
+identity; neither uses your actual Claude or Codex identity.
 
-What it proves, and what it does not: the message steps prove that a message is
-stored in the durable inbox and read back unchanged. They do not prove live
-delivery to a running agent, which needs a running router and a registered
-session; `memesh doctor` reports on the router (`MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1`
-probes it), and the journey's own output says so.
+What it proves, and what it does not: the message steps queue a message
+between two synthetic registrations in a scratch conversation store and read
+its body and routing fields back through the real CLI. They do not prove
+delivery to a running host, native wakeup or a model. The router diagnostic
+(`MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1`) inspects the separate legacy transport;
+it does not validate new conversation delivery.
 
 Output: one line per step (what was done, what came back, how long it took).
 A failed step also prints `Why:` and `Fix:` and stops the journey. If the temp
@@ -2514,40 +2510,36 @@ once to adopt it. The updater finds a copy outside `$HERMES_HOME/plugins/memesh`
 only if `memesh hermes install --path` recorded it. Hermes loads a provider when
 it starts, so a refreshed copy takes effect at the next Hermes start.
 
-The two commands below are called by the plugin, not typed by a person. Input is one JSON object on
-stdin — never on the command line, where every local process can read it —
-and the result is one JSON line on stdout.
+The provider calls this command with one JSON object on stdin and receives one JSON line:
 
 ```bash
-echo '{"messages": [...]}' | memesh hermes capture-session --session <id>
 echo '{"user": "...", "assistant": "..."}' | memesh hermes capture-turn --session <id>
+echo '{"prompt": "..."}' | memesh hermes prompt-context --session <id>
 ```
 
-| Option | Description |
-|--------|-------------|
-| `--session <id>` | Hermes session id: 1-128 letters, digits, `.`, `_`, `:` or `-`. Required. |
-
-`capture-session` runs the same rules as the Claude Code Stop hook over an
-OpenAI-format message list (`tool_calls` on assistant messages, `role: "tool"`
-results) and stores up to three `session-insight` entities:
-`session-<id>-files`, `session-<id>-fixes` and `session-<id>-summary`. Fewer
-than three tool calls stores nothing. A tool result counts as an error only
-when its JSON says so (`error`, `success: false`, or a non-zero `exit_code`);
-results that are not a JSON object are counted in `toolResultsNonJson` so a
-host that returns plain text shows up as a blind spot, not as "no errors".
-Shell commands and error text are redacted before they are stored. Running it
-again for the same session adds only observations that are not already there.
-
-`capture-turn` stores one `conversation` entity, tagged `signal:decision` or
-`signal:lesson`, only when the assistant's reply states a decision or a
-lesson (the user text is not classified: it can carry questions and the
-injected recall block). A negated cue ("not decided yet") does not count.
-Anything else stores nothing and reports `{"outcome":"skipped"}`. The name is a digest
-of the turn text, so a retry does not add a second row.
-
-Both stamp `metadata.provenance.source_host: "hermes"` and tag `platform:hermes`.
+`--session <id>` is required: 1–128 letters, digits, `.`, `_`, `:` or `-`.
+`capture-turn` stores each nonempty side as a separate `conversation` memory,
+tagged `platform:hermes`, `session:<id>` and `role:user` or `role:assistant`.
+It stores the full text after secret masking, without classifying the words or
+cutting either side to 2,000 characters. The prefetched memory context block
+is removed from the user side. Each turn event gets a new identity, including
+when the same words are repeated later. The result is `{"outcome":"wrote","names":[...]}`;
+an empty turn returns `{"outcome":"skipped","reason":"the turn has no text"}`.
+Both memories record `metadata.provenance.source_host: "hermes"`.
+`capture-session` has been removed: compression and session end generate no
+activity summaries. Session end only waits for pending turn writes.
 Bad input (not JSON, wrong shape, over 8 MiB, bad `--session`) exits `1` with
 a message on stderr.
+
+`prompt-context` reads the existing database without initializing or migrating it
+and returns `{"text":"...","ids":[...]}`. Its stdin may also include
+`"exclude":[1,2]` for positive memory IDs already delivered to the session.
+At most two strong matches (at most
+one assistant conversation) share a 4 KiB UTF-8 budget including the data notice,
+fences and truncation handles. It reads unfiled memories and Hermes captures,
+excluding other hosts/projects and the supplied session's conversations. It
+honors `promptRecall` and the effective `autoCapture` switch. No database or no
+match returns empty text and IDs. Explicit `memesh_recall` remains an HTTP tool.
 
 ### memesh delegation
 

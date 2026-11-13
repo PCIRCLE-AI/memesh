@@ -24,8 +24,10 @@ try {
   await client.connect(transport);
   const tool = (await client.listTools()).tools.find((candidate) => candidate.name === 'message');
   assert.ok(tool, 'installed MCP did not advertise message');
-  const actions = (tool.inputSchema?.properties?.action as { enum?: unknown } | undefined)?.enum;
-  assert.deepEqual(actions, ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status']);
+  const variants = tool.inputSchema.oneOf;
+  assert.ok(Array.isArray(variants), 'installed message schema must advertise action variants');
+  const actions = variants.map((variant: { properties?: { action?: { const?: unknown } } }) => variant.properties?.action?.const);
+  assert.deepEqual(actions.sort(), ['discover', 'read', 'send', 'status']);
 } finally {
   await client.close();
 }

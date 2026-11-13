@@ -1,6 +1,6 @@
 /**
- * The MCP server hands every client one instruction: saving is on by default, and the only exception is the user
- * explicitly asking not to save. A host puts this field into the model's system prompt, so it is the place the default
+ * The MCP server tells each client to save by default and use ordinary forget for user-selected memories.
+ * A host puts this field into the model's system prompt, so it is the place the default
  * has to be said. The built server is started under a throwaway HOME (with the account-home preload, so it does not
  * register itself as a live host in the maintainer's real ~/.memesh) and asked to initialize.
  */
@@ -52,9 +52,12 @@ describe.skipIf(process.platform === 'win32')('the MCP server tells the model th
     expect(await initializeInstructions()).toBe(DEFAULT_SAVE_INSTRUCTION);
   }, 60_000);
 
-  it('the instruction names the one exception and carries no condition on what is worth saving', () => {
+  it('the instruction explains selected-memory forget without conditioning default saving', () => {
     expect(DEFAULT_SAVE_INSTRUCTION).toMatch(/Saving is on by default/);
-    expect(DEFAULT_SAVE_INSTRUCTION).toMatch(/only exception is the user explicitly asking you not to save/);
+    expect(DEFAULT_SAVE_INSTRUCTION).toMatch(/remove a specific stored memory/);
+    expect(DEFAULT_SAVE_INSTRUCTION).toContain('`recall`');
+    expect(DEFAULT_SAVE_INSTRUCTION).toContain('`forget`');
+    expect(DEFAULT_SAVE_INSTRUCTION).not.toMatch(/not to save|current_turn|only exception/i);
     expect(DEFAULT_SAVE_INSTRUCTION).toMatch(/preferences/);
     expect(DEFAULT_SAVE_INSTRUCTION, 'names no private-session tool').not.toMatch(/private/i);
     expect(DEFAULT_SAVE_INSTRUCTION).not.toMatch(/\b(worth|important|durable|significant|later session|would need|if (it|you|the))\b/i);

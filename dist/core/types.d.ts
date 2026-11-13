@@ -57,7 +57,6 @@ export interface SearchOptions {
     countAsAccess?: boolean;
 }
 export interface RememberInput {
-    reasonOptional?: boolean;
     name?: string;
     type?: string;
     note?: string;
@@ -76,6 +75,7 @@ export interface RememberInput {
     provenanceOverride?: Record<string, unknown>;
     sourceHost?: string;
     project?: string | null;
+    projectIsDefault?: boolean;
     currentProject?: string;
     projectIds?: readonly string[];
 }

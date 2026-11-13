@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { binTargets, hookCommands } from '../scripts/lib/executable-targets.mjs';
 import { computeSkipList, findUnresolvedPlaceholders } from '../scripts/check-entry-points-start.mjs';
+import { buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 
 const script = path.resolve('scripts/check-entry-points-start.mjs');
 const dirs: string[] = [];
@@ -28,6 +29,29 @@ function fixtureRoot(): string {
 function run(root: string) {
   return spawnSync(process.execPath, [script, '--root', root], { encoding: 'utf8', timeout: 30_000 });
 }
+
+it('keeps hook writes out of the invoking owners HOME, not just their database', () => {
+  const root = fixtureRoot();
+  const owner = fixtureRoot();
+  const marker = path.join(owner, 'entry-gate-sentinel.txt');
+  fs.writeFileSync(marker, 'owner sentinel');
+  write(root, 'package.json', JSON.stringify({ type: 'module', bin: { memesh: 'dist/transports/cli/cli.js' } }));
+  write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+  write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { SessionStart: [{ hooks: [{
+    type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js',
+  }] }] } }));
+  write(root, 'scripts/hooks/session-start.js', `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    fs.writeFileSync(path.join(process.env.HOME, 'entry-gate-sentinel.txt'), 'hook wrote here');
+  `);
+  const result = spawnSync(process.execPath, [script, '--root', root], {
+    env: buildIsolatedSuiteEnv(process.env, { runtimeHome: owner }), encoding: 'utf8', timeout: 30_000,
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('2/2 entry point(s) started');
+  expect(fs.readFileSync(marker, 'utf8')).toBe('owner sentinel');
+});
 
 describe('executable-targets derivation picks up new manifest entries', () => {
   // Requirement: "the list is derived, never hand-written... a new entry

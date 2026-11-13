@@ -33,7 +33,7 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
-import { briefingTaskStateLines } from './task-state.js';
+import { taskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
 import { buildBriefingIndex, type BriefingIndex } from './briefing-index.js';
 import { buildRecentIndex } from './recent-index.js';
@@ -41,9 +41,8 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   DEFAULT_TOPOLOGY_BUDGET,
   assembleTopologyBlock,
-  boundTaskStateLines,
-  buildReferenceContext,
-  hasBriefingContent,
+  buildOpeningContext,
+  MAX_OPENING_CONTEXT_BYTES,
   jsonStringLiteral,
   projectLabel,
 } from './work-topology.js';
@@ -64,11 +63,10 @@ export interface BriefingResult {
    *  stale flag, or the unreadable-record line. The unread-message reminder
    *  that rides beside them is not a task state and does not count — a briefing
    *  whose only state line is that reminder has `hasTaskState: false`. At
-   *  `minimal` a FRESH state is not rendered at all, so it is `false` there. */
+   *  every level, a fresh stated task state can be rendered. */
   hasTaskState: boolean;
-  /** Whether the block leads with the session handoff: where the last session
-   *  in this project left off. Shown at every level while it is under
-   *  HANDOFF_MAX_AGE_DAYS old. Not counted in `entityCount`. */
+  /** Whether the block includes recent sessions' latest assistant replies.
+   *  Not counted in `entityCount`. */
   hasHandoff: boolean;
   /** The durable-memory index (#323) — counts, cost and the rendered lines,
    *  computed regardless of level (the `--index` CLI flag and callers that
@@ -177,12 +175,7 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
   // replace it, in the slot the stated lines would have taken.
   let taskLines: string[];
   try {
-    // #360: briefingTaskStateLines downgrades a stale record to one line
-    // (at every level) and, when fresh, honours the level's own
-    // taskState flag — `minimal` omits it entirely.
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName, ids).state, projectName, new Date(), {
-      includeFresh: policy.taskState,
-    }));
+    taskLines = taskStateLines(getTaskState(projectName, ids).state, projectName);
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
     taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
@@ -218,10 +211,8 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
   const everSeen = inboxRecipient !== undefined && unreadCount === 0 && inboxUnreadable === undefined
     ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
     : undefined;
-  // The session handoff leads everything: it is what the last session in this
-  // project said it was about to do. Exact project, active, and through the
-  // same trust gate as every other memory. Every pool below comes from the
-  // one selection the hook also runs.
+  // Task state and recent session tails precede ranked memories. The tails
+  // share the hook's exact-project, active and trust-filtered selection.
   // The same limit the SessionStart hook resolves (env, then config, then the
   // default), so the two surfaces cannot show different sets for one project.
   const pools = selectBriefingPools(db, projectName, {
@@ -230,11 +221,9 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
     global: policy.global,
     foreign: policy.foreign,
   });
-  const handoff = pools.handoff ? handoffLines(pools.handoff) : [];
+  const handoff = pools.handoffs.flatMap((row) => handoffLines(row));
 
   const stateLines = [
-    ...handoff,
-    ...taskLines,
     ...(inboxUnreadable !== undefined && inboxRecipient
       ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
       : unreadInboxLines(
@@ -260,7 +249,7 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
       { entities: toEntities(pools.recent), foreign: true },
     ],
     projectName,
-    DEFAULT_TOPOLOGY_BUDGET,
+    { ...DEFAULT_TOPOLOGY_BUDGET, maxChars: MAX_OPENING_CONTEXT_BYTES },
   );
 
   // Repository facts PREFIX a briefing; they never constitute one. Prepending
@@ -268,7 +257,7 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
   // a git repository returned a fenced block whose entire content was a branch
   // name, which is the one thing the agent can already see. So the emptiness
   // test comes first and the facts are context for memories, not a substitute.
-  const withRepo = lines.length > 0 && repoLines.length > 0
+  const withRepo = (lines.length > 0 || taskLines.length > 0 || handoff.length > 0) && repoLines.length > 0
     ? [...repoLines, '', ...lines]
     : lines;
 
@@ -302,20 +291,24 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
   // session-start.js's `memoryContext` construction), so the two cannot
   // drift on what "nothing to show" means, even though neither can call
   // the other's code (A1a).
-  const empty = !hasBriefingContent(block);
+  const opening = buildOpeningContext(taskLines, handoff, block);
+  const empty = opening.text === '';
+  // Remaining lines preserve their original positions. Count only rendered
+  // ranked rows, never a tail or task value that happens to resemble one.
+  const renderedRankedEnd = Math.max(0, opening.remainingLines.length - (withRepo.length - lines.length));
 
   return {
     project: projectName,
-    text: empty ? '' : buildReferenceContext(block),
+    text: opening.text,
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
     // The ranked lines only: the state lines lead the block, and the
     // handoff's text there can itself contain lines that look like `- [`.
-    entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith('- [')).length,
+    entityCount: lines.slice(stateLines.length, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
     // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
     // reminder, which is not a task state.
-    hasTaskState: taskLines.length > 0,
-    hasHandoff: handoff.length > 0,
+    hasTaskState: opening.taskLines.length > 0,
+    hasHandoff: opening.tailLines.length > 0,
     index,
     level,
     empty,

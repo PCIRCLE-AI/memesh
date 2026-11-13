@@ -1,6 +1,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { type IndexCandidate } from './briefing-index.js';
 import { type TopologyEntity } from './work-topology.js';
+export declare const USER_CONVERSATION_TITLE_LIMIT = 10;
 export interface PoolRow {
     id: number;
     name: string;
@@ -22,10 +23,10 @@ export interface HandoffRow {
     metadata: string | null;
     text: string;
     observedAt: string;
+    sessionId: string;
 }
 export interface BriefingPools {
-    handoff: HandoffRow | undefined;
-    handoffHidden: 'untrusted' | undefined;
+    handoffs: HandoffRow[];
     lessonCount: number;
     lessons: PoolRow[];
     project: PoolRow[];
@@ -33,6 +34,7 @@ export interface BriefingPools {
     shared: PoolRow[];
     global: PoolRow[];
     recent: PoolRow[];
+    userConversations: PoolRow[];
 }
 export interface PoolOptions {
     projectIds?: readonly string[];

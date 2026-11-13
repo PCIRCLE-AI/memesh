@@ -10,6 +10,7 @@ export type UpgradeNoticeMode = {
     updates: 'off';
     door: 'cli' | 'mcp';
     unsupported?: string;
+    explanation?: string;
 } | {
     updates: 'held';
     door: 'cli' | 'mcp';
@@ -26,6 +27,7 @@ export interface EntryPointNoticeInput {
     currentVersion: string;
     entryPoint: EntryPoint;
     dir?: string;
+    markerDir?: string;
     now?: Date;
     processOnce?: Set<string>;
     updateCheckEnabled?: boolean;

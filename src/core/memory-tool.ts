@@ -26,7 +26,7 @@ import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
 import type { Entity, Namespace } from './types.js';
-import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE, decisionLacksReason } from './work-topology.js';
+import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE } from './work-topology.js';
 
 /** The one prefix every path must sit under. Anything else is refused. */
 export const MEMORY_ROOT = '/memories';
@@ -392,14 +392,13 @@ function rewriteObservations(
     });
     // An edit never widens who sees the memory. A note of the memory folder keeps its source,
     // but the text is the model's now: it is untrusted, so it is not shared as the user's own
-    // note, and marked edited, so the Stop hook does not make it trusted again. A decision left
-    // without its reason is untrusted, as `remember` and note-ingest rule. Metadata that is not
+    // note, and marked edited, so the Stop hook does not make it trusted again. Metadata that is not
     // a JSON object is left exactly as it is: there is nothing to keep or change in it.
     const current = metadataObject(entity.name);
     if (!current) return;
     const provenance = current.provenance as Record<string, unknown> | undefined;
     const fromFolder = provenance?.source === NOTE_FILE_PROVENANCE;
-    if (!fromFolder && !decisionLacksReason(entity.type, next)) return;
+    if (!fromFolder) return;
     kg.updateEntityMetadata(entity.name, (meta) => ({
       ...meta,
       trust: 'untrusted',

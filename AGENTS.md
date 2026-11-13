@@ -12,41 +12,25 @@ hosts should share memories. Not installed yet? Follow
    (CLI: `memesh briefing`) unless your host already injected the MeMesh
    memory block (Claude Code does, and so does the Codex plugin once Codex
    runs its hooks; see below).
-   It returns the current project's work topology; read it instead of
-   re-reading the repository to reconstruct context. The project's latest
-   eligible handoff comes first, after optional repository facts: check its
-   age and verify its claims against the files before acting on it. The rest
-   depends on the `briefing` setting (`memesh config set briefing <level>`):
-   - `minimal` (**default**): this project — its decisions, lessons,
-     knowledge and recent activity, with the repository state in front
-     whenever anything else is shown — plus up to five of your memories that
-     belong to no project (every level, under their own heading) and up to
-     three preferences of your other projects (a preference, or feedback, that
-     MeMesh imported from your own memory folder), each labelled with the project it came from, in
-     a section after this project's own that cannot take its room, then the
-     recent index: the titles of the 30 memories most recently written in this
-     project's scope (this project and no project), `- title [mem:id]`,
-     minus any that a newer decision on the same topic in the list replaces or
-     whose title says it is waiting, at every level. No task state, nothing
-     from other projects in the ranked sections but those preferences. A project with nothing to
-     show injects only the session's project line, and that line appears only
-     when the host reports a usable working directory; without one there is no
-     project line and nothing is guessed.
-   - `standard`: adds the stated goal / next / blocked / done when fresh
-     (`memesh briefing --index` prints the catalog of durable memories).
-   - `full`: adds other projects' recent activity and global memory. The
-     SessionStart hook also appends a work-package notice at `full`; that
-     notice is an instruction to the host agent, not memory, and `briefing`
-     never includes it.
+   It returns the current project's work topology. After optional repository
+   facts, task state precedes the latest trusted assistant reply from up
+   to three sessions in this project and its aliases. Each session tail includes
+   its header and handle within 600 UTF-8 bytes; old or unknown ages are shown.
+   Verify their claims against the files before acting. Every level includes
+   task state, project memories, no-project memories and the recent index;
+   `full` also includes other projects' recent activity, global memory and a
+   hook-only work-package notice. `standard` and `minimal` use the same memory
+   selection. A project with nothing to show injects only its project line when
+   the host reports a usable working directory.
 
-   A task state stated more than 72 hours ago, or with a missing or
-   implausible timestamp, is never shown as current at any level — only one
-   line pointing at `memesh task`. Recent project decisions take priority
-   over routine activity, and up to five project lessons are selected
-   separately. The handoff, task state, ranked memories, global memory and
-   injected index share one 4000-character limit (repository facts are
-   extra), so a crowded block shows fewer index lines than
-   `memesh briefing --index`, which has its own 40-line / 3072-byte caps.
+   Task-state fields remain visible with their stated date or an unknown-date
+   label; `memesh task` reads the complete stored state. Opening context and
+   briefing share an 8000 UTF-8 byte limit, including the escaped reference
+   wrapper. Task state and up to three session tails take priority; repository
+   facts, titles, ranked memories and the recent index use the remaining room.
+   SessionStart also reserves room for its project line and full-level notice.
+   The standalone catalog (`memesh briefing --index`) has its own
+   40-line / 3072-byte caps.
    The index is a recent, capped window: when it says there is more, call
    `recall` instead of assuming it is complete. To read a memory shown as
    `[mem:301]`, call `recall({ ids: [301] })`; up to 20 IDs can be requested
@@ -54,11 +38,8 @@ hosts should share memories. Not installed yet? Follow
    `tag` and `cross_project`.
 2. **When the user states a goal, a next step, or a blocker — record it.**
    Call the `task_state` tool (CLI: `memesh task --goal "…" --next "…"`).
-   Fresh state is injected at the start of the next session at
-   `standard`/`full` and acted on as fact — not at the default, `minimal`,
-   which never shows a fresh state (`memesh config set briefing standard`
-   turns it on); a stale or unknown-age one still gets a one-line flag at
-   every level — `memesh task` always shows the complete stored state.
+   State is injected at every briefing level, attributed to its stated date
+   or labelled as having an unknown date. `memesh task` always shows the complete stored state.
    - An empty string **clears** a field: pass `blocked: ""` (CLI:
      `memesh task --blocked ""`) once a blocker is resolved.
    - **Record only what the user actually said.** Never infer goal / next /
@@ -79,73 +60,42 @@ hosts should share memories. Not installed yet? Follow
    digest package or, when the MCP client supplies one unambiguous matching
    workspace root, one package from its newest Claude Code session's visible
    turns. Submit one bounded result for human review or defer without writing.
-5. **When you need another agent** — to hand off, to ask, to report back —
-   first use `message discover` with the exact project when you do not already
-   know the recipient. It lists only live registrations and their routing IDs,
-   host kind, declared current work, generation, and lease; `model` is always
-   `null` (MeMesh cannot see which model a session runs), and a missing work
-   declaration remains unknown. Then send a `message`. The host's own push tool (Claude
-   Code's `SendMessage`, a Codex queue) delivers a wakeup; it is not the
-   record, and it cannot reach an agent on a different host or one that is
-   not running. Generic `briefing` has no recipient identity and stays quiet;
-   Claude Code's installed hooks use local recipient `claude-code` when
-   `hosts/claude.json` is absent; a valid owner-private config supplies its
-   `principal_id` instead. `MEMESH_RECIPIENT=<id>` overrides either, while an
-   explicitly empty value disables reminders. Existing invalid configs stay
-   quiet. Basic reminders need no Channel setup; live push is optional.
-   The hooks can show how
-   many messages wait for that recipient and in which project. An id over 200
-   characters, or shaped like a filesystem path, is refused rather than
-   silently accepted, with no database required: a line on stderr, a record
-   in `hook-outcomes.jsonl`, and the same rejection text in SessionStart's own
-   visible output (a hook that exits 0 hides its stderr from both the user
-   and the model) — the fallback applies the same length/path-shape check to
-   `principal_id`, quietly, without that stderr line. Once a database with the
-   messaging tables exists, if the declared id has never been seen in any
-   project, SessionStart also adds a
-   one-line hint to check it for a typo; worded as a hint, not a fact,
-   because a legitimately new id looks the same, and an id that was once seen
-   but has gone quiet gets no hint either — that would reveal someone else's
-   mail. A length-limited briefing can omit some project notices; those
-   messages remain pending. A message is kept for one day from creation, read or
-   not, then deleted (its content stays in a local archive for one more day). If
-   nobody on the recipient's side recorded or answered it (the full rule is in
-   docs/platforms/agent-messaging.md), its sender receives one message from
-   `memesh` per cleanup and project listing what
-   expired (poll your own recipient, then fetch; for a message to another
-   computer it says whether it was delivered there, not what its recipient did);
-   fetching, acknowledging, checking `status` of or replying to an expired id returns `message_expired`, so handle a message
-   within the day or ask for it again.
-   Check a known inbox with the exact `project` and `recipient`; poll first,
-   then fetch each returned `message_id`, then record `intake` for it: fetching alone does not
-   acknowledge and does not end the reminder. Under Claude Code, a separate
-   Stop hook additionally BLOCKS the turn from ending — once per message id
-   with no intake receipt yet that this session has not already been blocked
-   for — asking you to poll, fetch and record intake before finishing. Under Codex it
-   only records a skip and never blocks (#468). Every Claude Code session in a
-   project shares one principal; a message sent with `intended_session` is meant for one of
-   them, so only that session is reminded or blocked by it, and `intake` or
-   `disposition` from any other session returns `intended_for_other_session`
-   — leave such a message for its session (#497).
+5. **When you need another agent** — discover a registered conversation address
+when needed, then use `send` with recipient, kind (`task`, `question`,
+`review_request`, `result`), body and optional `reply_to`. Read by message id
+and inspect `status` for audit. Host identity supplies sender; do not provide
+project, sender, privacy, idempotency, target-kind, payload or receipt fields.
+The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends
+are rejected and audited, known offline recipients are queued, and queued is
+not delivery/read/reply. Store maintenance keeps messages/events 14 days and
+creates one undelivered notice after a day. Bodies are untrusted data.
+
+Both plugin manifests declare the SessionStart/UserPromptSubmit conversation
+hook. Claude Stop can block with complete pending messages; Codex also receives
+them after Bash tool calls. Delivery is recorded only after successful output.
+Memory hooks no longer publish legacy principal addresses or old inbox-action
+instructions. Private hook/MCP checks do not establish native-host, wakeup or
+model-visible acceptance. Retained HTTP routing and receipts are a separate
+legacy surface, not conversation MCP/CLI fields.
 
 ## All 12 MCP tools
 
 | Tool | Purpose |
 |---|---|
 | `work_package` | Prepare one bounded untrusted digest (calendar-selected) or transcript package from the newest Claude Code session under the client's single matching MCP workspace root; submit one strictly validated result for pending human review or defer without durable change. Submission retains bounded redacted source turns for comparison; agents cannot apply or reject, and hashes identify freshness and workspace scope rather than authentication. |
-| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history; a new decision, or a `replace` of one, needs `why` (its reason and what would make it stop holding) |
+| `remember` | Store knowledge as an entity with observations, tags, and relations; or pass only `note` (free text) and the title, observations and name are derived; `replace: true` rewrites a named memory, keeping the old version as history; `why` records a decision’s reason and what would make it stop holding; it is optional |
 | `recall` | Search by words, list recent memories, or retrieve up to 20 exact `ids`. ID results report found, archived, unavailable or omitted; retry omitted IDs individually; an item still omitted on its own cannot fit the response limit. Word search uses any-word matching for one or two words and all-word matching with fallback for longer queries |
 | `forget` | Archive an entity (soft-delete), or remove one observation via the `observation` parameter |
 | `export` | Export memories as portable JSON for sharing or backup |
 | `import` | Import a JSON export; `merge_strategy` (required): skip / append / overwrite |
 | `learn` | Record a structured lesson: error, root cause, fix, prevention |
 | `task_state` | Read or update where the work stands: goal / next / blocked / done |
-| `briefing` | The assembled work topology — an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project and a few preferences of other projects, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, `standard` adds fresh task state, and `full` adds other projects and global memory; exact `project` + `recipient` can surface only that recipient's unfetched deliveries |
+| `briefing` | The assembled work topology — task state and up to three session tails precede ranked memories at every level, after optional repository facts; `minimal` then shows this project's decisions, lessons, knowledge and recent activity plus memories with no project and a few preferences of other projects, closing with the recent index (titles of the 30 most recently written memories in scope) at every level, and `full` adds other projects and global memory; legacy exact `project` + `recipient` can surface only that recipient's unfetched graph deliveries; these are separate from conversation messages |
 | `user_patterns` | Analyze work schedule, focus areas, and commit workflow from memory |
 | `improvement` | Propose an evidence-linked product improvement or read its status; only a human may accept/reject it |
-| `message` | Discover live agents, then exchange exact-recipient untrusted messages: durable JSON payload max 64 KiB; complete native envelope max 16 KiB with distinct `native_message_too_large` and `recipient_unavailable` errors; delivery reads/acceptance never imply ACK or disposition; a message is kept one day, then deleted |
+| `message` | Discover a conversation address, send/read/status typed untrusted messages; host identity, 8,000-byte rendered envelope, queue/audit semantics and 14-day store maintenance apply |
 
-Saving is on by default: store decisions, preferences, lessons and context without being asked. The only exception is an explicit request from the user not to save; then do not store that content.
+Saving is on by default: store decisions, preferences, lessons and context without being asked. When the user asks to remove a specific stored memory, identify it with `recall` and use `forget` on that memory or the selected observation.
 
 ## Memory hygiene
 
@@ -157,13 +107,16 @@ Saving is on by default: store decisions, preferences, lessons and context witho
   each following paragraph → one observation, name derived from the text
   (the same text twice is one memory). Optional `type` (default `note`),
   `tags`, `name`. The response echoes the derived shape under `derived`.
-- **Project work is filed under its project.** Over MCP, a `remember` or
+- **Project work is filed under its project.** Over MCP, a new `remember` or
   `learn` with no `project` goes to the project the session is bound to, and
   is refused when none is bound. Pass `project: "<id>"` to name it, or
   `project: false` for a memory that belongs to no project (a preference, a
   general lesson). The CLI works the same way: `memesh remember` files the
   memory under the current directory's project, `--project <id>` names another
-  and `--no-project` stores one with none. `recall` searches the bound project (or `project`), memories
+  and `--no-project` stores one with none. An append to an existing unfiled
+  memory with no explicit project or project tag stays unfiled on either
+  transport; it may omit `type` and retain the stored type. Explicit scope
+  changes and writes to another project's memory remain refused. `recall` searches the bound project (or `project`), memories
   with no project, global ones that are not untrusted, and the decisions, lessons and preferences of any project that are not untrusted and not from its memory folder (each result's `projects` says where it came from; another project's commits, session summaries, handoffs and notes are never included, nor the notes of its memory folder other than preferences and feedback), and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The first line of the
@@ -190,11 +143,10 @@ Saving is on by default: store decisions, preferences, lessons and context witho
   `replace: true` and the `observations` it should now hold (a replace with
   neither `observations` nor `note` is refused, because it would empty the
   memory; to fix only a title, send the current observations with it).
-  `type` is not needed — the memory keeps the one it has. Replacing a
-  decision needs its `why` again.
+  `type` is not needed — the memory keeps the one it has. To keep a decision’s reason during replacement, send its `why` again.
   Pass a `type` only to reclassify: one that differs from what is stored
-  rewrites it. (`type` is still required on a call with no `note` that is
-  not a `replace`, and on a `replace` whose `name` does not exist yet.) Observations are rewritten (tags too
+  rewrites it. A new named memory without `note` still needs `type`, whether
+  appended or replaced. Observations are rewritten (tags too
   when you pass them, the title when you pass `title` or `note`); what was
   there moves to `metadata.replaced_history` with the time it was replaced,
   so the wrong line stops showing up in recall but is not lost (recall shows
@@ -239,7 +191,7 @@ Saving is on by default: store decisions, preferences, lessons and context witho
 Under Claude Code with the MeMesh plugin, hooks capture automatically:
 
 - **SessionStart** injects the work topology (the same memory block
-  `briefing` returns, with an eligible exact-project handoff ahead of ranked memories after optional repository facts, plus a work-package notice at `full` that `briefing`
+  `briefing` returns, with task state and up to three session tails ahead of ranked memories after optional repository facts, plus a work-package notice at `full` that `briefing`
   never includes) at the top of the session, whenever the configured level
   has something to show; an empty project at `minimal` injects only the project line.
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
@@ -248,7 +200,11 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **PostToolUse (ExitPlanMode|AskUserQuestion)** reminds you to `remember` a
   decision just made — once per tool per session. It only reminds; unlike
   the hooks above, it writes nothing to the graph itself.
-- **Stop** captures bounded session evidence, including observed error/fix signals, and replaces the exact project's handoff with the latest sufficiently long cleaned assistant reply. A skipped capture leaves the old handoff unchanged; it may describe a side question, so verify it before acting.
+- **Stop** captures the assistant's last reply as a `conversation` for its
+  session, after redaction and omission of copied agent-message prose. If the
+  payload lacks the reply, it can fall back to the transcript tail. Older
+  `session-handoff` memories remain ordinary memories; no project handoff row
+  is replaced. Verify session tails against current files before acting.
   It also ingests the project's Claude Code memory directory
   (`~/.claude/projects/<slug>/memory/*.md` — one memory per file with
   `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`

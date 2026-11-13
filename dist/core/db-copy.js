@@ -2,11 +2,14 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 export const DB_COPIES_KEPT = 3;
+export function backupDirectoryFor(dbPath) {
+    return path.join(path.dirname(dbPath), 'backups');
+}
 export function copyDatabaseBefore(db, prefix, inCopy) {
     const location = db.location();
     if (!location)
         return { kind: 'failed', reason: 'the database has no file path, so no copy can be made' };
-    const directory = path.join(path.dirname(location), 'backups');
+    const directory = backupDirectoryFor(location);
     const stamp = new Date().toISOString().replace(/[:.]/g, '-');
     const unique = randomUUID().slice(0, 8);
     const finalPath = path.join(directory, `${prefix}-${stamp}-${unique}.db`);

@@ -360,10 +360,10 @@ export declare const MessageSchema: z.ZodDiscriminatedUnion<[z.ZodObject<{
     action: z.ZodLiteral<"disposition">;
 }, z.core.$strict>, z.ZodObject<{
     activation: z.ZodEnum<{
+        failed: "failed";
         woken: "woken";
         manual_resume_required: "manual_resume_required";
         unsupported: "unsupported";
-        failed: "failed";
     }>;
     detail: z.ZodOptional<z.ZodString>;
     project: z.ZodPipe<z.ZodString, z.ZodTransform<string, string>>;

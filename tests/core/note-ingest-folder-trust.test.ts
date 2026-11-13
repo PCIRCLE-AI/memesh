@@ -133,11 +133,11 @@ describe('note ingestion and trust', () => {
     expect(row('feedback-a').meta.trust).toBe('trusted');
   });
 
-  it('a decision note with no reason is still stored, untrusted: a decision needs its reason to be trusted', () => {
+  it('a decision note with no reason keeps the own folder trust', () => {
     note(folderB, 'd.md', 'decision-d', 'decision', 'Use tabs');
     const result = ingestNoteDirectory({ dir: folderB, project: 'proj-b', trusted: true });
     expect(result.created).toEqual(['decision-d']);
-    expect(row('decision-d').meta.trust).toBe('untrusted');
+    expect(row('decision-d').meta.trust).toBe('trusted');
   });
 });
 
@@ -280,13 +280,13 @@ describe('a note stored untrusted is made trusted only by the copied, recorded c
     }
   });
 
-  it.each([true, false])('a trusted decision edited to drop its Why becomes untrusted (trusted read: %s)', (trusted) => {
+  it.each([true, false])('a trusted decision keeps its trust when its Why is removed (trusted read: %s)', (trusted) => {
     fs.writeFileSync(path.join(folderB, 'd.md'), '---\nname: decision-d\ndescription: d\nmetadata:\n  type: decision\n---\nUse tabs\n\nWhy: diffs stay small\n');
     ingestNoteDirectory({ dir: folderB, project: 'proj-b', trusted: true });
     expect(row('decision-d').meta.trust).toBe('trusted');
     fs.writeFileSync(path.join(folderB, 'd.md'), '---\nname: decision-d\ndescription: d\nmetadata:\n  type: decision\n---\nUse tabs, always\n');
     ingestNoteDirectory({ dir: folderB, project: 'proj-b', trusted });
-    expect(row('decision-d').meta.trust).toBe('untrusted');
+    expect(row('decision-d').meta.trust).toBe('trusted');
   });
 
   it('a note a later run adds to an already trusted folder needs no copy', () => {

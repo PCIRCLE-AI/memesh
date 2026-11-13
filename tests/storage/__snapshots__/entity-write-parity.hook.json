@@ -66,10 +66,12 @@
       "observationsWritten": 1
     },
     {
-      "threw": "\"session-handoff:p2\" is stored as type decision, not session-handoff; the Stop hook leaves it alone"
+      "id": 14,
+      "isNew": false,
+      "observationsWritten": 1
     },
     {
-      "id": 15,
+      "id": 16,
       "isNew": true,
       "observationsWritten": 1
     }
@@ -167,14 +169,16 @@
       "id": 14,
       "name": "session-handoff:p2",
       "type": "decision",
-      "title": null,
+      "title": "ordinary legacy-name content",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
-      "metadata": null
+      "metadata": {
+        "title_source": "heuristic"
+      }
     },
     {
-      "id": 15,
+      "id": 16,
       "name": "untitled-commit",
       "type": "commit",
       "title": "shrike",
@@ -230,7 +234,12 @@
     },
     {
       "id": 15,
-      "entity_id": 15,
+      "entity_id": 14,
+      "content": "ordinary legacy-name content"
+    },
+    {
+      "id": 16,
+      "entity_id": 16,
       "content": "shrike"
     }
   ],
@@ -293,7 +302,7 @@
     ],
     "land": [],
     "shrike": [
-      15
+      16
     ],
     "Files": [
       5,

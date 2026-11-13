@@ -19,6 +19,7 @@
 // `--prune-stale` removes only baseline keys that the current detectors no
 // longer emit. It never adds or classifies a new hit; those still require a
 // reviewed reason.
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { stripComments } from '../lib/reference-corpus.mjs';
@@ -68,14 +69,23 @@ function walk(dir, exts) {
 }
 
 /**
- * hit id = class + location key (file, or file:line). Deliberately NO content
- * hash: a line edit shifts ids, which resurfaces the entry as new+stale and
- * forces a re-triage — the failure mode of that choice (an id re-used by
- * different code at the same line, silently inheriting the old triage) is
- * accepted and this comment is where it is written down.
+ * hit id = class + location key. A `file:line` key is rewritten to
+ * `file#<hash of the trimmed line text>` (plus `.2`, `.3` for a repeat of the
+ * same text in that file), so inserting or deleting lines elsewhere in the
+ * file keeps a triaged entry matched, while editing the flagged line itself
+ * resurfaces it as new + stale and forces a re-triage. Accepted: two lines
+ * with identical text swap triage if they swap order.
  */
+const lineCache = new Map();
 function hitId(cls, key) {
-  return `${cls} ${key}`;
+  const m = /^(.+\.(?:ts|sh|yml|md)):(\d+)$/.exec(key);
+  if (!m) return `${cls} ${key}`;
+  if (!lineCache.has(m[1])) lineCache.set(m[1], read(m[1]).split('\n').map(l => l.trim()));
+  const lines = lineCache.get(m[1]);
+  const text = lines[Number(m[2]) - 1];
+  const nth = lines.slice(0, Number(m[2])).filter(l => l === text).length;
+  const hash = createHash('sha1').update(text).digest('hex').slice(0, 8);
+  return `${cls} ${m[1]}#${hash}${nth > 1 ? `.${nth}` : ''}`;
 }
 
 // The classes this audit is expected to report on. A fixed list, on purpose:

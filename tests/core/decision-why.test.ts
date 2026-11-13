@@ -4,7 +4,7 @@
  * A decision stored as a bare conclusion — "keep the redactor as is, do not
  * extend it" — was later read as a standing ban, long after the reason for
  * it (it could not be done cleanly then) had gone. Two halves close that:
- * the writer refuses a new decision without `why`, and every briefing line
+ * the writer accepts decisions without `why`, and every briefing line
  * shows the reason (or that there is none) and how long nobody has checked.
  */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
@@ -42,11 +42,19 @@ const observationsOf = (name: string) => (getDatabase()
   .prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id')
   .all(name) as Array<{ content: string }>).map((r) => r.content);
 
-describe('remember refuses a decision without its reason', () => {
-  it('refuses a new decision with no why, naming both halves, and stores nothing', () => {
-    expect(() => remember({ name: 'db-choice', type: 'decision', observations: ['Use SQLite'] }))
-      .toThrow(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('db-choice')).toBeUndefined();
+describe('remember stores a decision, with or without its reason', () => {
+  it('does not label a user note as missing a tool-supplied reason', () => {
+    const row = {
+      id: 1, name: 'user-note', type: 'decision', title: 'Use SQLite',
+      metadata: JSON.stringify({ trust: 'trusted', provenance: { source: 'note-file' } }),
+    };
+    const entity = toTopologyEntity(row, new Map());
+    expect(entity.why).toBeUndefined();
+    expect(topologyLine(entity, 200)).not.toContain('no reason recorded');
+  });
+  it('stores a new decision that has no why', () => {
+    remember({ name: 'db-choice', type: 'decision', observations: ['Use SQLite'] });
+    expect(observationsOf('db-choice')).toEqual(['Use SQLite']);
   });
 
   it('stores why as the observation "Why: …"', () => {
@@ -61,7 +69,8 @@ describe('remember refuses a decision without its reason', () => {
 
   it('covers architecture_decision and design_decision too', () => {
     for (const type of ['architecture_decision', 'design_decision']) {
-      expect(() => remember({ name: `x-${type}`, type, observations: ['x'] }), type).toThrow(/needs `why`/);
+      remember({ name: `x-${type}`, type, observations: ['x'] });
+      expect(observationsOf(`x-${type}`), type).toEqual(['x']);
     }
   });
 
@@ -71,17 +80,18 @@ describe('remember refuses a decision without its reason', () => {
     expect(observationsOf('db-choice')).toEqual(['Use SQLite', `Why: ${WHY}`, 'WAL mode on']);
   });
 
-  it('asks for it on a replace, which rewrites the decision', () => {
+  it('a replace without why rewrites the decision; with why it keeps the reason', () => {
     remember({ name: 'db-choice', type: 'decision', observations: ['Use SQLite'], why: WHY });
-    expect(() => remember({ name: 'db-choice', replace: true, observations: ['Use DuckDB'] })).toThrow(/needs `why`/);
-    expect(observationsOf('db-choice')).toEqual(['Use SQLite', `Why: ${WHY}`]);
+    remember({ name: 'db-choice', replace: true, observations: ['Use DuckDB'] });
+    expect(observationsOf('db-choice')).toEqual(['Use DuckDB']);
     remember({ name: 'db-choice', replace: true, observations: ['Use DuckDB'], why: 'analytics queries; revisit if writes dominate' });
     expect(observationsOf('db-choice')).toEqual(['Use DuckDB', 'Why: analytics queries; revisit if writes dominate']);
   });
 
-  it('asks for it when replace reclassifies a note as a decision', () => {
+  it('replace can reclassify a note as a decision without a why', () => {
     remember({ name: 'n', type: 'note', observations: ['x'] });
-    expect(() => remember({ name: 'n', type: 'decision', replace: true, observations: ['x'] })).toThrow(/needs `why`/);
+    remember({ name: 'n', type: 'decision', replace: true, observations: ['x'] });
+    expect(observationsOf('n')).toEqual(['x']);
   });
 
   it('works with the note form', () => {
@@ -109,10 +119,10 @@ describe('remember refuses a decision without its reason', () => {
     expect(observationsOf('imported-choice')).toEqual(['Use SQLite']);
   });
 
-  it('the MCP tool refuses it with the same sentence and stores it with why', async () => {
-    const refused = await handleTool('remember', { name: 'mcp-choice', type: 'decision', observations: ['x'], project: false });
-    expect(refused.isError).toBe(true);
-    expect(JSON.stringify(refused)).toMatch(/needs `why`/);
+  it('the MCP tool stores a decision without a why, and with one', async () => {
+    const bare = await handleTool('remember', { name: 'mcp-bare', type: 'decision', observations: ['x'], project: false });
+    expect(bare.isError).toBeFalsy();
+    expect(observationsOf('mcp-bare')).toEqual(['x']);
     const ok = await handleTool('remember', { name: 'mcp-choice', type: 'decision', observations: ['x'], why: WHY, project: false });
     expect(ok.isError).toBeFalsy();
     expect(observationsOf('mcp-choice')).toContain(`Why: ${WHY}`);
@@ -329,15 +339,9 @@ describe('the reason argument', () => {
     expect(observationsOf('labelled')).toEqual(['x', 'Why: because; revisit if it changes']);
   });
 
-  it('a label with nothing after it is no reason at all', () => {
-    expect(() => remember({ name: 'label-only', type: 'decision', observations: ['x'], why: 'Why: ' })).toThrow(/needs `why`/);
-  });
-
-  it('the refusal names the type with the right article', () => {
-    const refusal = (type: string) => { try { remember({ name: `n-${type}`, type, observations: ['x'] }); } catch (e) { return (e as Error).message; } return ''; };
-    expect(refusal('decision')).toContain('this decision: a decision needs `why`');
-    expect(refusal('architecture_decision')).toContain('this architecture_decision: an architecture_decision needs `why`');
-    expect(refusal('design_decision')).toContain('this design_decision: a design_decision needs `why`');
+  it('a label with nothing after it is no reason at all: the decision is stored without one', () => {
+    remember({ name: 'label-only', type: 'decision', observations: ['x'], why: 'Why: ' });
+    expect(observationsOf('label-only')).toEqual(['x']);
   });
 });
 

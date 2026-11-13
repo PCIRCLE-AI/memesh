@@ -523,21 +523,21 @@ describe('Feature: memory_20250818 over the knowledge graph', () => {
         expect(seenFromB('fold-low')).toBe(false);
       });
 
-      it('an agent\'s trusted decision edited to drop its reason becomes untrusted and stops being shared', () => {
+      it('an agent\'s trusted decision keeps sharing when its reason is removed', () => {
         seedTyped('agent-dec', 'decision', ['Use sqlite.', 'Why: user said so.']);
         setMeta('agent-dec', JSON.stringify({ trust: 'trusted', provenance: { source: 'local' } }));
         expect(seenFromB('agent-dec')).toBe(true);
         expect(handleMemoryCommand(edits[0][1]('agent-dec')).isError).toBe(false);
-        expect((JSON.parse(rawMeta('agent-dec')!) as { trust?: string }).trust).toBe('untrusted');
-        expect(seenFromB('agent-dec')).toBe(false);
+        expect((JSON.parse(rawMeta('agent-dec')!) as { trust?: string }).trust).toBe('trusted');
+        expect(seenFromB('agent-dec')).toBe(true);
       });
 
-      it('an agent\'s decision with no metadata, edited to drop its reason, becomes untrusted', () => {
+      it('an agent\'s decision with no metadata keeps sharing when its reason is removed', () => {
         seedTyped('bare-dec', 'decision', ['Use sqlite.', 'Why: user said so.']);
         setMeta('bare-dec', null);
         expect(seenFromB('bare-dec')).toBe(true);
         expect(handleMemoryCommand(edits[0][1]('bare-dec')).isError).toBe(false);
-        expect(seenFromB('bare-dec')).toBe(false);
+        expect(seenFromB('bare-dec')).toBe(true);
       });
 
       it('an agent\'s decision that keeps its reason keeps its trust', () => {

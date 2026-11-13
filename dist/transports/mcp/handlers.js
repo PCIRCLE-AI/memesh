@@ -10,10 +10,8 @@ import { computePatterns } from '../../core/patterns.js';
 import { assembleBriefing } from '../../core/briefing.js';
 import { getTaskState, setTaskState } from '../../core/task-state-store.js';
 import { getProductImprovementStatus, stageProductImprovement, } from '../../core/product-improvements.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
-import { hostSessionFromEnv } from '../../core/host-session.js';
-import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, MessageSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
+import { executeConversationMessageAction, CONVERSATION_MESSAGE_DESCRIPTION, CONVERSATION_MESSAGE_INPUT_SCHEMA } from '../conversation-messaging.js';
+import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
@@ -73,7 +71,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'remember',
-        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), preferences, patterns, lessons learned, and project context. Saving is on by default: store them without waiting to be asked; the only exception is the user explicitly asking not to save, in which case do not store that content. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
+        description: 'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), preferences, patterns, lessons learned, and project context. Saving is on by default: store them without waiting to be asked. Use `forget` when the user asks to remove a specific existing memory. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
             'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
             'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix. ' +
             'Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
@@ -86,7 +84,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 type: {
                     type: 'string',
-                    description: 'Entity type (e.g., "decision", "pattern", "lesson_learned"). Required unless `note` is given (it then defaults to "note"), or `replace: true` is sent with the `name` of a memory that exists — that call keeps the stored type. Passing one on a `replace` reclassifies the memory.',
+                    description: 'Entity type (e.g., "decision", "pattern", "lesson_learned"). Required for a new named memory. Omit it when appending to or replacing an existing name to retain its type; note defaults to "note". Passing a type on replace reclassifies the memory.',
                 },
                 note: {
                     type: 'string',
@@ -116,7 +114,7 @@ export const TOOL_DEFINITIONS = [
                 },
                 why: {
                     type: 'string',
-                    description: 'For a decision: why it was made AND what would make it stop holding (e.g. "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Stored as the observation "Why: …" and shown next to the decision wherever it is recalled or briefed. Required to create or `replace` a memory of type decision, architecture_decision or design_decision, unless an observation already starts with "Why: ".',
+                    description: 'For a decision: why it was made AND what would make it stop holding (e.g. "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). Stored as the observation "Why: …" and shown next to the decision wherever it is recalled or briefed. Optional: a decision without it is stored and shown as "no reason recorded".',
                 },
                 tags: {
                     type: 'array',
@@ -156,7 +154,7 @@ export const TOOL_DEFINITIONS = [
             additionalProperties: false,
             anyOf: [
                 { required: ['note'] },
-                { required: ['name', 'type'] },
+                { required: ['name'], properties: { replace: { const: false } } },
                 { required: ['name', 'replace', 'observations'], properties: { replace: { const: true }, observations: { minItems: 1 } } },
                 { required: ['name', 'interactive'], properties: { interactive: { const: true } } },
                 { required: ['name', 'editor'] },
@@ -304,7 +302,7 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'briefing',
-        description: 'The work topology for a project, assembled and ready to use — assembled under the same rules as Claude Code’s session-start memory block (at `full`, the SessionStart hook additionally appends a work-package notice; that notice is a host-agent instruction, not memory, and is never part of this tool’s output). An eligible exact-project handoff precedes ranked memories at every level, after optional repository facts: fresh through 72 hours, marked stale through 14 days, omitted when older, undatable, or implausibly future-dated. Imported or archived handoffs are not auto-injected. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories share a 4000-character memory-block limit. At every level the block closes with the recent index: the titles of the 30 memories most recently written in this project or with no project (never another project’s, global or not), each `- title [mem:id]`, leaving out one a newer decision on the same topic in the list replaces or whose title says it is waiting; nothing is put in its place. How much else is assembled follows the `briefing` setting: `minimal` (the default) includes this project’s decisions and direction, lessons, known facts and recent activity, plus up to five memories that belong to no project and up to three preferences of other projects (labelled with their project, after the project’s own), and no fresh task state (a stale or unknown-age one still collapses to a one-line flag at every level), and may be empty; `standard` adds a fresh goal / next / blocked / done; `full` additionally includes other projects and global memory. Whatever the level, the result’s `index` field carries the standalone catalog of durable memories (`memesh briefing --index`). Call it at the start of a session only when the host has not already injected this block (the MeMesh SessionStart hook does under Claude Code, and under the Codex plugin once Codex runs its hooks; it runs again after context compaction), or when the user asks what is remembered; use recall for specific questions. Content is wrapped as untrusted background data.',
+        description: 'Assemble project context using the same selection as the SessionStart memory block. At every level, show the stated goal / next / blocked / done attributed to their dates, including old or unknown dates, then the latest assistant conversation from each of up to three project sessions. Each session tail includes its age, source when known and recall handle within 600 UTF-8 bytes; old or unknown-age replies remain visible. Archived or untrusted conversations are excluded. The complete replies remain searchable; no separate handoff record is written. Recent project decisions take priority over routine activity and up to five project lessons are selected separately. The ranked block shares a 4000-character limit with task state and session tails. The recent index closes the block at every level: up to 30 recent titles in scope, with recall handles; a title marked pending or blocked is still eligible. The default minimal level includes project context, up to five memories with no project and a few labelled preferences of other projects; standard retains these sections and full additionally includes global memory and other projects. The result index field is the separate durable-memory catalog (also memesh briefing --index). Call at session start only when the host has not already injected the block, or when the user asks what is remembered; use recall for specific questions. Content is untrusted background data. The full-level SessionStart work-package notice is a host instruction and is never part of this tool output.',
         inputSchema: {
             type: 'object',
             properties: {
@@ -376,53 +374,8 @@ export const TOOL_DEFINITIONS = [
     },
     {
         name: 'message',
-        description: `Use this to contact or discover another agent on the same MeMesh instance, or on another computer in this machine's team. discover is a bounded, project-scoped live-directory read of active leases and returns only the router result; it performs no send, fetch, ACK, replay, or receipt work. An empty discover result does not predict whether a principal-target send/fetch will work: those use a separate durable store-and-forward path to a named recipient that does not require the router or any live registration (an exact target_kind=session send still does, and still needs the router). send durably stores one untrusted JSON-encoded payload of at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) idempotently. Native delivery has a separate ${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB) cap for the complete envelope, including routing metadata and payload. For target_kind=session, success requires the exact active native host to accept the message: Claude Channel receives the full envelope; Claude inbox and the Codex CLI queue receive only a notice, after which the agent checks receipts and fetches the body. An oversized envelope returns native_message_too_large; an unreachable local router returns router_unreachable; an unavailable or rejected exact session returns recipient_unavailable. Both sender-side failures preserve scoped recovery data. Principal targets retain durable store-and-forward behavior even when native delivery is unavailable. Every session of one principal shares its inbox: a principal send with intended_session is meant for that one session, which alone is reminded of it and alone may record intake or a disposition (any other caller, including one with no session id, gets intended_for_other_session). A session send with fallback_to_principal that the session refuses (recipient_unavailable) is sent to its principal with intended_session set to that session instead. For a full native envelope, poll/fetch remain compatibility and recovery reads; after a notice, fetch is the required read of the body. intake, ack, disposition, and activation are separate explicit facts; an agent only needs to record intake, while ack and disposition are optional. A host accept means the host took the notice: for the Claude Code inbox it was seen in the conversation (a notice Claude Code holds back is not an accept, and the message waits in the inbox until the session's next prompt or turn end); for the Claude Code Channel it was handed over and queued, and MeMesh cannot see whether it was shown; for Codex it was queued for the thread. It never means the agent read it. status reads where one message stands from what MeMesh recorded and from any intake, ack, disposition or reply the agent made: queued, accepted, handed_to_agent (intake, ack or disposition recorded) or replied; for a person/handle@machine recipient on another computer it reports the network delivery instead: handed_to_network (not yet confirmed delivered), delivered_to_machine or not_delivered. Native acceptance, polling, fetching, and discovery never imply agent acknowledgement or workflow completion. In receipts, the host_accept fact's delivery_state.target_session "not_live" only means that session had no live registration when read; it is not a permanent end. A MeMesh send cannot wake or resume an offline session (an exact-session send to it returns recipient_unavailable). Resume that session in its own host, which may not succeed at once, and read receipts again; or decide to send to the principal instead, knowing the original session may still take the first message if it comes back. MeMesh does neither automatically. After this computer joined a team (memesh network), a principal send to person/handle@machine, a member named in the team's signed roster, is stored here and forwarded to that machine through the relay or directly, retried for up to one day; its receipts add a network fact (state, attempts, last error code, path), and discover also lists other members' live agents with remote: true. Only the message crosses machines; memory never does. A message is kept for one day from creation, read or unread, then deleted (its content stays in a local archive for one more day); if its recipient recorded no intake, ack or disposition and sent no reply, its sender gets a message from memesh saying so (for a message to another computer it says whether it was delivered there, not what its recipient did), and status, fetching, acknowledging or replying to an expired id returns message_expired.`,
-        inputSchema: {
-            type: 'object',
-            properties: {
-                action: {
-                    type: 'string',
-                    enum: ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'],
-                    description: 'Message lifecycle or live-directory action. Each action validates only its documented fields and rejects unknown fields.',
-                },
-                project: { type: 'string', description: 'Local project scope shared by sender and recipient. A stable identifier, never a filesystem path; compared exactly, after Unicode NFC normalisation.' },
-                sender: { type: 'string', description: 'Required for send. Stable local sender/agent identifier; provenance only, trimmed of surrounding whitespace but otherwise stored as given.' },
-                recipient: { type: 'string', description: 'Required except discover and send with recipient_handle. Stable target identifier, never a filesystem path; compared exactly after Unicode NFC normalisation.' },
-                recipient_handle: { type: 'string', description: 'Send only: a discovered project-scoped session handle, mutually exclusive with recipient. Offline registered sessions can also be addressed.' },
-                target_kind: {
-                    type: 'string',
-                    enum: ['principal', 'session'],
-                    description: 'Recipient identity kind for send and fetch. Defaults to principal; exact-session delivery and fetch require session.',
-                },
-                intended_session: {
-                    type: 'string',
-                    description: 'Optional for send with target_kind principal: the one session of that principal this message is meant for. Only that session is reminded of it and may record intake or a disposition.',
-                },
-                fallback_to_principal: {
-                    type: 'boolean',
-                    description: 'Optional for send with target_kind session: if that session refuses the message (recipient_unavailable), send it to the principal it registered under, with intended_session set to it.',
-                },
-                idempotency_key: { type: 'string', description: 'Required for send and receipt writes. Stable retry key.' },
-                payload: {
-                    type: ['string', 'number', 'boolean', 'object', 'array', 'null'],
-                    description: `Required for send. Untrusted JSON value, limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB) after JSON encoding. Native push additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB). MeMesh never executes the payload.`,
-                },
-                content_type: { type: 'string', enum: ['text/plain', 'application/json'], description: 'Send payload media type. Defaults to text/plain.' },
-                privacy: { type: 'string', enum: ['private', 'team'], description: 'Send privacy classification. Routing remains exact-recipient in v1.' },
-                correlation_id: { type: 'string', description: 'Optional caller-stable conversation or task correlation ID.' },
-                reply_to: { type: 'string', description: 'Optional earlier message ID this message replies to.' },
-                cursor: { type: 'string', description: 'Optional opaque cursor returned by poll. Clients must not parse it.' },
-                wait_ms: { type: 'number', description: 'Poll wait in milliseconds, 0-30000. Defaults to 0.' },
-                limit: { type: 'number', description: 'Maximum poll or discovery rows, 1-100. Defaults to 20 for poll and 50 for discover.' },
-                message_id: { type: 'string', description: 'Required for fetch, status, receipt writes, and receipt readback.' },
-                intake_state: { type: 'string', enum: ['fetched', 'ingested'], description: 'Required only for intake. Neither value implies ACK.' },
-                disposition: { type: 'string', enum: ['accepted', 'rejected', 'completed', 'cancelled', 'deferred'], description: 'Required only for disposition.' },
-                activation: { type: 'string', enum: ['woken', 'manual_resume_required', 'unsupported', 'failed'], description: 'Required only for activation; manual_resume_required never implies ACK or workflow disposition.' },
-                detail: { type: 'string', description: 'Optional bounded explanation for disposition or activation.' },
-            },
-            required: ['action'],
-            additionalProperties: false,
-        },
+        description: CONVERSATION_MESSAGE_DESCRIPTION,
+        inputSchema: CONVERSATION_MESSAGE_INPUT_SCHEMA,
     },
 ];
 function ok(data) {
@@ -593,7 +546,9 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const currentProject = typeof projectArg === 'string'
                 ? projectArg
                 : projectArg === undefined && binding !== undefined && 'project' in binding ? binding.project : undefined;
-            return ok(remember({ ...input, sourceHost, project: resolved.project, currentProject, projectIds: idsOf(resolved.project) }));
+            return ok(remember({ ...input, sourceHost, project: resolved.project,
+                projectIsDefault: projectArg === undefined && !(input.tags ?? []).some(tag => tag.startsWith('project:')),
+                currentProject, projectIds: idsOf(resolved.project) }));
         }
         if (name === 'recall') {
             const r = parseOrFail(McpRecallSchema, args);
@@ -770,15 +725,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             }));
         }
         if (name === 'message') {
-            const r = parseOrFail(MessageSchema, args);
-            if (!r.ok)
-                return r.result;
-            return ok(await executeAgentMessageAction(getDatabase(), r.data, {
-                transport: 'mcp',
-                sourceHost: normalizeClientHost(sourceHost),
-                signal,
-                hostSession: hostSessionFromEnv(),
-            }));
+            return ok(executeConversationMessageAction(args, { session: requestContext.hostSession }));
         }
         return fail(`Unknown tool: ${name}`);
     }

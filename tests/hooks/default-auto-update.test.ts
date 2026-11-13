@@ -61,7 +61,7 @@ describe('#533: no reply-Upgrade flow', () => {
   it('registers the host process so the updater waits for it to exit', () => {
     const s = sandbox();
     runSessionStart({ MEMESH_DB_PATH: s.dbPath, MEMESH_UPDATE_CHECK_PATH: s.cachePath, HOME: s.dir });
-    // Registered in the ACCOUNT's own directory (HOME/.memesh), where every data directory's update looks.
+    // Registered under HOME/.memesh, where every data directory's update looks.
     expect(fs.existsSync(path.join(s.dir, '.memesh', 'live-hosts', `${process.pid}.json`))).toBe(true);
     expect(fs.existsSync(path.join(s.dir, 'live-hosts'))).toBe(false);
   });
@@ -69,10 +69,10 @@ describe('#533: no reply-Upgrade flow', () => {
   it('a session with no database yet says in the log that it started no update check, instead of returning in silence', async () => {
     const s = sandbox();
     runSessionStart({ MEMESH_DB_PATH: s.dbPath, MEMESH_UPDATE_CHECK_PATH: s.cachePath, HOME: s.dir, MEMESH_AUTO_UPDATE: 'major' });
-    const logPath = path.join(s.dir, 'auto-update.log');
+    const logPath = path.join(s.dir, '.memesh', 'auto-update.log');
     for (let i = 0; i < 50 && !(fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('no database yet')); i += 1) await new Promise((r) => setTimeout(r, 100));
     expect(fs.readFileSync(logPath, 'utf8')).toContain('there is no database yet, so neither the update check nor the updater starts in this session');
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-attempt'))).toBe(false);
   }, 30_000);
 
   it('a session whose installed version cannot be read (no package.json at the plugin root) says in the log that it started no updater', async () => {
@@ -89,38 +89,38 @@ describe('#533: no reply-Upgrade flow', () => {
       env: { ...process.env, MEMESH_DIR: undefined, MEMESH_DB_PATH: s.dbPath, MEMESH_UPDATE_CHECK_PATH: s.cachePath, HOME: s.dir, MEMESH_AUTO_UPDATE: 'major' },
       encoding: 'utf8', timeout: 20_000,
     });
-    const logPath = path.join(s.dir, 'auto-update.log');
+    const logPath = path.join(s.dir, '.memesh', 'auto-update.log');
     for (let i = 0; i < 50 && !(fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('installed version could not be read')); i += 1) await new Promise((r) => setTimeout(r, 100));
     expect(fs.readFileSync(logPath, 'utf8')).toContain('the installed version could not be read from package.json, so neither the update check nor the updater starts');
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-attempt'))).toBe(false);
   }, 30_000);
 
   it('with automatic updates ON the hook asks the dispatch, which says why it starts nothing from a source checkout (it cannot update itself) and takes no attempt slot', async () => {
     const s = sandbox();
     new MemeshDatabase(s.dbPath).close();
-    // Explicitly on (the data directory here is not the account's own, so the default would not apply). The hook runs from this
+    // Explicitly on so this test does not depend on the environment's default. The hook runs from this
     // source checkout, which is not an install that can update itself: that is the dispatch's own answer, and it is logged.
     runSessionStart({ MEMESH_DB_PATH: s.dbPath, MEMESH_UPDATE_CHECK_PATH: s.cachePath, HOME: s.dir, MEMESH_AUTO_UPDATE: 'major' });
-    const logPath = path.join(s.dir, 'auto-update.log');
+    const logPath = path.join(s.dir, '.memesh', 'auto-update.log');
     for (let i = 0; i < 100 && !(fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('cannot update itself')); i += 1) await new Promise((r) => setTimeout(r, 100));
     expect(fs.readFileSync(logPath, 'utf8')).toContain('no runner started: source checkout cannot update itself');
     expect(fs.readFileSync(logPath, 'utf8')).not.toContain('DISPATCHED');
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-attempt'))).toBe(false);
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-state.json'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-state.json'))).toBe(false);
   }, 30_000);
 
   it('with automatic updates OFF it starts nothing: no runner, no attempt record, only a line saying why (and none of the work the runner does first)', async () => {
     const s = sandbox();
     new MemeshDatabase(s.dbPath).close();
     runSessionStart({ MEMESH_DB_PATH: s.dbPath, MEMESH_UPDATE_CHECK_PATH: s.cachePath, HOME: s.dir, MEMESH_AUTO_UPDATE: 'off' });
-    const noteLog = path.join(s.dir, 'auto-update.log');
+    const noteLog = path.join(s.dir, '.memesh', 'auto-update.log');
     for (let i = 0; i < 50 && !(fs.existsSync(noteLog) && fs.readFileSync(noteLog, 'utf8').includes('automatic updates are off')); i += 1) await new Promise((r) => setTimeout(r, 100));
     expect(fs.readFileSync(noteLog, 'utf8')).toContain('automatic updates are off, so the updater does not start in this session');
     await new Promise((r) => setTimeout(r, 1500)); // a runner started by mistake would have written its record by now
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-state.json'))).toBe(false);
-    expect(fs.existsSync(path.join(s.dir, 'auto-update-attempt'))).toBe(false);
-    expect(fs.existsSync(path.join(s.dir, 'auto-update.lock'))).toBe(false);
-    const log = path.join(s.dir, 'auto-update.log');
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-state.json'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(s.dir, '.memesh', 'auto-update.lock'))).toBe(false);
+    const log = path.join(s.dir, '.memesh', 'auto-update.log');
     expect(fs.existsSync(log) ? fs.readFileSync(log, 'utf8') : '').not.toContain('DISPATCHED');
   }, 30_000);
 });

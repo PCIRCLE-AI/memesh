@@ -4,11 +4,9 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { getMemeshDirFromDbPath } from './paths.js';
+import { ConversationMessages } from './conversation-messages.js';
 export const JOURNEY_TIMEOUT_MS = 30_000;
 export const JOURNEY_SKIP_ENV = 'MEMESH_SKIP_POST_INSTALL_JOURNEY';
-const PROJECT = 'memesh-journey';
-const SENDER = 'journey-sender';
-const RECIPIENT = 'journey-recipient';
 const REINSTALL = 'Reinstall with `npm install -g @pcircle/memesh@latest`, then run `memesh doctor --journey`. If it still fails, run `memesh feedback`.';
 const PASSTHROUGH_ENV = [
     'PATH', 'PATHEXT', 'SystemRoot', 'ComSpec',
@@ -250,6 +248,8 @@ export async function runInstallJourney(options, testHooks = {}) {
     const nonce = crypto.randomBytes(5).toString('hex');
     const noteText = `journey check ${nonce}`;
     const payload = `journey message ${nonce}`;
+    const sender = `journey-sender-${nonce}`;
+    const recipient = `journey-recipient-${nonce}`;
     const steps = [];
     let timedOut = false;
     let failedStep;
@@ -266,6 +266,15 @@ export async function runInstallJourney(options, testHooks = {}) {
         fs.mkdirSync(dataDir, { recursive: true, mode: 0o700 });
         fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
         const env = journeyEnv(scratch);
+        const messages = new ConversationMessages({ file: path.join(dataDir, 'messages.db') });
+        try {
+            for (const id of [sender, recipient]) {
+                messages.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+            }
+        }
+        finally {
+            messages.close();
+        }
         if (!fs.existsSync(entry)) {
             steps.push({
                 id: 'remember', did: 'Start the installed memesh command', ok: false, result: 'not found', ms: 0,
@@ -309,12 +318,13 @@ export async function runInstallJourney(options, testHooks = {}) {
             },
             {
                 id: 'send',
-                did: 'Send a message to a local agent (memesh message send)',
-                args: () => ['message', 'send', '--project', PROJECT, '--sender', SENDER, '--recipient', RECIPIENT, '--idempotency-key', `journey-${nonce}`, '--payload-stdin'],
+                did: 'Send a message to a synthetic conversation (memesh message send)',
+                args: () => ['message', 'send', '--recipient', recipient, '--kind', 'question', '--payload-stdin'],
+                session: sender,
                 stdin: () => payload,
                 check: (out) => {
                     const json = asRecord(parseJson(out));
-                    if (typeof json?.message_id !== 'string' || json.message_id.length === 0) {
+                    if (json?.state !== 'queued' || typeof json.message_id !== 'string' || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(json.message_id)) {
                         return { ok: false, reason: `send did not return a message id. It printed: ${tail(out) || '(nothing)'}`, fix: REINSTALL };
                     }
                     messageId = json.message_id;
@@ -323,14 +333,17 @@ export async function runInstallJourney(options, testHooks = {}) {
             },
             {
                 id: 'fetch',
-                did: 'Read the message back (memesh message fetch)',
-                args: () => ['message', 'fetch', '--project', PROJECT, '--recipient', RECIPIENT, '--message-id', messageId],
+                did: 'Read the message back (memesh message read)',
+                args: () => ['message', 'read', '--message-id', messageId],
+                session: recipient,
                 check: (out) => {
                     const json = asRecord(parseJson(out));
-                    if (json?.payload !== payload) {
+                    const message = asRecord(json?.message);
+                    if (message?.body !== payload || message.id !== messageId || message.sender !== sender
+                        || message.recipient !== recipient || message.kind !== 'question' || message.reply_to !== null) {
                         return {
                             ok: false,
-                            reason: json ? `The message came back with different content (expected "${payload}", got ${JSON.stringify(json.payload)}).` : `fetch printed something that is not a message: ${tail(out) || '(nothing)'}`,
+                            reason: message ? 'The message came back with different content or routing fields.' : `read printed something that is not a message: ${tail(out) || '(nothing)'}`,
                             fix: REINSTALL,
                         };
                     }
@@ -348,7 +361,8 @@ export async function runInstallJourney(options, testHooks = {}) {
                     failedStep = spec.id;
                     break;
                 }
-                const out = await runChild(entry, spec.args(), spec.stdin?.(), env, scratch, remaining);
+                const stepEnv = spec.session ? { ...env, CLAUDE_CODE_SESSION_ID: spec.session } : env;
+                const out = await runChild(entry, spec.args(), spec.stdin?.(), stepEnv, scratch, remaining);
                 const ms = Date.now() - stepStart;
                 if (out.timedOut) {
                     timedOut = true;

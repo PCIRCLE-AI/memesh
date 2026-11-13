@@ -1,11 +1,10 @@
-// The session handoff: the agent's own last words, kept per project so the
-// next session starts from where this one stopped.
+// Session tails: opening previews of complete assistant conversations.
 //
-// A leaf on purpose: the Stop hook that writes the handoff and the
+// A leaf on purpose: the Stop hook that stores conversations and the
 // SessionStart hook that shows it cannot import src/, so this file is mirrored
 // to scripts/hooks/_generated/ (scripts/generate-hook-core.mjs). Its one import
 // is another mirrored leaf. Everything here is pure; the hooks and core own
-// the reads, the write and the record.
+// the reads, conversation writes and outcome records.
 
 import { parseSqliteUtcMs } from './time-utils.js';
 import { redactMemoryText } from './paths.js';
@@ -13,90 +12,17 @@ import { codexAssistantText } from './host-transcript.js';
 
 export const SESSION_HANDOFF_TYPE = 'session-handoff';
 
-/** Older than this, the handoff is shown with a warning that it may be out of date. */
-export const HANDOFF_STALE_HOURS = 72;
-
-/** Older than this, the handoff is not shown at all. */
-export const HANDOFF_MAX_AGE_DAYS = 14;
-
-/** A timestamp this far in the future is clock skew; beyond it, the age is unknown. */
-export const HANDOFF_FUTURE_SKEW_MINUTES = 5;
-
-/** Most characters kept, the leading ellipsis included. The tail of a final message is where "next" lives. */
-export const HANDOFF_MAX_CHARS = 800;
-
-/** Fewer characters than this is an acknowledgement, not a handoff. */
-export const HANDOFF_MIN_CHARS = 80;
-
+/** At most three independent sessions, with a 600-byte rendered tail each. */
+export const HANDOFF_SESSION_LIMIT = 3;
+export const HANDOFF_MAX_BYTES = 600;
 /** Transcript bytes read from the end when the Stop payload has no message. */
 export const HANDOFF_TRANSCRIPT_TAIL_BYTES = 256 * 1024;
-
-/** One entity per project: each Stop replaces it. */
-export function sessionHandoffName(project: string): string {
-  return `${SESSION_HANDOFF_TYPE}:${project}`;
-}
 
 interface TranscriptLine {
   type?: unknown;
   isSidechain?: unknown;
   isApiErrorMessage?: unknown;
   message?: { model?: unknown; content?: unknown };
-}
-
-const FENCE_LINE = /^\s*(`{3,}|~{3,})(.*)$/;
-
-/**
- * Drop fenced code, one line at a time so the cost stays linear whatever the
- * input. A fence opens on a line that STARTS (at any indent — list items nest
- * them) with ``` or ~~~, and closes on the next line that starts with at
- * least as many of the same character; an unclosed fence runs to the end.
- * A ``` in the middle of a sentence, or a backtick line that closes itself
- * (```x```), is prose about code, not a fence.
- */
-function stripFences(text: string): string {
-  const kept: string[] = [];
-  let open: { char: string; len: number } | null = null;
-  for (const line of text.split('\n')) {
-    const m = FENCE_LINE.exec(line);
-    if (open) {
-      if (m && m[1][0] === open.char && m[1].length >= open.len) open = null;
-      continue;
-    }
-    if (m && !(m[1][0] === '`' && m[2].includes('`'))) {
-      open = { char: m[1][0], len: m[1].length };
-      continue;
-    }
-    kept.push(line);
-  }
-  return kept.join('\n');
-}
-
-/**
- * The text worth keeping from an assistant message: prose only (fenced code is
- * dropped — it is what the diff and the repo already hold), blank runs
- * collapsed, and if it is longer than HANDOFF_MAX_CHARS the END is kept behind
- * a `…`, cut at a line break where one is near. Never longer than
- * HANDOFF_MAX_CHARS. Returns '' when there is nothing left.
- *
- * Redact BEFORE calling: a secret cut in half at the boundary no longer
- * matches the pattern that would have caught it.
- */
-export function cleanHandoffText(raw: string): string {
-  let text = stripFences(String(raw ?? '').replace(/\r\n?/g, '\n'))
-    .split('\n')
-    .map((line) => line.trimEnd())
-    .join('\n')
-    .replace(/\n{3,}/g, '\n\n')
-    .trim();
-  if (text.length <= HANDOFF_MAX_CHARS) return text;
-
-  text = text.slice(-(HANDOFF_MAX_CHARS - 1));
-  // Never start on half of a surrogate pair.
-  const first = text.charCodeAt(0);
-  if (first >= 0xdc00 && first <= 0xdfff) text = text.slice(1);
-  const newline = text.indexOf('\n');
-  if (newline >= 0 && newline < HANDOFF_MAX_CHARS / 3) text = text.slice(newline + 1);
-  return `…${text.trim()}`;
 }
 
 /**
@@ -294,11 +220,9 @@ export function omitAgentMessageText(text: string, payloads: readonly string[]):
 export interface HandoffRecord {
   /** Entity id — the citation handle. */
   id: number;
-  /** The stored text: the handoff entity's newest observation. */
+  /** The stored assistant conversation's complete text. */
   text: string;
-  /** That observation's `created_at` (SQLite UTC). The entity's own
-   *  `created_at` is the FIRST Stop's and never moves, so it cannot say how
-   *  old the text is. */
+  /** The conversation observation's `created_at` (SQLite UTC). */
   observedAt: string | null | undefined;
   /** Source metadata, when available; legacy records may have none. */
   metadata?: string | null;
@@ -314,56 +238,41 @@ function ageText(hours: number): string {
   return `${d} day${d === 1 ? '' : 's'} ago`;
 }
 
-/** Why a handoff is, or is not, shown. Everything but `shown`/`stale` hides it. */
-export type HandoffStatus = 'shown' | 'stale' | 'expired' | 'undatable' | 'future' | 'empty';
-
-/**
- * The lines that lead a new session's context — where the last session in this
- * project left off, and how long ago — plus the reason when there are none.
- * The ONE renderer both the SessionStart hook and the `briefing` tool/CLI
- * call, so they cannot disagree.
- *
- * The text goes through cleanHandoffText again, whoever wrote it: the Stop
- * hook bounds what it stores, but a handoff written through `remember` is not
- * bounded, and an unbounded one would take the whole block's budget.
- *
- * Hidden when there is nothing honest to show: no text, an age that cannot be
- * read, a timestamp more than HANDOFF_FUTURE_SKEW_MINUTES in the future, or a
- * handoff older than HANDOFF_MAX_AGE_DAYS. Past HANDOFF_STALE_HOURS the header
- * says it may be out of date. The header ends in `[mem:<id>]` so a session
- * that uses it can cite it like any other memory.
- */
+/** The shared opening renderer; an old or unknown age is labelled, never hidden. */
 export function handoffView(
   record: HandoffRecord | null | undefined,
   now: Date = new Date(),
-): { lines: string[]; status: HandoffStatus } {
-  // #523: redacted on DISPLAY as well as at capture. The Stop hook stores a
-  // new handoff redacted, but one stored before that keeps its text for up
-  // to 14 days, and this is the one view both the briefing and the
-  // SessionStart hook render through. Redaction runs on the WHOLE stored
-  // text before `cleanHandoffText` keeps only the last 800 characters, so
-  // the cut cannot expose a fragment of a credential.
-  const text = record ? cleanHandoffText(redactMemoryText(record.text ?? '')) : '';
-  if (!record || !text) return { lines: [], status: 'empty' };
+): { lines: string[]; status: 'shown' | 'empty' } {
+  if (!record) return { lines: [], status: 'empty' };
+  // Redact the full field before retaining its tail. Flatten before bounding:
+  // the outer reference renderer uses the same whitespace/control/tag rules.
+  // eslint-disable-next-line no-control-regex
+  const text = redactMemoryText(record.text ?? '').replace(/[\s\u0085\u001c-\u001e]+/g, ' ').replace(/</g, '&lt;').trim();
+  if (!text) return { lines: [], status: 'empty' };
   const then = typeof record.observedAt === 'string' ? parseSqliteUtcMs(record.observedAt) : null;
-  if (then === null) return { lines: [], status: 'undatable' };
-  const hours = (now.getTime() - then) / 3_600_000;
-  if (hours < -HANDOFF_FUTURE_SKEW_MINUTES / 60) return { lines: [], status: 'future' };
-  const age = Math.max(0, hours);
-  if (age > HANDOFF_MAX_AGE_DAYS * 24) return { lines: [], status: 'expired' };
-  const stale = age > HANDOFF_STALE_HOURS;
-  const when = stale
-    ? `${ageText(age)} — may be out of date; check it against the repository`
-    : ageText(age);
+  const hours = then === null ? null : (now.getTime() - then) / 3_600_000;
+  const when = hours === null || !Number.isFinite(hours) || hours < -5 / 60
+    ? 'age unknown'
+    : ageText(Math.max(0, hours));
   let source = '';
   try {
     const host = JSON.parse(record.metadata ?? 'null')?.provenance?.source_host;
-    if (host === 'codex' || host === 'claude-code') source = `; source: ${host}`;
+    if (host === 'codex' || host === 'claude-code' || host === 'hermes') source = `; source: ${host}`;
   } catch { /* Legacy or malformed metadata gives no reliable source. */ }
-  return {
-    lines: [`Where the last session left off (${when}${source}): [mem:${record.id}]`, ...text.split('\n')],
-    status: stale ? 'stale' : 'shown',
-  };
+  const header = `Last reply from a recent session (${when}${source}): [mem:${record.id}]`;
+  const budget = HANDOFF_MAX_BYTES - Buffer.byteLength(header + '\n', 'utf8');
+  let tail = text;
+  if (Buffer.byteLength(tail, 'utf8') > budget) {
+    // A UTF-16 pre-slice cannot discard a suffix that would fit the byte
+    // budget. Drop a possible initial low surrogate before codepoint slicing.
+    tail = tail.slice(-budget);
+    if (/^[\uDC00-\uDFFF]/u.test(tail)) tail = tail.slice(1);
+    const points = Array.from(tail);
+    let bytes = Buffer.byteLength(tail, 'utf8') + 3; // ellipsis
+    while (bytes > budget && points.length > 0) bytes -= Buffer.byteLength(points.shift()!, 'utf8');
+    tail = '…' + points.join('');
+  }
+  return { lines: [header, tail], status: 'shown' };
 }
 
 export function handoffLines(record: HandoffRecord | null | undefined, now: Date = new Date()): string[] {

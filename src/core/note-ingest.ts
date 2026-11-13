@@ -39,7 +39,7 @@ import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { remember } from './operations.js';
-import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX, decisionLacksReason } from './work-topology.js';
+import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
 import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
@@ -82,6 +82,8 @@ export interface NoteIngestOptions {
   maxBytes?: number;
 }
 
+export type NoteSkipCode = 'tooLarge' | 'noFrontmatter' | 'tooManyObservations' | 'symlink' | 'other';
+
 export interface NoteIngestResult {
   /** Digest of the directory's realpath — the provenance key, not the path. */
   dirId: string;
@@ -104,6 +106,8 @@ export interface NoteIngestResult {
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
   skipped: Array<{ path: string; reason: string }>;
+  /** Still-unimported files observed this run, including cached refusals; never new-loss counts. */
+  skippedCounts: Record<NoteSkipCode, number>;
   /**
    * How many of `skipped` are NEW — refused for a reason this file did not
    * already carry on an earlier run.
@@ -117,6 +121,8 @@ export interface NoteIngestResult {
   refusedNow: number;
   /** Files beyond the per-run cap, not processed this run. */
   more: number;
+  /** A file syscall failed; do not advance the caller's successful-ingestion stamp. */
+  retryNeeded?: boolean;
 }
 
 export interface Frontmatter {
@@ -232,6 +238,7 @@ type SkipPrint = {
   mtime: number;
   size: number;
   reason: string;
+  code?: NoteSkipCode;
   name?: string;
   owner?: { rel: string; mtime: number; size: number };
   /**
@@ -288,15 +295,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     restored: [],
     markedMissing: [],
     skipped: [],
+    skippedCounts: { tooLarge: 0, noFrontmatter: 0, tooManyObservations: 0, symlink: 0, other: 0 },
     refusedNow: 0,
     more: 0,
   };
 
   const db = getDatabase();
-  // A decision needs its reason to be stored as trusted (operations.remember); a note
-  // that states none is stored untrusted, as notes always were.
-  const trustFor = (type: string | undefined, observations: readonly string[]): 'trusted' | 'untrusted' =>
-    opts.trusted && !decisionLacksReason(type, observations) ? 'trusted' : 'untrusted';
   const existingStmt = db.prepare(
     `SELECT e.id, e.metadata, e.status, e.type,
             json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
@@ -341,6 +345,18 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     // rewritten below.
     priorSkips = {};
   }
+  // Unchanged refusals still need their DB-dependent guards checked, but
+  // must not monopolize the read cap ahead of new or edited notes.
+  const unchangedRefusals = new Set(files.filter((file) => {
+    const previous = priorSkips[relPath(realDir, file)];
+    if (!previous) return false;
+    try {
+      const stat = fs.lstatSync(file);
+      return stat.isFile() && stat.mtimeMs === previous.mtime && stat.size === previous.size;
+    } catch { return false; } // original read loop reports the failure
+  }));
+  // Stable sort preserves the original dictionary order within each group.
+  files.sort((a, b) => Number(unchangedRefusals.has(a)) - Number(unchangedRefusals.has(b)));
   const nextSkips: Record<string, SkipPrint> = {};
   /**
    * Report a file as skipped, and count it as newly refused unless it was
@@ -349,8 +365,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
    * would make every process's first run a flood of old news.
    */
   const counted = new Set<string>();
-  const report = (rel: string, reason: string) => {
+  const report = (rel: string, reason: string, code: NoteSkipCode = 'other') => {
     result.skipped.push({ path: rel, reason });
+    // Old caches have no stable code. Do not infer a category from their prose.
+    const category = Object.hasOwn(result.skippedCounts, code) ? code : 'other';
+    result.skippedCounts[category]++;
     if (priorSkips[rel]?.reason === reason || counted.has(rel)) return;
     counted.add(rel);
     result.refusedNow++;
@@ -362,12 +381,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   for (const abs of symlinks) {
     const rel = relPath(realDir, abs);
     const reason = 'symlink refused';
-    report(rel, reason);
+    report(rel, reason, 'symlink');
     let st: fs.Stats | null;
     try { st = fs.lstatSync(abs); } catch { st = null; }
     nextSkips[rel] = st
-      ? { mtime: st.mtimeMs, size: st.size, reason }
-      : { mtime: 0, size: 0, reason };
+      ? { mtime: st.mtimeMs, size: st.size, reason, code: 'symlink' }
+      : { mtime: 0, size: 0, reason, code: 'symlink' };
   }
 
   /** Names whose memory is tagged missing: nobody owns them, so they are free. */
@@ -396,12 +415,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
-    const skip = (reason: string) => { report(rel, reason); };
+    const skip = (reason: string, code: NoteSkipCode = 'other') => { report(rel, reason, code); };
     let raw: Buffer;
     let stat: fs.Stats;
-    const contentSkip = (reason: string) => {
-      skip(reason);
-      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+    const contentSkip = (reason: string, code: NoteSkipCode = 'other') => {
+      skip(reason, code);
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, code };
       declaredNameAt.set(rel, '');
     };
     /**
@@ -443,12 +462,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // The file was listed by the directory walk and is gone or unreachable
       // now. It declares no name, which is what the missing sweep needs to
       // know: a memory recording this path no longer has it.
+      result.retryNeeded = true;
       skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       declaredNameAt.set(rel, '');
       continue;
     }
     try {
-      if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
+      if (stat.isSymbolicLink()) { skip('symlink refused', 'symlink'); continue; }
       const prior = known.get(rel);
       // The inode is part of the fingerprint: two files of the same size
       // written in the same millisecond that swap NAMES are otherwise both
@@ -466,26 +486,29 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // per-run cap, or by a recorded file it could not see) stayed refused
       // while a file on disk declared that very name.
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+      // Legacy caches have prose only: re-read once under the existing cap
+      // to derive a producer code, rather than permanently guessing "other".
+      if (priorSkip && Object.hasOwn(result.skippedCounts, priorSkip.code ?? '') && !priorSkip.reportOnly && !nameIsFree
         && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
-        skip(priorSkip.reason);
+        skip(priorSkip.reason, priorSkip.code);
         nextSkips[rel] = priorSkip;
         continue;
       }
       if (read >= maxFiles) { result.more++; continue; }
       read++;
       readRels.add(rel);
-      if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
+      if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`, 'tooLarge'); continue; }
       const real = fs.realpathSync(abs);
       if (!real.startsWith(realDir + path.sep)) { unreachableSkip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
     } catch (err) {
+      result.retryNeeded = true;
       unreachableSkip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       continue;
     }
 
     const parsed = parseFrontmatter(raw.toString('utf8'));
-    if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name'); continue; }
+    if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name', 'noFrontmatter'); continue; }
     // Same hygiene as every other field: the name is stored and shown too.
     const rawName = stringField(parsed.data, 'name');
     const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
@@ -509,7 +532,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // "observations", not "paragraphs": this count is post-split, and one
       // paragraph can yield more than one observation. The cap is on what is
       // stored, which is what the reader needs to act on.
-      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`, 'tooManyObservations');
       continue;
     }
     claims.push({
@@ -671,10 +694,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // decision note may lack a `why`: both keep the behaviour they had while every
       // note was untrusted.
       trustOverride: existing
-        ? (existing.trust === 'trusted' && !decisionLacksReason(owner.type, owner.observations!) ? 'trusted' : 'untrusted')
-        : trustFor(owner.type, owner.observations!),
+        ? (existing.trust === 'trusted' ? 'trusted' : 'untrusted')
+        : (opts.trusted ? 'trusted' : 'untrusted'),
       reinforceConfidence: false,
-      reasonOptional: true,
       provenanceOverride: {
         source: 'note-file',
         note_path: owner.rel,
@@ -715,6 +737,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   }
 
   if (Object.keys(nextSkips).length > 0) {
+    // Name/ownership refusals are classified at this producer too. Without
+    // this default, a newly written cache would look legacy on every run.
+    for (const print of Object.values(nextSkips)) print.code ??= 'other';
     db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
   } else {
     db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);

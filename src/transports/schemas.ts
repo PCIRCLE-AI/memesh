@@ -145,14 +145,8 @@ function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z
   }
   if (data.note === undefined) {
     if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-    // `replace` on a named memory inherits the type it already has —
-    // operations.ts only rewrites the stored type when one was PASSED
-    // (`typeGiven`), so that inheritance has always worked; this schema was
-    // the only thing making the documented correction call restate a field
-    // the server would ignore. Scoped to `replace` + `name` on purpose: a
-    // `name` without `replace` is usually a NEW memory, and a new memory with
-    // no type is the silent default this codebase spent a release removing.
-    if (data.type === undefined && !(data.replace && data.name !== undefined)) ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    // Only the guarded writer can distinguish an append to an existing name
+    // from a new memory. It inherits the former's type and requires the latter's.
     // `replace` rewrites the observations. With none given (or an empty list)
     // the core clears the memory and stores nothing, so a call that only meant
     // to fix the title (or the tags) emptied the memory it named. Archiving a

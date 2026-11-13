@@ -33,6 +33,7 @@ export declare function getGlobalNpmRoot(options?: {
 }): string;
 export declare function detectInstallChannel(options: DetectInstallChannelOptions): InstallChannel;
 export declare function getCurrentInstallChannel(options: GetCurrentInstallChannelOptions): InstallChannel;
+export declare function pluginUpdateCommand(packageRoot: string): string;
 export declare function getInstallChannelSupport(channel: InstallChannel, packageRoot: string): InstallChannelSupport;
 export {};
 //# sourceMappingURL=install-channel.d.ts.map

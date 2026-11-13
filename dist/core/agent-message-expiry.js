@@ -7,6 +7,7 @@ import { AGENT_MESSAGE_TTL_MS, agentMessageExpiryCutoff } from './agent-message-
 import { AgentMessagingError, sendAgentMessage } from './agent-messaging.js';
 import { DEFAULT_DB_FILE } from './paths.js';
 import { sqliteUtcToIso } from './time-utils.js';
+import { ConversationMessages } from './conversation-messages.js';
 import { networkDeliveryOf } from '../network/outbound.js';
 export const AGENT_MESSAGE_EXPIRY_INTERVAL_MS = 5 * 60 * 1000;
 const AGENT_MESSAGE_EXPIRED_ID_KEEP_MS = 30 * 24 * 60 * 60 * 1000;
@@ -129,6 +130,10 @@ export async function runAgentMessageExpiry(db, options) {
         const work = pass;
         if (!tablesExist(work))
             return finish('no_message_tables', 'agent_messages, agent_message_expiry_runs, agent_message_expiries or agent_message_expiry_lease is missing');
+        if (file !== '' && work.prepare('SELECT 1 FROM agent_messages LIMIT 1').get()) {
+            const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+            messages.close();
+        }
         const cutoff = agentMessageExpiryCutoff(clockMs);
         const inFlightCutoff = new Date(clockMs - IN_FLIGHT_GRACE_MS).toISOString();
         const presenceParams = presenceBindings(cutoff, clockMs);
@@ -200,6 +205,8 @@ export async function runAgentMessageExpiry(db, options) {
                 }
                 work.transaction(() => {
                     renewLease(work, holder);
+                    const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+                    messages.close();
                     deleteBatch(work, rows, tally);
                     saveRunProgress(work, startedRunId, tally, archiveFile);
                 }).immediate();

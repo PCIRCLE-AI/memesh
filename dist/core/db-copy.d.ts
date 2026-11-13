@@ -1,5 +1,6 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 export declare const DB_COPIES_KEPT = 3;
+export declare function backupDirectoryFor(dbPath: string): string;
 export type DbCopyOutcome = {
     kind: 'ready';
     path: string;

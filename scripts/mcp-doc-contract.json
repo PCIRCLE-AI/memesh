@@ -1,12 +1,12 @@
 {
   "schema_version": "mcp-doc-contract/v2",
-  "source_sha256": "a3957dc1ce09a0194a68098da6e5d23a95d304cf0178d2b2b27fd0133da6a587",
+  "source_sha256": "cdcf91d3f96abd4179514dcd666b6ea8a0dfa99319eeeeb35cfa2f2e8c0ebf50",
   "surfaces": {
-    "README.md": "a045a7c5ef85ef28c66fad979a8765a614dc95690fdfcb68c38abf8760138c92",
-    "README.zh-TW.md": "ca3b377532525078b464c3316f450bc08e364f5b366def571bb80d70397488b0",
-    "AGENTS.md": "79545ebbeae1e2c330f8de2b127d76daa675c1a5933bbeffb81fd784129f668a",
-    "skills/memesh/SKILL.md": "1c03160f729f530b2b81b98eafa34390ed0398ace50fbf1e429052ae8951a7b5",
-    "docs/api/API_REFERENCE.md": "798b90df5b706bae9d20ecc0373609a2127fbb146941c3063e9fbca8b2cbfb20",
-    "docs/ARCHITECTURE.md": "f9c999e346a4bce271356d08061644455ce576607e25522ba8b341fda5e130c8"
+    "README.md": "f4d2cae3bf805040e84587e52ce106058530ea3945edafb946740ab030dec57f",
+    "README.zh-TW.md": "2d12ce6078bcf66bd3261fb2100c65a662876a1af57dde80131c11845723df64",
+    "AGENTS.md": "ef345aa70b546a690d5af14466158d410627210c7423cc9399b364e49f5e597a",
+    "skills/memesh/SKILL.md": "9002bd602cf69e87b37214c3e133c3a88a69a7ad52c084c9a40726447baf7ec3",
+    "docs/api/API_REFERENCE.md": "14f5570dd20eab156c6a33fafe5dad2f64a78092dbc3df976070aa6b507a43d2",
+    "docs/ARCHITECTURE.md": "7d35c31bf8d84072018dfb3d634c4dfd3e407205ce23ed771f1ac054efefc0cd"
   }
 }

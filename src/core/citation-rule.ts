@@ -84,12 +84,12 @@ export const CITATION_RULE_FILENAME = 'memesh-citations.md';
 
 /**
  * The saving contract, in the two places a model reads as instructions: this
- * rule file and the MCP server's `instructions`. Saving is the default; the
- * single exception is the user explicitly asking not to save. Nothing here
+ * rule file and the MCP server's `instructions`. Saving is the default;
+ * users can request removal of specific existing memories. Nothing here
  * ranks what is "worth" saving — that is the choice this sentence removes.
  */
 export const DEFAULT_SAVE_INSTRUCTION =
-  'Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. The only exception is the user explicitly asking you not to save, in which case do not store that content.';
+  'Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. When the user asks to remove a specific stored memory, use `recall` to identify it and `forget` to archive that memory or remove the selected observation.';
 
 /**
  * The contract itself.

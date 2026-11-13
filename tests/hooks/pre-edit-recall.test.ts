@@ -1148,7 +1148,6 @@ syncBuiltinESMExports();
       // against them — not a snippet asserting source text as behavior.
       const preCompactPath = path.resolve('scripts/hooks/pre-compact.js');
       const sessionSummaryPath = path.resolve('scripts/hooks/session-summary.js');
-      const sessionInsightPath = path.resolve('src/core/session-insight.ts');
 
       // pre-compact.js: object-literal `type: '...'` passed to captureEntity.
       const preCompactSrc = fs.readFileSync(preCompactPath, 'utf8');
@@ -1160,13 +1159,7 @@ syncBuiltinESMExports();
       const storeMemoryTypes = [...sessionSummarySrc.matchAll(/storeMemory\(\s*[^,]+,\s*'([\w-]+)'/g)].map(m => m[1]);
       expect(storeMemoryTypes.length).toBeGreaterThan(0);
 
-      // src/core/session-insight.ts: the library session-summary.js AND the
-      // Hermes capture path (`captureChatSession`) both write through.
-      const sessionInsightSrc = fs.readFileSync(sessionInsightPath, 'utf8');
-      const sessionInsightTypes = [...sessionInsightSrc.matchAll(/\n\s*type:\s*'([\w-]+)',/g)].map(m => m[1]);
-      expect(sessionInsightTypes.length).toBeGreaterThan(0);
-
-      const allProducerTypes = new Set([...preCompactTypes, ...storeMemoryTypes, ...sessionInsightTypes]);
+      const allProducerTypes = new Set([...preCompactTypes, ...storeMemoryTypes]);
       for (const t of allProducerTypes) {
         expect(SESSION_SNAPSHOT_TYPES.has(t), `producer writes type "${t}" — not in SESSION_SNAPSHOT_TYPES`).toBe(true);
       }

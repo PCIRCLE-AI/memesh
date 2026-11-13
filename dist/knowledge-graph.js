@@ -10,7 +10,6 @@ import { canonicalEntityType } from './core/work-topology.js';
 import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
 import { releaseCompressedRecord } from './core/compression-ledger.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
-import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 const isGuardWithPattern = (guard) => guard !== null && typeof guard === 'object' && typeof guard.pattern === 'string';
 function redactMetadataForStore(next, stored, sameCall = []) {
@@ -244,6 +243,8 @@ export class KnowledgeGraph {
             this.db
                 .prepare("UPDATE entities SET status = 'active' WHERE name = ?")
                 .run(name);
+            if (opts?.observations?.length)
+                this.clearEntityData(name);
         }
         const prevObs = isNewEntity
             ? []
@@ -673,7 +674,7 @@ export class KnowledgeGraph {
         const byName = lessonNames.length === 0
             ? ''
             : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${noProjectTag()})`;
-        const params = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+        const params = [PROJECT_TAG_PREFIX + project, ...lessonNames];
         if (namespace)
             params.push(namespace);
         params.push(limit ?? 20, offset);
@@ -683,7 +684,6 @@ export class KnowledgeGraph {
            EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
            ${byName}
          )
-         AND ${NOT_A_PROJECT_MEMORY.sql}
          ${statusFilter} ${namespaceFilter}
          ORDER BY e.id DESC LIMIT ? OFFSET ?`)
             .all(...params);

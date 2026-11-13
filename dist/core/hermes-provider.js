@@ -291,9 +291,8 @@ function writeCopy(input, replacing, keep) {
     const files = hashFiles(sourceDir);
     const owner = `${process.pid}-${ownerTag(process.pid)}`;
     const { newRoot, fresh, oldRoot, old } = stagingPaths(target, owner);
-    fs.rmSync(newRoot, { recursive: true, force: true });
     fs.mkdirSync(path.dirname(target), { recursive: true });
-    fs.mkdirSync(newRoot, { recursive: true });
+    fs.mkdirSync(newRoot);
     let backup = null;
     let residue = null;
     try {
@@ -303,8 +302,7 @@ function writeCopy(input, replacing, keep) {
         if (replacing) {
             if (keep)
                 backup = backUp(target, backupRoot, now);
-            fs.rmSync(oldRoot, { recursive: true, force: true });
-            fs.mkdirSync(oldRoot, { recursive: true });
+            fs.mkdirSync(oldRoot);
             fs.renameSync(target, old);
             try {
                 fs.renameSync(fresh, target);

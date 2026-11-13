@@ -9,20 +9,21 @@
 import { hasTables, MEMORY_READ_TABLES } from './schema.js';
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from './fts-index.js';
 import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
-import { AUTO_CONTEXT_EXCLUDED_TYPES, autoContextScope, projectAliases, readRecentRows, recentLine, staleReason, tableColumns, } from './recent-index.js';
+import { redactShownTogether } from './core-paths.js';
+import { AUTO_CONTEXT_EXCLUDED_TYPES, autoContextScope, projectAliases, recentTitle, tableColumns, } from './recent-index.js';
 export const PROMPT_RECALL_MAX_LINES = 2;
+export const PROMPT_RECALL_MAX_BYTES = 4096;
 export const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 export const PROMPT_RECALL_MIN_TERMS = 2;
 const PROMPT_CHARS = 1500;
 const MAX_TERMS = 12;
-export const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
 export const PROMPT_RECALL_SKIP_TYPES = new Set();
 export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 const CANDIDATE_WINDOW = 30;
 const SCORED_TEXT_CHARS = 20000;
-const MIN_ROWS_FOR_DF = 20;
 const MAX_LATIN_TERMS = 60;
 const MAX_CJK_TERMS = 30;
+const EXCLUDE_OWN_CONVERSATION_SQL = " AND (e.type <> 'conversation' OR NOT EXISTS (SELECT 1 FROM tags own_session WHERE own_session.entity_id = e.id AND own_session.tag = ?))";
 const EXCLUDED_TYPES = AUTO_CONTEXT_EXCLUDED_TYPES;
 const STOP_WORDS = new Set([
     'the', 'and', 'for', 'are', 'was', 'were', 'you', 'your', 'with', 'this', 'that', 'these', 'those',
@@ -104,8 +105,14 @@ function promptTerms(prompt) {
     }
     return [...latin, ...cjk];
 }
-function documentFrequencies(db, terms) {
+function documentFrequencies(db, terms, excludeSession) {
     const df = new Map();
+    if (excludeSession !== undefined) {
+        const countOther = db.prepare(`SELECT count(*) AS c FROM entities_fts JOIN entities e ON e.id = entities_fts.rowid WHERE entities_fts MATCH ?${EXCLUDE_OWN_CONVERSATION_SQL}`);
+        for (const term of terms)
+            df.set(term.text, countOther.get(term.match, `session:${excludeSession}`).c);
+        return df;
+    }
     const count = db.prepare('SELECT count(*) AS c FROM entities_fts WHERE entities_fts MATCH ?');
     const plain = terms.filter((t) => !t.cjk);
     if (plain.length > 0) {
@@ -144,15 +151,16 @@ export function scorePrompt(db, prompt, options) {
     if (!hasTables(db, [...MEMORY_READ_TABLES, 'entities_fts']))
         return { scored: [], terms: all.map((t) => t.text) };
     const entityCols = tableColumns(db, 'entities');
-    const total = db.prepare(`SELECT count(*) AS c FROM entities${entityCols.has('status') ? " WHERE status = 'active'" : ''}`).get().c;
-    const df = documentFrequencies(db, all);
-    const useDf = total >= MIN_ROWS_FOR_DF;
+    const ownConversation = options.excludeConversationSession === undefined ? '' : EXCLUDE_OWN_CONVERSATION_SQL;
+    const ownParams = options.excludeConversationSession === undefined ? [] : [`session:${options.excludeConversationSession}`];
+    const total = db.prepare(`SELECT count(*) AS c FROM entities e WHERE 1=1${entityCols.has('status') ? " AND e.status = 'active'" : ''}${ownConversation}`).get(...ownParams).c;
+    const df = documentFrequencies(db, all, options.excludeConversationSession);
     const idf = (term) => {
         const n = df.get(term.text) ?? 0;
         return Math.log(1 + (total - n + 0.5) / (n + 0.5));
     };
     const informative = all
-        .filter((t) => (df.get(t.text) ?? 0) > 0 && (!useDf || (df.get(t.text) ?? 0) <= (options.maxTermShare ?? PROMPT_RECALL_MAX_TERM_SHARE) * total))
+        .filter((t) => (df.get(t.text) ?? 0) > 0)
         .map((t) => ({ term: t, weight: idf(t) }))
         .sort((a, b) => b.weight - a.weight || (a.term.text < b.term.text ? -1 : 1))
         .slice(0, MAX_TERMS);
@@ -160,7 +168,7 @@ export function scorePrompt(db, prompt, options) {
         return { scored: [], terms: [] };
     const promptWeight = informative.reduce((sum, t) => sum + t.weight, 0);
     const match = informative.map((t) => t.term.match).join(' OR ');
-    const scope = autoContextScope(projectAliases(options.project, options.cwd));
+    const scope = autoContextScope(projectAliases(options.project, options.cwd), options.platform);
     const before = options.createdBefore === undefined ? null : new Date(options.createdBefore).toISOString();
     const skipTypes = [...(options.skipTypes ?? PROMPT_RECALL_SKIP_TYPES)];
     const maxProjectAgeDays = options.maxProjectAgeDays === undefined ? PROMPT_RECALL_MAX_PROJECT_AGE_DAYS : options.maxProjectAgeDays;
@@ -169,11 +177,12 @@ export function scorePrompt(db, prompt, options) {
      FROM entities_fts fts JOIN entities e ON e.id = fts.rowid
      WHERE entities_fts MATCH ?${entityCols.has('status') ? " AND e.status = 'active'" : ''}
        AND e.type NOT IN (${[...EXCLUDED_TYPES, ...skipTypes].map(() => '?').join(',')})
-       AND NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture')
+       AND (e.type = 'conversation' OR NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture'))
        AND ${scope.sql}
+       ${ownConversation}
        ${before === null ? '' : 'AND julianday(e.created_at) < julianday(?)'}
      ORDER BY fts.rank, e.id DESC
-     LIMIT ?`).all(match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params, ...(before === null ? [] : [before]), CANDIDATE_WINDOW);
+     LIMIT ?`).all(match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params, ...(options.excludeConversationSession === undefined ? [] : [`session:${options.excludeConversationSession}`]), ...(before === null ? [] : [before]), CANDIDATE_WINDOW);
     const observations = db.prepare(`SELECT content, created_at FROM observations WHERE entity_id = ?${before === null ? '' : ' AND julianday(created_at) < julianday(?)'} ORDER BY id`);
     const scored = [];
     for (const row of rows) {
@@ -214,10 +223,51 @@ export function scorePrompt(db, prompt, options) {
             mass,
             inTitle: hits.some(({ term }) => inHead(term)),
             rank: row.rank,
+            ...(row.type === 'conversation'
+                ? { conversationRole: (db.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = 'role:assistant' LIMIT 1").get(row.id) ? 'assistant' : 'user') }
+                : {}),
         });
     }
     scored.sort((a, b) => b.coverage - a.coverage || b.matched.length - a.matched.length || a.rank - b.rank || b.id - a.id);
     return { scored, terms: informative.map((t) => t.term.text) };
+}
+function contentContext(db, hits, before) {
+    const observations = db.prepare(`SELECT content FROM observations WHERE entity_id = ?${before === undefined ? '' : ' AND julianday(created_at) < julianday(?)'} ORDER BY id`);
+    const rows = hits.map((hit) => {
+        const read = (before === undefined
+            ? observations.all(hit.id)
+            : observations.all(hit.id, new Date(before).toISOString()));
+        const [title, ...body] = redactShownTogether([hit.title ?? hit.name, ...read.map((o) => o.content)]);
+        const label = recentTitle({ ...hit, title, name: title ?? '' });
+        return { hit, label, points: Array.from(body.join('\n')) };
+    });
+    const lines = rows.map(({ hit, label }) => `- ${label} [mem:${hit.id}]`);
+    for (const [index, { hit, label, points }] of rows.entries()) {
+        const used = Buffer.byteLength(buildReferenceContext(lines), 'utf8');
+        const limit = used + Math.floor((PROMPT_RECALL_MAX_BYTES - used) / (rows.length - index));
+        const line = (count) => `- ${label}${count ? ` — ${points.slice(0, count).join('')}` : ''}${count < points.length ? ` … [content truncated; recall ids=[${hit.id}] for full text]` : ''} [mem:${hit.id}]`;
+        const fits = (count) => {
+            const candidate = [...lines];
+            candidate[index] = line(count);
+            return Buffer.byteLength(buildReferenceContext(candidate), 'utf8') <= limit;
+        };
+        let low = 0;
+        let high = points.length;
+        if (!fits(high)) {
+            high--;
+            while (low < high) {
+                const middle = Math.ceil((low + high) / 2);
+                if (fits(middle))
+                    low = middle;
+                else
+                    high = middle - 1;
+            }
+        }
+        else
+            low = high;
+        lines[index] = line(low);
+    }
+    return buildReferenceContext(lines);
 }
 export function selectPromptRecall(db, prompt, options) {
     const { scored, terms } = scorePrompt(db, prompt, options);
@@ -227,26 +277,24 @@ export function selectPromptRecall(db, prompt, options) {
         return { text: '', ids: [], reason: 'no-candidates', scored, terms };
     const minCoverage = options.minCoverage ?? PROMPT_RECALL_MIN_COVERAGE;
     const minTerms = options.minTerms ?? PROMPT_RECALL_MIN_TERMS;
-    const maxLines = options.maxLines ?? PROMPT_RECALL_MAX_LINES;
-    const top = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms).slice(0, maxLines);
+    const maxLines = Math.min(options.maxLines ?? PROMPT_RECALL_MAX_LINES, PROMPT_RECALL_MAX_LINES);
+    const top = [];
+    let assistantConversations = 0;
+    for (const match of scored) {
+        if (match.coverage < minCoverage || match.matched.length < minTerms)
+            continue;
+        if (match.conversationRole === 'assistant' && assistantConversations >= 1)
+            continue;
+        top.push(match);
+        if (match.conversationRole === 'assistant')
+            assistantConversations++;
+        if (top.length >= maxLines)
+            break;
+    }
     if (top.length === 0)
         return { text: '', ids: [], reason: 'below-threshold', scored, terms };
-    const asOf = options.createdBefore ?? Date.now();
-    const rows = readRecentRows(db, [...(options.recentPool ?? []), ...top.map((m) => m.id)], asOf, projectAliases(options.project, options.cwd));
-    const byId = new Map(rows.map((r) => [r.id, r]));
-    const removed = [];
-    const current = top.filter((m) => {
-        const row = byId.get(m.id);
-        const reason = row ? staleReason(row, rows, asOf) : null;
-        if (reason !== null)
-            removed.push({ id: m.id, reason });
-        return reason === null;
-    });
-    if (current.length === 0)
-        return { text: '', ids: [], reason: 'stale', removed, scored, terms };
-    const fresh = current.filter((m) => !options.exclude?.has(m.id));
+    const fresh = top.filter((m) => !options.exclude?.has(m.id));
     if (fresh.length === 0)
-        return { text: '', ids: [], reason: 'already-shown', removed, scored, terms };
-    const lines = fresh.map((m) => recentLine({ id: m.id, title: m.title, name: m.name }));
-    return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), removed, scored, terms };
+        return { text: '', ids: [], reason: 'already-shown', scored, terms };
+    return { text: contentContext(db, fresh, options.createdBefore), ids: fresh.map((m) => m.id), scored, terms };
 }

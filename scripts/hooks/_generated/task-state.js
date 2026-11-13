@@ -145,7 +145,6 @@ export function taskStateLines(state, project, now = new Date()) {
     });
     return lines;
 }
-export const STALE_TASK_STATE_HOURS = 72;
 export const CLOCK_SKEW_ALLOWANCE_MINUTES = 5;
 const ZONED_INSTANT = /^(?<year>\d{4})-(?<month>\d{2})-(?<day>\d{2})[Tt](?<hour>\d{2}):(?<minute>\d{2})(?::(?<second>\d{2})(?:\.\d+)?)?(?:(?<zulu>[Zz])|(?<offSign>[+-])(?<offHour>\d{2}):?(?<offMinute>\d{2}))$/;
 function isLeapYear(year) {
@@ -195,43 +194,4 @@ function resolveTaskStateAge(updatedAt, now) {
     if (hours < -(CLOCK_SKEW_ALLOWANCE_MINUTES / 60))
         return { known: false };
     return { known: true, hours: Math.max(0, hours) };
-}
-function staleTaskStateLine(project, hours) {
-    const days = Math.floor(hours / 24);
-    const age = days >= 1 ? `${days} day${days === 1 ? '' : 's'} ago` : `${Math.floor(hours)} hour${Math.floor(hours) === 1 ? '' : 's'} ago`;
-    return `Task state for ${jsonStringLiteral(projectLabel(project))} was last stated ${age} — older than ${STALE_TASK_STATE_HOURS}h, so it is not shown as current. Run \`memesh task\` to see or update it.`;
-}
-function taskStateAgeUnknownLine(project) {
-    return `Task state for ${jsonStringLiteral(projectLabel(project))} has a missing, unreadable, or future-dated timestamp, so its age could not be established — not shown as current. Run \`memesh task\` to see or update it.`;
-}
-export function briefingTaskStateLines(state, project, now = new Date(), { includeFresh = true } = {}) {
-    if (isEmptyTaskState(state))
-        return [];
-    if (state.stated_at !== undefined) {
-        const present = TASK_STATE_FIELDS.filter((field) => state[field]);
-        const ages = present.map((field) => resolveTaskStateAge(fieldStatedAt(state, field), now));
-        const fresh = present.filter((_, index) => ages[index].known && ages[index].hours <= STALE_TASK_STATE_HOURS);
-        if (fresh.length === 0) {
-            if (ages.some((age) => !age.known))
-                return [taskStateAgeUnknownLine(project)];
-            return [staleTaskStateLine(project, Math.min(...ages.map((age) => age.known ? age.hours : Infinity)))];
-        }
-        const shown = { updated_at: state.updated_at, stated_at: state.stated_at };
-        const redacted = redactShownTogether(present.map((field) => state[field]));
-        present.forEach((field, index) => { if (fresh.includes(field))
-            shown[field] = redacted[index]; });
-        const lines = includeFresh ? taskStateLines(shown, project, now) : [];
-        const omitted = present.filter((field) => !fresh.includes(field));
-        if (omitted.length > 0) {
-            lines.push(`Task state for ${jsonStringLiteral(projectLabel(project))} has older or unknown-age fields (${omitted.join(', ')}) not shown as current. Run \`memesh task\` to see or update them.`);
-        }
-        return lines;
-    }
-    const age = resolveTaskStateAge(state.updated_at, now);
-    if (!age.known)
-        return [taskStateAgeUnknownLine(project)];
-    if (age.hours > STALE_TASK_STATE_HOURS) {
-        return [staleTaskStateLine(project, age.hours)];
-    }
-    return includeFresh ? taskStateLines(state, project, now) : [];
 }

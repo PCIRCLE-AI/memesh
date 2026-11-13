@@ -96,8 +96,6 @@ function refineRemember(data, ctx) {
     if (data.note === undefined) {
         if (data.name === undefined)
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-        if (data.type === undefined && !(data.replace && data.name !== undefined))
-            ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
         if (data.replace && (data.observations === undefined || data.observations.length === 0))
             ctx.addIssue({ code: 'custom', path: ['observations'], message: 'replace rewrites the memory\'s observations, so it needs `observations` (or `note`) — a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags' });
         return;

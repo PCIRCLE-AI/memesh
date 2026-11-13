@@ -52,7 +52,9 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
       encoding: 'utf8',
       timeout,
     });
-    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status, signal: r.signal };
+    let terminal = false;
+    try { process.kill(r.pid, 0); } catch (error) { terminal = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status, signal: r.signal, pid: r.pid, terminal };
   }
 
   const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
@@ -68,6 +70,48 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   const write = (entries: object[]) => fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
   const append = (entries: object[]) => fs.appendFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
 
+  it('B-F14 preserves same-run writes, each refusal count, and deferred files through real Stop', () => {
+    fs.mkdirSync(memoryDir);
+    const note = (name: string, body = 'body') => `---\nname: ${name}\n---\n\n${body}\n`;
+    fs.writeFileSync(path.join(memoryDir, '00-large.md'), note('rejected_large', 'x'.repeat(300 * 1024)));
+    fs.writeFileSync(path.join(memoryDir, '01-noheader.md'), 'no header');
+    fs.writeFileSync(path.join(memoryDir, '02-observations.md'), note('rejected_many', Array.from({ length: 101 }, (_, i) => `paragraph ${i}`).join('\n\n')));
+    fs.writeFileSync(path.join(memoryDir, '03-noname.md'), '---\ndescription: name absent\n---\nbody');
+    fs.writeFileSync(path.join(memoryDir, '04-empty.md'), note('rejected_empty', ''));
+    const outside = path.join(home, 'outside.md'); fs.writeFileSync(outside, note('rejected_link'));
+    fs.symlinkSync(outside, path.join(memoryDir, '05-link.md'));
+    // 123 regular files: five refusals + 118 valid; link does not spend a read slot.
+    for (let i = 0; i < 118; i++) fs.writeFileSync(path.join(memoryDir, `n${String(i).padStart(3, '0')}.md`), note(`bf14_good_${i}`));
+    write(reads(1));
+    expect(run().status).toBe(0);
+    const ledger = () => JSON.parse('[' + fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8').trim().split('\n').join(',') + ']') as Array<{hook:string;run:string;outcome:string;reason?:string;count?:number}>;
+    const first = ledger().filter((r) => r.hook === 'note-ingest');
+    expect(new Set(first.map((r) => r.run)).size).toBe(1);
+    expect(first.filter((r) => r.outcome === 'wrote')).toHaveLength(1);
+    for (const [reason, count] of [
+      ['a note file was larger than the size limit and was not imported', 1],
+      ['a note file had no header block and was not imported', 1],
+      ['a note file had more observations than the limit and was not imported', 1],
+      ['a note file was a symbolic link and was not imported', 1],
+      ['a note file was not imported for another recorded reason', 2],
+      ['more note files changed than one run reads, so the rest are read at the next Stop', 23],
+    ] as const) expect(first.filter((r) => r.reason === reason)).toEqual([expect.objectContaining({ outcome: 'skipped', reason, count })]);
+    expect(JSON.stringify(first.filter((r) => r.outcome === 'skipped'))).not.toMatch(/\.md|rejected_/);
+    const countSaved = () => {
+      const db = new MemeshDatabase(path.join(home, '.memesh/knowledge-graph.db'), { readOnly: true });
+      try {
+        expect(db.prepare("SELECT count(*) AS n FROM entities WHERE name LIKE 'rejected_%'").get()).toEqual({ n: 0 });
+        return db.prepare("SELECT count(*) AS n FROM entities WHERE name LIKE 'bf14_good_%'").get();
+      } finally { db.close(); }
+    };
+    expect(countSaved()).toEqual({ n: 95 });
+    append(reads(1)); expect(run().status).toBe(0);
+    expect(countSaved()).toEqual({ n: 118 });
+    const second = ledger().filter((r) => r.hook === 'note-ingest' && r.run !== first[0].run);
+    expect(second.some((r) => r.reason === 'a note file was larger than the size limit and was not imported' && r.count === 1)).toBe(true);
+    expect(second.some((r) => r.reason === 'more note files changed than one run reads, so the rest are read at the next Stop')).toBe(false);
+  }, 60_000);
+
   /** The recorded outcomes for one hook name. Pinned non-empty: every Stop
    *  must leave a record, so an empty list is itself a failure, never a
    *  vacuous pass for the `.at(-1)` assertions that follow. */
@@ -79,6 +123,134 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(records.length, `no ${hook} outcome was recorded`).toBeGreaterThan(0);
     return records;
   }
+
+  it('B-F14 reclassifies unchanged legacy skip caches on the next Stop', () => {
+    fs.mkdirSync(memoryDir);
+    const large = path.join(memoryDir, 'large.md'); const plain = path.join(memoryDir, 'plain.md');
+    fs.writeFileSync(large, 'x'.repeat(300 * 1024)); fs.writeFileSync(plain, 'no header');
+    write(reads(1)); expect(run().status).toBe(0);
+    const memesh = path.join(home, '.memesh');
+    const db = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    try {
+      const key = `note_ingest_skips:${noteDirId(fs.realpathSync(memoryDir))}`;
+      const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as {value:string};
+      const cache = JSON.parse(row.value);
+      for (const value of Object.values(cache) as Array<{code?:string}>) delete value.code;
+      db.prepare('UPDATE memesh_metadata SET value = ? WHERE key = ?').run(JSON.stringify(cache), key);
+    } finally { db.close(); }
+    const stateFile = path.join(memesh, 'note-ingest-state-2.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    for (const value of Object.values(state) as Array<{outcomeCodes?:boolean}>) delete value.outcomeCodes;
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    const before = outcomes('note-ingest').length;
+    append(reads(1)); expect(run().status).toBe(0);
+    const latest = outcomes('note-ingest').slice(before);
+    expect(latest).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'a note file was larger than the size limit and was not imported', count: 1 }),
+      expect.objectContaining({ reason: 'a note file had no header block and was not imported', count: 1 }),
+    ]));
+    expect(latest.some((r) => r.reason === 'a note file was not imported for another recorded reason')).toBe(false);
+  }, 60_000);
+
+  it('QA6 new notes progress past 100 unchanged refusals and released owners are retried', () => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'seed.md'), '---\nname: qa6_seed\n---\nseed');
+    write(reads(1)); expect(run().status).toBe(0); // initialize the private schema
+    const dbPath = path.join(home, '.memesh/knowledge-graph.db');
+    const withDb = <T,>(fn: (db: MemeshDatabase) => T): T => {
+      const db = new MemeshDatabase(dbPath); try { return fn(db); } finally { db.close(); }
+    };
+    withDb((db) => {
+      for (let i = 0; i < 100; i++) {
+        const name = `qa6_owner_${String(i).padStart(3, '0')}`;
+        const id = db.prepare('INSERT INTO entities (name,type) VALUES (?,?)').run(name, 'fact').lastInsertRowid;
+        db.prepare('INSERT INTO observations (entity_id,content) VALUES (?,?)').run(id, `original ${i}`);
+        db.prepare('INSERT INTO tags (entity_id,tag) VALUES (?,?)').run(id, 'qa6-original');
+        fs.writeFileSync(path.join(memoryDir, `a${String(i).padStart(3, '0')}.md`), `---\nname: ${name}\n---\nreplacement ${i}`);
+      }
+    });
+    fs.writeFileSync(path.join(memoryDir, 'zzz.md'), '---\nname: qa6_valid\n---\nvalid');
+    const snapshot = () => withDb((db) => ({
+      entities: db.prepare("SELECT * FROM entities WHERE name LIKE 'qa6_owner_%' ORDER BY id").all(),
+      observations: db.prepare("SELECT o.* FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name LIKE 'qa6_owner_%' ORDER BY o.id").all(),
+      tags: db.prepare("SELECT t.* FROM tags t JOIN entities e ON e.id=t.entity_id WHERE e.name LIKE 'qa6_owner_%' ORDER BY t.id").all(),
+    }));
+    const original = snapshot();
+    const ledger = () => JSON.parse('[' + fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8').trim().split('\n').join(',') + ']') as Array<{hook:string;run:string;reason?:string;count?:number;outcome:string}>;
+    const prior = ledger().filter((r) => r.hook === 'note-ingest').length;
+    const other = 'a note file was not imported for another recorded reason';
+    const deferred = 'more note files changed than one run reads, so the rest are read at the next Stop';
+    append(reads(1)); expect(run().status).toBe(0);
+    const first = ledger().filter((r) => r.hook === 'note-ingest').slice(prior);
+    expect(first).toEqual(expect.arrayContaining([expect.objectContaining({ reason: other, count: 100 }), expect.objectContaining({ reason: deferred, count: 1 })]));
+    expect(snapshot()).toEqual(original);
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='qa6_valid'").get())).toBeUndefined();
+    append(reads(1)); expect(run().status).toBe(0);
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='qa6_valid'").get())).toBeDefined();
+    expect(snapshot()).toEqual(original);
+    const second = ledger().filter((r) => r.hook === 'note-ingest').slice(prior + first.length);
+    expect(second).toEqual(expect.arrayContaining([expect.objectContaining({ reason: other, count: 99 }), expect.objectContaining({ reason: deferred, count: 1 }), expect.objectContaining({ outcome: 'wrote' })]));
+    expect(new Set(second.map((r) => r.run)).size).toBe(1);
+    expect(ledger()).toEqual(expect.arrayContaining(first)); // first run's 100 remain in history
+    const last = path.join(memoryDir, 'a099.md'); const beforeStat = fs.statSync(last); const beforeBytes = fs.readFileSync(last);
+    withDb((db) => db.prepare("DELETE FROM entities WHERE name='qa6_owner_099'").run());
+    append(reads(1)); expect(run().status).toBe(0); // more=1 naturally retries; no touch/throttle override
+    expect(fs.readFileSync(last)).toEqual(beforeBytes); expect(fs.statSync(last).mtimeMs).toBe(beforeStat.mtimeMs);
+    const restored = withDb((db) => db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name='qa6_owner_099'").all());
+    expect(restored).toEqual([{ content: 'replacement 99' }]);
+    const third = ledger().filter((r) => r.hook === 'note-ingest').slice(prior + first.length + second.length);
+    expect(third.some((r) => r.outcome === 'wrote')).toBe(true);
+    expect(third.some((r) => r.reason === deferred)).toBe(false);
+    console.info('QA6 actual Stop receipt', JSON.stringify({ first, second, third, restored,
+      originalOwners: original.entities.length, originalOwnerSnapshotSha: createHash('sha256').update(JSON.stringify(original)).digest('hex') }));
+  }, 60_000);
+
+  it.skipIf(!canDenyReads)('note I/O retry: unchanged unreadable note is imported after mode recovery on the next real Stop', () => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'seed.md'), '---\nname: io_seed\n---\nseed');
+    write(reads(1)); expect(run().status).toBe(0);
+    const stateFile = path.join(home, '.memesh/note-ingest-state-2.json');
+    const beforeState = fs.readFileSync(stateFile, 'utf8');
+    const good = path.join(memoryDir, 'a-good.md'); const bad = path.join(memoryDir, 'b-unreadable.md');
+    fs.writeFileSync(good, '---\nname: io_good\n---\ngood body');
+    fs.writeFileSync(bad, '---\nname: io_recovered\n---\nrecovered body');
+    const bytes = fs.readFileSync(bad); const mtime = fs.statSync(bad).mtimeMs;
+    const withDb = <T,>(fn: (db: MemeshDatabase) => T): T => {
+      const db = new MemeshDatabase(path.join(home, '.memesh/knowledge-graph.db'), { readOnly: true });
+      try { return fn(db); } finally { db.close(); }
+    };
+    const goodSnapshot = () => withDb((db) => ({
+      entity: db.prepare("SELECT * FROM entities WHERE name='io_good'").get(),
+      observations: db.prepare("SELECT o.* FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name='io_good' ORDER BY o.id").all(),
+      tags: db.prepare("SELECT t.* FROM tags t JOIN entities e ON e.id=t.entity_id WHERE e.name='io_good' ORDER BY t.id").all(),
+    }));
+    fs.chmodSync(bad, 0);
+    let first;
+    try {
+      let denied: unknown; try { fs.readFileSync(bad); } catch (error) { denied = error; }
+      expect(denied).toHaveProperty('code', 'EACCES');
+      append(reads(1)); first = run(); expect(first.status).toBe(0); expect(first.terminal).toBe(true);
+      expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_good'").get())).toBeDefined();
+      expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_recovered'").get())).toBeUndefined();
+    } finally { fs.chmodSync(bad, 0o600); }
+    const failedState = fs.readFileSync(stateFile, 'utf8');
+    const storedGood = goodSnapshot();
+    expect(fs.readFileSync(bad)).toEqual(bytes); expect(fs.statSync(bad).mtimeMs).toBe(mtime);
+    append(reads(1)); const second = run(); expect(second.status).toBe(0); expect(second.terminal).toBe(true);
+    // Baseline reaches this actual loss assertion: its second Stop is incorrectly throttled.
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_recovered'").get())).toBeDefined();
+    expect(failedState).toBe(beforeState);
+    expect(goodSnapshot()).toEqual(storedGood);
+    expect(withDb((db) => db.prepare("SELECT count(*) AS n FROM entities WHERE name='io_good'").get())).toEqual({ n: 1 });
+    const invalid = path.join(memoryDir, 'invalid.md'); fs.writeFileSync(invalid, 'no header');
+    append(reads(1)); const validation = run(); expect(validation.status).toBe(0);
+    const validState = fs.readFileSync(stateFile, 'utf8');
+    append(reads(1)); const quiet = run(); expect(quiet.status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)?.reason).toBe('no note file changed since the last ingestion');
+    expect(fs.readFileSync(stateFile, 'utf8')).toBe(validState);
+    console.info('note I/O retry receipt', JSON.stringify({ first, second, validation, quiet,
+      realReadError: 'EACCES', failedStateUnchanged: failedState === beforeState, recovered: true, goodRowsUnchanged: true, noteBytesMtimeUnchanged: true }));
+  }, 60_000);
 
   it('nudges once on a turn with a plan approved and nothing written', () => {
     write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
@@ -315,7 +487,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(run().status).toBe(0);
     const last = outcomes('note-ingest').at(-1)!;
     expect(last.outcome).toBe('skipped');
-    expect(last.reason).toBe('note files were refused and nothing was stored');
+    expect(last.reason).toBe('a note file was a symbolic link and was not imported');
   }, 60_000);
 
   it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {

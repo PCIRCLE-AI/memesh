@@ -39,9 +39,6 @@ export function isReservedTag(tag) {
 }
 export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 export const WHY_PREFIX = 'Why: ';
-export function decisionLacksReason(type, observations) {
-    return type !== undefined && DECISION_TYPES.has(type) && !observations.some((o) => o.startsWith(WHY_PREFIX));
-}
 export const UNCONFIRMED_DECISION_DAYS = 30;
 export function utcEpoch(at) {
     if (!at)
@@ -163,7 +160,7 @@ export function groupTopology(entities, projectName) {
     const foreign = [];
     const shared = [];
     for (const e of entities) {
-        if (e.type === 'task-state' || e.type === 'session-handoff')
+        if (e.type === 'task-state')
             continue;
         if (e.global) {
             global.push(e);
@@ -388,6 +385,38 @@ export function buildReferenceContext(memoryLines) {
         ...safeLines,
         fence,
     ].join('\n');
+}
+export const MAX_OPENING_CONTEXT_BYTES = 8000;
+export function buildOpeningContext(taskLines, tailLines, remainingLines, reservedBytes = 0) {
+    const encoder = new TextEncoder();
+    const fits = (lines) => encoder.encode(buildReferenceContext(lines)).length + reservedBytes <= MAX_OPENING_CONTEXT_BYTES;
+    if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0)
+        throw new Error('Invalid opening context reserved byte count');
+    let tasks = [...taskLines];
+    if (!fits([...tasks, ...tailLines])) {
+        const shorten = (limit) => taskLines.map((line, index) => index === 0 ? line : clip(line, limit));
+        let low = 256, high = MAX_OPENING_CONTEXT_BYTES;
+        if (!fits([...shorten(low), ...tailLines]))
+            throw new Error('Opening context budget cannot fit task dates and session tails');
+        while (low < high) {
+            const limit = Math.ceil((low + high) / 2);
+            if (fits([...shorten(limit), ...tailLines]))
+                low = limit;
+            else
+                high = limit - 1;
+        }
+        tasks = shorten(low);
+    }
+    const kept = [...tasks, ...tailLines];
+    const remaining = [];
+    for (const line of remainingLines) {
+        const next = [...kept, line];
+        if (!fits(next))
+            break;
+        kept.push(line);
+        remaining.push(line);
+    }
+    return { text: hasBriefingContent(kept) ? buildReferenceContext(kept) : '', taskLines: tasks, tailLines: [...tailLines], remainingLines: remaining };
 }
 const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 export function projectLabel(projectId) {

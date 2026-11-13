@@ -135,6 +135,7 @@ export const IMPORTABLE_METADATA_KEYS: ReadonlySet<string> = new Set([
  * so a new authority key added later fails a test instead of shipping quiet.
  */
 export const AUTHORITY_METADATA_KEYS: ReadonlySet<string> = new Set([
+  'conversationCapturedAt', // _shared.js: local replay ordering must not be pre-seeded by an import.
   // Dreamer idempotency gate (dreamer.ts ~810-814, `dream accept`'s Phase-3
   // pattern path): `if (!evidenceFor.includes(digestId)) evidenceFor.push
   // (digestId)` reads THIS FIELD to decide whether to append — a genuine
@@ -963,6 +964,9 @@ export function importMemories(args: ImportInput, options?: { trust?: boolean; o
             return { kind: 'restored' } as const;
           }
           if (args.merge_strategy === 'append') {
+            // Explicit backup restoration keeps the archived text. Reactivate
+            // without new content before appending, unlike a fresh re-remember.
+            if (existing.archived) kg.createEntity(entity.name, existing.type, { trustOverride: 'untrusted' });
             // Exact-text dedupe against what the entity already has.
             // `createEntity` INSERTs every observation it is handed with no
             // dedupe of its own — correct for `remember`, where a caller

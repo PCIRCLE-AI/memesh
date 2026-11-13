@@ -41,19 +41,19 @@ function walk(root, dir, keep, out) {
         const code = err?.code;
         if (code === 'ENOENT' || code === 'ENOTDIR')
             return false;
-        out.unreadable.push(`${posix(path.relative(root, dir))}/`);
+        out.issues.push(`${posix(path.relative(root, dir))}/ (cannot be read)`);
         return true;
     }
     for (const entry of entries) {
         const full = path.join(dir, entry.name);
         const rel = posix(path.relative(root, full));
         if (entry.isSymbolicLink()) {
-            out.symlinks.push(rel);
+            out.issues.push(`${rel} (symbolic link)`);
             continue;
         }
         if (entry.isDirectory()) {
             if (isPackIgnoredName(entry.name))
-                out.strayFolders.push(`${rel}/`);
+                out.issues.push(`${rel}/ (a folder npm pack never ships)`);
             else
                 walk(root, full, keep, out);
         }
@@ -62,7 +62,7 @@ function walk(root, dir, keep, out) {
                 out.files.push(rel);
         }
         else {
-            out.special.push(rel);
+            out.issues.push(`${rel} (not a file)`);
         }
     }
     return true;
@@ -72,13 +72,13 @@ function walkCovered(root, segments, keep, out) {
     if (link === 'absent')
         return false;
     if (link !== null) {
-        out.symlinks.push(link);
+        out.issues.push(`${link} (symbolic link)`);
         return true;
     }
     return walk(root, path.join(root, ...segments), keep, out);
 }
 export function manifestScope(packageRoot) {
-    const found = { files: [], symlinks: [], unreadable: [], strayFolders: [], special: [] };
+    const found = { files: [], issues: [] };
     const missingRequired = [];
     if (!walkCovered(packageRoot, MANIFEST_SKILLS_DIR.split('/'), () => true, found))
         missingRequired.push(`${MANIFEST_SKILLS_DIR}/`);
@@ -88,7 +88,7 @@ export function manifestScope(packageRoot) {
         const segments = rel.split('/');
         const linkAbove = firstLinkOnPath(packageRoot, segments.slice(0, -1));
         if (linkAbove !== null && linkAbove !== 'absent') {
-            found.symlinks.push(linkAbove);
+            found.issues.push(`${linkAbove} (symbolic link)`);
             continue;
         }
         let stat;
@@ -97,7 +97,7 @@ export function manifestScope(packageRoot) {
         }
         catch { }
         if (stat?.isSymbolicLink())
-            found.symlinks.push(rel);
+            found.issues.push(`${rel} (symbolic link)`);
         else if (stat?.isFile())
             found.files.push(rel);
         else
@@ -107,10 +107,7 @@ export function manifestScope(packageRoot) {
     return {
         files: unique(found.files),
         missingRequired,
-        symlinks: unique(found.symlinks),
-        unreadable: unique(found.unreadable),
-        strayFolders: unique(found.strayFolders),
-        special: unique(found.special),
+        issues: unique(found.issues),
     };
 }
 //# sourceMappingURL=manifest-scope.js.map

@@ -10,6 +10,7 @@ export interface NoteIngestOptions {
     maxFiles?: number;
     maxBytes?: number;
 }
+export type NoteSkipCode = 'tooLarge' | 'noFrontmatter' | 'tooManyObservations' | 'symlink' | 'other';
 export interface NoteIngestResult {
     dirId: string;
     discovered: number;
@@ -26,8 +27,10 @@ export interface NoteIngestResult {
         path: string;
         reason: string;
     }>;
+    skippedCounts: Record<NoteSkipCode, number>;
     refusedNow: number;
     more: number;
+    retryNeeded?: boolean;
 }
 export interface Frontmatter {
     data: Record<string, string | Record<string, string>>;

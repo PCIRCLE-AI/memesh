@@ -17,8 +17,6 @@ import {
   mergeTaskState,
   isEmptyTaskState,
   taskStateLines,
-  briefingTaskStateLines,
-  STALE_TASK_STATE_HOURS,
   MAX_FIELD_CHARS,
   type TaskState,
 } from '../../src/core/task-state.js';
@@ -131,94 +129,46 @@ describe('task-state', () => {
     expect(taskStateLines({ updated_at: NOW }, 'memesh')).toEqual([]);
   });
 
-  // #360 — briefingTaskStateLines is the ONE function the SessionStart hook
-  // and the `briefing` tool/CLI both call for task state, so a stale record
-  // reads the same everywhere. It must NOT change taskStateLines above:
-  // `memesh task` renders directly through that function, and a human who
-  // just ran it must see the real value, not "run `memesh task` to see it".
-  describe('briefingTaskStateLines (#360)', () => {
-    it('STALE_TASK_STATE_HOURS is 72 (three days)', () => {
-      expect(STALE_TASK_STATE_HOURS).toBe(72);
-    });
-
-    it('an empty state is still nothing, regardless of includeFresh', () => {
-      expect(briefingTaskStateLines({}, 'memesh')).toEqual([]);
-      expect(briefingTaskStateLines({}, 'memesh', new Date(), { includeFresh: false })).toEqual([]);
-    });
-
-    it('a fresh state with includeFresh true renders exactly what taskStateLines renders', () => {
+  describe('task-state display for briefing and task reads', () => {
+    it('keeps a five-day-old goal, next step and blocker with their age', () => {
       const now = new Date('2026-08-16T12:00:00.000Z');
-      const state: TaskState = { goal: 'ship it', updated_at: '2026-08-16T01:00:00.000Z' };
-      expect(briefingTaskStateLines(state, 'memesh', now, { includeFresh: true }))
-        .toEqual(taskStateLines(state, 'memesh', now));
+      const lines = taskStateLines({ goal: 'ship it', next: 'review', blocked: 'waiting', updated_at: '2026-08-11T12:00:00.000Z' }, 'memesh', now);
+      expect(lines[0]).toContain('5 days ago');
+      expect(lines.join('\n')).toContain('ship it');
+      expect(lines.join('\n')).toContain('review');
+      expect(lines.join('\n')).toContain('waiting');
     });
 
-    it('a fresh state with includeFresh false is omitted entirely (the `minimal` level)', () => {
+    it('keeps each field and attributes its own date, including an unknown date', () => {
       const now = new Date('2026-08-16T12:00:00.000Z');
-      const state: TaskState = { goal: 'ship it', updated_at: '2026-08-16T01:00:00.000Z' };
-      expect(briefingTaskStateLines(state, 'memesh', now, { includeFresh: false })).toEqual([]);
+      const lines = taskStateLines({ goal: 'old goal', next: 'new next', blocked: 'unknown blocker', stated_at: { goal: '2026-08-11T12:00:00.000Z', next: '2026-08-16T11:00:00.000Z', blocked: 'not-a-date' } }, 'memesh', now);
+      expect(lines[1]).toContain('5 days ago');
+      expect(lines[1]).toContain('old goal');
+      expect(lines[2]).toContain('today');
+      expect(lines[2]).toContain('new next');
+      expect(lines[3]).toContain('unknown date');
+      expect(lines[3]).toContain('unknown blocker');
+      expect(lines.join('\n')).not.toContain('not-a-date');
     });
 
-    it('a stale state renders ONE line naming the age and how to see it, regardless of includeFresh', () => {
-      const now = new Date('2026-08-16T12:00:00.000Z');
-      // 100 hours old — comfortably past the 72h threshold.
-      const state: TaskState = { goal: 'ship it', updated_at: '2026-08-12T08:00:00.000Z' };
-      for (const includeFresh of [true, false]) {
-        const lines = briefingTaskStateLines(state, 'memesh', now, { includeFresh });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('"memesh"');
-        expect(lines[0]).toContain('4 days ago');
-        expect(lines[0]).toContain('72h');
-        expect(lines[0]).toContain('memesh task');
-        // Never the multi-line "Stated about" heading a fresh state gets.
-        expect(lines[0]).not.toContain('Stated about');
-      }
-    });
-
-    // Boundary, computed relative to a fixed `now` rather than a wall-clock
-    // date — this repo shipped a release-blocking test that was red only
-    // between 00:00-01:00 UTC (project_batches doc, #360's own acceptance
-    // criteria calls this out by name).
-    it('boundary: just under the threshold is still fresh, just over is stale', () => {
-      const now = new Date('2026-08-16T12:00:00.000Z');
-      const justUnder = new Date(now.getTime() - (STALE_TASK_STATE_HOURS - 0.01) * 3_600_000).toISOString();
-      const justOver = new Date(now.getTime() - (STALE_TASK_STATE_HOURS + 0.01) * 3_600_000).toISOString();
-
-      const fresh = briefingTaskStateLines({ goal: 'g', updated_at: justUnder }, 'memesh', now);
-      expect(fresh.length).toBeGreaterThan(1);
-      expect(fresh[0]).toContain('Stated about');
-
-      const stale = briefingTaskStateLines({ goal: 'g', updated_at: justOver }, 'memesh', now);
-      expect(stale).toHaveLength(1);
-      expect(stale[0]).toContain('72h');
-    });
-
-    // Codex review round 1, item 3: this test used to assert the OPPOSITE —
-    // that an unusable timestamp rendered as fresh ("at some point"). That
-    // was the bug: "we don't know" is not "recent and trustworthy", and a
-    // future-dated record used to be fresh FOREVER (an age that never
-    // exceeds the threshold no matter how much wall-clock time passes).
-    // Fail CLOSED instead — an unknown age gets its own one-line flag,
-    // distinct from the ordinary stale line, at every level (`memesh task`
-    // is the one place that still shows the raw value — see the file
-    // header comment on why `taskStateLines` itself is untouched).
-    describe('age cannot be established -> fail closed, one distinct line (item 3)', () => {
+    // Invalid or ambiguous timestamps never acquire a guessed age.
+    describe('unknown age retains the value without inventing a date', () => {
       const say = (state: TaskState, now = new Date('2026-08-16T12:00:00.000Z')) =>
-        briefingTaskStateLines(state, 'memesh', now);
+        taskStateLines(state, 'memesh', now);
 
       it('missing updated_at', () => {
         const lines = say({ goal: 'g' });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
-        expect(lines[0]).toContain('memesh task');
-        expect(lines[0]).not.toContain('Stated about');
-        expect(lines[0]).not.toContain('at some point');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
+        expect(lines[0]).toContain('Stated about');
       });
 
       it('malformed updated_at', () => {
         const lines = say({ goal: 'g', updated_at: 'not-a-date' });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
       });
 
       // Codex round 3, item 2: Date.parse accepts these and reads them in
@@ -228,14 +178,16 @@ describe('task-state', () => {
       // inferred from whatever Date.parse decides.
       it('date-only updated_at ("2026-08-16") is ambiguous, not fresh', () => {
         const lines = say({ goal: 'g', updated_at: '2026-08-16' });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
       });
 
       it('a timezone-less datetime ("2026-08-13T12:30:00", no Z/offset) is ambiguous, not fresh', () => {
         const lines = say({ goal: 'g', updated_at: '2026-08-13T12:30:00' });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
       });
 
       it('the zone-less SQLite shape ("YYYY-MM-DD HH:MM:SS", no T, no Z) is ALSO ambiguous here', () => {
@@ -249,8 +201,9 @@ describe('task-state', () => {
         // reaching here can only be a hand edit or an imported bundle, and
         // is treated the same as any other unrecognised format.
         const lines = say({ goal: 'g', updated_at: '2026-08-13 12:30:00' });
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
       });
 
       it('what the product itself writes IS accepted: a full Z-suffixed instant', () => {
@@ -259,7 +212,7 @@ describe('task-state', () => {
         const now = new Date('2026-09-19T21:00:00.000Z');
         const lines = say({ goal: 'g', updated_at: '2026-09-19T20:35:34.805Z' }, now);
         expect(lines[0]).toContain('Stated about');
-        expect(lines[0]).not.toContain('could not be established');
+        expect(lines[0]).not.toContain('at some point');
       });
 
       // Codex round 3 re-review, item 1: ZONED_INSTANT validates SHAPE only
@@ -275,62 +228,61 @@ describe('task-state', () => {
 
         it('February 30th does not roll over to March', () => {
           const lines = unknown('2026-02-30T00:00:00Z');
-          expect(lines).toHaveLength(1);
-          expect(lines[0]).toContain('could not be established');
+          expect(lines).toHaveLength(2);
+          expect(lines[0]).toContain('at some point');
+          expect(lines[1]).toContain('g');
           expect(lines[0]).not.toContain('72h'); // must not silently compute a stale age either
         });
 
         it('February 29th in a non-leap year is rejected', () => {
           const lines = unknown('2026-02-29T00:00:00Z'); // 2026 is not a leap year
-          expect(lines[0]).toContain('could not be established');
+          expect(lines[0]).toContain('at some point');
+          expect(lines[1]).toContain('g');
         });
 
         it('February 29th in a leap year is a REAL date — accepted', () => {
-          // 2024 is a leap year, and in the PAST relative to the fixed
-          // `now` (2026-08-16) — well past the stale threshold, but that is
-          // a DIFFERENT thing from "unknown": it is a known, valid, old
-          // date, so it renders the ordinary ONE-line STALE flag, not the
-          // unknown-age line.
+          // A valid leap day remains a known, old date.
           const lines = unknown('2024-02-29T00:00:00Z');
-          expect(lines[0]).not.toContain('could not be established');
-          expect(lines).toHaveLength(1);
-          expect(lines[0]).toContain('72h'); // stale, correctly computed
+          expect(lines[0]).not.toContain('at some point');
+          expect(lines).toHaveLength(2);
+          expect(lines[0]).toMatch(/\d+ days ago/);
+          expect(lines[1]).toContain('g');
         });
 
         it('month 13 is rejected', () => {
-          expect(unknown('2026-13-01T00:00:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-13-01T00:00:00Z')[0]).toContain('at some point');
         });
 
         it('month 0 is rejected', () => {
-          expect(unknown('2026-00-10T00:00:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-00-10T00:00:00Z')[0]).toContain('at some point');
         });
 
         it('April 31st is rejected (April has 30 days)', () => {
-          expect(unknown('2026-04-31T00:00:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-04-31T00:00:00Z')[0]).toContain('at some point');
         });
 
         it('hour 25 is rejected', () => {
-          expect(unknown('2026-08-01T25:00:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T25:00:00Z')[0]).toContain('at some point');
         });
 
         it('hour 24 (ISO "end of day") is rejected, a deliberate choice — see the code comment', () => {
-          expect(unknown('2026-08-01T24:00:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T24:00:00Z')[0]).toContain('at some point');
         });
 
         it('minute 60 is rejected', () => {
-          expect(unknown('2026-08-01T23:60:00Z')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T23:60:00Z')[0]).toContain('at some point');
         });
 
         it('second 60 (a leap second) is rejected, a deliberate choice — see the code comment', () => {
-          expect(unknown('2026-08-01T23:59:60Z')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T23:59:60Z')[0]).toContain('at some point');
         });
 
         it('offset hour 24 is rejected ("+24:00" is not a real UTC offset)', () => {
-          expect(unknown('2026-08-01T00:00:00+24:00')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T00:00:00+24:00')[0]).toContain('at some point');
         });
 
         it('offset minute 60 is rejected ("+08:60" is not a real UTC offset)', () => {
-          expect(unknown('2026-08-01T00:00:00+08:60')[0]).toContain('could not be established');
+          expect(unknown('2026-08-01T00:00:00+08:60')[0]).toContain('at some point');
         });
 
         // #360 round 7 (Codex round 6 re-review, item 2): `-00:00` is NOT
@@ -342,20 +294,21 @@ describe('task-state', () => {
         // be rejected in `isRealInstant`, before `Date.parse` ever runs.
         it('offset -00:00 is rejected (RFC 3339 §4.3: "UTC, offset unknown" is not a trusted offset)', () => {
           const lines = unknown('2026-08-16T11:00:00-00:00'); // 1h before `now` if trusted
-          expect(lines[0]).toContain('could not be established');
-          expect(lines[0]).not.toContain('Stated about');
+          expect(lines[0]).toContain('at some point');
+          expect(lines[1]).toContain('g');
+          expect(lines[0]).toContain('Stated about');
         });
 
         it('the identical instant with Z is fresh (contrast case for -00:00, same clock)', () => {
           const lines = say({ goal: 'g', updated_at: '2026-08-16T11:00:00Z' }, now);
           expect(lines[0]).toContain('Stated about');
-          expect(lines[0]).not.toContain('could not be established');
+          expect(lines[0]).not.toContain('at some point');
         });
 
         it('the identical instant with +00:00 is fresh too (contrast case for -00:00, same clock)', () => {
           const lines = say({ goal: 'g', updated_at: '2026-08-16T11:00:00+00:00' }, now);
           expect(lines[0]).toContain('Stated about');
-          expect(lines[0]).not.toContain('could not be established');
+          expect(lines[0]).not.toContain('at some point');
         });
 
         it('offset -00:30 (a REAL negative offset, not negative-zero) stays valid', () => {
@@ -363,14 +316,14 @@ describe('task-state', () => {
           // (2026-08-16T12:00:00Z), 30 minutes old.
           const lines = say({ goal: 'g', updated_at: '2026-08-16T11:00:00-00:30' }, now);
           expect(lines[0]).toContain('Stated about');
-          expect(lines[0]).not.toContain('could not be established');
+          expect(lines[0]).not.toContain('at some point');
         });
 
         it('the real writer shape is still fresh after this fix (regression check)', () => {
           const recent = new Date(now.getTime() - 2 * 3_600_000).toISOString();
           const lines = unknown(recent);
           expect(lines[0]).toContain('Stated about');
-          expect(lines[0]).not.toContain('could not be established');
+          expect(lines[0]).not.toContain('at some point');
         });
       });
 
@@ -378,9 +331,10 @@ describe('task-state', () => {
         const now = new Date('2026-08-16T12:00:00.000Z');
         const wayFuture = new Date(now.getTime() + 24 * 3_600_000).toISOString(); // +24h
         const lines = say({ goal: 'g', updated_at: wayFuture }, now);
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('could not be established');
-        expect(lines[0]).not.toContain('Stated about');
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('at some point');
+        expect(lines[1]).toContain('g');
+        expect(lines[0]).toContain('Stated about');
       });
 
       it('the unknown-age line and the stale line read differently, so hook-outcomes/context readers can tell them apart', () => {
@@ -388,8 +342,8 @@ describe('task-state', () => {
         const unknown = say({ goal: 'g', updated_at: 'garbage' }, now)[0];
         const stale = say({ goal: 'g', updated_at: '2026-08-01T00:00:00.000Z' }, now)[0];
         expect(unknown).not.toBe(stale);
-        expect(unknown).not.toContain('72h');
-        expect(stale).toContain('72h');
+        expect(unknown).toContain('at some point');
+        expect(stale).toContain('15 days ago');
       });
     });
 
@@ -397,9 +351,9 @@ describe('task-state', () => {
       const now = new Date('2026-08-16T12:00:00.000Z');
       // 2 minutes in the future — inside the 5-minute allowance.
       const future = new Date(now.getTime() + 2 * 60_000).toISOString();
-      const lines = briefingTaskStateLines({ goal: 'g', updated_at: future }, 'memesh', now);
+      const lines = taskStateLines({ goal: 'g', updated_at: future }, 'memesh', now);
       expect(lines.length).toBeGreaterThan(1);
-      expect(lines[0]).not.toContain('could not be established');
+      expect(lines[0]).not.toContain('at some point');
       expect(lines[0]).toContain('today');
     });
 
@@ -411,7 +365,6 @@ describe('task-state', () => {
         expect(lines[0]).toContain('at some point');
         expect(lines.join('\n')).toContain('keep stored goal');
         expect(lines.join('\n')).toContain('keep stored done');
-        expect(briefingTaskStateLines(state, 'memesh', now)[0]).toContain('could not be established');
         expect(state.updated_at).toBe(updatedAt);
       },
     );
@@ -422,20 +375,20 @@ describe('task-state', () => {
       const hoursAgo = (h: number) => new Date(now.getTime() - h * 3_600_000).toISOString();
 
       it('exactly 72h -> fresh', () => {
-        const lines = briefingTaskStateLines({ goal: 'g', updated_at: hoursAgo(72) }, 'memesh', now);
+        const lines = taskStateLines({ goal: 'g', updated_at: hoursAgo(72) }, 'memesh', now);
         expect(lines[0]).toContain('Stated about');
       });
 
       it('71h59m -> fresh', () => {
-        const lines = briefingTaskStateLines({ goal: 'g', updated_at: hoursAgo(71 + 59 / 60) }, 'memesh', now);
+        const lines = taskStateLines({ goal: 'g', updated_at: hoursAgo(71 + 59 / 60) }, 'memesh', now);
         expect(lines[0]).toContain('Stated about');
       });
 
-      it('72h01m -> stale (one line)', () => {
-        const lines = briefingTaskStateLines({ goal: 'g', updated_at: hoursAgo(72 + 1 / 60) }, 'memesh', now);
-        expect(lines).toHaveLength(1);
-        expect(lines[0]).toContain('72h');
-        expect(lines[0]).not.toContain('could not be established');
+      it('72h01m remains visible with its age', () => {
+        const lines = taskStateLines({ goal: 'g', updated_at: hoursAgo(72 + 1 / 60) }, 'memesh', now);
+        expect(lines).toHaveLength(2);
+        expect(lines[0]).toContain('3 days ago');
+        expect(lines[1]).toContain('g');
       });
     });
 
@@ -469,9 +422,9 @@ describe('task-state', () => {
         const now = new Date('2026-08-16T12:00:00.000Z');
         for (const tz of ZONES) {
           process.env.TZ = tz;
-          const lines = briefingTaskStateLines({ goal: 'g', updated_at: '2026-08-13T12:30:00' }, 'memesh', now);
-          expect(lines, `TZ=${tz}`).toHaveLength(1);
-          expect(lines[0], `TZ=${tz}`).toContain('could not be established');
+          const lines = taskStateLines({ goal: 'g', updated_at: '2026-08-13T12:30:00' }, 'memesh', now);
+          expect(lines, `TZ=${tz}`).toHaveLength(2);
+          expect(lines[0], `TZ=${tz}`).toContain('at some point');
         }
       });
 
@@ -479,9 +432,9 @@ describe('task-state', () => {
         const now = new Date('2026-08-16T12:00:00.000Z');
         for (const tz of ZONES) {
           process.env.TZ = tz;
-          const lines = briefingTaskStateLines({ goal: 'g', updated_at: '2026-08-16' }, 'memesh', now);
-          expect(lines, `TZ=${tz}`).toHaveLength(1);
-          expect(lines[0], `TZ=${tz}`).toContain('could not be established');
+          const lines = taskStateLines({ goal: 'g', updated_at: '2026-08-16' }, 'memesh', now);
+          expect(lines, `TZ=${tz}`).toHaveLength(2);
+          expect(lines[0], `TZ=${tz}`).toContain('at some point');
         }
       });
 
@@ -491,7 +444,7 @@ describe('task-state', () => {
         const rendered: string[] = [];
         for (const tz of ZONES) {
           process.env.TZ = tz;
-          const lines = briefingTaskStateLines({ goal: 'g', updated_at: updatedAt }, 'memesh', now);
+          const lines = taskStateLines({ goal: 'g', updated_at: updatedAt }, 'memesh', now);
           expect(lines[0], `TZ=${tz}`).toContain('Stated about');
           rendered.push(lines.join('\n'));
         }
@@ -504,9 +457,10 @@ describe('task-state', () => {
         const updatedAt = '2026-08-01T00:00:00.000Z'; // well past 72h
         for (const tz of ZONES) {
           process.env.TZ = tz;
-          const lines = briefingTaskStateLines({ goal: 'g', updated_at: updatedAt }, 'memesh', now);
-          expect(lines, `TZ=${tz}`).toHaveLength(1);
-          expect(lines[0], `TZ=${tz}`).toContain('72h');
+          const lines = taskStateLines({ goal: 'g', updated_at: updatedAt }, 'memesh', now);
+          expect(lines, `TZ=${tz}`).toHaveLength(2);
+          expect(lines[0], `TZ=${tz}`).toContain('15 days ago');
+          expect(lines[1], `TZ=${tz}`).toContain('g');
         }
       });
     });
@@ -526,17 +480,19 @@ describe('task-state lines name the project by its label, never the routing hash
     expect(lines[0]).toBe('Stated about "memesh" today, and not revisited since:');
   });
 
-  it('the one-line stale flag', () => {
-    const lines = briefingTaskStateLines({ goal: 'g', updated_at: '2026-08-12T08:00:00.000Z' }, ID, now);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^Task state for "memesh" was last stated 4 days ago/);
+  it('the old state block', () => {
+    const lines = taskStateLines({ goal: 'g', updated_at: '2026-08-12T08:00:00.000Z' }, ID, now);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^Stated about "memesh" 4 days ago/);
+    expect(lines[1]).toContain('g');
     expect(lines[0]).not.toContain(HASH);
   });
 
-  it('the one-line unknown-age flag', () => {
-    const lines = briefingTaskStateLines({ goal: 'g' }, ID, now);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toMatch(/^Task state for "memesh" has a missing, unreadable, or future-dated timestamp/);
+  it('the unknown-age state block', () => {
+    const lines = taskStateLines({ goal: 'g' }, ID, now);
+    expect(lines).toHaveLength(2);
+    expect(lines[0]).toMatch(/^Stated about "memesh" at some point/);
+    expect(lines[1]).toContain('g');
     expect(lines[0]).not.toContain(HASH);
   });
 

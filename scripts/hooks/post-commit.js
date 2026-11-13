@@ -5,7 +5,7 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { isAbsolute, join, resolve } from 'path';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookSourceHost, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
+import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookCaughtReason, hookSourceHost, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
 
 const HEAD_MARKER_DIR = 'post-commit-heads';
 const FULL_SHA = /^[a-f0-9]{40,64}$/;
@@ -13,10 +13,11 @@ const MAX_COMMITS_PER_RUN = 20;
 // Leave time to record an error before the host's five-second hook deadline.
 const MARKER_LOCK_TIMEOUT_MS = 1000;
 
-function gitText(cwd, args) {
+function gitText(cwd, args, maxBuffer = 1024 * 1024) {
   return execFileSync('git', ['-C', cwd, ...args], {
     encoding: 'utf8',
     timeout: 5000,
+    maxBuffer,
     stdio: ['ignore', 'pipe', 'pipe'],
   }).trim();
 }
@@ -29,6 +30,11 @@ function validStoredHeads(parsed) {
     }
   }
   return heads;
+}
+
+function validStoredFailures(parsed) {
+  return Object.fromEntries(Object.entries(parsed?.failures ?? {}).filter(([hash, count]) =>
+    FULL_SHA.test(hash) && Number.isInteger(count) && count >= 1 && count <= 3));
 }
 
 function closestKnownAncestor(cwd, head, candidates) {
@@ -85,10 +91,9 @@ function resolveHeadState(cwd, location) {
     ...(legacyHead ? [legacyHead] : []),
   ]);
   const short = gitText(cwd, ['rev-parse', '--short', head]);
-  const subject = gitText(cwd, ['show', '-s', '--format=%s', head]);
   let branch = 'unknown';
   try { branch = gitText(cwd, ['branch', '--show-current']) || 'detached'; } catch {}
-  return { head, previous, short, subject, branch, ...location };
+  return { head, previous, short, branch, failures: validStoredFailures(parsed), ...location };
 }
 
 function acquireMarkerLock(markerPath) {
@@ -110,14 +115,15 @@ function acquireMarkerLock(markerPath) {
 }
 
 /** Advance only this worktree's position. The caller holds the repository marker lock. */
-function writeHeadState(state) {
+function writeHeadState(state, advance = true) {
   ensurePrivateDir(state.markerDir);
   const tmp = `${state.markerPath}.${randomBytes(8).toString('hex')}.tmp`;
   try {
     let heads = {};
     try { heads = validStoredHeads(JSON.parse(readFileSync(state.markerPath, 'utf8'))); } catch {}
-    heads[state.worktreeKey] = state.head;
-    writeFileSync(tmp, JSON.stringify({ version: 2, heads }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
+    if (advance) heads[state.worktreeKey] = state.head;
+    else if (!heads[state.worktreeKey] && FULL_SHA.test(state.previous ?? '')) heads[state.worktreeKey] = state.previous;
+    writeFileSync(tmp, JSON.stringify({ version: 2, heads, failures: state.failures }), { encoding: 'utf8', mode: 0o600, flag: 'wx' });
     renameSync(tmp, state.markerPath);
     try { chmodSync(state.markerPath, 0o600); } catch {}
   } catch (err) {
@@ -126,20 +132,28 @@ function writeHeadState(state) {
   }
 }
 
-function commitsFromState(cwd, state) {
+function commitsFromState(cwd, state, db) {
   const raw = gitText(cwd, [
-    'rev-list', '--reverse', `--max-count=${MAX_COMMITS_PER_RUN}`, `${state.previous}..${state.head}`,
-  ]);
-  const hashes = raw.split('\n').map((line) => line.trim()).filter((line) => FULL_SHA.test(line));
-  const total = Number.parseInt(gitText(cwd, ['rev-list', '--count', `${state.previous}..${state.head}`]), 10);
+    'log', '--reverse', '--format=%H %h', `${state.previous}..${state.head}`,
+  ], 64 * 1024 * 1024);
+  const range = raw ? raw.split('\n').map((line) => {
+    const [fullHash, hash] = line.split(' ');
+    if (!FULL_SHA.test(fullHash) || !/^[a-f0-9]{4,64}$/.test(hash)) throw new Error('git returned an invalid commit range');
+    return { fullHash, hash };
+  }) : [];
+  // Names in any state count, including archived memories. One bound JSON
+  // parameter also avoids SQLite's variable limit for a large backlog.
+  const stored = new Set(db.prepare('SELECT name FROM entities WHERE name IN (SELECT value FROM json_each(?))')
+    .all(JSON.stringify(range.map(({ hash }) => `commit-${hash}`))).map(row => row.name));
+  const pending = range.filter(({ fullHash, hash }) => !stored.has(`commit-${hash}`) && state.failures[fullHash] !== 3);
   return {
-    commits: hashes.map((hash) => ({
-      hash: gitText(cwd, ['rev-parse', '--short', hash]),
-      message: gitText(cwd, ['show', '-s', '--format=%s', hash]),
+    commits: pending.slice(0, MAX_COMMITS_PER_RUN).map(({ fullHash, hash }) => ({
+      fullHash, hash,
+      message: gitText(cwd, ['show', '-s', '--format=%s', fullHash]),
       branch: state.branch,
-      batch: hashes.length > 1 || total > 1,
+      batch: range.length > 1,
     })),
-    skipped: Number.isFinite(total) ? Math.max(0, total - hashes.length) : 0,
+    pending: pending.length,
   };
 }
 
@@ -198,8 +212,8 @@ let releaseStateLock = null;
  * line, so `no commit line in output` fired on every commit for two days and
  * the graph looked identical to a hook broken by an upgrade.
  */
-function record(outcome, reason, entity) {
-  recordHookOutcome(process.env, { hook: 'post-commit', outcome, reason, entity, payload });
+function record(outcome, reason, entity, count) {
+  recordHookOutcome(process.env, { hook: 'post-commit', outcome, reason, entity, count, payload });
 }
 
 let input = '';
@@ -287,21 +301,9 @@ process.stdin.on('end', () => {
     let branch;
     let commitHash;
     let commitMsg;
-    let stateBatch = [];
-    let batchSkipped = 0;
     if (state?.previous && state.previous !== state.head) {
-      const resolved = commitsFromState(data.cwd, state);
-      stateBatch = resolved.commits;
-      batchSkipped = resolved.skipped;
-      const newest = stateBatch.at(-1);
-      if (!newest) {
-        try { process.stderr.write('[memesh post-commit] repository HEAD changed, but no reachable commit could be enumerated\n'); } catch {}
-        record('skipped', SKIP_REASONS.commitHeadUnresolvable);
-        return exit0();
-      }
-      branch = newest.branch;
-      commitHash = newest.hash;
-      commitMsg = newest.message;
+      branch = state.branch;
+      commitHash = state.short;
     } else if (state && state.previous === state.head) {
       // When Git state is available it is stronger evidence than terminal
       // text. A failed command can return buffered or wrapper-produced text
@@ -323,7 +325,7 @@ process.stdin.on('end', () => {
       // when the host explicitly reports failure or interruption.
       branch = state.branch;
       commitHash = state.short;
-      commitMsg = state.subject;
+      commitMsg = gitText(data.cwd, ['show', '-s', '--format=%s', state.head]);
     } else if (state.previous === null && tr && typeof tr === 'object' && tr.isError === false && tr.interrupted !== true) {
       // A current Claude Code PostToolUse payload tells us the command
       // completed successfully.  In that one case HEAD itself is the newly
@@ -332,7 +334,7 @@ process.stdin.on('end', () => {
       // this event and is never backfilled.
       branch = state.branch;
       commitHash = state.short;
-      commitMsg = state.subject;
+      commitMsg = gitText(data.cwd, ['show', '-s', '--format=%s', state.head]);
     } else if (state.previous === null) {
       writeHeadState(state);
       try { process.stderr.write('[memesh post-commit] recorded repository HEAD baseline; existing history was not backfilled\n'); } catch {}
@@ -359,21 +361,48 @@ process.stdin.on('end', () => {
 
     const projectName = getProjectName(data.cwd);
 
+    if (state.previous === null) {
+      // Persist the event's baseline before opening the graph. A graph lock
+      // must not erase this newly observed commit on the next invocation.
+      let parent;
+      try { parent = gitText(data.cwd, ['rev-parse', '--verify', `${state.head}^`]); } catch {}
+      if (parent && FULL_SHA.test(parent)) {
+        writeHeadState({ ...state, head: parent });
+        state.previous = parent;
+      }
+      // A repository's root commit has no parent; retain the existing boundary.
+    }
+
     // Open DB via shared helper — applies SCHEMA_SQL + status migration.
     // Pass fts:true so the FTS5 entity-search index is also available.
     const { db } = openHookDb(process.env, { fts: true });
     try {
-      const commits = stateBatch.length > 0
-        ? stateBatch
-        : [{ hash: commitHash, message: commitMsg, branch, batch: false }];
+      const resolved = state.previous
+        ? commitsFromState(data.cwd, state, db)
+        : { commits: [{ fullHash: state.head, hash: commitHash, message: commitMsg, branch, batch: false }], pending: 1 };
+      const commits = resolved.commits;
+      let remaining = resolved.pending;
       const captured = [];
       let archivedCount = 0;
       for (const commit of commits) {
-        const result = captureCommit(db, data, projectName, commit);
-        if (!result.written) {
-          record('error', 'captureEntity did not land the write', result.entityName);
-          return exit0();
+        let result;
+        try {
+          result = captureCommit(db, data, projectName, commit);
+          if (!result.written) throw new Error('captureEntity did not land the write');
+        } catch (err) {
+          record('error', hookErrorReason(err));
+          if (hookCaughtReason(err) === 'MEMESH_DB_LOCKED') break;
+          const count = Math.min(3, (state.failures[commit.fullHash] ?? 0) + 1);
+          state.failures[commit.fullHash] = count;
+          writeHeadState(state, false);
+          if (count === 3) {
+            remaining--;
+            record('skipped', SKIP_REASONS.commitsNotStoredWriteFailed, undefined, 1);
+          }
+          continue;
         }
+        delete state.failures[commit.fullHash];
+        remaining--;
         if (result.written.archived) {
           archivedCount++;
           continue;
@@ -384,14 +413,17 @@ process.stdin.on('end', () => {
       // One hook invocation is one heartbeat even when a merge exposes a
       // bounded batch. Advance the state only after every selected commit
       // landed or was deliberately skipped, so failures can still retry.
-      if (state) writeHeadState(state);
-      if (captured.length === 0) {
+      writeHeadState(state, remaining === 0);
+      if (resolved.pending === 0) record('skipped', 'all commits in this range were already processed');
+      if (remaining > 0) record('skipped', SKIP_REASONS.commitsLeftForNextRun, undefined, remaining);
+      if (captured.length === 0 && archivedCount > 0) {
         record('skipped', SKIP_REASONS.captureTargetArchived, `commit-${commitHash}`);
         return exit0();
       }
+      if (captured.length === 0) return exit0();
       recordHookRun(db, 'post-commit');
-      const reason = captured.length > 1 || batchSkipped > 0 || archivedCount > 0
-        ? `captured ${captured.length} commits as a batch; skipped ${batchSkipped} older commits` + (archivedCount ? `; ${archivedCount} archived commits left unchanged` : '')
+      const reason = captured.length > 1 || archivedCount > 0
+        ? `captured ${captured.length} commits as a batch` + (archivedCount ? `; ${archivedCount} archived commits left unchanged` : '')
         : undefined;
       record('wrote', reason, captured.at(-1));
     } finally {

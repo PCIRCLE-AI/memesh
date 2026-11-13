@@ -91,13 +91,13 @@ describe('memesh remember files the memory under the current directory\'s projec
 });
 
 describe('a memory stored before the CLI filed memories under a project', () => {
-  it('refusing to add to it from a project directory says how to: --no-project', () => {
+  it('an explicit project still cannot move a legacy unfiled memory', () => {
     getDatabase().prepare("INSERT INTO entities (name, type) VALUES ('Legacy cli note', 'note')").run();
     closeDatabase();
-    const refused = runCliFromSource(['remember', '--name', 'Legacy cli note', '--type', 'note', '--obs', 'more'], { cwd: dirA, memeshDir: root, dbPath });
+    const refused = runCliFromSource(['remember', '--name', 'Legacy cli note', '--type', 'note', '--project', idA, '--obs', 'more'], { cwd: dirA, memeshDir: root, dbPath });
     openDatabase(dbPath);
     expect(refused.status).toBe(1);
-    expect(refused.stderr).toContain('--no-project');
+    expect(refused.stderr).toContain('it has no project tag');
     remember(dirA, '--name', 'Legacy cli note', '--type', 'note', '--obs', 'more', '--no-project');
     expect(projectTags('Legacy cli note')).toEqual([]);
   });

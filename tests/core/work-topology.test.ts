@@ -20,6 +20,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { getProjectName } from '../../src/core/paths.js';
+import { taskStateLines } from '../../src/core/task-state.js';
 import {
   WORK_LAYER_TYPES,
   layerOf,
@@ -30,6 +31,7 @@ import {
   buildTopologyLines,
   assembleTopologyBlock,
   buildReferenceContext,
+  buildOpeningContext,
   stripControlChars,
   boundTaskStateLines,
   DEFAULT_TOPOLOGY_BUDGET,
@@ -49,6 +51,43 @@ const entity = (over: Partial<TopologyEntity> & { type: string }): TopologyEntit
 });
 
 describe('work-topology', () => {
+  it('reports empty and tail-only allocation accurately and charges repository/index lines', () => {
+    expect(buildOpeningContext([], [], [])).toEqual({ text: '', taskLines: [], tailLines: [], remainingLines: [] });
+    const tails = ['Last reply:', 'TAIL_ONLY'];
+    const result = buildOpeningContext([], tails, ['Repository facts:', 'Recently written memories:', '- index title']);
+    expect(result.taskLines).toEqual([]); expect(result.tailLines).toEqual(tails);
+    expect(result.remainingLines).toHaveLength(3);
+    expect(result.text.indexOf('TAIL_ONLY')).toBeLessThan(result.text.indexOf('Repository facts:'));
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(8000);
+  });
+  it('allocates actual UTF-8 wrapper bytes to all task dates and tails before optional memories', () => {
+    const date = '2026-11-13T00:00:00.000Z';
+    const task = ['Stated task:', ...['Goal', 'Next', 'Blocked', 'Done'].map(field => `- ${field}: (stated ${date}; today) ${'界'.repeat(300)}`)];
+    const tails = [1, 2, 3].flatMap(i => [`Tail ${i}:`, '尾'.repeat(180) + `END-${i}`]);
+    const memories = Array.from({ length: 30 }, (_, i) => `MEMORY-${i} ${'文'.repeat(100)}`);
+    const result = buildOpeningContext(task, tails, memories, 120);
+    expect(result.taskLines).toEqual(task); expect(result.tailLines).toEqual(tails);
+    expect(result.remainingLines.length).toBeGreaterThan(0); expect(result.remainingLines.length).toBeLessThan(memories.length);
+    expect(Buffer.byteLength(result.text) + 120).toBeLessThanOrEqual(8000);
+    expect(buildOpeningContext([], [], memories, 120).remainingLines.length).toBeGreaterThan(result.remainingLines.length);
+  });
+
+  it('shortens oversized task values without dropping fields, dates, tails or Unicode integrity', () => {
+    const date = '2026-11-13T00:00:00.000Z';
+    const task = taskStateLines({ goal: '😀<```'.repeat(2000), next: '😀<```'.repeat(2000), blocked: '😀<```'.repeat(2000), done: '😀<```'.repeat(2000), stated_at: { goal: date, blocked: date } }, 'project', new Date(date));
+    const tails = ['TAIL-1', 'TAIL-2', 'TAIL-3'];
+    const result = buildOpeningContext(task, tails, ['optional memory'], 300);
+    expect(result.taskLines).toHaveLength(5); expect(result.taskLines[0]).toBe(task[0]);
+    for (const line of task.slice(1)) {
+      const prefix = line.slice(0, line.indexOf(')') + 1);
+      expect(prefix.length).toBeLessThan(256); expect(result.text).toContain(prefix);
+    }
+    expect(result.text).toContain('(unknown date)');
+    expect(result.tailLines).toEqual(tails); expect(result.text).not.toContain('<');
+    expect(result.text).not.toMatch(LONE_SURROGATE); expect(Buffer.byteLength(result.text) + 300).toBeLessThanOrEqual(8000);
+    expect(() => buildOpeningContext(task, tails, [], 8000)).toThrow('cannot fit');
+    expect(() => buildOpeningContext([], [], [], -1)).toThrow('Invalid');
+  });
   it('never puts the machine name in front of the model', () => {
     // `name` is a dedup key (`commit-a1b2c3d`, `session-<pid>-<ts>-files`).
     // The whole point of UX-1's title was that a human — or a model — should

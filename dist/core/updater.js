@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 const DEFAULT_READBACK_TIMEOUT_MS = 30 * 1000;
 function parseSemver(version) {
     const m = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/.exec(version.trim());
@@ -34,7 +35,8 @@ function parseInstalledGlobalVersion(raw) {
 export function getInstalledGlobalVersion(options = {}) {
     const { execFileSyncImpl = execFileSync, readbackTimeoutMs = DEFAULT_READBACK_TIMEOUT_MS, } = options;
     try {
-        const raw = execFileSyncImpl('npm', ['ls', '-g', '@pcircle/memesh', '--json', '--depth=0'], { encoding: 'utf8', timeout: readbackTimeoutMs });
+        const npm = requireNpmInvocation(['ls', '-g', '@pcircle/memesh', '--json', '--depth=0']);
+        const raw = execFileSyncImpl(npm.command, npm.args, { encoding: 'utf8', timeout: readbackTimeoutMs });
         return parseInstalledGlobalVersion(raw);
     }
     catch {

@@ -2,7 +2,7 @@ import fs from 'fs';
 import path from 'path';
 export const CITATION_RULE_MARKER = '<!-- managed-by: memesh -->';
 export const CITATION_RULE_FILENAME = 'memesh-citations.md';
-export const DEFAULT_SAVE_INSTRUCTION = 'Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. The only exception is the user explicitly asking you not to save, in which case do not store that content.';
+export const DEFAULT_SAVE_INSTRUCTION = 'Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. When the user asks to remove a specific stored memory, use `recall` to identify it and `forget` to archive that memory or remove the selected observation.';
 export const CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
 # MeMesh memory citations
 

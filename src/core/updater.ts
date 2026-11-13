@@ -1,4 +1,5 @@
 import { execFileSync } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 
 type ExecFileSyncLike = typeof execFileSync;
 
@@ -78,9 +79,10 @@ export function getInstalledGlobalVersion(
   } = options;
 
   try {
+    const npm = requireNpmInvocation(['ls', '-g', '@pcircle/memesh', '--json', '--depth=0']);
     const raw = execFileSyncImpl(
-      'npm',
-      ['ls', '-g', '@pcircle/memesh', '--json', '--depth=0'],
+      npm.command,
+      npm.args,
       { encoding: 'utf8', timeout: readbackTimeoutMs },
     );
     return parseInstalledGlobalVersion(raw);

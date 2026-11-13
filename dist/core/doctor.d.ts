@@ -89,6 +89,7 @@ export interface HostsHere {
 export type HostFixState = 'claude' | 'no-host' | 'codex' | 'codex-no-command' | 'gemini';
 export declare function hostFixState(hosts: HostsHere): HostFixState;
 export declare function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck;
+export declare function inspectPendingConversations(dir?: string): DoctorCheck;
 export declare function hoursSince(sqliteTimestamp: string): number | null;
 type NativeBindingProbeResult = {
     ok: true;

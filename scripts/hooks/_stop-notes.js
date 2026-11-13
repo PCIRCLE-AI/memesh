@@ -221,6 +221,8 @@ function writeJsonAtomic(path, value) {
  * new mtime after a `touch` or a checkout — is bookkeeping about the file, not
  * a change to anything the user stored, and reads as a skip. `entity` names one
  * memory the run touched, and is set exactly when the outcome is `wrote`.
+ * Additional outcomes retain each fixed refusal/defer reason in the same run.
+ * @returns {Promise<{outcome: string, reason: string, entity?: string, count?: number, additionalOutcomes?: Array<{outcome: string, reason: string, count: number}>}>}
  */
 export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   if (!memoryDir) return { outcome: 'skipped', reason: SKIP_REASONS.noMemoryDir };
@@ -234,7 +236,7 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   const newest = newestNoteMtime(memoryDir);
   const last = typeof state[key]?.at === 'number' ? state[key].at : 0;
   // A folder read before its notes were trusted is read once more, so the notes already stored are made trusted.
-  if (newest <= last && !state[key]?.more && state[key]?.trusted === true) {
+  if (newest <= last && !state[key]?.more && state[key]?.trusted === true && state[key]?.outcomeCodes === true) {
     return { outcome: 'skipped', reason: SKIP_REASONS.noNoteChanged };
   }
 
@@ -258,7 +260,9 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   // `startedAt`, not `newest`: a file edited while this run was reading is
   // newer than the stamp and is picked up next time.
   // `trusted` is recorded only when the folder's notes are trusted: a run that could not take the copy it needs first leaves it unset, so the next Stop tries again.
-  writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0, trusted: !result.retrustFailed } });
+  if (!result.retryNeeded) {
+    writeJsonAtomic(statePath, { ...state, [key]: { at: startedAt, more: result.more > 0, trusted: !result.retrustFailed, outcomeCodes: true } });
+  }
   if (result.retrustFailed) return { outcome: 'error', reason: `note trust: ${result.retrustFailed}` };
   // Every shape of MEMORY change counts, not only the ones that store text:
   // a move re-points the memory at its file and a restore takes it out of
@@ -276,24 +280,23 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
     ?? result.restored[0] ?? result.markedMissing[0] ?? result.retrusted[0];
   const changed = result.created.length + result.replaced.length + result.repathed.length
     + result.restored.length + result.markedMissing.length + result.retrusted.length > 0;
-  // A write records the summary (counts only); a skip records a known
-  // reason, the only kind doctor will quote.
-  // A run that stored nothing but REFUSED files is not the same event as a
-  // quiet one, and `noteNothingNew` — "note files were read and nothing new
-  // needed storing" — said it was: the user's file was rejected and the hook
-  // reported contentment. `refusedNow`, never `skipped.length`: the latter
-  // sticks forever once a file is bad, so every later Stop would keep
-  // re-reporting old news as if it had just happened. When the run DID store
-  // something, summarizeNoteIngest already names the refusals alongside it.
-  return {
-    outcome: changed ? 'wrote' : 'skipped',
-    reason: changed
-      ? summarizeNoteIngest(result)
-      : (result.refusedNow > 0 ? SKIP_REASONS.noteFilesRefused
-        : result.more > 0 ? SKIP_REASONS.notesLeftForNextRun
-          : SKIP_REASONS.noteNothingNew),
-    entity: changed ? touched : undefined,
+  // These are files still not imported this run, including cached refusals,
+  // not a claim that the same file was newly lost on every Stop.
+  const reasons = {
+    tooLarge: SKIP_REASONS.noteTooLarge,
+    noFrontmatter: SKIP_REASONS.noteNoFrontmatter,
+    tooManyObservations: SKIP_REASONS.noteTooManyObservations,
+    symlink: SKIP_REASONS.noteIsSymlink,
+    other: SKIP_REASONS.noteOtherNotImported,
   };
+  const skipped = Object.entries(result.skippedCounts)
+    .filter(([, count]) => count > 0)
+    .map(([code, count]) => ({ outcome: 'skipped', reason: reasons[code], count }));
+  if (result.more > 0) skipped.push({ outcome: 'skipped', reason: SKIP_REASONS.notesLeftForNextRun, count: result.more });
+  const primary = changed
+    ? { outcome: 'wrote', reason: summarizeNoteIngest(result), entity: touched }
+    : skipped.shift() ?? { outcome: 'skipped', reason: SKIP_REASONS.noteNothingNew };
+  return { ...primary, entity: changed ? touched : undefined, additionalOutcomes: skipped };
 }
 
 /**
@@ -581,7 +584,8 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.memoryDirOtherProject, payload });
     } else {
       const r = await runNoteIngestion({ memoryDir, project, metaUrl });
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, payload });
+      for (const extra of r.additionalOutcomes ?? []) recordHookOutcome(env, { hook: 'note-ingest', ...extra, payload });
+      recordHookOutcome(env, { hook: 'note-ingest', outcome: r.outcome, reason: r.reason, entity: r.entity, count: r.count, payload });
     }
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }

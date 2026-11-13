@@ -28,7 +28,6 @@ import { canonicalEntityType } from './core/work-topology.js';
 import { noProjectTag, projectScopeFilter } from './core/project-scope.js';
 import { releaseCompressedRecord } from './core/compression-ledger.js';
 import { KNOWN_ERROR_PATTERNS, MIN_NAME_PROJECT_LENGTH, PROJECT_TAG_PREFIX } from './core/project-attribution.js';
-import { NOT_A_PROJECT_MEMORY } from './core/projects.js';
 import { addsNewText, besideRefusal, clearPartsOfKey, metadataRefusal, redactTextValues, redactTitleAndObservations, redactVersionText, textsIn } from './core/paths.js';
 
 /**
@@ -654,6 +653,9 @@ export class KnowledgeGraph {
       this.db
         .prepare("UPDATE entities SET status = 'active' WHERE name = ?")
         .run(name);
+      // A new write starts the memory over: what was forgotten does not come back with it. A call that brings no
+      // content (an import's restore of an archived memory) only makes it active again.
+      if (opts?.observations?.length) this.clearEntityData(name);
     }
 
     // For existing entities, capture current obs text to delete the old FTS
@@ -1414,7 +1416,7 @@ export class KnowledgeGraph {
     const byName = lessonNames.length === 0
       ? ''
       : `OR (e.name IN (${lessonNames.map(() => '?').join(',')}) AND ${noProjectTag()})`;
-    const params: (string | number)[] = [PROJECT_TAG_PREFIX + project, ...lessonNames, NOT_A_PROJECT_MEMORY.param];
+    const params: (string | number)[] = [PROJECT_TAG_PREFIX + project, ...lessonNames];
     if (namespace) params.push(namespace);
     params.push(limit ?? 20, offset);
     const rows = this.db
@@ -1424,7 +1426,6 @@ export class KnowledgeGraph {
            EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
            ${byName}
          )
-         AND ${NOT_A_PROJECT_MEMORY.sql}
          ${statusFilter} ${namespaceFilter}
          ORDER BY e.id DESC LIMIT ? OFFSET ?`
       )

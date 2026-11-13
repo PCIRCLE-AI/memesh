@@ -5,11 +5,10 @@
 // Agents almost never call `recall` themselves, and a memory used to reach
 // them only at session start or when they edited a file. This is the third
 // moment: the user asks about something, and the stored memories that are
-// plainly about it ride along with the prompt — at most two lines, each a
-// title and its `[mem:id]` handle, under the same "background data, not
-// instructions" notice the session-start block carries. A match that looks
-// out of date (src/core/recent-index.ts) or was already shown is dropped and
-// not replaced by the next one.
+// plainly about it ride along with the prompt — at most two memories sharing
+// a 4 KiB rendered-context budget, under the same "background data, not
+// instructions" notice the session-start block carries. A match already
+// shown is dropped and not replaced by the next one.
 //
 // What counts as plainly about it is decided by src/core/prompt-recall.ts
 // (this hook runs its generated copy; scripts/audit/prompt-recall-replay.mjs
@@ -20,9 +19,8 @@
 //     with nothing on stdout. The database is opened read-only with a short
 //     lock wait.
 //   - Every exit leaves an outcome record (`recordHookOutcome`), skips included.
-//   - An id is injected at most once per session: the ids shown are kept in a
-//     per-session list, and the ids session start already showed (its
-//     injection record) are never repeated.
+//   - Content is injected at most once per session, tracked in a per-session
+//     list. Opening title indexes do not count as having read the content.
 //   - Skipped entirely, and recorded as such, when the feature
 //     (`promptRecall`) or auto-capture is off.
 //   - The ids it injects are added to the session's injection record so a
@@ -54,6 +52,7 @@ import { selectPromptRecall } from './_generated/prompt-recall.js';
 /** The hook's own wait for a database lock; the prompt must not stall behind a writer. */
 const LOCK_WAIT_MS = 1000;
 const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
+const CONTENT_STATE_VERSION = 1;
 
 // ---------------------------------------------------------------------------
 // Per-session state: ids already shown.
@@ -64,7 +63,10 @@ function readState(file) {
   try {
     const raw = JSON.parse(readFileSync(file, 'utf8'));
     return {
-      ids: Array.isArray(raw.ids) ? raw.ids.filter((id) => Number.isSafeInteger(id) && id > 0) : [],
+      // Earlier releases tracked title-only injections here. They must not
+      // suppress the first content delivery when an existing session resumes.
+      ids: raw.contentVersion === CONTENT_STATE_VERSION && Array.isArray(raw.ids)
+        ? raw.ids.filter((id) => Number.isSafeInteger(id) && id > 0) : [],
     };
   } catch (err) {
     if (err?.code === 'ENOENT') return null;
@@ -74,7 +76,7 @@ function readState(file) {
 
 function writeState(file, state) {
   ensurePrivateDir(stateDir());
-  writePrivateJson(file, state);
+  writePrivateJson(file, { ...state, contentVersion: CONTENT_STATE_VERSION });
 }
 
 /** Ids the session-start block already showed in this session, from its injection record. */
@@ -173,19 +175,13 @@ export async function handlePrompt(data) {
     }
     const project = typeof data.cwd === 'string' && data.cwd ? getProjectName(data.cwd) : null;
     const injectionState = injectionRecord(sessionId, project);
-    const shown = new Set([...(state?.ids ?? []), ...(injectionState.prior?.entityIds ?? [])]);
+    const shown = new Set(state?.ids ?? []);
 
-    // The session-start index before its filter: a match a newer decision in
-    // it replaces is out of date. A session with no such record (session start
-    // did not run, or showed nothing) compares the matches with each other
-    // only, and says so on the outcome below.
-    const hasPool = Array.isArray(injectionState.prior?.recentPoolIds);
-    const recentPool = hasPool ? injectionState.prior.recentPoolIds.filter((id) => Number.isSafeInteger(id) && id > 0) : [];
     const db = openMemeshDb(dbPath, { readOnly: true });
     let result;
     try {
       db.pragma(`busy_timeout = ${LOCK_WAIT_MS}`);
-      result = selectPromptRecall(db, prompt, { project, cwd: project === null ? null : data.cwd, exclude: shown, recentPool });
+      result = selectPromptRecall(db, prompt, { project, cwd: project === null ? null : data.cwd, exclude: shown, excludeConversationSession: sessionId });
     } finally {
       db.close();
     }
@@ -195,7 +191,6 @@ export async function handlePrompt(data) {
         'no-terms': SKIP_REASONS.promptNoTerms,
         'no-candidates': SKIP_REASONS.promptNoMatch,
         'below-threshold': SKIP_REASONS.promptNoMatch,
-        stale: SKIP_REASONS.promptStale,
         'already-shown': SKIP_REASONS.promptAlreadyShown,
       }[result.reason] ?? SKIP_REASONS.promptNoMatch);
       return null;
@@ -213,7 +208,7 @@ export async function handlePrompt(data) {
       record('error', `injection-record: ${hookErrorReason(err)}`);
     }
     try { pruneSessionState(stateDir(), Date.now()); } catch { /* best-effort housekeeping */ }
-    record('notified', undefined, `injected:${result.ids.length}${credited ? '' : ':uncredited'}${hasPool ? '' : ':no-recent-index'}`);
+    record('notified', undefined, `injected:${result.ids.length}${credited ? '' : ':uncredited'}`);
     return JSON.stringify({
       hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: result.text },
     });

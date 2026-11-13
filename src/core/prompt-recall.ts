@@ -33,18 +33,19 @@ import type { MemeshDatabase } from '../storage/sqlite.js';
 import { hasTables, MEMORY_READ_TABLES } from '../storage/schema.js';
 import { renderPhraseExpression, tokenizeQuery, UNSPACED_SCRIPT_CLASS } from '../storage/fts-index.js';
 import { buildReferenceContext, isAutoInjectable } from './work-topology.js';
+import { redactShownTogether } from './paths.js';
 import {
   AUTO_CONTEXT_EXCLUDED_TYPES,
   autoContextScope,
   projectAliases,
-  readRecentRows,
-  recentLine,
-  staleReason,
+  recentTitle,
   tableColumns,
 } from './recent-index.js';
 
 /** Most memories one prompt may bring along (before the out-of-date filter, which does not back-fill). */
 export const PROMPT_RECALL_MAX_LINES = 2;
+/** Entire rendered context, including the data notice, fences and recall handles. */
+export const PROMPT_RECALL_MAX_BYTES = 4096;
 /** Share of the prompt's information a memory must cover to count as strong. */
 export const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 /** Distinct prompt words a memory must contain. One shared word is a topic, not a match. */
@@ -53,8 +54,6 @@ export const PROMPT_RECALL_MIN_TERMS = 2;
 const PROMPT_CHARS = 1500;
 /** The most informative terms of a prompt that take part in scoring. */
 const MAX_TERMS = 12;
-/** A term in more than this share of memories says nothing about any one of them. */
-export const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
 /**
  * Memory types a prompt never brings along beyond the bookkeeping types.
  * Empty: feedback notes are offered like any other memory (measured:
@@ -70,11 +69,10 @@ export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 const CANDIDATE_WINDOW = 30;
 /** Characters of a memory's observations read back for scoring. */
 const SCORED_TEXT_CHARS = 20000;
-/** Fewer memories than this and document frequency means nothing: only stop words are dropped. */
-const MIN_ROWS_FOR_DF = 20;
 /** Terms looked up per prompt, so a pasted document cannot turn into hundreds of queries. */
 const MAX_LATIN_TERMS = 60;
 const MAX_CJK_TERMS = 30;
+const EXCLUDE_OWN_CONVERSATION_SQL = " AND (e.type <> 'conversation' OR NOT EXISTS (SELECT 1 FROM tags own_session WHERE own_session.entity_id = e.id AND own_session.tag = ?))";
 
 const EXCLUDED_TYPES = AUTO_CONTEXT_EXCLUDED_TYPES;
 
@@ -103,21 +101,19 @@ export interface ScoredMemory {
   inTitle: boolean;
   /** The keyword index's BM25 rank for this memory (more negative is better). */
   rank: number;
+  /** A captured conversation's speaker, when the writer stored one. */
+  conversationRole?: 'user' | 'assistant';
 }
 
 export interface PromptRecallOptions {
   /** The session's project id (without the `project:` prefix), or null for none. Its proven aliases are searched (recent-index.ts `projectAliases`). */
   project: string | null;
+  /** Hermes may recall its own unfiled host-scoped captures; other hosts retain the default scope. */
+  platform?: 'hermes';
   /** The session's folder, when known: the other id its checkout is known by is then searched too. */
   cwd?: string | null;
-  /** Ids already shown in this session; never returned again (and not replaced by the next match). */
+  /** Ids whose content was already brought into this session; title indexes do not count. */
   exclude?: ReadonlySet<number>;
-  /**
-   * The session-start index before its filter (recent-index.ts `poolIds`):
-   * a match a newer decision in it replaces is out of date. Absent: the
-   * matches are compared with each other only.
-   */
-  recentPool?: readonly number[];
   minCoverage?: number;
   minTerms?: number;
   maxLines?: number;
@@ -128,8 +124,8 @@ export interface PromptRecallOptions {
    * cannot answer it.
    */
   createdBefore?: number;
-  /** Share of memories above which a term is too common to count (default PROMPT_RECALL_MAX_TERM_SHARE). */
-  maxTermShare?: number;
+  /** Do not offer captured conversation rows from this session. */
+  excludeConversationSession?: string;
   /** Memory types never offered (default PROMPT_RECALL_SKIP_TYPES; an empty set offers every type). */
   skipTypes?: ReadonlySet<string>;
   /**
@@ -153,8 +149,6 @@ export interface PromptRecallResult {
   ids: number[];
   /** Why nothing was injected; undefined when something was. */
   reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'stale' | 'already-shown';
-  /** Strong matches the out-of-date filter removed, and why. */
-  removed?: Array<{ id: number; reason: 'superseded' | 'waiting' }>;
   /** Every scored candidate, best first, for threshold studies. */
   scored: ScoredMemory[];
   /** Prompt terms that took part in scoring. */
@@ -239,8 +233,15 @@ function promptTerms(prompt: string): Term[] {
 }
 
 /** How many memories hold each term, from the vocabulary view for plain words and a phrase count for CJK words. */
-function documentFrequencies(db: MemeshDatabase, terms: Term[]): Map<string, number> {
+function documentFrequencies(db: MemeshDatabase, terms: Term[], excludeSession?: string): Map<string, number> {
   const df = new Map<string, number>();
+  if (excludeSession !== undefined) {
+    // Capture and recall hooks can run in either order. The current prompt's
+    // own conversation row is not evidence that its words occurred in memory.
+    const countOther = db.prepare(`SELECT count(*) AS c FROM entities_fts JOIN entities e ON e.id = entities_fts.rowid WHERE entities_fts MATCH ?${EXCLUDE_OWN_CONVERSATION_SQL}`);
+    for (const term of terms) df.set(term.text, (countOther.get(term.match, `session:${excludeSession}`) as { c: number }).c);
+    return df;
+  }
   const count = db.prepare('SELECT count(*) AS c FROM entities_fts WHERE entities_fts MATCH ?');
   const plain = terms.filter((t) => !t.cjk);
   if (plain.length > 0) {
@@ -271,7 +272,7 @@ function parseMetadata(raw: string | null): unknown {
 export function scorePrompt(
   db: MemeshDatabase,
   prompt: string,
-  options: Pick<PromptRecallOptions, 'project' | 'cwd' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>,
+  options: Pick<PromptRecallOptions, 'project' | 'platform' | 'cwd' | 'createdBefore' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate' | 'excludeConversationSession'>,
 ): { scored: ScoredMemory[]; terms: string[] } {
   const all = promptTerms(prompt);
   if (all.length === 0) return { scored: [], terms: [] };
@@ -279,16 +280,17 @@ export function scorePrompt(
   if (!hasTables(db, [...MEMORY_READ_TABLES, 'entities_fts'])) return { scored: [], terms: all.map((t) => t.text) };
 
   const entityCols = tableColumns(db, 'entities');
-  const total = (db.prepare(`SELECT count(*) AS c FROM entities${entityCols.has('status') ? " WHERE status = 'active'" : ''}`).get() as { c: number }).c;
-  const df = documentFrequencies(db, all);
-  const useDf = total >= MIN_ROWS_FOR_DF;
+  const ownConversation = options.excludeConversationSession === undefined ? '' : EXCLUDE_OWN_CONVERSATION_SQL;
+  const ownParams = options.excludeConversationSession === undefined ? [] : [`session:${options.excludeConversationSession}`];
+  const total = (db.prepare(`SELECT count(*) AS c FROM entities e WHERE 1=1${entityCols.has('status') ? " AND e.status = 'active'" : ''}${ownConversation}`).get(...ownParams) as { c: number }).c;
+  const df = documentFrequencies(db, all, options.excludeConversationSession);
   const idf = (term: Term) => {
     const n = df.get(term.text) ?? 0;
     return Math.log(1 + (total - n + 0.5) / (n + 0.5));
   };
-  // A term no memory contains cannot match; a term in many memories is not about any one.
+  // A term no memory contains cannot match.
   const informative = all
-    .filter((t) => (df.get(t.text) ?? 0) > 0 && (!useDf || (df.get(t.text) ?? 0) <= (options.maxTermShare ?? PROMPT_RECALL_MAX_TERM_SHARE) * total))
+    .filter((t) => (df.get(t.text) ?? 0) > 0)
     .map((t) => ({ term: t, weight: idf(t) }))
     .sort((a, b) => b.weight - a.weight || (a.term.text < b.term.text ? -1 : 1))
     .slice(0, MAX_TERMS);
@@ -296,7 +298,7 @@ export function scorePrompt(
   const promptWeight = informative.reduce((sum, t) => sum + t.weight, 0);
 
   const match = informative.map((t) => t.term.match).join(' OR ');
-  const scope = autoContextScope(projectAliases(options.project, options.cwd));
+  const scope = autoContextScope(projectAliases(options.project, options.cwd), options.platform);
   const before = options.createdBefore === undefined ? null : new Date(options.createdBefore).toISOString();
   const skipTypes = [...(options.skipTypes ?? PROMPT_RECALL_SKIP_TYPES)];
   const maxProjectAgeDays = options.maxProjectAgeDays === undefined ? PROMPT_RECALL_MAX_PROJECT_AGE_DAYS : options.maxProjectAgeDays;
@@ -306,13 +308,16 @@ export function scorePrompt(
      FROM entities_fts fts JOIN entities e ON e.id = fts.rowid
      WHERE entities_fts MATCH ?${entityCols.has('status') ? " AND e.status = 'active'" : ''}
        AND e.type NOT IN (${[...EXCLUDED_TYPES, ...skipTypes].map(() => '?').join(',')})
-       AND NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture')
+       AND (e.type = 'conversation' OR NOT EXISTS (SELECT 1 FROM tags ac WHERE ac.entity_id = e.id AND ac.tag = 'source:auto-capture'))
        AND ${scope.sql}
+       ${ownConversation}
        ${before === null ? '' : 'AND julianday(e.created_at) < julianday(?)'}
      ORDER BY fts.rank, e.id DESC
      LIMIT ?`,
   ).all(
-    match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params, ...(before === null ? [] : [before]), CANDIDATE_WINDOW,
+    match, ...EXCLUDED_TYPES, ...skipTypes, ...scope.params,
+    ...(options.excludeConversationSession === undefined ? [] : [`session:${options.excludeConversationSession}`]),
+    ...(before === null ? [] : [before]), CANDIDATE_WINDOW,
   ) as Array<{ id: number; name: string; type: string; title: string | null; metadata: string | null; rank: number }>;
 
   const observations = db.prepare(
@@ -355,13 +360,58 @@ export function scorePrompt(
       mass,
       inTitle: hits.some(({ term }) => inHead(term)),
       rank: row.rank,
+      ...(row.type === 'conversation'
+        ? { conversationRole: (db.prepare("SELECT 1 FROM tags WHERE entity_id = ? AND tag = 'role:assistant' LIMIT 1").get(row.id) ? 'assistant' : 'user') as 'user' | 'assistant' }
+        : {}),
     });
   }
   scored.sort((a, b) => b.coverage - a.coverage || b.matched.length - a.matched.length || a.rank - b.rank || b.id - a.id);
   return { scored, terms: informative.map((t) => t.term.text) };
 }
 
-/** The strong matches for a prompt, rendered as the block the hook injects. */
+/** Content for at most two hits, sharing one UTF-8 budget after neutralization. */
+function contentContext(db: MemeshDatabase, hits: ScoredMemory[], before?: number): string {
+  const observations = db.prepare(
+    `SELECT content FROM observations WHERE entity_id = ?${before === undefined ? '' : ' AND julianday(created_at) < julianday(?)'} ORDER BY id`,
+  );
+  const rows = hits.map((hit) => {
+    const read = (before === undefined
+      ? observations.all(hit.id)
+      : observations.all(hit.id, new Date(before).toISOString())) as Array<{ content: string }>;
+    // Redact the complete fields together, before either truncation or flattening.
+    const [title, ...body] = redactShownTogether([hit.title ?? hit.name, ...read.map((o) => o.content)]);
+    const label = recentTitle({ ...hit, title, name: title ?? '' });
+    return { hit, label, points: Array.from(body.join('\n')) };
+  });
+  const lines = rows.map(({ hit, label }) => `- ${label} [mem:${hit.id}]`);
+  for (const [index, { hit, label, points }] of rows.entries()) {
+    // Reserve the other rows' headers, and share remaining space so one long
+    // reply cannot crowd a second hit out. A short first row leaves more room.
+    const used = Buffer.byteLength(buildReferenceContext(lines), 'utf8');
+    const limit = used + Math.floor((PROMPT_RECALL_MAX_BYTES - used) / (rows.length - index));
+    const line = (count: number) => `- ${label}${count ? ` — ${points.slice(0, count).join('')}` : ''}${count < points.length ? ` … [content truncated; recall ids=[${hit.id}] for full text]` : ''} [mem:${hit.id}]`;
+    const fits = (count: number) => {
+      const candidate = [...lines];
+      candidate[index] = line(count);
+      return Buffer.byteLength(buildReferenceContext(candidate), 'utf8') <= limit;
+    };
+    let low = 0;
+    let high = points.length;
+    if (!fits(high)) {
+      // The full value omits the truncation marker; search only marked prefixes.
+      high--;
+      while (low < high) {
+        const middle = Math.ceil((low + high) / 2);
+        if (fits(middle)) low = middle;
+        else high = middle - 1;
+      }
+    } else low = high;
+    lines[index] = line(low);
+  }
+  return buildReferenceContext(lines);
+}
+
+/** The strong matches for a prompt, rendered as bounded content for the hook. */
 export function selectPromptRecall(db: MemeshDatabase, prompt: string, options: PromptRecallOptions): PromptRecallResult {
   const { scored, terms } = scorePrompt(db, prompt, options);
   if (terms.length === 0) return { text: '', ids: [], reason: 'no-terms', scored, terms };
@@ -369,26 +419,20 @@ export function selectPromptRecall(db: MemeshDatabase, prompt: string, options: 
 
   const minCoverage = options.minCoverage ?? PROMPT_RECALL_MIN_COVERAGE;
   const minTerms = options.minTerms ?? PROMPT_RECALL_MIN_TERMS;
-  const maxLines = options.maxLines ?? PROMPT_RECALL_MAX_LINES;
-  const top = scored.filter((m) => m.coverage >= minCoverage && m.matched.length >= minTerms).slice(0, maxLines);
+  const maxLines = Math.min(options.maxLines ?? PROMPT_RECALL_MAX_LINES, PROMPT_RECALL_MAX_LINES);
+  const top: ScoredMemory[] = [];
+  let assistantConversations = 0;
+  for (const match of scored) {
+    if (match.coverage < minCoverage || match.matched.length < minTerms) continue;
+    if (match.conversationRole === 'assistant' && assistantConversations >= 1) continue;
+    top.push(match);
+    if (match.conversationRole === 'assistant') assistantConversations++;
+    if (top.length >= maxLines) break;
+  }
   if (top.length === 0) return { text: '', ids: [], reason: 'below-threshold', scored, terms };
 
-  // Out-of-date matches are dropped, then the ones already shown; neither is
-  // replaced by the next match.
-  const asOf = options.createdBefore ?? Date.now();
-  const rows = readRecentRows(db, [...(options.recentPool ?? []), ...top.map((m) => m.id)], asOf, projectAliases(options.project, options.cwd));
-  const byId = new Map(rows.map((r) => [r.id, r]));
-  const removed: NonNullable<PromptRecallResult['removed']> = [];
-  const current = top.filter((m) => {
-    const row = byId.get(m.id);
-    const reason = row ? staleReason(row, rows, asOf) : null;
-    if (reason !== null) removed.push({ id: m.id, reason });
-    return reason === null;
-  });
-  if (current.length === 0) return { text: '', ids: [], reason: 'stale', removed, scored, terms };
-  const fresh = current.filter((m) => !options.exclude?.has(m.id));
-  if (fresh.length === 0) return { text: '', ids: [], reason: 'already-shown', removed, scored, terms };
+  const fresh = top.filter((m) => !options.exclude?.has(m.id));
+  if (fresh.length === 0) return { text: '', ids: [], reason: 'already-shown', scored, terms };
 
-  const lines = fresh.map((m) => recentLine({ id: m.id, title: m.title, name: m.name }));
-  return { text: buildReferenceContext(lines), ids: fresh.map((m) => m.id), removed, scored, terms };
+  return { text: contentContext(db, fresh, options.createdBefore), ids: fresh.map((m) => m.id), scored, terms };
 }

@@ -79,7 +79,7 @@ describe('manifestScope', () => {
     put('hooks/native-memory.js.real');
     fs.symlinkSync(path.join(root, 'hooks/native-memory.js.real'), path.join(root, 'hooks/native-memory.js'));
     const scope = manifestScope(root);
-    expect(scope.symlinks).toEqual(['hooks/native-memory.js', 'skills/a/EVIL.md', 'skills/evil-dir']);
+    expect(scope.issues).toEqual(['hooks/native-memory.js', 'skills/a/EVIL.md', 'skills/evil-dir'].map((p) => `${p} (symbolic link)`));
     expect(scope.files).toEqual(['skills/a/SKILL.md']);
     expect(scope.missingRequired, 'a linked wiring file is reported as a link, not also as missing').not.toContain('hooks/native-memory.js');
   });
@@ -92,7 +92,7 @@ describe('manifestScope', () => {
     try {
       expect(() => fs.readdirSync(locked), 'the folder is readable: this test would prove nothing').toThrow();
       const scope = manifestScope(root);
-      expect(scope.unreadable).toEqual(['scripts/hooks/_generated/']);
+      expect(scope.issues).toEqual(['scripts/hooks/_generated/ (cannot be read)']);
       expect(scope.files).not.toContain('scripts/hooks/_generated/g.js');
       expect(scope.missingRequired).not.toContain('scripts/hooks/');
     } finally {
@@ -115,7 +115,7 @@ describe('manifestScope', () => {
       fs.symlinkSync(outside, path.join(root, 'skills'));
       fs.symlinkSync(outside, path.join(root, 'scripts', 'hooks'));
       const scope = manifestScope(root);
-      expect(scope.symlinks).toEqual(['scripts/hooks', 'skills']);
+      expect(scope.issues).toEqual(['scripts/hooks (symbolic link)', 'skills (symbolic link)']);
       expect(scope.files, 'files behind a link were counted as the package\'s own').toEqual([]);
       expect(scope.missingRequired, 'a linked folder is a link, not a missing folder').not.toContain('skills/');
     });
@@ -125,7 +125,7 @@ describe('manifestScope', () => {
       const outside = outsideWith('hooks/h.js');
       fs.symlinkSync(outside, path.join(root, 'scripts'));
       const scope = manifestScope(root);
-      expect(scope.symlinks).toContain('scripts');
+      expect(scope.issues).toContain('scripts (symbolic link)');
       expect(scope.files).not.toContain('scripts/hooks/h.js');
     });
 
@@ -134,7 +134,7 @@ describe('manifestScope', () => {
       const outside = outsideWith('hooks.json', 'native-memory.js', 'mcp.json', 'plugin.json');
       fs.symlinkSync(outside, path.join(root, folder));
       const scope = manifestScope(root);
-      expect(scope.symlinks).toEqual([folder]);
+      expect(scope.issues).toEqual([`${folder} (symbolic link)`]);
       expect(scope.files.filter((f) => f.startsWith(`${folder}/`))).toEqual([]);
     });
 
@@ -146,7 +146,7 @@ describe('manifestScope', () => {
       const viaLink = path.join(holder, 'linked-package');
       fs.symlinkSync(root, viaLink);
       const scope = manifestScope(viaLink);
-      expect(scope.symlinks).toEqual([]);
+      expect(scope.issues).toEqual([]);
       expect(scope.files).toEqual(['hooks/hooks.json', 'scripts/hooks/h.js', 'skills/a/SKILL.md']);
     });
   });
@@ -155,7 +155,7 @@ describe('manifestScope', () => {
     const { root, put } = tree();
     for (const rel of ['skills/a/SKILL.md', 'skills/CVS/SKILL.md', 'skills/evil.orig/SKILL.md', 'skills/.git/SKILL.md', 'skills/._x/SKILL.md', 'scripts/hooks/h.js', 'scripts/hooks/.hg/evil.js']) put(rel);
     const scope = manifestScope(root);
-    expect(scope.strayFolders).toEqual(['scripts/hooks/.hg/', 'skills/._x/', 'skills/.git/', 'skills/CVS/', 'skills/evil.orig/']);
+    expect(scope.issues).toEqual(['scripts/hooks/.hg/', 'skills/._x/', 'skills/.git/', 'skills/CVS/', 'skills/evil.orig/'].map((p) => `${p} (a folder npm pack never ships)`));
     expect(scope.files.filter((f) => /CVS|evil|\.git|\._x|\.hg/.test(f)), 'a stray folder was walked').toEqual([]);
     expect(scope.files).toEqual(['scripts/hooks/h.js', 'skills/a/SKILL.md']);
   });
@@ -165,7 +165,7 @@ describe('manifestScope', () => {
     for (const rel of ['skills/a/SKILL.md', 'skills/a/.git', 'skills/a/CVS', 'skills/a/.svn', 'skills/a/.hg']) put(rel);
     const scope = manifestScope(root);
     expect(scope.files.filter((f) => f.startsWith('skills/'))).toEqual(['skills/a/SKILL.md']);
-    expect(scope.strayFolders).toEqual([]);
+    expect(scope.issues).toEqual([]);
   });
 
   it.skipIf(process.platform === 'win32')('an entry that is not a file, a folder or a link (a named pipe) is reported, and never read', () => {
@@ -175,7 +175,7 @@ describe('manifestScope', () => {
     const made = spawnSync('mkfifo', [pipe]);
     expect(made.status, 'mkfifo is not available: this test would prove nothing').toBe(0);
     const scope = manifestScope(root);
-    expect(scope.special).toEqual(['skills/a/PIPE.md']);
+    expect(scope.issues).toEqual(['skills/a/PIPE.md (not a file)']);
     expect(scope.files).toEqual(['skills/a/SKILL.md']);
   });
 });

@@ -1,8 +1,8 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 export declare const PROMPT_RECALL_MAX_LINES = 2;
+export declare const PROMPT_RECALL_MAX_BYTES = 4096;
 export declare const PROMPT_RECALL_MIN_COVERAGE = 0.5;
 export declare const PROMPT_RECALL_MIN_TERMS = 2;
-export declare const PROMPT_RECALL_MAX_TERM_SHARE = 0.03;
 export declare const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string>;
 export declare const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 export interface ScoredMemory {
@@ -15,17 +15,18 @@ export interface ScoredMemory {
     mass: number;
     inTitle: boolean;
     rank: number;
+    conversationRole?: 'user' | 'assistant';
 }
 export interface PromptRecallOptions {
     project: string | null;
+    platform?: 'hermes';
     cwd?: string | null;
     exclude?: ReadonlySet<number>;
-    recentPool?: readonly number[];
     minCoverage?: number;
     minTerms?: number;
     maxLines?: number;
     createdBefore?: number;
-    maxTermShare?: number;
+    excludeConversationSession?: string;
     skipTypes?: ReadonlySet<string>;
     maxProjectAgeDays?: number | null;
     projectAgeFromNoteDate?: boolean;
@@ -34,14 +35,10 @@ export interface PromptRecallResult {
     text: string;
     ids: number[];
     reason?: 'no-terms' | 'no-candidates' | 'below-threshold' | 'stale' | 'already-shown';
-    removed?: Array<{
-        id: number;
-        reason: 'superseded' | 'waiting';
-    }>;
     scored: ScoredMemory[];
     terms: string[];
 }
-export declare function scorePrompt(db: MemeshDatabase, prompt: string, options: Pick<PromptRecallOptions, 'project' | 'cwd' | 'createdBefore' | 'maxTermShare' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate'>): {
+export declare function scorePrompt(db: MemeshDatabase, prompt: string, options: Pick<PromptRecallOptions, 'project' | 'platform' | 'cwd' | 'createdBefore' | 'skipTypes' | 'maxProjectAgeDays' | 'projectAgeFromNoteDate' | 'excludeConversationSession'>): {
     scored: ScoredMemory[];
     terms: string[];
 };

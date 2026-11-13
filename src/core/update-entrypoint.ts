@@ -21,8 +21,8 @@ import fs from 'fs';
 import path from 'path';
 import { spawn } from 'child_process';
 import { fileURLToPath } from 'url';
-import { memeshDir } from './paths.js';
-import { bumpKind, currentPolicy, policyPermits } from './auto-update.js';
+import { getMemeshDirFromDbPath, memeshDir } from './paths.js';
+import { bumpKind, currentPolicy, describeUpdatePolicy, policyPermits } from './auto-update.js';
 import { findPackageRoot } from './package-root.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from './install-channel.js';
 import { getLastUpdateCheck } from './version-check.js';
@@ -45,7 +45,7 @@ export type EntryPoint = 'mcp' | 'cli';
 export type UpgradeNoticeMode =
   | { updates: 'on'; door: 'cli' | 'mcp' }
   /** The owner said off; `unsupported` is set too when this install could not update itself anyway. */
-  | { updates: 'off'; door: 'cli' | 'mcp'; unsupported?: string }
+  | { updates: 'off'; door: 'cli' | 'mcp'; unsupported?: string; explanation?: string }
   /** Automatic updates are on, but the setting (`patch`, `minor`) does not take this release by itself. */
   | { updates: 'held'; door: 'cli' | 'mcp'; setting: string }
   | { updates: 'unsupported'; guidance: string; door?: 'cli' | 'mcp' };
@@ -55,11 +55,12 @@ export function formatUpdateNoticeLine(notice: UpdateNotice, mode: UpgradeNotice
     case 'UPGRADE_AVAILABLE': {
       const head = `[memesh update] ${notice.latestVersion} is available (you are on ${notice.currentVersion}).`;
       if (mode.updates === 'off') {
+        const explanation = mode.explanation ? ` ${mode.explanation}` : '';
         // The model door never gets the command: a model told how to install it may, and the owner said off.
-        if (mode.door === 'mcp') return `${head} Automatic updates are off, so it is not being installed. Do not update on your own.`;
+        if (mode.door === 'mcp') return `${head} Automatic updates are off, so it is not being installed.${explanation} Do not update on your own or change settings; tell the person.`;
         // `memesh update` cannot do it on an install that cannot update itself: say that, not a command that would refuse.
-        if (mode.unsupported) return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}`;
-        return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.`;
+        if (mode.unsupported) return `${head} Automatic updates are off, and MeMesh cannot install it for this install method: ${mode.unsupported}${explanation}`;
+        return `${head} Automatic updates are off, so it is not being installed; \`memesh update\` installs it when you choose to.${explanation}`;
       }
       if (mode.updates === 'held') {
         if (mode.door === 'mcp') return `${head} The setting autoUpdate: ${mode.setting} does not install this release by itself, so it is not being installed. Do not update on your own.`;
@@ -229,6 +230,8 @@ export interface EntryPointNoticeInput {
   currentVersion: string;
   entryPoint: EntryPoint;
   dir?: string;
+  /** Override only the upgrade receipt location; an explicit dir retains its existing isolated-directory contract. */
+  markerDir?: string;
   now?: Date;
   /** Per-process memory for the MCP door; the caller owns the Set. */
   processOnce?: Set<string>;
@@ -273,7 +276,9 @@ class ProcessMemo {
 function upgradeNoticeMode(input: EntryPointNoticeInput, latestVersion: string | null): UpgradeNoticeMode {
   // An unreadable setting is off here too (resolveUpdatePolicy says so).
   let policy: ReturnType<typeof currentPolicy>['policy'];
-  try { policy = currentPolicy().policy; } catch { policy = 'off'; }
+  let explanation: string | undefined;
+  try { const decision = currentPolicy(); policy = decision.policy; if (policy === 'off') explanation = describeUpdatePolicy(decision); }
+  catch { policy = 'off'; explanation = 'The update policy could not be read. Repair the configuration; use `memesh doctor` to inspect it.'; }
   let support = input.installSupport;
   if (support === undefined) {
     try {
@@ -282,7 +287,7 @@ function upgradeNoticeMode(input: EntryPointNoticeInput, latestVersion: string |
     } catch { support = null; } // unknown is not "cannot": the notice goes on without that claim
   }
   const cannot = support && !support.canSelfUpdate ? support.guidance : undefined;
-  if (policy === 'off') return { updates: 'off', door: input.entryPoint, ...(cannot ? { unsupported: cannot } : {}) };
+  if (policy === 'off') return { updates: 'off', door: input.entryPoint, explanation, ...(cannot ? { unsupported: cannot } : {}) };
   // Unknown is not "cannot": only an install that is known to be unable to update itself gets that sentence.
   if (cannot) return { updates: 'unsupported', guidance: cannot, door: input.entryPoint };
   // The setting decides which releases install by themselves: say so when this one is not among them.
@@ -307,16 +312,16 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
     const memo = input.entryPoint === 'mcp' ? new ProcessMemo(input.processOnce, input.currentVersion, now) : null;
     if (memo?.decided()) return null;
     const dir = input.dir ?? memeshDir();
-    // Everything is read from `dir` — the same directory the hooks use — not
-    // from whatever the process environment happens to say, so an isolated
-    // caller (and every test) sees one consistent state.
+    const markerDir = input.markerDir ?? input.dir ?? getMemeshDirFromDbPath();
+    // Config, cache, throttles and notice claims stay in dir. Only the upgrade
+    // receipt follows the database; explicit dir callers retain their isolation.
     const updateCheckEnabled = input.updateCheckEnabled ?? updateCheckEnabledIn(dir);
     const tag = /^[0-9A-Za-z.+-]+$/.test(input.currentVersion) ? input.currentVersion : 'unknown';
     const cache = getLastUpdateCheck(input.currentVersion, { now, updateCheckPath: path.join(dir, `update-check.${tag}.json`) });
     if (updateCheckEnabled && shouldRefreshUpdateCache(input.currentVersion, cache, now)) {
       (input.refresh ?? spawnCacheRefresh)(dir, input.currentVersion, now);
     }
-    const notice = resolveUpdateNotice({ dir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
+    const notice = resolveUpdateNotice({ dir, markerDir, currentVersion: input.currentVersion, cache, now, updateCheckEnabled });
     // Never checked yet (fresh install, or the refresh above has not landed):
     // nothing to say YET. Saying "could not confirm" here would put a
     // permanent false alarm in front of exactly the hosts this door exists
@@ -337,7 +342,7 @@ export function updateNoticeForEntryPoint(input: EntryPointNoticeInput): string 
 
     if (notice.kind === 'JUST_UPGRADED') {
       // Same atomic hand-off as the hook: whoever claims the receipt says it.
-      const claimed = claimJustUpgradedMarker(dir);
+      const claimed = claimJustUpgradedMarker(markerDir);
       if (!claimed) return null;
       return formatUpdateNoticeLine({ ...notice, from: claimed.from, to: claimed.to });
     }

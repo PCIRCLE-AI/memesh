@@ -148,10 +148,13 @@ describe('marking records that earlier versions archived by compression', () => 
       legacyCompressedWeek(25);
       fs.mkdirSync(backupsDir(), { recursive: true });
       fs.writeFileSync(path.join(backupsDir(), 'before-compression-marker-2026-01-01T00-00-00-000Z.db.tmp'), 'half a backup');
+      fs.writeFileSync(path.join(backupsDir(), '.partial-before-compression-marker-2147483647-deadbeef.db'), 'dead owner copy');
       getDatabase().prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(leaseKey, `424242:${Date.now() - 1000}`);
       backfillCompressionMarkers(getDatabase());
       expect(totalCommits()).toBe(25);
-      expect(fs.readdirSync(backupsDir()).filter((f) => f.endsWith('.tmp'))).toEqual([]);
+      expect(fs.readdirSync(backupsDir()).filter((f) => f.startsWith('.partial-'))).toEqual([]);
+      // Legacy copies carry no owner identity; do not remove an unproven live copy.
+      expect(fs.existsSync(path.join(backupsDir(), 'before-compression-marker-2026-01-01T00-00-00-000Z.db.tmp'))).toBe(true);
       expect(finalBackups()).toHaveLength(1);
       const copy = fs.readFileSync(path.join(backupsDir(), finalBackups()[0]));
       expect(copy.subarray(0, 15).toString()).toBe('SQLite format 3');
@@ -542,8 +545,9 @@ describe('marking records that earlier versions archived by compression', () => 
         spy.mockRestore();
       }
       expect(targets).toHaveLength(1);
-      expect(String(targets[0])).toMatch(/\.db\.tmp$/);
-      expect(finalBackups()).toEqual([path.basename(String(targets[0]), '.tmp')]);
+      expect(path.basename(String(targets[0]))).toMatch(/^\.partial-before-compression-marker-\d+-[a-f0-9]{8}\.db$/);
+      expect(fs.existsSync(String(targets[0]))).toBe(false);
+      expect(finalBackups()).toHaveLength(1);
     });
 
     it('releases only its own claim: one taken over meanwhile stays with its new holder', () => {

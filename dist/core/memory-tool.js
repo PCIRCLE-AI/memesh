@@ -2,7 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
-import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE, decisionLacksReason } from './work-topology.js';
+import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE } from './work-topology.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -145,7 +145,7 @@ function rewriteObservations(kg, entity, observations) {
             return;
         const provenance = current.provenance;
         const fromFolder = provenance?.source === NOTE_FILE_PROVENANCE;
-        if (!fromFolder && !decisionLacksReason(entity.type, next))
+        if (!fromFolder)
             return;
         kg.updateEntityMetadata(entity.name, (meta) => ({
             ...meta,

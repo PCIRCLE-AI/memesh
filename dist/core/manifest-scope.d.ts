@@ -4,10 +4,7 @@ export declare const MANIFEST_HOOKS_DIR = "scripts/hooks";
 export interface ManifestScope {
     files: string[];
     missingRequired: string[];
-    symlinks: string[];
-    unreadable: string[];
-    strayFolders: string[];
-    special: string[];
+    issues: string[];
 }
 export declare function manifestScope(packageRoot: string): ManifestScope;
 //# sourceMappingURL=manifest-scope.d.ts.map

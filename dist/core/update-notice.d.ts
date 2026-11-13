@@ -45,6 +45,7 @@ export declare function claimJustUpgradedMarker(dir: string): JustUpgradedMarker
 export declare function shouldRefreshUpdateCache(currentVersion: string, cache: UpdateCheckCacheLike | null | undefined, now?: Date): boolean;
 export interface ResolveUpdateNoticeInput {
     dir: string;
+    markerDir?: string;
     currentVersion: string;
     cache: UpdateCheckCacheLike | null | undefined;
     now?: Date;

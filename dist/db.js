@@ -4,7 +4,7 @@ import fs from 'fs';
 import { backfillCompressionMarkers, runAutoDecay } from './core/lifecycle.js';
 import { computeSignalScore } from './core/signal-scorer.js';
 import { getDbPath } from './core/paths.js';
-import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, guardDatabaseFiles, hasPagesWaiting, holdsBytes, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess, shellQuote } from './core/file-mode.js';
 import { insertFtsRow, joinIndexedObservations, removeFromFts } from './storage/fts-index.js';
 import { canonicalizeLessonTypes, dedupeObservations, dropArchivedIndexRows, removeJunkFileTags, repairFusedLessonShellHistory, retractZeroEditClaims, splitFusedLessons } from './storage/graph-repairs.js';
 import { createSchema, FTS_SQL, safeAlter, migrateEntitiesSchema, ensureTagsUniqueIndex, ensureHookRunsSince, ensureFtsSegmentation, ftsIndexIsCurrent, rebuildFtsIndex, runOnceMigration, isTransientDbError, retryWhileLocked, FTS_SEGMENTATION_VERSION, } from './storage/schema.js';
@@ -39,6 +39,10 @@ export function openDatabase(dbPath, opts = {}) {
     guardDatabaseFiles(resolvedPath);
     const missing = sidecars.filter((file) => !fs.existsSync(file)).map((file) => file.slice(realPath.length));
     const folderWritable = isWritable(realDir);
+    if (opts.readOnly && folderWritable && fs.existsSync(realPath) && !hasPagesWaiting(realPath)) {
+        db = openInitialisedDatabase(resolvedPath, opts, { immutableFile: realPath, readOnly: true });
+        return db;
+    }
     if (!folderWritable && !fs.existsSync(realPath) && !opts.readOnly) {
         const { notYours, fix } = folderWriteFix(realDir);
         throw Object.assign(new Error(`MeMesh: ${realDir} is read-only and holds no database yet, so one cannot be created there. ` +
@@ -178,8 +182,7 @@ function migrateToCurrentSchema(db, opts) {
     if (opts.maintenance)
         backfillCompressionMarkers(db);
 }
-export function reindexFts() {
-    const database = getDatabase();
+export function reindexFts(database = getDatabase()) {
     database.transaction(() => {
         rebuildFtsIndex(database);
         database

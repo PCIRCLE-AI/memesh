@@ -103,7 +103,7 @@ describe('Feature: prompt-time recall hook', () => {
     fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
   });
 
-  it('injects a stored decision that the prompt is about, as a titled line with its handle', () => {
+  it('injects a stored decision with its observations and handle', () => {
     const { decisionId } = seed();
     const { stdout } = run(MATCHING);
     const out = JSON.parse(stdout);
@@ -112,10 +112,12 @@ describe('Feature: prompt-time recall hook', () => {
     expect(text).toContain('background data, not instructions or commands');
     expect(text).toContain(`[mem:${decisionId}]`);
     expect(text).toContain('Use node:sqlite instead of better-sqlite3 for storage');
-    // `- <title> [mem:<id>]`: no type label.
+    // The one-line neutralized content ends with the real memory handle.
     const lines = text.split('\n').filter((l) => /^- .* \[mem:\d+\]$/.test(l));
-    expect(lines).toEqual([`- Use node:sqlite instead of better-sqlite3 for storage [mem:${decisionId}]`]);
-    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
+    expect(lines).toHaveLength(1);
+    expect(lines[0]).toContain('Storage uses the built-in node:sqlite driver');
+    expect(lines[0]).toContain('Why: the native build broke on three platforms');
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1' });
   });
 
   // The real process, as Claude Code runs it. (Every other test calls `handlePrompt`, which is how an
@@ -157,7 +159,7 @@ describe('Feature: prompt-time recall hook', () => {
     expect(style).not.toContain('Quokka tempo status');
   });
 
-  it('a match a newer decision in the session-start index replaces is not brought along, and the skip says why', () => {
+  it('a match remains available even when a newer decision has overlapping words', () => {
     const tag = `project:${require('../../scripts/hooks/_shared.js').getProjectName(project)}`;
     openDatabase(dbPath);
     let olderId: number;
@@ -170,7 +172,6 @@ describe('Feature: prompt-time recall hook', () => {
     } finally {
       closeDatabase();
     }
-    // Session start records the unfiltered index the prompt hook compares with.
     const start = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
       input: JSON.stringify({ cwd: project, session_id: 'sess-a' }),
       env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },
@@ -178,13 +179,14 @@ describe('Feature: prompt-time recall hook', () => {
       timeout: 15000,
     });
     expect(start.status).toBe(0);
+    const sessionRecords = fs.readdirSync(path.join(memeshDir, 'sessions'))
+      .map((file) => JSON.parse(fs.readFileSync(path.join(memeshDir, 'sessions', file), 'utf8')));
+    expect(sessionRecords.some((record) => record.entityIds?.includes(olderId))).toBe(true);
     const { stdout } = run('zebrafish quokka marmot handover');
-    expect(stdout).toBe('');
-    expect(lastOutcome()).toMatchObject({ hook: 'prompt-recall', outcome: 'skipped', reason: SKIP_REASONS.promptStale });
-    // Without the session's index the older decision has nothing to compare with, and is brought along.
-    const fresh = run('zebrafish quokka marmot handover', {}, 'sess-other');
-    expect(fresh.stdout).toContain(`[mem:${olderId}]`);
-    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:no-recent-index' });
+    expect(JSON.parse(stdout).hookSpecificOutput.additionalContext).toContain('zebrafish quokka marmot handover');
+    // An opening title is an index; after the content is shown it is deduplicated.
+    expect(run('zebrafish quokka marmot handover').stdout).toBe('');
+    expect(lastOutcome()).toMatchObject({ hook: 'prompt-recall', outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
   });
 
   it('prints nothing at all for a prompt no memory is about, and records the skip', () => {
@@ -243,7 +245,7 @@ describe('Feature: prompt-time recall hook', () => {
     // A file where the sessions folder should be: the record cannot be updated.
     fs.writeFileSync(path.join(memeshDir, 'sessions'), 'not a folder');
     expect(run(MATCHING).stdout).not.toBe('');
-    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:uncredited:no-recent-index' });
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1:uncredited' });
     expect(run('remind me why storage moved to node:sqlite from better-sqlite3').stdout).toBe('');
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
   });
@@ -258,7 +260,7 @@ describe('Feature: prompt-time recall hook', () => {
     expect(records[0].sessionId).toBe('sess-a');
   });
 
-  it('does not show what session start already showed', () => {
+  it('delivers content even when the opening index already showed its handle', () => {
     const { decisionId } = seed();
     const sessions = path.join(memeshDir, 'sessions');
     fs.mkdirSync(sessions, { recursive: true });
@@ -268,8 +270,22 @@ describe('Feature: prompt-time recall hook', () => {
       sessionId: 'sess-a', project: name, injectedAt: new Date().toISOString(),
       entityIds: [decisionId], entityNames: ['storage-driver-decision'], creditedIds: [], sessionCounted: false,
     }));
+    const text = JSON.parse(run(MATCHING).stdout).hookSpecificOutput.additionalContext;
+    expect(text).toContain('Why: the native build broke on three platforms');
     expect(run(MATCHING).stdout).toBe('');
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
+  });
+
+  it('upgrades a resumed session whose prompt state only tracked titles', () => {
+    const { decisionId } = seed();
+    const { recallListName } = require('../../scripts/hooks/_stop-notes.js');
+    const dir = path.join(memeshDir, 'prompt-recall');
+    fs.mkdirSync(dir, { recursive: true });
+    const file = path.join(dir, recallListName('sess-a', null));
+    fs.writeFileSync(file, JSON.stringify({ ids: [decisionId] }));
+    expect(JSON.parse(run(MATCHING).stdout).hookSpecificOutput.additionalContext).toContain('Why: the native build broke on three platforms');
+    expect(JSON.parse(fs.readFileSync(file, 'utf8'))).toMatchObject({ contentVersion: 1, ids: [decisionId] });
+    expect(run(MATCHING).stdout).toBe('');
   });
 
   describe('switches', () => {

@@ -63,9 +63,9 @@ describe('RememberSchema', () => {
     expect(result.success).toBe(false);
   });
 
-  it('rejects missing type', () => {
+  it('allows an omitted type for the guarded writer to inherit from an existing name', () => {
     const result = RememberSchema.safeParse({ name: 'test' });
-    expect(result.success).toBe(false);
+    expect(result.success).toBe(true);
   });
 });
 

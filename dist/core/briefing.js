@@ -7,11 +7,11 @@ import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
 import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
 import { hostSessionFromEnv } from './host-session.js';
 import { canonicalAgentScopeId } from './agent-scope-id.js';
-import { briefingTaskStateLines } from './task-state.js';
+import { taskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
 import { buildBriefingIndex } from './briefing-index.js';
 import { buildRecentIndex } from './recent-index.js';
-import { DEFAULT_TOPOLOGY_BUDGET, assembleTopologyBlock, boundTaskStateLines, buildReferenceContext, hasBriefingContent, jsonStringLiteral, projectLabel, } from './work-topology.js';
+import { DEFAULT_TOPOLOGY_BUDGET, assembleTopologyBlock, buildOpeningContext, MAX_OPENING_CONTEXT_BYTES, jsonStringLiteral, projectLabel, } from './work-topology.js';
 import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './briefing-pools.js';
 import { briefingLevelPolicy, resolveBriefingLevel, } from './briefing-level.js';
 function projectIdsFor(projectName) {
@@ -41,9 +41,7 @@ export function assembleBriefing(project, recipient, projectIds) {
         : [];
     let taskLines;
     try {
-        taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName, ids).state, projectName, new Date(), {
-            includeFresh: policy.taskState,
-        }));
+        taskLines = taskStateLines(getTaskState(projectName, ids).state, projectName);
     }
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
@@ -68,10 +66,8 @@ export function assembleBriefing(project, recipient, projectIds) {
         global: policy.global,
         foreign: policy.foreign,
     });
-    const handoff = pools.handoff ? handoffLines(pools.handoff) : [];
+    const handoff = pools.handoffs.flatMap((row) => handoffLines(row));
     const stateLines = [
-        ...handoff,
-        ...taskLines,
         ...(inboxUnreadable !== undefined && inboxRecipient
             ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
             : unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)),
@@ -85,8 +81,8 @@ export function assembleBriefing(project, recipient, projectIds) {
         { entities: toEntities(pools.shared), foreign: false, shared: true },
         { entities: toEntities(pools.global), foreign: false, global: true },
         { entities: toEntities(pools.recent), foreign: true },
-    ], projectName, DEFAULT_TOPOLOGY_BUDGET);
-    const withRepo = lines.length > 0 && repoLines.length > 0
+    ], projectName, { ...DEFAULT_TOPOLOGY_BUDGET, maxChars: MAX_OPENING_CONTEXT_BYTES });
+    const withRepo = (lines.length > 0 || taskLines.length > 0 || handoff.length > 0) && repoLines.length > 0
         ? [...repoLines, '', ...lines]
         : lines;
     const now = Date.now();
@@ -96,13 +92,15 @@ export function assembleBriefing(project, recipient, projectIds) {
     const block = withRepo.length > 0 && indexLines.length > 0
         ? [...withRepo, '', ...indexLines]
         : [...withRepo, ...indexLines];
-    const empty = !hasBriefingContent(block);
+    const opening = buildOpeningContext(taskLines, handoff, block);
+    const empty = opening.text === '';
+    const renderedRankedEnd = Math.max(0, opening.remainingLines.length - (withRepo.length - lines.length));
     return {
         project: projectName,
-        text: empty ? '' : buildReferenceContext(block),
-        entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith('- [')).length,
-        hasTaskState: taskLines.length > 0,
-        hasHandoff: handoff.length > 0,
+        text: opening.text,
+        entityCount: lines.slice(stateLines.length, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
+        hasTaskState: opening.taskLines.length > 0,
+        hasHandoff: opening.tailLines.length > 0,
         index,
         level,
         empty,

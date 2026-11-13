@@ -44,32 +44,32 @@ require a bearer token when bound to `localhost`.
 
 ## Behavior
 
-- `prefetch()` / `queue_prefetch()`: recalls up to 5 relevant entities via
-  `POST /v1/recall` before each turn, injected as context.
-- `sync_turn()`: hands each completed turn to `memesh hermes capture-turn`
-  in a background thread. MeMesh stores it as one `conversation` entity
-  (tagged `platform:hermes`, `signal:decision` or `signal:lesson`) **only**
-  when the turn states a decision or a lesson; ordinary turns store nothing.
-  Skipped for non-`primary` agent contexts (cron, subagents, flush) so
-  automated jobs don't pollute long-term memory.
-- Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` — exposed so
-  the model saves with `memesh_remember` by default, without waiting to be asked, and manages memory with the other two, on top of the automatic hooks.
-  `memesh_remember` takes `why` (the reason, and what would make it stop
-  holding), which a `decision`, `architecture_decision` or `design_decision`
-  needs; a refused write comes back as the server's own sentence.
-- `on_pre_compress()` / `on_session_end()`: pass the message list to
-  `memesh hermes capture-session`, the same extractor the Claude Code Stop
-  hook uses. It stores up to three `session-insight` entities —
-  `session-<id>-files` (files edited), `session-<id>-fixes` (errors met while
-  editing) and `session-<id>-summary` (a session with 20+ tool calls) — not a
-  transcript. Both run **synchronously** (unlike `sync_turn()`): they fire
-  once per session/compression, immediately before the host calls
-  `shutdown()`, so a fire-and-forget background thread here reliably loses
-  that race — don't "fix" this back to async.
+- `prefetch()` / `queue_prefetch()`: calls `memesh hermes prompt-context`
+  with the prompt on stdin. The shared selector brings in at most two strong
+  matches (at most one assistant conversation), with the entire fenced context
+  limited to 4 KiB of UTF-8. Truncated content includes a recall handle. It
+  excludes the current session's conversations and other projects/hosts;
+  Hermes's unfiled captures remain eligible. A session switch invalidates the
+  cache. Missing CLI, failures and timeouts skip injection with a log warning.
+  Content delivered during this provider process is deduplicated per session;
+  opening titles do not mark content as read.
+- `sync_turn()`: sends every completed primary-agent turn to `memesh hermes
+  capture-turn` in a background thread. Each nonempty side becomes a separate
+  `conversation` memory in full, after secret masking, with `platform:hermes`,
+  `session:<id>` and `role:user` / `role:assistant` tags. No keyword classifier
+  or 2,000-character text cap is used. The prefetched recall block is removed
+  before the user text is stored. Non-primary agent contexts remain excluded.
+- Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` remain available.
+  `why` is optional for decisions; those without it are stored and labelled
+  "no reason recorded".
+- `on_pre_compress()` writes nothing. `on_session_end()` only drains queued
+  turns, sharing one 5-second deadline with `shutdown()`; activity summaries
+  are no longer generated. Check the outcome log for queued or running turns
+  that remain at the deadline.
 - Automatic writes go through the `memesh` CLI (payload on stdin), so they
   are stamped `metadata.provenance.source_host: "hermes"`. The HTTP API
-  stamps everything it writes `http`. Recall and the explicit tools still use
-  HTTP. The CLI and `memesh serve` must therefore use the same database —
+  stamps everything it writes `http`. Automatic recall also uses the CLI;
+  explicit tools use HTTP. The CLI and `memesh serve` must use the same database —
   the default when both run as the same user on the same machine. If
   `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
   unit file, give the Hermes process the same values.
@@ -87,9 +87,5 @@ require a bearer token when bound to `localhost`.
   so memories written after a switch aren't mistagged with the pre-switch
   session id.
 
-## Recall response shape
-
-`POST /v1/recall` returns `data` as `{"entities": [...]}`. MeMesh 4.5.1
-returned a bare array
-([#159](https://github.com/PCIRCLE-AI/memesh/issues/159), fixed); this
-plugin accepts both.
+Automatic recall honors `promptRecall` and the effective `autoCapture` switch.
+The explicit `memesh_recall` tool retains the HTTP response envelope.

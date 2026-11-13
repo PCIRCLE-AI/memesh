@@ -62,13 +62,10 @@ if (scope.missingRequired.length > 0) {
 // named like something `npm pack` leaves out, or an entry that is not a file at all (a named pipe, a socket) is not
 // "nothing there": writing the manifest anyway would leave what is inside (or behind it) unlisted, which `memesh
 // doctor` then reports as tampering on every install, or worse, never.
-if (scope.unreadable.length > 0 || scope.symlinks.length > 0 || scope.strayFolders.length > 0 || scope.special.length > 0) {
+if (scope.issues.length > 0) {
   process.stderr.write(
     `[skills-manifest] cannot write a complete manifest:\n` +
-      (scope.unreadable.length > 0 ? `  unreadable folder(s): ${scope.unreadable.join(', ')}\n` : '') +
-      (scope.symlinks.length > 0 ? `  symbolic link(s) (npm pack does not ship them; replace with the real file): ${scope.symlinks.join(', ')}\n` : '') +
-      (scope.strayFolders.length > 0 ? `  folder(s) named like something npm pack leaves out (they would not be in a published package): ${scope.strayFolders.join(', ')}\n` : '') +
-      (scope.special.length > 0 ? `  entr(ies) that are not files (a named pipe, a socket, a device): ${scope.special.join(', ')}\n` : '')
+      scope.issues.map((issue) => `  ${issue}\n`).join('')
   );
   process.exit(1);
 }

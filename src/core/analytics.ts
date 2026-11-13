@@ -10,7 +10,6 @@
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import type { CountRow } from './types.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { DECISION_TYPES } from './work-topology.js';
 
 export interface HealthFactor {
@@ -22,7 +21,7 @@ export interface HealthFactor {
 // Knowledge types shown in the age matrix and radar (excludes high-noise session dumps)
 export const NOISE_TYPES = new Set([
   'session_keypoint', 'commit', 'weekly-summary', 'session-insight',
-  'session-summary', 'session_identity', 'session-identity', SESSION_HANDOFF_TYPE,
+  'session-summary', 'session_identity', 'session-identity',
 ]);
 
 export type AgeBucket = 'week' | 'month' | 'quarter' | 'older';

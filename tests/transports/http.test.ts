@@ -204,12 +204,10 @@ describe('HTTP Transport: POST /v1/remember', () => {
     expect(res.body.data.observations).toBe(2);
   });
 
-  it('refuses a decision with no why: 400 with the sentence that names both halves, nothing stored', async () => {
-    const refused = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
-    expect(refused.status).toBe(400);
-    expect(refused.body.success).toBe(false);
-    expect(refused.body.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('http-bare-decision')).toBeUndefined();
+  it('stores a decision with no why, and a later call adds the why', async () => {
+    const bare = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
+    expect(bare.status).toBe(200);
+    expect(bare.body.data.observations).toBe(1);
 
     const stored = await req('POST', '/v1/remember', {
       name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'], why: 'the proxy terminates nothing; revisit if it does',

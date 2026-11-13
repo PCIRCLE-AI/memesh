@@ -172,7 +172,8 @@ describe('journey through the real packaged CLI', () => {
     expect(scratchDirs()).toEqual(before);
     const text = formatJourney(result).join('\n');
     expect(text).toContain('Journey PASSED');
-    expect(text).toContain('memesh message fetch');
+    expect(text).toContain('memesh message read');
+    expect(text).toContain('synthetic conversation');
   }, 60_000);
 
   it('does not touch the real data folder, the router or the host config folders, even when the environment points at them', async () => {
@@ -212,12 +213,30 @@ describe('journey through the real packaged CLI', () => {
       fs.mkdirSync(path.join(pkg, 'dist/transports/cli'), { recursive: true });
       fs.copyFileSync(path.join(PACKAGE_ROOT, 'package.json'), path.join(pkg, 'package.json'));
       const cli = path.join(pkg, 'dist/transports/cli/cli.js');
-      fs.writeFileSync(cli, bundle.replace(needle, `${needle}\n  PASSTHROUGH_ENV.push(...Object.keys(base));`));
+      // Observe only actual CLI step children. The normal bundle must leave this
+      // silent; the widened allow-list must carry the exact private socket hint.
+      const marker = path.join(world.home, '.memesh', 'child-env-leaked.json');
+      const observer = `
+if (process.argv[2] !== 'doctor' && process.env.MEMESH_ROUTER_SOCKET === ${JSON.stringify(path.join(work, 'r.sock'))}) {
+  const fs = await import('node:fs');
+  fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ step: process.argv[2], pid: process.pid }), { mode: 0o600 });
+}
+`;
+      const observedBundle = bundle.replace('\n', `\n${observer}`);
+      fs.writeFileSync(cli, observedBundle);
+      const normal = await runAsync(process.execPath, [cli, 'doctor', '--journey'], { env: process.env, cwd: world.home });
+      expect(normal.status, normal.stderr).toBe(0);
+      expect(normal.stdout).toContain('Journey PASSED');
+      expect(fs.existsSync(marker)).toBe(false);
+      world.expectUntouched();
+      fs.writeFileSync(cli, observedBundle.replace(needle, `${needle}\n  PASSTHROUGH_ENV.push(...Object.keys(base));`));
       const r = await runAsync(process.execPath, [cli, 'doctor', '--journey'], { env: process.env, cwd: world.home });
-      // The ambient variables reached the step: it either touched the sentinels or
-      // failed on the sentinel's own 1-byte message quota. A journey that failed
-      // for any other reason would not satisfy this.
-      expect(world.changed() || /quota/i.test(r.stdout + r.stderr), `${r.status}\n${r.stdout}\n${r.stderr}`).toBe(true);
+      expect(r.status, r.stderr).toBe(0);
+      expect(fs.existsSync(marker), r.stdout + r.stderr).toBe(true);
+      const evidence = JSON.parse(fs.readFileSync(marker, 'utf8')) as { step: string; pid: number };
+      expect(['remember', 'recall', 'message']).toContain(evidence.step);
+      expect(evidence.pid).not.toBe(process.pid);
+      expect(world.changed()).toBe(true);
     } finally {
       await world.close();
     }
@@ -230,13 +249,13 @@ describe('journey through the real packaged CLI', () => {
     };
     const env = journeyEnv('/scratch', {
       PATH: '/bin', HOME: '/real', MEMESH_DB_PATH: '/real/db', MEMESH_DIR: '/real', MEMESH_ROUTER_SOCKET: '/real/s',
-      CLAUDE_CODE_SESSION_ID: 'abc', ANTHROPIC_API_KEY: 'k', NODE_OPTIONS: '--require /evil.js', ...hostVariables,
+      CLAUDE_CODE_SESSION_ID: 'abc', CODEX_THREAD_ID: 'outer-thread', ANTHROPIC_API_KEY: 'k', NODE_OPTIONS: '--require /evil.js', ...hostVariables,
     });
     expect(env.PATH).toBe('/bin');
     expect(env.HOME).toBe('/scratch');
     expect(env.MEMESH_DIR).toBe(path.join('/scratch', '.memesh'));
     expect(env.MEMESH_DB_PATH).toBe(path.join('/scratch', '.memesh', 'knowledge-graph.db'));
-    for (const leaked of ['MEMESH_ROUTER_SOCKET', 'CLAUDE_CODE_SESSION_ID', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', ...Object.keys(hostVariables)]) {
+    for (const leaked of ['MEMESH_ROUTER_SOCKET', 'CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID', 'ANTHROPIC_API_KEY', 'NODE_OPTIONS', ...Object.keys(hostVariables)]) {
       expect(env[leaked]).toBeUndefined();
     }
     // The whole set, not four names: any variable added to the step is a decision to make here.
@@ -248,6 +267,22 @@ const cleanupsLocal: Array<() => void> = [];
 afterEach(() => { while (cleanupsLocal.length) cleanupsLocal.pop()!(); });
 
 describe('every step fails loudly with its own reason', () => {
+  it('rejects a real CLI read response with the right body but the wrong recipient', async () => {
+    const entry = brokenCli(['message', 'read'], `
+      const { spawnSync } = await import('node:child_process');
+      const r = spawnSync(process.execPath, [${JSON.stringify(REAL_CLI)}, ...argv], { env: process.env, encoding: 'utf8' });
+      if (r.status !== 0) { process.stderr.write(r.stderr); process.exit(r.status ?? 1); }
+      const response = JSON.parse(r.stdout);
+      response.message.recipient = 'wrong-synthetic-recipient';
+      console.log(JSON.stringify(response)); process.exit(0);
+    `);
+    const result = await runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry });
+    expect(result.steps.slice(0, -1).every(s => s.ok)).toBe(true);
+    expect(result.failedStep).toBe('fetch');
+    expect(result.steps.at(-1)?.reason).toContain('different content or routing fields');
+    expect(result.cleaned).toBe(true);
+  }, 60_000);
+
   const cases: Array<{ step: JourneyStepId; match: string[]; behaviour: string; reason: RegExp; ran: JourneyStepId[] }> = [
     { step: 'remember', match: ['remember'], behaviour: `console.error('boom: cannot open database'); process.exit(3);`, reason: /command failed: boom: cannot open database/, ran: ['remember'] },
     { step: 'remember', match: ['remember'], behaviour: `console.log('{"stored":false}'); process.exit(0);`, reason: /did not report the note as stored/, ran: ['remember'] },
@@ -257,8 +292,8 @@ describe('every step fails loudly with its own reason', () => {
     { step: 'recall', match: ['recall'], behaviour: `console.log('not json'); process.exit(0);`, reason: /not a result list/, ran: ['remember', 'recall'] },
     { step: 'send', match: ['message', 'send'], behaviour: `console.error('Error: router unavailable'); process.exit(1);`, reason: /command failed: Error: router unavailable/, ran: ['remember', 'recall', 'send'] },
     { step: 'send', match: ['message', 'send'], behaviour: `console.log('{}'); process.exit(0);`, reason: /did not return a message id/, ran: ['remember', 'recall', 'send'] },
-    { step: 'fetch', match: ['message', 'fetch'], behaviour: `console.error('Error: not available'); process.exit(1);`, reason: /command failed: Error: not available/, ran: ['remember', 'recall', 'send', 'fetch'] },
-    { step: 'fetch', match: ['message', 'fetch'], behaviour: `console.log('{"payload":"something else"}'); process.exit(0);`, reason: /came back with different content/, ran: ['remember', 'recall', 'send', 'fetch'] },
+    { step: 'fetch', match: ['message', 'read'], behaviour: `console.error('Error: not available'); process.exit(1);`, reason: /command failed: Error: not available/, ran: ['remember', 'recall', 'send', 'fetch'] },
+    { step: 'fetch', match: ['message', 'read'], behaviour: `console.log('{"message":{"body":"something else"}}'); process.exit(0);`, reason: /came back with different content/, ran: ['remember', 'recall', 'send', 'fetch'] },
   ];
 
   for (const c of cases) {

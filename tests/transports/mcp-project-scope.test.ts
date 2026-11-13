@@ -112,9 +112,9 @@ describe('updating a memory with no project', () => {
     expect(tagsOf('pref-indent')).toEqual(['topic:style']);
     const observations = (getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all('pref-indent') as Array<{ content: string }>).map(o => o.content);
     expect(observations).toEqual(['indent with two spaces', 'except in Makefiles']);
-    // An omitted project from the bound session is a project write: refused, nothing changes.
+    // Explicitly declaring a project cannot move the shared memory.
     const before = rowOf('pref-indent');
-    const refused = await handleTool('remember', { name: 'pref-indent', type: 'preference', observations: ['tabs again'] }, undefined, undefined, bound('A'));
+    const refused = await handleTool('remember', { name: 'pref-indent', type: 'preference', observations: ['tabs again'], project: 'A' }, undefined, undefined, bound('A'));
     expect(refused.isError).toBe(true);
     expect(rowOf('pref-indent')).toBe(before);
   });
@@ -218,10 +218,10 @@ describe('ownership: a write never reaches a memory it does not own', () => {
     expect(getDatabase().prepare("SELECT name FROM entities WHERE name = 'x'").all()).toEqual([]);
   });
 
-  it('a project write onto an untagged legacy memory is refused; the memory stays findable as no-project', async () => {
+  it('an explicit project write cannot move an untagged legacy memory', async () => {
     new KnowledgeGraph(getDatabase()).createEntity('legacy', 'fact', { observations: ['capybara legacy'] });
     const before = rowOf('legacy');
-    const r = await handleTool('remember', { name: 'legacy', type: 'fact', observations: ['capybara new'] }, undefined, undefined, bound('A'));
+    const r = await handleTool('remember', { name: 'legacy', type: 'fact', observations: ['capybara new'], project: 'A' }, undefined, undefined, bound('A'));
     expect(r.isError).toBe(true);
     expect(rowOf('legacy')).toBe(before);
 

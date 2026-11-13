@@ -351,9 +351,10 @@ function writeCopy(input: WriteInput, replacing: boolean, keep: boolean): { back
   const files = hashFiles(sourceDir); // throws on symlinks and other non-plain files
   const owner = `${process.pid}-${ownerTag(process.pid)}`;
   const { newRoot, fresh, oldRoot, old } = stagingPaths(target, owner);
-  fs.rmSync(newRoot, { recursive: true, force: true });
   fs.mkdirSync(path.dirname(target), { recursive: true });
-  fs.mkdirSync(newRoot, { recursive: true });
+  // A live owner may already hold this staging name. Only a newly created
+  // directory belongs to this attempt and may be removed by its finally.
+  fs.mkdirSync(newRoot);
   let backup: string | null = null;
   let residue: string | null = null;
   try {
@@ -362,8 +363,7 @@ function writeCopy(input: WriteInput, replacing: boolean, keep: boolean): { back
     fs.writeFileSync(path.join(fresh, MARKER_FILE), JSON.stringify(marker, null, 2) + '\n');
     if (replacing) {
       if (keep) backup = backUp(target, backupRoot, now);
-      fs.rmSync(oldRoot, { recursive: true, force: true });
-      fs.mkdirSync(oldRoot, { recursive: true });
+      fs.mkdirSync(oldRoot);
       fs.renameSync(target, old);
       try {
         fs.renameSync(fresh, target);

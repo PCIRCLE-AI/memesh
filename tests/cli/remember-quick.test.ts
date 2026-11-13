@@ -212,17 +212,16 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(exitCode).toBe(0);
   }, 60_000);
 
-  it('refuses a decision with no --why (exit 1, the sentence on stderr, nothing stored) and stores it with --why', () => {
-    const refused = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(refused.stdout).not.toContain('Stored');
+  it('stores a decision with no --why (exit 0) and with --why', () => {
+    const bare = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
+    expect(bare.exitCode, `stderr: ${bare.stderr}`).toBe(0);
 
     const stored = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere', '--why=the proxy terminates nothing; revisit if it does'], { HOME: tmpHome });
     expect(stored.exitCode, `stderr: ${stored.stderr}`).toBe(0);
     const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'cli-no-why' ORDER BY o.id").all() as { content: string }[];
     db.close();
+    // The second call adds the reason to the decision the first one stored.
     expect(obs.map((o) => o.content)).toEqual(['Use TLS everywhere', 'Why: the proxy terminates nothing; revisit if it does']);
   }, 60_000);
 

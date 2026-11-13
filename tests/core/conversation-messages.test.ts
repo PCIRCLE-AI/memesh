@@ -1,0 +1,188 @@
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { afterEach, describe, expect, it } from 'vitest';
+import { ConversationMessages, MESSAGE_MAX_BYTES, renderConversationMessage } from '../../src/core/conversation-messages.js';
+import { DatabaseSync } from '../../src/storage/sqlite.js';
+
+const roots: string[] = [];
+const stores: ConversationMessages[] = [];
+const DAY = 86_400_000;
+function fixture() {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-conversation-messages-'));
+  roots.push(root);
+  let now = Date.parse('2026-11-13T00:00:00.000Z');
+  const options = { file: path.join(root, 'messages.db'), machine: 'MAC', clock: () => now,
+    processAlive: (pid: number) => pid === 101 };
+  const open = () => {
+    const store = new ConversationMessages(options);
+    stores.push(store);
+    return store;
+  };
+  const store = open();
+  store.register({ id: 'A', host: 'claude-code', machine: 'mac', pid: 101, wake: { socket: '/tmp/a.sock' } });
+  store.register({ id: 'B', host: 'codex', machine: 'Mac', pid: 102, wake: { thread: 'B' } });
+  store.register({ id: 'C', host: 'hermes', machine: 'MAC', pid: 103, wake: {} });
+  return { root, store, open, advance: (days: number) => { now += days * DAY; } };
+}
+afterEach(() => {
+  for (const store of stores.splice(0)) store.close();
+  for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('conversation message store', () => {
+  it('excludes already surfaced IDs before the whole-envelope byte budget without changing queued state', () => {
+    const { store } = fixture();
+    const excluded: string[] = [];
+    for (let i = 0; i < 500; i++) excluded.push(store.send('A', { recipient: 'B', kind: 'task', body: `old ${i}` }).message.id);
+    const fresh = store.send('A', { recipient: 'B', kind: 'task', body: 'FRESH_AFTER_500' }).message.id;
+    expect(store.hookBatch('B').ids).not.toContain(fresh);
+    const batch = store.hookBatch('B', excluded);
+    expect(batch.ids).toEqual([fresh]); expect(batch.text).toContain('FRESH_AFTER_500');
+    expect(Buffer.byteLength(batch.text)).toBeLessThanOrEqual(MESSAGE_MAX_BYTES);
+    expect(store.status().filter(row => row.state === 'queued')).toHaveLength(501);
+  });
+  it('has exactly three tables, owner-private files and no memory graph', () => {
+    const { root } = fixture();
+    const db = new DatabaseSync(path.join(root, 'messages.db'), { readOnly: true });
+    try {
+      expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' ORDER BY name").all().map(row => row.name))
+        .toEqual(['conversations', 'events', 'messages']);
+    } finally { db.close(); }
+    if (process.platform !== 'win32') {
+      expect(fs.statSync(root).mode & 0o077).toBe(0);
+      for (const file of fs.readdirSync(root)) expect(fs.statSync(path.join(root, file)).mode & 0o077).toBe(0);
+    }
+    expect(fs.existsSync(path.join(root, 'knowledge-graph.db'))).toBe(false);
+  });
+
+  it('discovers registered online and offline conversations without project fields', () => {
+    const { store } = fixture();
+    expect(store.discover().map(row => [row.id, row.online, row.machine])).toEqual([
+      ['A', true, 'mac'], ['B', false, 'mac'], ['C', false, 'mac'],
+    ]);
+    expect(store.discover().every(row => !('project' in row))).toBe(true);
+    expect(() => store.register({ id: 'bad/id', host: 'codex', machine: 'mac', pid: 1, wake: {} })).toThrow();
+  });
+
+  it('queues for an offline registered recipient and reads/replies at the exact conversation', () => {
+    const { store } = fixture();
+    const sent = store.send('A', { recipient: 'B@MAC', kind: 'question', body: 'START\nMID\nEND' });
+    expect(sent.accepted).toBe(true);
+    expect(store.status('A', sent.message.id)[0].state).toBe('queued');
+    expect(() => store.read('C', sent.message.id)).toThrow('not addressed');
+    expect(store.status('C', sent.message.id)).toEqual([]);
+    expect(store.read('B', sent.message.id).body).toBe('START\nMID\nEND');
+    store.read('B', sent.message.id);
+    const reply = store.send('B', { recipient: 'A', kind: 'result', body: 'REPLY', reply_to: sent.message.id });
+    expect(store.read('A', reply.message.id).body).toBe('REPLY');
+    const status = store.status('A', sent.message.id)[0];
+    expect(status.state).toBe('replied');
+    expect(status.body).toBe(sent.message.body);
+    expect(status.events.map(event => event.event)).toEqual(['queued', 'delivered', 'read', 'replied']);
+    expect(status.events.every(event => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.at))).toBe(true);
+  });
+
+  it('rejects spoofed replies without acknowledging or creating a message', () => {
+    const { store } = fixture();
+    const { message } = store.send('A', { recipient: 'B', kind: 'task', body: 'task' });
+    expect(() => store.send('C', { recipient: 'A', kind: 'result', body: 'spoof', reply_to: message.id })).toThrow('Reply must');
+    expect(() => store.send('B', { recipient: 'C', kind: 'result', body: 'wrong target', reply_to: message.id })).toThrow('Reply must');
+    expect(store.status()).toHaveLength(1);
+    expect(store.status('A')[0].state).toBe('queued');
+  });
+
+  it('records unknown-recipient and oversize failures durably, with no oversize body', () => {
+    const { store, open } = fixture();
+    const unknown = store.send('A', { recipient: 'missing', kind: 'task', body: 'keep for audit' });
+    expect(unknown).toMatchObject({ accepted: false, reason: 'unknown_recipient', recipients: ['A', 'B', 'C'] });
+    const long = store.send('A', { recipient: 'B', kind: 'review_request', body: '密'.repeat(8_000) });
+    expect(long).toMatchObject({ accepted: false, reason: 'message_too_large' });
+    expect(long.message.body).toBeNull();
+    expect(long.message.body_bytes).toBe(24_000);
+    expect(store.hookBatch('B')).toEqual({ text: '', ids: [] });
+    const rows = open().status('A');
+    expect(rows.map(row => row.state)).toEqual(['rejected', 'rejected']);
+    expect(rows[0].body).toBe('keep for audit');
+    expect(rows[1].body).toBeNull();
+    expect(rows[1].events[0].detail).toContain('message_too_large');
+  });
+
+  it('rejects malformed addresses and unbounded reply headers before persisting', () => {
+    const { store } = fixture();
+    expect(() => store.send('A', { recipient: 'B', kind: 'task', body: 'small', reply_to: 'x'.repeat(100_000) }))
+      .toThrow('Invalid reply_to');
+    expect(() => store.send('A', { recipient: 'B@', kind: 'task', body: 'small' })).toThrow('Invalid recipient');
+    expect(store.status()).toEqual([]);
+  });
+
+  it('bounds complete rendered envelopes, including UTF8/JSON escaping and headers', () => {
+    const { store } = fixture();
+    const accepted = store.send('A', { recipient: 'B', kind: 'task', body: '字'.repeat(2_000) });
+    expect(accepted.accepted).toBe(true);
+    expect(Buffer.byteLength(renderConversationMessage(accepted.message))).toBeLessThanOrEqual(MESSAGE_MAX_BYTES);
+    const escaped = store.send('A', { recipient: 'B', kind: 'task', body: '\n'.repeat(4_000) });
+    expect(escaped).toMatchObject({ accepted: false, reason: 'message_too_large' });
+    const second = store.send('A', { recipient: 'B', kind: 'result', body: '字'.repeat(1_000) });
+    const batch = store.hookBatch('B');
+    expect(batch.ids).toEqual([accepted.message.id]);
+    expect(Buffer.byteLength(batch.text)).toBeLessThanOrEqual(MESSAGE_MAX_BYTES);
+    expect(batch.text).toContain(JSON.stringify(accepted.message));
+    expect(store.status('A', accepted.message.id)[0].state).toBe('queued');
+    store.recordHookDelivery('B', batch.ids, 'UserPromptSubmit');
+    expect(store.hookBatch('B').ids).toEqual([second.message.id]);
+  });
+
+  it('does not acknowledge anything when a delivery batch includes another recipient', () => {
+    const { store } = fixture();
+    const b = store.send('A', { recipient: 'B', kind: 'task', body: 'B' }).message;
+    const c = store.send('A', { recipient: 'C', kind: 'task', body: 'C' }).message;
+    expect(() => store.recordHookDelivery('B', [b.id, c.id], 'Stop')).toThrow('Wrong recipient');
+    expect(store.status('A').map(row => row.state)).toEqual(['queued', 'queued']);
+  });
+
+  it('notifies once after a day, keeps the original deliverable and expires by original send time', () => {
+    const { store, advance, open, root } = fixture();
+    const original = store.send('A', { recipient: 'B', kind: 'task', body: 'pending' }).message;
+    advance(1.1);
+    let next = open();
+    expect(next.status()).toHaveLength(2);
+    expect(next.status('A', original.id)[0].events.map(event => event.event)).toEqual(['queued', 'undelivered_notified']);
+    expect(next.hookBatch('B').ids).toEqual([original.id]);
+    next = open();
+    expect(next.status()).toHaveLength(2);
+    advance(13);
+    next = open();
+    expect(next.status(undefined, original.id)).toEqual([]);
+    const db = new DatabaseSync(path.join(root, 'messages.db'), { readOnly: true });
+    try { expect(db.prepare('SELECT COUNT(*) AS count FROM events WHERE message_id = ?').get(original.id)?.count).toBe(0); }
+    finally { db.close(); }
+    expect(next.status()).toHaveLength(1); // notification has its own, later send time
+    advance(2);
+    expect(open().status()).toEqual([]); // never create notifications about notifications
+  });
+
+  it('does not notify for rejected or already-delivered messages', () => {
+    const { store, advance, open } = fixture();
+    store.send('A', { recipient: 'missing', kind: 'task', body: 'rejected' });
+    const delivered = store.send('A', { recipient: 'B', kind: 'question', body: 'read' });
+    store.read('B', delivered.message.id);
+    advance(2);
+    expect(open().status()).toHaveLength(2);
+  });
+
+  it('accepts the 31st message with a warning instead of refusing it', () => {
+    const { store } = fixture();
+    for (let i = 0; i < 30; i++) expect(store.send('A', { recipient: 'B', kind: 'task', body: String(i) }).accepted).toBe(true);
+    expect(store.send('A', { recipient: 'B', kind: 'task', body: '31' })).toMatchObject({ accepted: true, warning: '31 messages await delivery' });
+  });
+
+  it('preserves identity snapshots after registration changes and rejects unregistered callers', () => {
+    const { store } = fixture();
+    store.send('A', { recipient: 'B', kind: 'task', body: 'original' });
+    store.register({ id: 'B', host: 'hermes', machine: 'mac', pid: 101, wake: {} });
+    expect(store.status('A')[0].recipient_host).toBe('codex');
+    expect(() => store.send('unknown', { recipient: 'B', kind: 'task', body: 'spoof' })).toThrow('not registered');
+    expect(() => store.status('unknown')).toThrow('not registered');
+  });
+});

@@ -35,6 +35,39 @@ afterEach(() => {
 const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid!;
 
 describe('copyDatabaseBefore', () => {
+  it('copies pending WAL through a genuinely read-only source and can ATTACH the copy for verification', () => {
+    const writer = getDatabase();
+    writer.prepare("INSERT INTO entities(name,type) VALUES('only-in-wal','note')").run();
+    const file = path.join(root, 'kg.db');
+    expect(fs.statSync(`${file}-wal`).size).toBeGreaterThan(0);
+    const before = [fs.readFileSync(file), fs.readFileSync(`${file}-wal`)];
+    const reader = new MemeshDatabase(file, { readOnly: true });
+    try {
+      expect(() => reader.prepare("INSERT INTO entities(name,type) VALUES('refused','note')").run()).toThrow(/readonly/);
+      const result = copyDatabaseBefore(reader, 'pre-update-probe');
+      expect(result.kind).toBe('ready');
+      if (result.kind !== 'ready') throw new Error(result.reason);
+      const copy = new MemeshDatabase(result.path, { readOnly: true });
+      try { expect(copy.prepare("SELECT name FROM entities WHERE name='only-in-wal'").get()).toBeTruthy(); }
+      finally { copy.close(); }
+    } finally { reader.close(); }
+    expect([fs.readFileSync(file), fs.readFileSync(`${file}-wal`)]).toEqual(before);
+  });
+
+  it('keeps the existing inCopy callback confined to the attached copy', () => {
+    const db = getDatabase();
+    db.prepare("INSERT INTO entities(name,type) VALUES('source-name','note')").run();
+    const result = copyDatabaseBefore(db, PREFIX, schema => {
+      db.prepare(`UPDATE ${schema}.entities SET name='copy-name' WHERE name='source-name'`).run();
+    });
+    expect(result.kind).toBe('ready');
+    expect(db.prepare("SELECT name FROM entities WHERE name='source-name'").get()).toBeTruthy();
+    if (result.kind !== 'ready') throw new Error(result.reason);
+    const copy = new MemeshDatabase(result.path, { readOnly: true });
+    try { expect(copy.prepare("SELECT name FROM entities WHERE name='copy-name'").get()).toBeTruthy(); }
+    finally { copy.close(); }
+  });
+
   it('keeps the newest copies and every record of what was changed', () => {
     for (let i = 0; i < DB_COPIES_KEPT + 2; i++) {
       const copy = copyDatabaseBefore(getDatabase(), PREFIX);

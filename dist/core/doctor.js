@@ -9,7 +9,8 @@ import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
 import { openDatabase, closeDatabase, isDatabaseOpen, readOnlyFolderState, } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
-import { AUTO_UPDATE_REASONS, currentPolicy, describeLockHolder, inspectAutoUpdateState, readInstalling } from './auto-update.js';
+import { AUTO_UPDATE_REASONS, currentPolicy, describeUpdatePolicy, updateControlDir, describeLockHolder, inspectAutoUpdateState, readInstalling, proxyConfigured, nodeUsesEnvProxy } from './auto-update.js';
+import { backupDirectoryFor } from './db-copy.js';
 import { getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost, pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS, } from './install-channel.js';
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
@@ -28,16 +29,15 @@ import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
-import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS, } from './capture-liveness.js';
+import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { getAgentMessageStorageReport } from './agent-message-storage.js';
 import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
 import { AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, inspectAgentMessageArchive, lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive, } from './agent-message-expiry.js';
 import { readHostConfigFile } from '../host-runtime/config.js';
-import { journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
+import { journeyEnv, journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
 import { readRouterIdleExit } from '../host-runtime/router-idle.js';
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
 const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
@@ -119,7 +119,11 @@ function openDatabaseForDoctor(dbPath, opts = {}) {
     const target = dbPath ?? getDbPath();
     if (!fs.existsSync(target))
         throw new NoDatabaseYetError(target);
-    return openDatabase(target, { ...opts, readOnly: true });
+    const borrowed = isDatabaseOpen();
+    const db = openDatabase(target, { ...opts, readOnly: true });
+    if (!borrowed)
+        db.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? 1_000}`);
+    return db;
 }
 function isSchemaBehind(err) {
     if (typeof err?.fix === 'string')
@@ -797,28 +801,6 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
         catch { }
     }
 }
-const SAFE_HANDOFF_NAME = /^session-handoff:[^`\\/\p{Cc}]+~[0-9a-f]{32}$/u;
-const shellWord = (text) => (/^[A-Za-z0-9._:~-]+$/.test(text) ? text : `'${text.replaceAll("'", `'\\''`)}'`);
-function archivedHandoffName(file) {
-    if (!Object.hasOwn(file.hooks, 'handoff-capture'))
-        return null;
-    const names = new Set();
-    for (const r of file.hooks['handoff-capture']) {
-        if (r.outcome === 'skipped' && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === 'string')
-            names.add(r.entity);
-    }
-    if (names.size !== 1)
-        return null;
-    const [name] = names;
-    return SAFE_HANDOFF_NAME.test(name) ? name : null;
-}
-function archivedHandoffCheck(title, runs, name) {
-    const summary = `handoff-capture: ${runs} runs, 0 writes — the session handoff was archived with \`forget\`, so it is not updated any more.`;
-    if (name) {
-        return createCheck('capture-liveness', title, 'warn', summary, `To turn it back on, run \`memesh remember --name ${shellWord(name)} --type session-handoff --obs restart --project ${shellWord(name.slice(name.indexOf(':') + 1))}\`; the next Stop replaces it.`, { code: 'capture-liveness.handoff-archived', params: { runs, name } });
-    }
-    return createCheck('capture-liveness', title, 'warn', summary, 'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.', { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
-}
 const NO_HOST_NEXT_STEP = 'Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.';
 const CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first — the records begin on the next hook run.`;
 const CODEX_NO_COMMAND_NEXT_STEP = "Codex's configuration folder is here but the `codex` command is not on PATH, so the Codex plugin cannot be refreshed from this shell. Put `codex` on PATH, then re-run `memesh doctor` for the refresh command.";
@@ -890,6 +872,28 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     }
     const outcomeFile = parseHookOutcomes(raw);
     const hooks = summarizeHookOutcomes(outcomeFile);
+    const result = inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hooks, captureWired);
+    const details = hooks.flatMap((hook) => {
+        const reasons = hook.notStored.map((item) => `'${item.reason}': ${item.records} record(s), `
+            + (item.count === null ? `${item.unit}: quantity unknown` : `${item.count} known ${item.unit}`)
+            + (item.unknownCount > 0 ? `; ${item.unknownCount} record(s) with unknown quantity` : ''));
+        if (hook.lockedRuns > 0)
+            reasons.push(`${hook.lockedRuns} run(s) failed because the database stayed locked (MEMESH_DB_LOCKED); lost item count unknown`);
+        return reasons.length ? [`${hook.hook}, within the retained window of ${hook.triggeredRuns} triggered run(s): ${reasons.join('; ')}.`] : [];
+    });
+    if (details.length > 0) {
+        result.check.summary += ` Not stored or deferred: ${details.join(' ')}`;
+        if (hooks.some((hook) => hook.notStored.length > 0))
+            result.check.summary += ' Item totals can include the same item on multiple runs.';
+        if (result.check.status === 'pass')
+            result.check.status = 'warn';
+        if (result.report?.status === 'PASS')
+            result.report.status = 'PASS_WITH_CONCERNS';
+    }
+    return result;
+}
+function inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hooks, captureWired) {
+    const TITLE = 'Capture liveness';
     let db = null;
     let types;
     let neverRan;
@@ -907,8 +911,8 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
-          AND e.type <> ?
-        GROUP BY e.type`).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE);
+          AND e.type <> 'session-handoff'
+        GROUP BY e.type`).all(AUTO_CAPTURE_TAG);
         types = summarizeTypeTrends(rows.map((r) => ({
             type: String(r.type),
             last7: Number(r.last7) || 0,
@@ -992,9 +996,6 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
     if (verdict.silentHook) {
         const h = verdict.silentHook;
         const reason = h.dominantSkipReason ?? 'no reason recorded';
-        if (h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived) {
-            return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
-        }
         return {
             check: createCheck('capture-liveness', TITLE, 'warn', `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`, 'Run `memesh doctor --json` for the per-hook figures. If the reason does not describe your usage, run `memesh install-hooks` and restart your agent.', { code: 'capture-liveness.silent-hook', params: { hook: h.hook, runs: h.triggeredRuns, reason } }),
             report,
@@ -1034,6 +1035,17 @@ function inspectCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, readFileSyn
         check: createCheck('capture-liveness', TITLE, 'pass', summary),
         report,
     };
+}
+export function inspectPendingConversations(dir = getMemeshDirFromDbPath()) {
+    try {
+        const count = fs.readdirSync(path.join(dir, 'pending-conversations')).filter(name => /^[0-9a-f]{32}\.json$/.test(name)).length;
+        return createCheck('pending-conversations', 'Pending conversations', count ? 'warn' : 'pass', `${count} conversation event(s) waiting for database replay.`, count ? 'The next memory hook retries pending writes; if the count persists, check database lock and file permissions.' : undefined, { params: { count } });
+    }
+    catch (err) {
+        if (err.code === 'ENOENT')
+            return createCheck('pending-conversations', 'Pending conversations', 'pass', '0 conversation events waiting for database replay.', undefined, { params: { count: 0 } });
+        return createCheck('pending-conversations', 'Pending conversations', 'warn', 'Pending conversation events could not be counted. Check the data folder permissions.');
+    }
 }
 function autoCaptureOffSource() {
     let configAutoCapture;
@@ -1411,7 +1423,7 @@ function inspectPluginCacheCurrency(installChannel, pluginHost, packageRoot, ins
     if (recordedVersion !== null && typeof runningVersion === 'string' && recordedVersion !== runningVersion) {
         return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'warn', `${hostLabel}'s record says version ${recordedVersion} is installed from commit ${installedSha.slice(0, 8)}, but the plugin running here is ${runningVersion}: the cache and the record disagree.`, 'Run `memesh update --reinstall`: it puts the verified release back (source check, commit on main, pinned dependencies, read-back) and rewrites the record.', { code: 'plugin-cache.stale', params });
     }
-    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'pass', `The plugin cache records commit ${installedSha.slice(0, 8)}; the ${hostLabel} marketplace has since moved to ${marketplaceSha.slice(0, 8)}. The installed plugin stays on the release MeMesh verified: the marketplace branch is ahead of the last release, and its newer code has not been checked. Nothing to do; \`memesh update\` moves to the next release when one is published.`, undefined, { code: 'plugin-cache.behind-marketplace', params });
+    return createCheck('plugin-cache', `Plugin cache source record is current (${hostLabel})`, 'pass', `The plugin cache records commit ${installedSha.slice(0, 8)}; the ${hostLabel} marketplace now records ${marketplaceSha.slice(0, 8)}. MeMesh has not checked whether this installation was built from a release. If you doubt this copy, run \`memesh update --reinstall\` to put it back through the release checks.`, undefined, { code: 'plugin-cache.behind-marketplace', params });
 }
 function isClaudeChannelCommand(command) {
     if (command === 'memesh-host-claude')
@@ -1519,19 +1531,20 @@ function isFreshInstall(packageRoot, statSyncImpl) {
 }
 function inspectAutoUpdate(installSupport) {
     const policy = currentPolicy();
+    const policyStatus = policy.policy === 'off' && (policy.reason === AUTO_UPDATE_REASONS.policyOffUnreadableConfig || policy.reason === AUTO_UPDATE_REASONS.policyOffInvalidValue) ? 'warn' : 'pass';
     const cannotSelfUpdate = installSupport !== undefined && !installSupport.canSelfUpdate;
     const setting = policy.policy === 'off'
-        ? `off (${policy.reason ?? 'policy is off'})`
+        ? `off (${describeUpdatePolicy(policy)})`
         : cannotSelfUpdate
             ? `on in the settings, but this install (${installSupport.label}) cannot update itself, so nothing is installed. ${installSupport.guidance}`
             : `on for ${policy.policy === 'major' ? 'every version' : `${policy.policy} versions and below`}; it installs after running sessions end (waiting at most 3 days, after which sessions still open may use the new files before they restart)`;
-    const dataDir = getMemeshDirFromDbPath();
+    const dataDir = updateControlDir();
     const read = inspectAutoUpdateState(dataDir);
     const installing = readInstalling(dataDir);
     if (installing && !installing.running) {
-        return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. An update from ${installing.marker.from} to ${installing.marker.to} began its install at ${installing.marker.at}, and the process that ran it is gone without recording a result, so the install may be half done.`, `Put this version back through the same checks with \`memesh update --reinstall\` (a database backup was made before the install began: see ${path.join(dataDir, 'backups')}). Details: ${path.join(dataDir, 'auto-update.log')}.`, { code: 'auto-update.interrupted' });
+        return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. An update from ${installing.marker.from} to ${installing.marker.to} began its install at ${installing.marker.at}, and the process that ran it is gone without recording a result, so the install may be half done.`, `Put this version back through the same checks with \`memesh update --reinstall\` (a database backup was made before the install began: see ${backupDirectoryFor(getDbPath())}). Details: ${path.join(dataDir, 'auto-update.log')}.`, { code: 'auto-update.interrupted' });
     }
-    const holder = describeLockHolder(dataDir);
+    const holder = describeLockHolder(updateControlDir());
     if (holder && !holder.running) {
         return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. The update lock was left behind by a ${holder.label === 'manual' ? 'manual' : 'automatic'} update (pid ${holder.pid}, started ${holder.startedAt}) that is no longer running.`, `Nothing to do: the next update attempt takes the lock over about 2 minutes after its owner is found gone. Details: ${path.join(dataDir, 'auto-update.log')}.`, { code: 'auto-update.lock-orphan' });
     }
@@ -1540,7 +1553,7 @@ function inspectAutoUpdate(installSupport) {
         return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. The record of the last attempt cannot be read (${read.detail}), so it is not known whether one ran or failed.`, `Look at ${path.join(dataDir, 'auto-update-state.json')} and ${path.join(dataDir, 'auto-update.log')}; removing the damaged record (a file, or a directory that is in its place) is safe: the next attempt writes a new one.`, { code: 'auto-update.state-unreadable' });
     }
     if (read.kind === 'absent') {
-        return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. No attempt has run yet.${running}`);
+        return createCheck('auto-update', 'Automatic updates', policyStatus, `Automatic updates are ${setting}. No attempt has run yet.${running}`);
     }
     const state = read.state;
     const waitedDays = state.outcome === 'waiting' && state.waitingSince ? Math.floor((Date.now() - Date.parse(state.waitingSince)) / 86_400_000) : null;
@@ -1565,22 +1578,24 @@ function inspectAutoUpdate(installSupport) {
         return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, 'An update removed the Codex marketplace pcircle-memesh and then failed before it could put it back: it is missing because of that update, not because you removed it. The next automatic run puts it back while config.toml is unchanged; to do it now: `codex plugin marketplace add PCIRCLE-AI/memesh`, then `memesh update --reinstall`.', { code: 'auto-update.codex-restore-failed' });
     }
     if (state.reason === AUTO_UPDATE_REASONS.dependencyPinFailed) {
-        return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, `The update was undone and ${state.from ?? 'the previous version'} is still what runs: nothing is broken. The next automatic run, or \`memesh update\`, tries again. If it keeps failing, read ${path.join(getMemeshDirFromDbPath(), 'auto-update.log')} for the step that failed (usually the network or the registry).`, { code: 'auto-update.pin-undone' });
+        return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, `The update was undone and ${state.from ?? 'the previous version'} is still what runs: nothing is broken. The next automatic run, or \`memesh update\`, tries again. If it keeps failing, read ${path.join(updateControlDir(), 'auto-update.log')} for the step that failed (usually the network or the registry).`, { code: 'auto-update.pin-undone' });
     }
     if (state.outcome === 'failed') {
-        const log = path.join(getMemeshDirFromDbPath(), 'auto-update.log');
+        const log = path.join(updateControlDir(), 'auto-update.log');
         const backup = state.backup ? ` A database backup was made first: ${state.backup}` : '';
         const sourceRejected = state.reason === AUTO_UPDATE_REASONS.sourceNotVerified || state.reason === AUTO_UPDATE_REASONS.tarballMismatch || state.reason === AUTO_UPDATE_REASONS.commitNotOnMain || state.reason === AUTO_UPDATE_REASONS.dependenciesNotPinned;
         const fix = state.reason === AUTO_UPDATE_REASONS.installNotUndone
-            ? `Run \`memesh update --reinstall\`: it puts this version back through the same checks and finishes the install. Until then MeMesh may not start (its dependencies are missing). Read ${log} for what happened.${backup}`
-            : sourceRejected
-                ? `Do not install this version by other means (${installSupport?.channel === 'npm-global' || installSupport === undefined ? 'a bare npm install' : 'installing it from the marketplace yourself'}): that skips the check of where the package came from. \`memesh update\` runs the same check and will refuse too. Read ${log} for the check that failed; if it keeps failing, report it.${backup}`
-                : installSupport?.recommendedCommand
-                    ? `Read ${log} for the step that failed, then update by hand with \`${installSupport.recommendedCommand}\`.${backup}`
-                    : `Read ${log} for the step that failed, then update the way you installed MeMesh.${backup}`;
+            ? `Run \`memesh update --reinstall\`: it puts this version back through the same checks and finishes the install. Until then \`memesh serve\` and the Claude channel runner cannot start because their dependencies are missing; remember, recall and MCP still work. Read ${log} for what happened.${backup}`
+            : state.reason === AUTO_UPDATE_REASONS.commitUnconfirmed && proxyConfigured(process.env) && !nodeUsesEnvProxy()
+                ? `Upgrade Node to 22.21 or later in the 22.x line, or Node 24 or later, so the release check can use your proxy; automatic updates can then retry. Read ${log} for what happened.${backup}`
+                : sourceRejected
+                    ? `Do not install this version by other means (${installSupport?.channel === 'npm-global' || installSupport === undefined ? 'a bare npm install' : 'installing it from the marketplace yourself'}): that skips the check of where the package came from. \`memesh update\` runs the same check and will refuse too. Read ${log} for the check that failed; if it keeps failing, report it.${backup}`
+                    : installSupport?.recommendedCommand
+                        ? `Read ${log} for the step that failed, then update by hand with \`${installSupport.recommendedCommand}\`.${backup}`
+                        : `Read ${log} for the step that failed, then update the way you installed MeMesh.${backup}`;
         return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, fix, { code: 'auto-update.failed' });
     }
-    return createCheck('auto-update', 'Automatic updates', 'pass', `Automatic updates are ${setting}. ${what}`);
+    return createCheck('auto-update', 'Automatic updates', policyStatus, `Automatic updates are ${setting}. ${what}`);
 }
 function updateCacheFix() {
     let problem;
@@ -1710,6 +1725,8 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
     }
     const mismatches = [];
     const missing = [];
+    const scope = manifestScope(packageRoot);
+    const safeFiles = new Set(scope.files);
     for (const entry of entries) {
         const full = path.join(packageRoot, entry.path);
         if (!existsSyncImpl(full)) {
@@ -1718,12 +1735,16 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
         }
         try {
             const kind = fs.lstatSync(full);
-            if (!kind.isFile() && !kind.isSymbolicLink()) {
+            if (!kind.isFile()) {
                 mismatches.push(`${entry.path} (not a regular file)`);
                 continue;
             }
         }
         catch { }
+        if (!safeFiles.has(entry.path)) {
+            mismatches.push(`${entry.path} (not in the safe covered scope)`);
+            continue;
+        }
         let actualHash;
         try {
             const buf = readFileSyncImpl(full);
@@ -1737,14 +1758,10 @@ function verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, ins
             mismatches.push(entry.path);
     }
     const listed = new Set(entries.map((entry) => entry.path));
-    const scope = manifestScope(packageRoot);
     const unlisted = scope.files.filter((file) => !listed.has(file));
     const unaccounted = [
         ...scope.missingRequired.map((p) => `${p} (required, not found)`),
-        ...scope.symlinks.map((p) => `${p} (symbolic link)`),
-        ...scope.unreadable.map((p) => `${p} (cannot be read)`),
-        ...scope.strayFolders.map((p) => `${p} (a folder npm pack never ships)`),
-        ...scope.special.map((p) => `${p} (not a file)`),
+        ...scope.issues,
     ];
     if (missing.length === 0 && mismatches.length === 0 && unlisted.length === 0 && unaccounted.length === 0) {
         return createCheck('skills-manifest', 'Skills + hooks integrity', 'pass', `${entries.length} skill / hook files match the published manifest (SHA-256 verified); ${scope.files.length} files are in the covered scope on disk, none unlisted.`);
@@ -1771,11 +1788,15 @@ function probeInstalledMessageCapability(packageRoot) {
         return { ok: false, message: `installed runtime is missing ${absent.join(', ')}` };
     const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-message-'));
     try {
+        const env = journeyEnv(probeHome);
+        const dataDir = path.join(probeHome, '.memesh');
+        fs.mkdirSync(dataDir, { mode: 0o700 });
+        fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ updateCheck: false, autoUpdate: 'off' }), { mode: 0o600 });
         execFileSync(process.execPath, [path.join(packageRoot, 'dist/transports/cli/doctor-message-probe.js'), packageRoot], {
-            cwd: packageRoot,
+            cwd: probeHome,
             stdio: 'pipe',
             timeout: 15_000,
-            env: { ...process.env, HOME: probeHome, MEMESH_AUTO_CAPTURE: 'false' },
+            env,
         });
         return { ok: true };
     }
@@ -1788,11 +1809,11 @@ function probeInstalledMessageCapability(packageRoot) {
 }
 function inspectMessageCapability(packageRoot, enabled, probe) {
     if (!enabled) {
-        return createInfo('message-capability', 'Message adapter imports', 'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its ten-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.');
+        return createInfo('message-capability', 'Message adapter imports', 'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its four-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.');
     }
     const result = probe(packageRoot);
     if (result.ok)
-        return createCheck('message-capability', 'Message adapter imports', 'pass', 'This installed MCP advertised the ten-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.');
+        return createCheck('message-capability', 'Message adapter imports', 'pass', 'This installed MCP advertised the four-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.');
     return createCheck('message-capability', 'Message adapter imports', 'fail', `Installed message capability probe failed: ${withoutFinalPeriod(result.message)}.`, 'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.', { code: 'message-capability.probe-failed', params: { detail: result.message } });
 }
 function inspectInstallJourney(packageVersion) {
@@ -2126,6 +2147,7 @@ export async function runDoctor(options) {
     checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
     const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
     checks.push(captureLiveness.check);
+    checks.push(inspectPendingConversations());
     const captureReport = captureLiveness.report;
     checks.push(inspectNodeRuntime(packageRoot, existsSyncImpl, readFileSyncImpl));
     checks.push(inspectNativeBinding(packageRoot, existsSyncImpl, nativeBindingProbeImpl));

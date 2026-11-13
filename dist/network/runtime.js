@@ -73,12 +73,8 @@ export function checkRuntime(ctx, timeoutMs = CHECK_TIMEOUT_MS) {
     }
     throw new NetworkError('runtime_load_failed', `The networking component did not load: ${reason}. ${SINGLE_MACHINE_NOTE}`);
 }
-export function npmInvocation(args, platform = process.platform, execPath = process.execPath, exists = fs.existsSync) {
-    if (platform !== 'win32')
-        return { command: 'npm', args };
-    const cli = path.win32.join(path.win32.dirname(execPath), 'node_modules', 'npm', 'bin', 'npm-cli.js');
-    return exists(cli) ? { command: execPath, args: [cli, ...args] } : null;
-}
+export { npmInvocation } from '../core/npm-launch.js';
+import { npmInvocation } from '../core/npm-launch.js';
 function runNpmCi(ctx, directory) {
     const args = ['ci', '--ignore-scripts', '--include=optional', '--no-audit', '--no-fund', '--no-update-notifier', '--loglevel=error'];
     const options = { cwd: directory, env: childEnv(ctx), encoding: 'utf8', timeout: INSTALL_TIMEOUT_MS };

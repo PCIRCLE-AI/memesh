@@ -28,7 +28,6 @@ import {
   unconfirmedDaysSince,
   utcEpoch,
 } from './work-topology.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
 // --- The budget contract ------------------------------------------------------
 // Frozen numbers: #250 measures the index against them. Changing any of these
@@ -54,8 +53,8 @@ export const INDEX_CANDIDATE_CAP = 2000;
 /**
  * Types that never enter the index: the evidence layer (mechanical capture —
  * commits, session insights and summaries), `task-state` (which has its own
- * sole renderer at the top of the block) and the session handoff (never an
- * index line). Derived from the constants, not
+ * sole renderer at the top of the block). Legacy session-handoff records
+ * are ordinary memories. Derived from the constants, not
  * restated, so a new evidence type is excluded here the moment it is
  * classified there. Consumers bind this list into their SQL so a project
  * with thousands of commits cannot fill the candidate window.
@@ -65,7 +64,7 @@ export const INDEX_CANDIDATE_CAP = 2000;
  * index that silently drops an unfamiliar type is the failure it exists to
  * prevent.
  */
-export const INDEX_EXCLUDED_TYPES: readonly string[] = [...EVIDENCE_LAYER_TYPES, 'task-state', SESSION_HANDOFF_TYPE];
+export const INDEX_EXCLUDED_TYPES: readonly string[] = [...EVIDENCE_LAYER_TYPES, 'task-state'];
 
 export function isIndexableType(type: string | null | undefined): boolean {
   return !INDEX_EXCLUDED_TYPES.includes(type || 'memory');

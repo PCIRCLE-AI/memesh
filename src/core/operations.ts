@@ -18,7 +18,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
-import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
+import { WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent, type RecallForAgentResult, type RecallScope } from './recall-agent-view.js';
 import type {
   RememberInput,
@@ -133,7 +133,7 @@ export function shownEntity(entity: Entity): Entity {
   };
 }
 
-// `type` stays optional: `replace` on an existing name inherits the stored
+// `type` stays optional: append or replace on an existing name inherits the stored
 // type (#333 T4), so the resolved input can legitimately carry none.
 // rememberInTransaction resolves it against the row and refuses when there is
 // no row to inherit from.
@@ -154,13 +154,12 @@ function resolveRememberInput(
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
     // ABSENT and BLANK are different inputs, and only the first one is a
-    // request to inherit. `replace` waives an omitted `type` — it takes the
+    // request to inherit. An existing name waives an omitted `type` — it takes the
     // one the memory has — but an empty string is never a type: a truthiness
     // test here would send `''` down the retype branch and blank the stored
     // type of the memory being corrected. The transports' `z.string().min(1)`
     // stops that before it arrives; this is the direct-caller copy.
     if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
-    if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
     // #523: the structured form gets the same credential redaction the note
     // form has always had (note-derive.ts), so which argument carried a
     // connection string no longer decides whether it is stored. `name` and
@@ -261,6 +260,11 @@ function rememberInTransaction(
     }
   }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+  // An inferred checkout does not move an existing shared memory into that
+  // project. Explicit scope/tag changes still pass through the ownership guard.
+  if (args.projectIsDefault && !args.replace && existing && tagProjects.length === 0 && projectTagsOf(db, existing.id).length === 0) {
+    args = { ...args, project: null };
+  }
   if (tagProjects.some((p) => p.trim() === '')) {
     throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
   }
@@ -296,7 +300,7 @@ function rememberInTransaction(
     );
   }
 
-  // `type` omitted (only reachable with `replace`, per resolveRememberInput):
+  // An omitted `type` inherits from the existing name, for append or replace.
   // take the one the memory already has. When there is no memory to inherit
   // from, `replace` would CREATE one — and defaulting its type to
   // NOTE_DEFAULT_TYPE here is exactly the silent reclassification the
@@ -311,24 +315,8 @@ function rememberInTransaction(
   const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
   if (entityType === undefined) {
     throw new Error(
-      `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+      `There is no memory named "${args.name}" to inherit a type from, `
       + 'so this call would create one with no type — pass `type` to create it.',
-    );
-  }
-
-  // A decision is stored with the reason it was made and what would make it
-  // stop holding. Without it the conclusion is all a later reader sees, and
-  // it reads as a rule that holds forever. Checked when the decision is
-  // created or rewritten, not on an append. An untrusted writer (a note
-  // file, an import, an accepted dream proposal) is never refused here — a
-  // memory must not be dropped for a missing field; its line in the briefing
-  // says "(no reason recorded)" instead.
-  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted' && args.reasonOptional !== true
-    && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
-    throw new Error(
-      `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
-      + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
-      + 'Pass `why`, or an observation that starts with "Why: ".',
     );
   }
 
@@ -372,7 +360,7 @@ function rememberInTransaction(
     // go back. Replacing a memory's text must not silently untag it from its
     // project.
     if (tags === undefined) tags = previousTags;
-  } else if (derived && existing) {
+  } else if (derived && existing && existing.status !== 'archived') {
     // A note appended to a memory that already exists (the same text again,
     // or an explicit `name`): its first line must not overwrite the title the
     // memory already has, and a repeat must add nothing — including for the

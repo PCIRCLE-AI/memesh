@@ -1,54 +1,24 @@
 import fs from 'fs';
 import path from 'path';
+import { findPackageRoot } from './package-root.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
 export function isDamagedDatabaseError(message) {
     return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
 }
-const MEMORY_BACKUP_PREFIXES = ['pre-update-', 'before-compression-marker-', 'kg-before-', 'knowledge-graph-before-note-trust-'];
-function newestBackup(dir) {
-    let newest;
-    let names;
-    try {
-        names = fs.readdirSync(dir);
-    }
-    catch {
-        return undefined;
-    }
-    for (const name of names) {
-        if (!name.endsWith('.db') || !MEMORY_BACKUP_PREFIXES.some((prefix) => name.startsWith(prefix)))
-            continue;
-        const file = path.join(dir, name);
-        try {
-            const stat = fs.statSync(file);
-            if (stat.isFile() && stat.size > 0 && (!newest || stat.mtimeMs > newest.mtime))
-                newest = { file, mtime: stat.mtimeMs };
-        }
-        catch { }
-    }
-    return newest?.file;
-}
-export function damagedDatabaseSteps(databasePath) {
-    const q = shellQuote;
-    const db = q(databasePath);
-    const damaged = `${databasePath}.damaged`;
-    const recovered = q(`${databasePath}.recovered.db`);
-    const dropJournal = `rm -f ${q(`${databasePath}-wal`)} ${q(`${databasePath}-shm`)}`;
-    const journalCopies = ['-wal', '-shm'].map((s) => `[ ! -e ${q(databasePath + s)} ] || cp ${q(databasePath + s)} ${q(damaged + s)}`);
-    const backup = newestBackup(path.join(path.dirname(databasePath), 'backups'));
-    return {
-        copy: [`rm -f ${q(`${damaged}-wal`)} ${q(`${damaged}-shm`)}`, `cp ${db} ${q(damaged)}`, ...journalCopies].join('; '),
-        ...(backup ? { restore: `${dropJournal} && cp ${q(backup)} ${db}` } : {}),
-        salvage: `rm -f ${recovered} && sqlite3 ${q(damaged)} .recover | sqlite3 ${recovered}`,
-        replace: `${dropJournal} && mv ${recovered} ${db} && memesh reindex --fts`,
-    };
+export function repairCommand(databasePath, backupPath, nodeFallback = false) {
+    const quote = process.platform === 'win32'
+        ? (value) => `"${value.replace(/"/g, '""')}"`
+        : shellQuote;
+    const command = nodeFallback
+        ? `node ${quote(path.join(findPackageRoot(import.meta.url), 'dist', 'transports', 'cli', 'cli.js'))} repair`
+        : 'memesh repair';
+    return `${command} --database ${quote(databasePath)}${backupPath ? ` --from-backup ${quote(backupPath)}` : ''}`;
 }
 export function damagedDatabaseFix(databasePath) {
-    const steps = damagedDatabaseSteps(databasePath);
-    const restore = steps.restore
-        ? ` To go back to the newest backup instead (this overwrites the file, which is why the copy comes first): ${steps.restore}.`
-        : '';
-    return `Stop every memesh process, then copy the damaged file and its journal so nothing is lost: ${steps.copy}.${restore} To salvage what is readable: ${steps.salvage}, check the result, then put it in place and rebuild the keyword index: ${steps.replace}.`;
+    return `Stop every memesh process, then run: ${repairCommand(databasePath)}. `
+        + `If memesh is not on PATH: ${repairCommand(databasePath, undefined, true)}. `
+        + 'Repair keeps a verified copy of the database and its journal, salvages readable memories, and checks the result before replacing the file. Restart your AI tools afterwards.';
 }
 export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.existsSync, statSyncImpl = fs.statSync) {
     const message = err instanceof Error ? err.message : 'unknown database error';

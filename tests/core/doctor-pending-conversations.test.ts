@@ -1,0 +1,20 @@
+import { afterEach, expect, it } from 'vitest';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import { inspectPendingConversations } from '../../src/core/doctor.js';
+const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-pending-'));
+afterEach(() => fs.rmSync(dir, { recursive: true, force: true }));
+it('reports the pending count without reading private event bodies', () => {
+  expect(inspectPendingConversations(dir).params?.count).toBe(0);
+  const pending = path.join(dir, 'pending-conversations');
+  fs.mkdirSync(pending);
+  const event = path.join(pending, 'a'.repeat(32) + '.json');
+  fs.writeFileSync(event, 'private conversation not valid JSON', { mode: 0o000 });
+  fs.writeFileSync(path.join(pending, 'unfinished.tmp'), 'ignored');
+  const result = inspectPendingConversations(dir);
+  expect(result.status).toBe('warn');
+  expect(result.params?.count).toBe(1);
+  expect(JSON.stringify(result)).not.toContain('private conversation');
+  fs.chmodSync(event, 0o600);
+});

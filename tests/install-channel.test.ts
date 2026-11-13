@@ -1,7 +1,7 @@
 import path from 'path';
 import type fs from 'fs';
 import { describe, expect, it } from 'vitest';
-import { detectInstallChannel, detectPluginHost, getGlobalNpmRoot, getInstallChannelSupport } from '../src/core/install-channel.js';
+import { detectInstallChannel, detectPluginHost, getGlobalNpmRoot, getInstallChannelSupport, pluginUpdateCommand } from '../src/core/install-channel.js';
 
 function existsFor(paths: string[]) {
   const normalized = new Set(paths.map((entry) => path.resolve(entry)));
@@ -135,6 +135,7 @@ describe('install channel support', () => {
       .not.toBe('memesh upgrade-plugin');
     expect(support.guidance).not.toMatch(/memesh upgrade-plugin/);
     expect(support.recommendedCommand).toBe('memesh update');
+    expect(support.guidance).toContain(pluginUpdateCommand(CODEX_PLUGIN_ROOT));
     // The repair for damaged plugin files is the verified reinstall, and the text says so (not the host's own unchecked commands).
     expect(support.guidance).toMatch(/repair damaged plugin files[^]*memesh update --reinstall/);
     expect(support.guidance).not.toMatch(/marketplace upgrade/);
@@ -152,7 +153,7 @@ describe('install channel support', () => {
     // The repair is not the unpinned script, and npx is not offered as a way to run it: npx runs a throwaway copy that cannot know which install to update.
     expect(support.guidance).not.toMatch(/memesh upgrade-plugin/);
     expect(support.guidance).toMatch(/cannot work/);
-    expect(support.guidance).toContain(`node "${path.join(CLAUDE_PLUGIN_ROOT, 'dist', 'transports', 'cli', 'cli.js')}" update`);
+    expect(support.guidance).toContain(pluginUpdateCommand(CLAUDE_PLUGIN_ROOT));
     expect(support.guidance, 'still claims a new release does not auto-update').not.toMatch(/does not auto-update/);
   });
 });
