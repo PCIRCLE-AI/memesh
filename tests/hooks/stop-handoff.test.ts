@@ -1,10 +1,11 @@
 /** S2: the real Stop stores complete conversations; startup reads session tails. */
 import { afterEach, beforeEach, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
+import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 
@@ -45,6 +46,172 @@ function rows() {
 }
 const assistant = (text: string) => JSON.stringify({ type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text }] } });
 const channel = (payload: string) => JSON.stringify({ type: 'user', message: { role: 'user', content: `<channel source="memesh-channel">${JSON.stringify({ message_id: 'm-1', sender: 'other-agent', payload })}</channel>` } });
+
+it('omits only new-store bodies delivered to this conversation before capture', () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  try {
+    for (const id of ['sender', 's1', 'other']) store.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+    const received = 'Peer-origin instruction text that must not become the assistant memory.';
+    const waiting = 'Undelivered peer text must not remove independently authored assistant text.';
+    const elsewhere = 'Other conversation text must not remove this assistant own conclusion.';
+    const delivered = store.send('sender', { recipient: 's1', kind: 'task', body: received }).message;
+    store.recordHookDelivery('s1', [delivered.id], 'UserPromptSubmit');
+    store.send('sender', { recipient: 's1', kind: 'task', body: waiting });
+    const foreign = store.send('sender', { recipient: 'other', kind: 'task', body: elsewhere }).message;
+    store.recordHookDelivery('other', [foreign.id], 'UserPromptSubmit');
+    stop(`My own conclusion. ${received} ${waiting} ${elsewhere}`);
+    const saved = rows().find(row => row.type === 'conversation')!.content;
+    expect(saved).not.toContain(received);
+    expect(saved).toContain('My own conclusion.');
+    expect(saved).toContain(waiting);
+    expect(saved).toContain(elsewhere);
+  } finally { store.close(); }
+});
+
+it.skipIf(process.platform === 'win32')('retains a redacted assistant in pending when quote source is unsafe, without chmod', () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  store.close();
+  fs.chmodSync(file, 0o644);
+  const original = fs.readFileSync(file);
+  stop('This independent assistant reply must remain pending until its source can be checked.');
+  expect(rows().filter(row => row.type === 'conversation')).toEqual([]);
+  expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+  expect(fs.readFileSync(file)).toEqual(original);
+  const pending = path.join(home, '.memesh/pending-conversations');
+  const files = fs.readdirSync(pending);
+  expect(files).toHaveLength(1);
+  expect(JSON.parse(fs.readFileSync(path.join(pending, files[0]), 'utf8')).quoteSource.session).toBe('s1');
+  expect(fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8')).toContain('conversation quote source unavailable');
+  fs.chmodSync(file, 0o600);
+  start();
+  expect(rows().filter(row => row.type === 'conversation')).toHaveLength(1);
+  expect(fs.readdirSync(pending)).toEqual([]);
+  start();
+  expect(rows().filter(row => row.type === 'conversation')).toHaveLength(1);
+});
+
+it('does not create messages.db for memory-only capture', () => {
+  stop('My complete independent assistant response.');
+  expect(fs.existsSync(path.join(home, '.memesh/messages.db'))).toBe(false);
+  expect(rows().find(row => row.type === 'conversation')?.content).toBe('My complete independent assistant response.');
+});
+
+it('keeps locked quote reads within the hook budget and replays after unlock', async () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  store.close();
+  const setup = new MemeshDatabase(file);
+  setup.pragma('journal_mode = DELETE');
+  setup.close();
+  const env = buildIsolatedSuiteEnv({ PATH: process.env.PATH }, { runtimeHome: home });
+  const child = spawn(process.execPath, ['--input-type=module', '-e', `
+    import { DatabaseSync } from 'node:sqlite';
+    const db = new DatabaseSync(${JSON.stringify(file)});
+    db.exec('BEGIN EXCLUSIVE'); process.stdout.write('ready');
+    process.stdin.once('data', () => { db.exec('ROLLBACK'); db.close(); process.exit(0); });
+  `], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+  const closed = new Promise(resolve => child.once('exit', code => resolve(code)));
+  try {
+    await new Promise<void>((resolve, reject) => {
+      const timer = setTimeout(() => reject(new Error('holder startup timed out')), 3000);
+      child.stdout.once('data', chunk => { clearTimeout(timer); if (String(chunk) === 'ready') resolve(); else reject(new Error('holder not ready')); });
+    });
+    const started = performance.now();
+    stop('A complete assistant response retained while its quote source is locked.');
+    // One 2s contention budget plus hook startup/cleanup, not two separate waits.
+    expect(performance.now() - started).toBeLessThan(3000);
+    const pending = path.join(home, '.memesh/pending-conversations');
+    expect(fs.readdirSync(pending)).toHaveLength(1);
+    child.stdin.end('release');
+    expect(await closed).toBe(0);
+    expect(() => process.kill(child.pid!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+    start();
+    expect(fs.readdirSync(pending)).toEqual([]);
+    expect(rows().find(row => row.type === 'conversation')?.content).toBe('A complete assistant response retained while its quote source is locked.');
+  } finally {
+    if (child.exitCode === null) { child.kill('SIGKILL'); await closed; }
+  }
+}, 12000);
+
+it('does not use a foreign-machine delivery or another graph sibling as quote evidence', () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  for (const id of ['sender', 's1']) store.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+  const body = 'A foreign machine or graph must never delete my independently authored response.';
+  const message = store.send('sender', { recipient: 's1', kind: 'task', body }).message;
+  store.recordHookDelivery('s1', [message.id], 'UserPromptSubmit');
+  store.close();
+  const db = new MemeshDatabase(file);
+  db.prepare('UPDATE messages SET recipient_machine=? WHERE id=?').run('foreign-machine', message.id);
+  db.close();
+  stop(body);
+  expect(rows().find(row => row.type === 'conversation')?.content).toBe(body);
+  const otherData = path.join(home, 'other-graph');
+  fs.mkdirSync(otherData, { mode: 0o700 });
+  stop(body, 's1', {}, { MEMESH_DB_PATH: path.join(otherData, 'graph.db') });
+  const other = new MemeshDatabase(path.join(otherData, 'graph.db'), { readOnly: true });
+  try { expect(other.prepare('SELECT content FROM observations').all()).toContainEqual(expect.objectContaining({ content: body })); }
+  finally { other.close(); }
+  expect(fs.existsSync(path.join(otherData, 'messages.db'))).toBe(false);
+});
+
+it('refuses a symlink or invalid schema without altering the source, retaining pending', () => {
+  const data = path.join(home, '.memesh');
+  fs.mkdirSync(data, { mode: 0o700 });
+  const target = path.join(home, 'unrelated.db');
+  const db = new MemeshDatabase(target);
+  db.exec('CREATE TABLE sentinel(value TEXT); INSERT INTO sentinel VALUES (\'keep\')');
+  db.close();
+  fs.chmodSync(target, 0o600);
+  const before = fs.readFileSync(target);
+  fs.symlinkSync(target, path.join(data, 'messages.db'));
+  stop('This complete assistant event waits while the quote source is unsafe.');
+  expect(rows().filter(row => row.type === 'conversation')).toEqual([]);
+  expect(fs.readFileSync(target)).toEqual(before);
+  fs.unlinkSync(path.join(data, 'messages.db'));
+  fs.copyFileSync(target, path.join(data, 'messages.db'));
+  fs.chmodSync(path.join(data, 'messages.db'), 0o600);
+  start();
+  expect(fs.readdirSync(path.join(data, 'pending-conversations'))).toHaveLength(1);
+  expect(fs.readFileSync(path.join(data, 'messages.db'))).toEqual(before);
+});
+
+it('skips a reply consisting solely of delivered peer text, without claiming a write', () => {
+  const store = new ConversationMessages({ file: path.join(home, '.memesh/messages.db') });
+  try {
+    for (const id of ['sender', 's1']) store.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+    const body = 'This is exclusively a peer quotation with no independent assistant text.';
+    const message = store.send('sender', { recipient: 's1', kind: 'task', body }).message;
+    store.recordHookDelivery('s1', [message.id], 'UserPromptSubmit');
+    stop(body);
+    expect(rows().filter(row => row.type === 'conversation')).toEqual([]);
+    const outcomes = fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(outcomes).toContainEqual(expect.objectContaining({ hook: 'session-summary', outcome: 'skipped', reason: expect.stringContaining('only quoted agent text') }));
+    expect(outcomes.filter(row => row.hook === 'session-summary' && row.outcome === 'wrote')).toEqual([]);
+  } finally { store.close(); }
+});
+
+it.skipIf(process.platform === 'win32')('later delivery cannot retroactively remove text from a pending assistant', () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  for (const id of ['sender', 's1']) store.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+  const body = 'An independently authored conclusion that a peer only delivered later.';
+  const message = store.send('sender', { recipient: 's1', kind: 'task', body }).message;
+  store.close();
+  fs.chmodSync(file, 0o644);
+  stop(body);
+  const pending = path.join(home, '.memesh/pending-conversations');
+  const event = JSON.parse(fs.readFileSync(path.join(pending, fs.readdirSync(pending)[0]), 'utf8'));
+  fs.chmodSync(file, 0o600);
+  const later = new ConversationMessages({ file, clock: () => event.capturedAt + 1000 });
+  later.recordHookDelivery('s1', [message.id], 'UserPromptSubmit');
+  later.close();
+  start();
+  expect(rows().find(row => row.type === 'conversation')?.content).toBe(body);
+  expect(fs.readdirSync(pending)).toEqual([]);
+});
 
 it('stores short acknowledgements, code and long replies in full, without a dedicated handoff row', () => {
   const long = 'code:\n```ts\n' + '測試🙂'.repeat(3000) + '\n```\nNext: release review';

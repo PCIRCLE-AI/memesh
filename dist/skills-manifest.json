@@ -233,8 +233,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "5ca21ef11e4c0edfe6ef38dca0115f88b65b1410800c376d5e07c6f6388a7f29",
-      "bytes": 126956
+      "sha256": "da52826a9ec28d0447dd75ba520dcbbeb94a8b36388b244835d436a4fc498f34",
+      "bytes": 131283
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -298,8 +298,8 @@
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "1d94b8479b3f7f78e9cb821797ada2c0c3c058fe501ea5dc0d15db392a85ed90",
-      "bytes": 39716
+      "sha256": "0fdf7be505438e0c28b8ee587222100ac38eebac4a7c34d9e270836e197c4505",
+      "bytes": 39829
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",

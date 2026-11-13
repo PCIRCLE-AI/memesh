@@ -3,6 +3,8 @@ import { createHash, randomBytes } from 'crypto';
 import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
 import { dirname, join } from 'path';
+import { hostname } from 'os';
+import { AGENT_TEXT_OMITTED, omitAgentMessageText } from './_generated/session-handoff.js';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 // =============================================================================
@@ -1081,6 +1083,66 @@ function pendingConversationDir(env) {
   return join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'pending-conversations');
 }
 
+// Internal event marker survives a source-read failure in the existing pending file.
+// Never open the writeful message-store constructor for a capture-time lookup.
+function checkedConversationQuotes(event, env) {
+  if (!event.quoteSource) return event;
+  const { quoteSource, ...clean } = event;
+  let fd, source;
+  try {
+    if (quoteSource.machine !== hostname().toLowerCase()
+      || typeof quoteSource.session !== 'string' || !quoteSource.session
+      || !event.tags.includes(`session:${quoteSource.session}`)
+      || !event.tags.includes('role:assistant') || !Number.isSafeInteger(event.capturedAt)) {
+      throw new Error('invalid quote source identity');
+    }
+    const file = join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'messages.db');
+    let stat;
+    try { stat = lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return clean; throw error; }
+    const privateFile = value => value.isFile() && !value.isSymbolicLink()
+      && (process.platform === 'win32' || (value.mode & 0o077) === 0)
+      && (typeof process.getuid !== 'function' || value.uid === process.getuid());
+    const dir = lstatSync(dirname(file));
+    if (!dir.isDirectory() || dir.isSymbolicLink() || (process.platform !== 'win32' && (dir.mode & 0o077) !== 0)
+      || (typeof process.getuid === 'function' && dir.uid !== process.getuid()) || !privateFile(stat)) {
+      throw new Error('unsafe quote source');
+    }
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      try { if (!privateFile(lstatSync(file + suffix))) throw new Error('unsafe quote sidecar'); }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    // Read-only SQLite may create a missing SHM for a WAL. Refuse rather than write it.
+    if (existsSync(file + '-wal') && lstatSync(file + '-wal').size > 0 && !existsSync(file + '-shm')) {
+      throw new Error('quote WAL requires an existing shared-memory file');
+    }
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
+    const opened = fstatSync(fd);
+    if (!privateFile(opened) || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error('quote source changed');
+    const remaining = conversationDeadline - Date.now();
+    if (remaining <= 0) throw new Error('quote source budget exhausted');
+    source = new MemeshDatabase(file, { readOnly: true });
+    source.pragma(`busy_timeout = ${Math.min(HOOK_BUSY_TIMEOUT_MS, remaining)}`);
+    const current = lstatSync(file);
+    if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('quote source changed');
+    const bodies = source.prepare(`SELECT m.body FROM messages m
+      WHERE m.recipient = ? AND m.recipient_machine = ? AND m.body IS NOT NULL
+      AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='rejected')
+      AND EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='delivered'
+        AND json_extract(e.detail, '$.actor') = ? AND julianday(e.at) <= julianday(?))`)
+      .all(quoteSource.session, quoteSource.machine, quoteSource.session, new Date(event.capturedAt).toISOString())
+      .map(row => row.body);
+    const texts = [...bodies, ...bodies.map(body => redactSecrets(body))];
+    const observations = clean.observations.map(text => omitAgentMessageText(text, texts).text);
+    if (observations.every(text => !text.split(AGENT_TEXT_OMITTED).join('').trim())) return null;
+    return { ...clean, observations,
+      title: omitAgentMessageText(clean.title ?? '', texts).text };
+  } catch (cause) {
+    throw Object.assign(new Error('conversation quote source unavailable'), { code: 'MEMESH_CONVERSATION_QUOTE_SOURCE', cause });
+  } finally {
+    try { source?.close(); } finally { if (fd !== undefined) closeSync(fd); }
+  }
+}
+
 function writeConversation(db, event) {
   return db.transaction(() => writeConversationLocked(db, event)).immediate();
 }
@@ -1113,7 +1175,7 @@ export function replayPendingConversations(env = process.env) {
   replayAttempted = true;
   const dir = pendingConversationDir(env);
   if (!existsSync(dir)) return;
-  conversationDeadline = Date.now() + HOOK_BUSY_TIMEOUT_MS;
+  conversationDeadline ??= Date.now() + HOOK_BUSY_TIMEOUT_MS;
   replayingConversations = true;
   let db;
   try {
@@ -1127,8 +1189,9 @@ export function replayPendingConversations(env = process.env) {
         if (err.code === 'ENOENT') continue;
         throw err;
       }
+      const checked = checkedConversationQuotes(event, env);
       db.pragma(`busy_timeout = ${Math.max(1, deadline - Date.now())}`);
-      writeConversation(db, event);
+      if (checked) writeConversation(db, checked);
       try { unlinkSync(path); } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   } catch (err) {
@@ -1146,20 +1209,24 @@ export function captureConversation(event, env = process.env) {
   let db;
   let writing = false;
   try {
+    const checked = checkedConversationQuotes(safe, env);
+    if (!checked) return { skipped: true, reason: 'assistant reply contains only quoted agent text' };
     ({ db } = openHookDb(env, { fts: true, conversation: true }));
     writing = true;
-    return writeConversation(db, safe);
+    return writeConversation(db, checked);
   } catch (err) {
     const locked = /locked|busy/i.test(String(err.code) + ' ' + String(err.message));
     const writeIoFailed = writing && (err.code === 'EIO' || err.code === 'SQLITE_IOERR'
       || (Number.isSafeInteger(err.errcode) && err.errcode >= 0 && (err.errcode & 255) === 10));
-    if (!locked && !writeIoFailed) throw err;
+    const quoteReadFailed = err.code === 'MEMESH_CONVERSATION_QUOTE_SOURCE';
+    if (!locked && !writeIoFailed && !quoteReadFailed) throw err;
     const dir = pendingConversationDir(env);
     ensurePrivateDir(dir);
     // Immutable version files: a drainer that read OLD must never unlink NEW.
     const key = createHash('sha256').update(JSON.stringify(safe)).digest('hex').slice(0, 32);
     writePrivateJsonAtomic(join(dir, `${key}.json`), safe);
-    return { queued: true, reason: locked
+    return { queued: true, reason: quoteReadFailed
+      ? 'conversation quote source unavailable; redacted conversation pending replay' : locked
       ? 'database locked; redacted conversation pending replay'
       : 'database write I/O failed; redacted conversation pending replay' };
   } finally {

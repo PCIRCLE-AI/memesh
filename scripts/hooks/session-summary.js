@@ -6,6 +6,7 @@
 //
 import { join } from 'path';
 import { createHash, randomUUID } from 'crypto';
+import { hostname } from 'os';
 import { closeSync, existsSync, fstatSync, openSync, readFileSync, readSync, writeSync } from 'fs';
 import {
   AUTO_CAPTURE_TAG,
@@ -72,6 +73,7 @@ function captureAssistantConversation(data, project) {
     name: `conversation-${identity}`, type: 'conversation', replace: true,
     title: text.split('\n').find(line => line.trim())?.trim().slice(0, 120),
     observations: [text],
+    quoteSource: { session: data.session_id, machine: hostname().toLowerCase() },
     tags: [AUTO_CAPTURE_TAG, `project:${project}`, `session:${data.session_id}`, 'role:assistant'],
     sourceHost: hookSourceHost(data),
   });
