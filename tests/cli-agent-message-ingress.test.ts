@@ -38,7 +38,7 @@ function readOwnerPrivateRegularFile(filePath: string): string {
   }
 }
 
-describe('CLI message payload from stdin', () => {
+describe('legacy internal stdin payload parser', () => {
   it('keeps a multi-byte character that is split across two stdin writes intact', async () => {
     const bytes = Buffer.from('hi 你好', 'utf8');
     // 你 is three bytes starting at offset 3; cutting at 4 leaves it half in each chunk.
@@ -52,343 +52,7 @@ describe('CLI message payload from stdin', () => {
   });
 });
 
-describe('CLI durable-message ingress', () => {
-  it('documents the separate durable payload and complete native envelope limits', () => {
-    const result = spawnSync(process.execPath, cliArgs('message', 'send', '--help'), {
-      encoding: 'utf8',
-      env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
-    });
-    expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('payload 64 KiB');
-    expect(result.stdout).toMatch(/complete native\s+envelope 16 KiB/);
-    expect(result.stdout).toContain('65536 UTF-8 bytes');
-    expect(result.stdout).toContain('16384');
-    expect(result.stdout).toContain('untrusted');
-  });
-
-  it('accepts JSON from stdin through the current source CLI', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    const payload = JSON.stringify({ kind: 'stdin-happy-path', value: 7 });
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'recipient', '--idempotency-key', 'stdin-happy-json', '--payload-stdin',
-        '--content-type', 'application/json',
-      ), {
-        encoding: 'utf8',
-        input: payload,
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(result.status, result.stderr).toBe(0);
-      const response = JSON.parse(result.stdout) as Record<string, unknown>;
-      expect(response).toMatchObject({
-        project: 'test', sender: 'sender', recipient: 'recipient', target_kind: 'principal',
-        content_type: 'application/json',
-      });
-      expect(typeof response.message_id).toBe('string');
-      expect(result.stdout).not.toContain(payload);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('#497: sends a principal message meant for one session, and only that session (CLAUDE_CODE_SESSION_ID) can record intake', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-intended-'));
-    const sessionA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    const sessionB = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-    const env = (session?: string) => ({
-      ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', CLAUDE_CODE_SESSION_ID: session,
-    });
-    try {
-      const sent = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'lead', '--recipient', 'claude-test-1',
-        '--intended-session', sessionA, '--idempotency-key', 'intended-cli', '--payload-stdin',
-      ), { encoding: 'utf8', input: 'for owner A', env: env() });
-      expect(sent.status, sent.stderr).toBe(0);
-      const message = JSON.parse(sent.stdout) as { message_id: string; intended_session: string };
-      expect(message.intended_session).toBe(sessionA);
-
-      const intake = (session: string) => spawnSync(process.execPath, cliArgs(
-        'message', 'intake', '--project', 'test', '--recipient', 'claude-test-1',
-        '--message-id', message.message_id, '--idempotency-key', `intake-${message.message_id}`, '--state', 'ingested',
-      ), { encoding: 'utf8', env: env(session) });
-      const asB = intake(sessionB);
-      expect(asB.status).toBe(1);
-      expect(asB.stderr).toContain('intended_for_other_session');
-      const asA = intake(sessionA);
-      expect(asA.status, asA.stderr).toBe(0);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('#497: a registered Codex CLI thread can be named, and records intake from its shell (CODEX_THREAD_ID); no session id is refused with the CLI hint', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-codex-intended-'));
-    const dbPath = path.join(home, 'graph.db');
-    const thread = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
-    // The same row codex-session.ts writes: the thread id is the session id.
-    const db = openDatabase(dbPath);
-    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'codex-lead', 0)`).run();
-    db.prepare(`
-      INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
-      VALUES ('test', ?, 'codex-lead', 'codex-cli-queue')
-    `).run(thread);
-    closeDatabase();
-    const env = (vars: Record<string, string | undefined>) => ({
-      ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false',
-      CLAUDE_CODE_SESSION_ID: undefined, CODEX_THREAD_ID: undefined, ...vars,
-    });
-    try {
-      const sent = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'claude-lead', '--recipient', 'codex-lead',
-        '--intended-session', thread, '--idempotency-key', 'codex-intended', '--payload-stdin',
-      ), { encoding: 'utf8', input: 'for the codex thread', env: env({}) });
-      expect(sent.status, sent.stderr).toBe(0);
-      const message = JSON.parse(sent.stdout) as { message_id: string; intended_session: string };
-      expect(message.intended_session).toBe(thread);
-
-      const intake = (vars: Record<string, string | undefined>) => spawnSync(process.execPath, cliArgs(
-        'message', 'intake', '--project', 'test', '--recipient', 'codex-lead',
-        '--message-id', message.message_id, '--idempotency-key', `intake-${message.message_id}`, '--state', 'ingested',
-      ), { encoding: 'utf8', env: env(vars) });
-      const noSession = intake({});
-      expect(noSession.status).toBe(1);
-      expect(noSession.stderr).toContain('intended_for_other_session');
-      expect(noSession.stderr).toContain('memesh message intake');
-      const fromShell = intake({ CODEX_THREAD_ID: thread });
-      expect(fromShell.status, fromShell.stderr).toBe(0);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('watch uses the caller session like poll: a session of another principal sees no events for a message that is not its principal\'s', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-watch-caller-'));
-    const dbPath = path.join(home, 'graph.db');
-    const carol = 'dddddddd-dddd-4ddd-8ddd-dddddddddddd';
-    const db = openDatabase(dbPath);
-    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'carol', 0)`).run();
-    db.prepare(`INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('test', ?, 'carol', 'claude-inbox')`).run(carol);
-    const bob = 'eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee';
-    db.prepare(`INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES ('test', 'bob', 0)`).run();
-    db.prepare(`INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind) VALUES ('test', ?, 'bob', 'claude-inbox')`).run(bob);
-    closeDatabase();
-    const env = (session?: string) => ({
-      ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'false',
-      CLAUDE_CODE_SESSION_ID: session, CODEX_THREAD_ID: undefined,
-    });
-    try {
-      const sent = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'alice', '--recipient', 'bob',
-        '--idempotency-key', 'watch-caller', '--payload-stdin',
-      ), { encoding: 'utf8', input: 'for bob', env: env() });
-      expect(sent.status, sent.stderr).toBe(0);
-      const watch = (session?: string) => {
-        const run = spawnSync(process.execPath, cliArgs('message', 'watch', '--project', 'test', '--recipient', 'bob', '--wait-ms', '0'),
-          { encoding: 'utf8', env: env(session) });
-        expect(run.status, run.stderr).toBe(0);
-        return (JSON.parse(run.stdout.trim().split('\n').at(-1) as string) as { events: unknown[] }).events.length;
-      };
-      expect(watch(), 'no session id is not checked, as for HTTP').toBe(1);
-      expect(watch(carol), "another principal's session sees an empty inbox").toBe(0);
-      expect(watch(bob), "the recipient's own session still sees its inbox").toBe(1);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('#497: --fallback-to-principal is refused without --target-kind session', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-fallback-'));
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'lead', '--recipient', 'claude-test-1',
-        '--fallback-to-principal', '--idempotency-key', 'fallback-cli', '--payload-stdin',
-      ), { encoding: 'utf8', input: 'x', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
-      expect(result.status).toBe(1);
-      expect(result.stderr).toContain('fallback_to_principal is only valid with target_kind');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('enforces the durable limit after JSON encoding for plain text', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-limit-'));
-    try {
-      const accepted = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'recipient', '--idempotency-key', 'plain-limit-accepted', '--payload-stdin',
-      ), {
-        encoding: 'utf8',
-        input: 'x'.repeat(65_534),
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(accepted.status, accepted.stderr).toBe(0);
-
-      const rejected = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'recipient', '--idempotency-key', 'plain-limit-rejected', '--payload-stdin',
-      ), {
-        encoding: 'utf8',
-        input: 'x'.repeat(65_535),
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(rejected.status).not.toBe(0);
-      expect(rejected.stderr).toContain('payload must be at most 65536 UTF-8 bytes when encoded as JSON');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('reports router_unreachable when the sender cannot reach the router while preserving scoped recovery', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'session-instance-9', '--target-kind', 'session',
-        '--idempotency-key', 'stdin-exact-session', '--payload-stdin',
-      ), {
-        encoding: 'utf8',
-        input: 'exact session only',
-        // The CLI starts a missing router; a socket in a directory that does not exist is one it cannot start.
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_ROUTER_SOCKET: '/nonexistent-memesh-dir/r.sock' },
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('router_unreachable');
-      expect(result.stdout).toBe('');
-
-      const polled = spawnSync(process.execPath, cliArgs(
-        'message', 'watch', '--project', 'test', '--recipient', 'session-instance-9',
-        '--wait-ms', '0',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(polled.status, polled.stderr).toBe(0);
-      const lines = polled.stdout.trim().split('\n').map(line => JSON.parse(line) as Record<string, unknown>);
-      const eventBatch = lines.at(-1) as { events: Array<{ message_id: string; target_kind: string }> };
-      expect(eventBatch.events[0]).toMatchObject({ target_kind: 'session' });
-      const messageId = eventBatch.events[0].message_id;
-
-      const fetched = spawnSync(process.execPath, cliArgs(
-        'message', 'fetch', '--project', 'test', '--recipient', 'session-instance-9',
-        '--target-kind', 'session', '--message-id', messageId,
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(fetched.status, fetched.stderr).toBe(0);
-      expect(JSON.parse(fetched.stdout)).toMatchObject({
-        message_id: messageId,
-        recipient: 'session-instance-9',
-        target_kind: 'session',
-        payload: 'exact session only',
-      });
-
-      const wrongKind = spawnSync(process.execPath, cliArgs(
-        'message', 'fetch', '--project', 'test', '--recipient', 'session-instance-9',
-        '--target-kind', 'principal', '--message-id', messageId,
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(wrongKind.status).not.toBe(0);
-      expect(wrongKind.stderr).toContain('not available');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects an unsupported --target-kind before reading or persisting payload', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'session-instance-9', '--target-kind', 'replacement',
-        '--idempotency-key', 'invalid-target-kind', '--payload-stdin',
-      ), {
-        encoding: 'utf8',
-        input: 'must not persist',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toContain('--target-kind "replacement" is not valid. Use one of: principal, session.');
-      expect(result.stdout).toBe('');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('rejects payload argv and requires the stdin-only flag', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'message', 'send', '--project', 'test', '--sender', 'sender',
-        '--recipient', 'recipient', '--idempotency-key', 'one', '--payload-stdin',
-        '--payload', 'sentinel-must-not-be-logged',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toMatch(/unknown option '--payload'/);
-      expect(`${result.stdout}${result.stderr}`).not.toContain('sentinel-must-not-be-logged');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it('reports storage and the one-day rule, and has no prune command', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-message-'));
-    try {
-      const report = spawnSync(process.execPath, cliArgs('message', 'storage', 'report'), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(report.status, report.stderr).toBe(0);
-      expect(JSON.parse(report.stdout)).toMatchObject({
-        policy: { retention: 'one day from creation, then deleted', quota_bytes: null },
-        last_expiry_pass: null,
-        last_expiry_archive: null,
-        message_count: 0,
-        protected_unresolved_message_count: 0,
-        expired_pending_message_count: 0,
-      });
-
-      const prune = spawnSync(process.execPath, cliArgs('message', 'storage', 'prune'), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(prune.status).toBe(1);
-      expect(prune.stderr).toContain('`memesh message storage prune` and `report --cutoff` were removed');
-      expect(prune.stderr).toContain('keeps a message for one day and deletes it by itself');
-      expect(prune.stderr).toContain('`memesh message storage report`');
-
-      const cutoff = spawnSync(process.execPath, cliArgs('message', 'storage', 'report', '--cutoff', '2026-01-01T00:00:00Z'), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(cutoff.status).toBe(1);
-      expect(cutoff.stderr).toContain('were removed');
-
-      // Once a cleanup has archived something, the report says where the archive is.
-      const dbFile = path.join(home, '.memesh', 'knowledge-graph.db');
-      const handle = new DatabaseSync(dbFile);
-      handle.prepare(`
-        INSERT INTO agent_message_expiry_runs (started_at_ms, finished_at_ms, trigger_source, outcome, expired_message_count, backup_path)
-        VALUES (1, 2, 'router', 'deleted', 1, '/somewhere/backups/agent-messages-expired.db')
-      `).run();
-      handle.close();
-      const again = spawnSync(process.execPath, cliArgs('message', 'storage', 'report'), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(again.status, again.stderr).toBe(0);
-      expect(JSON.parse(again.stdout).last_expiry_archive).toBe('/somewhere/backups/agent-messages-expired.db');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
+describe('CLI project and managed-host safety', () => {
   it.skipIf(process.platform === 'win32')('refuses a filesystem path as --project or --principal, before writing any config', () => {
     // `memesh agent setup` is the fourth producer of a routing identity, and
     // the only one outside the message tool. `send` refuses a path-shaped
@@ -945,9 +609,7 @@ describe('CLI durable-message ingress', () => {
     }
   });
 
-  // Runs the printed restore command, so it needs the sqlite3 binary.
-  const hasSqlite3 = spawnSync('sqlite3', ['-version'], { encoding: 'utf8' }).status === 0;
-  it.skipIf(process.platform === 'win32' || !hasSqlite3)('#519: the backup is owner-only and the printed restore command works for an awkward path', () => {
+  it.skipIf(process.platform === 'win32')('#519: the backup is owner-only and the printed restore command works for an awkward path', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), "memesh cli it's \"odd\" $x-"));
     try {
       const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' };
@@ -963,8 +625,14 @@ describe('CLI durable-message ingress', () => {
       const backupPath = backupLine.trim().slice('Backup: '.length);
       expect(fs.statSync(backupPath).mode & 0o777).toBe(0o600);
       const restoreLine = rename.stdout.split('\n').find((l) => l.includes('Restore if needed'))!;
-      const command = restoreLine.slice(restoreLine.indexOf('sqlite3 '));
-      const run = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' });
+      const commandStart = restoreLine.indexOf('memesh repair ');
+      expect(commandStart).toBeGreaterThanOrEqual(0);
+      const command = restoreLine.slice(commandStart);
+      const bin = path.join(home, 'bin');
+      fs.mkdirSync(bin);
+      const quote = (word: string) => `'${word.replace(/'/g, `'\\''`)}'`;
+      fs.writeFileSync(path.join(bin, 'memesh'), `#!/bin/sh\nexec ${quote(process.execPath)} ${quote(path.resolve('dist/transports/cli/cli.js'))} "$@"\n`, { mode: 0o700 });
+      const run = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8', env: { ...env, PATH: `${bin}${path.delimiter}${process.env.PATH}` } });
       expect(run.status, run.stderr).toBe(0);
       const after = spawnSync(process.execPath, cliArgs('kg', 'rename-project'), { encoding: 'utf8', env });
       expect(after.stdout).toContain('odd-old');

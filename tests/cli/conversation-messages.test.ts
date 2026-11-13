@@ -57,6 +57,33 @@ describe("CLI conversation messages", () => {
     const status = run(root, undefined, ["message", "status", "--json"]);
     expect(status.status).toBe(0); expect(JSON.parse(status.stdout).messages[0]).toMatchObject({ body: null, body_bytes: 9_000, state: "rejected" });
   });
+  it("requires stdin and rejects payload argv without printing or storing the value", () => {
+    const { root, store } = fixture(); store.close(); stores.pop();
+    const common = ["message", "send", "--recipient", "receiver", "--kind", "task"];
+    const missing = run(root, "sender", common, "stdin body");
+    expect(missing.status).toBe(1);
+    expect(missing.stderr).toContain("--payload-stdin");
+    for (const option of ["--payload", "--body"]) {
+      const result = run(root, "sender", [...common, "--payload-stdin", option, "private-argv-sentinel"]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain(`unknown option '${option}'`);
+      expect(result.stdout + result.stderr).not.toContain("private-argv-sentinel");
+    }
+    const audit = new ConversationMessages({ file: path.join(root, "messages.db"), machine: os.hostname() });
+    try { expect(audit.status()).toEqual([]); } finally { audit.close(); }
+  });
+  it("records an unknown recipient rejection in the owner-private audit", () => {
+    const { root, store } = fixture(); store.close(); stores.pop();
+    const sent = run(root, "sender", ["message", "send", "--recipient", "missing", "--kind", "task", "--payload-stdin"], "audit body");
+    expect(sent.status).toBe(1); expect(sent.stderr).toContain("unknown_recipient");
+    const status = run(root, undefined, ["message", "status", "--json"]);
+    expect(status.status).toBe(0);
+    const rows = JSON.parse(status.stdout).messages;
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ sender: "sender", recipient: "missing", body: "audit body", state: "rejected" });
+    expect(rows[0].events.map((event: { event: string }) => event.event)).toEqual(["rejected"]);
+    if (process.platform !== "win32") expect(fs.statSync(path.join(root, "messages.db")).mode & 0o077).toBe(0);
+  });
   it("refuses a send with no host identity before writing a message", () => {
     const { root, store } = fixture(); store.close(); stores.pop(); const result = run(root, undefined, ["message", "send", "--recipient", "receiver", "--kind", "task", "--payload-stdin"], "body");
     expect(result.status).toBe(1); expect(result.stderr).toContain("without a host session identity");

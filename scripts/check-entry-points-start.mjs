@@ -500,6 +500,11 @@ async function main() {
         hook_event_name: 'SessionStart', source: 'startup',
       })),
     },
+    'scripts/hooks/messages.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'SessionStart', hookPayload({
+        hook_event_name: 'SessionStart', source: 'startup',
+      })),
+    },
     'scripts/hooks/post-commit.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
         hook_event_name: 'PostToolUse', tool_name: 'Bash',

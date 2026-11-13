@@ -87,6 +87,33 @@ describe('executable-targets derivation picks up new manifest entries', () => {
 });
 
 describe('gate fails when a declared entry point does not start', () => {
+  it('starts the messages hook with its SessionStart payload in the isolated environment and rejects a crash', () => {
+    const root = fixtureRoot();
+    write(root, 'package.json', JSON.stringify({ bin: { memesh: 'dist/transports/cli/cli.js' } }));
+    write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+    write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { SessionStart: [{ hooks: [{
+      command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js',
+    }] }] } }));
+    const hook = `const fs = require('node:fs');
+      const path = require('node:path');
+      const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (payload.hook_event_name !== 'SessionStart' || payload.source !== 'startup'
+        || payload.session_id !== 'entry-point-gate'
+        || process.env.USERPROFILE !== process.env.HOME
+        || process.env.MEMESH_DIR !== path.join(process.env.HOME, '.memesh')
+        || process.env.MEMESH_DB_PATH !== path.join(process.env.MEMESH_DIR, 'kg.db')) process.exit(7);
+    `;
+    write(root, 'scripts/hooks/messages.js', hook);
+    const pass = run(root);
+    expect(pass.status, pass.stderr).toBe(0);
+    expect(pass.stdout).toContain('ok    hook (scripts/hooks/messages.js)');
+    write(root, 'scripts/hooks/messages.js', 'process.exit(7);');
+    const fail = run(root);
+    expect(fail.status).toBe(1);
+    expect(fail.stderr).toContain('hook (scripts/hooks/messages.js)');
+    expect(fail.stderr).toContain('exited 7');
+  });
+
   // A minimal-but-complete fixture: one bin whose real file is broken, and
   // one hook whose real file is a trivial no-op — both keyed at the SAME
   // relative paths the real repo uses, so the gate's actual PROFILES table
