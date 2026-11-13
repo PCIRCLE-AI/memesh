@@ -14,6 +14,7 @@ import { AgentRouter, AGENT_ROUTER_PROTOCOL_VERSION, sendAgentRouterRequest } fr
 import { getProjectName } from '../../src/core/paths.js';
 import { projectTranscriptSlug } from '../../src/core/transcript-source.js';
 import { connectRouterHost, type RouterHostConnection } from '../../src/host-runtime/router-client.js';
+import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 
 const server = fileURLToPath(new URL('../../dist/mcp/server.js', import.meta.url));
 const version = JSON.parse(fs.readFileSync(new URL('../../package.json', import.meta.url), 'utf8')).version as string;
@@ -29,6 +30,7 @@ afterEach(async () => {
   await router?.stop();
   router = undefined;
   closeDatabase();
+  vi.unstubAllEnvs();
   if (directory) fs.rmSync(directory, { recursive: true, force: true });
 });
 
@@ -36,6 +38,7 @@ async function setup() {
   directory = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mcp-pres-')));
   fs.chmodSync(directory, 0o700);
   const socket = path.join(directory, 'r.sock');
+  vi.stubEnv('MEMESH_ROUTER_SOCKET', socket);
   const db = openDatabase(path.join(directory, 'memory.db'));
   fs.writeFileSync(path.join(directory, 'agent-router.token'), 'test-presence-token\n', { mode: 0o600 });
   router = new AgentRouter({
@@ -78,7 +81,10 @@ async function setup() {
     });
     connections.push(connection);
   }
-  return { db, start, discover, project, channel, workspace };
+  async function legacyMessage(input: Record<string, unknown>) {
+    return executeAgentMessageAction(db, input, { transport: 'mcp', sourceHost: 'fixture', hostSession: session });
+  }
+  return { db, start, discover, project, channel, workspace, legacyMessage };
 }
 
 describe.skipIf(process.platform === 'win32')('ordinary Claude MCP presence without Channel', () => {
@@ -101,17 +107,13 @@ describe.skipIf(process.platform === 'win32')('ordinary Claude MCP presence with
     }));
     await new Promise<void>((resolve, reject) => { native.once('error', reject); native.listen(nativePath, resolve); }); fs.chmodSync(nativePath, 0o600);
     try {
-      const client = await f.start({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_MESSAGING_SOCKET: nativePath, CLAUDE_CODE_MESSAGING_TOKEN: 'fixture' });
+      await f.start({ CLAUDE_CONFIG_DIR: configDir, CLAUDE_CODE_MESSAGING_SOCKET: nativePath, CLAUDE_CODE_MESSAGING_TOKEN: 'fixture' });
       await vi.waitFor(async () => expect(await f.discover()).toHaveLength(1));
-      const result = await client.callTool({ name: 'message', arguments: { action: 'send', project: f.project, sender: 'hidden-sender', recipient: session, target_kind: 'session', idempotency_key: 'notice-exact', payload: 'hidden-body' } });
-      expect(result.isError).not.toBe(true);
-      const sent = JSON.parse((result.content as Array<{ text: string }>)[0].text);
+      const sent = await f.legacyMessage({ action: 'send', project: f.project, sender: 'hidden-sender', recipient: session, target_kind: 'session', idempotency_key: 'notice-exact', payload: 'hidden-body' }) as any;
       expect(sent.native_delivery).toMatchObject({ adapter_kind: 'claude-inbox', receipt: { content: 'notice', confirmation: 'enqueue' } });
       expect(frames).toHaveLength(1);
       expect(JSON.stringify(frames[0])).not.toMatch(/hidden-sender|hidden-body/);
-      const principal = await client.callTool({ name: 'message', arguments: { action: 'send', project: f.project, sender: 'hidden-sender', recipient: 'claude-code', intended_session: session, idempotency_key: 'notice-principal', payload: 'hidden-body' } });
-      expect(principal.isError).not.toBe(true);
-      const principalSent = JSON.parse((principal.content as Array<{ text: string }>)[0].text);
+      const principalSent = await f.legacyMessage({ action: 'send', project: f.project, sender: 'hidden-sender', recipient: 'claude-code', intended_session: session, idempotency_key: 'notice-principal', payload: 'hidden-body' }) as any;
       await vi.waitFor(() => expect(frames).toHaveLength(2));
       await vi.waitFor(() => expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_host_accepts WHERE delivery_id = ?').get(principalSent.delivery_id)).toEqual({ n: 1 }));
       expect(JSON.stringify(frames[1])).not.toMatch(/hidden-sender|hidden-body/);
@@ -124,18 +126,15 @@ describe.skipIf(process.platform === 'win32')('ordinary Claude MCP presence with
       expect.objectContaining({ session_id: session, principal_id: 'claude-code', host_kind: 'claude', project: f.project, active: true }),
     ]), { timeout: 4000 });
     expect(await f.discover('another-project')).toEqual([]);
-    const sent = await client.callTool({ name: 'message', arguments: {
+    const result = await f.legacyMessage({
       action: 'send', project: f.project, sender: 'sender', recipient: session,
       target_kind: 'session', fallback_to_principal: true, idempotency_key: 'presence-fallback', payload: 'test notice',
-    } });
-    expect(sent.isError).not.toBe(true);
-    const result = JSON.parse((sent.content as Array<{ text: string }>)[0].text);
+    }) as any;
     expect(result).toMatchObject({ recipient: 'claude-code', target_kind: 'principal', intended_session: session });
-    const intake = await client.callTool({ name: 'message', arguments: {
+    await f.legacyMessage({
       action: 'intake', project: f.project, recipient: 'claude-code', message_id: result.message_id,
       intake_state: 'ingested', idempotency_key: 'presence-intake',
-    } });
-    expect(intake.isError).not.toBe(true);
+    });
     expect(f.db.prepare('SELECT COUNT(*) AS n FROM agent_host_accepts').get()).toEqual({ n: 0 });
     await client.close();
     clients.splice(clients.indexOf(client), 1);
