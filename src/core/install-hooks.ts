@@ -432,10 +432,11 @@ function installHooksUnguarded(opts: InstallOptions, cwd: string, changes: Chang
           existingCount: overlap.reduce((n, e) => n + e.hooks.length, 0),
         });
       }
-      // Replace any stale memesh entry with the same matcher (so
-      // re-running after a memesh upgrade picks up new paths).
+      // Replace stale entries, but retain desired siblings sharing this
+      // matcher (for example SessionStart's memory and message hooks).
       existing[event] = [
-        ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e))),
+        ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e)
+          && !desiredEntries.some((sibling) => entryAlreadyPresent([e], sibling)))),
         desiredEntry,
       ];
       added++;

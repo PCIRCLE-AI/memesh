@@ -36,7 +36,7 @@ describe.skipIf(process.platform === 'win32')('MCP server: registering as a runn
   it('logs it when it cannot register, instead of staying silent', async () => {
     const dir = tmp();
     // Hosts register in the ACCOUNT's own ~/.memesh (every data directory's update looks there), here under a throwaway HOME.
-    // A file where its live-hosts directory must go: registration cannot succeed. The reason goes to the data directory's log.
+    // A file where its live-hosts directory must go: registration cannot succeed. The reason goes to the HOME control log.
     const home = tmp();
     fs.mkdirSync(path.join(home, '.memesh'));
     fs.writeFileSync(path.join(home, '.memesh', 'live-hosts'), 'not a directory');
@@ -45,7 +45,7 @@ describe.skipIf(process.platform === 'win32')('MCP server: registering as a runn
       stdio: ['pipe', 'ignore', 'ignore'],
     });
     children.push(child);
-    const logPath = path.join(dir, 'auto-update.log');
+    const logPath = path.join(home, '.memesh', 'auto-update.log');
     const logged = await waitFor(() => fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('could not register this MCP host'));
     expect(logged).toBe(true);
     expect(fs.readFileSync(logPath, 'utf8')).toContain('the updater may not wait for it');
@@ -77,14 +77,15 @@ describe.skipIf(process.platform === 'win32')('memesh serve starts the updater (
       stdio: ['ignore', 'ignore', 'ignore'],
     });
     children.push(child);
-    const logPath = path.join(dir, 'auto-update.log');
+    const logPath = path.join(home, '.memesh', 'auto-update.log');
     // The gate is the dispatch's own: serve called it, and from a source checkout it answered that this install cannot update itself.
     expect(await waitFor(() => fs.existsSync(logPath) && fs.readFileSync(logPath, 'utf8').includes('cannot update itself'), 25_000)).toBe(true);
     expect(fs.readFileSync(logPath, 'utf8')).toContain('no runner started');
     expect(fs.readFileSync(logPath, 'utf8')).not.toContain('DISPATCHED');
     // Nothing shared was taken: no attempt time (the 6-hour slot every install of this account shares), no record of a "skipped" attempt.
-    expect(fs.existsSync(path.join(dir, 'auto-update-attempt'))).toBe(false);
-    expect(fs.existsSync(path.join(dir, 'auto-update-state.json'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.memesh', 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(home, '.memesh', 'auto-update-state.json'))).toBe(false);
+    expect(fs.existsSync(path.join(dir, 'auto-update.log'))).toBe(false);
     for (const where of [dir, path.join(home, '.memesh')]) {
       const hosts = path.join(where, 'live-hosts');
       expect(fs.existsSync(hosts) ? fs.readdirSync(hosts).filter((f) => f.startsWith(`${child.pid}.`)) : []).toHaveLength(0);
@@ -92,24 +93,28 @@ describe.skipIf(process.platform === 'win32')('memesh serve starts the updater (
   }, 40_000);
 });
 
-describe.skipIf(process.platform === 'win32')('memesh serve keeps what it writes owner-only, also in a directory that was made looser', () => {
-  it('tightens the data directory and the log of an existing 0755 / 0644 setup (the attempt time is tightened where it is written: see the dispatch test in auto-update.test.ts)', async () => {
+describe.skipIf(process.platform === 'win32')('memesh serve keeps its HOME control records owner-only', () => {
+  it('tightens the control directory and log of an existing 0755 / 0644 setup', async () => {
     const dir = tmp();
-    fs.chmodSync(dir, 0o755);
+    const home = tmp();
+    const control = path.join(home, '.memesh');
+    fs.mkdirSync(control, { mode: 0o755 });
+    fs.chmodSync(control, 0o755);
     for (const name of ['auto-update.log', 'auto-update-attempt']) {
-      fs.writeFileSync(path.join(dir, name), name === 'auto-update-attempt' ? '0' : '', { mode: 0o644 });
-      fs.chmodSync(path.join(dir, name), 0o644);
+      fs.writeFileSync(path.join(control, name), name === 'auto-update-attempt' ? '0' : '', { mode: 0o644 });
+      fs.chmodSync(path.join(control, name), 0o644);
     }
     const child = spawn(process.execPath, [path.resolve('dist/transports/cli/cli.js'), 'serve', '--host', '127.0.0.1', '--port', '0'], {
-      env: { ...process.env, MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'off' },
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'off' },
       stdio: ['ignore', 'ignore', 'ignore'],
     });
     children.push(child);
-    const logPath = path.join(dir, 'auto-update.log');
+    const logPath = path.join(control, 'auto-update.log');
     expect(await waitFor(() => fs.readFileSync(logPath, 'utf8').includes('cannot update itself'), 25_000)).toBe(true);
     const mode = (f: string) => fs.statSync(f).mode & 0o777;
-    expect(mode(dir)).toBe(0o700);
+    expect(mode(control)).toBe(0o700);
     expect(mode(logPath)).toBe(0o600);
+    expect(fs.existsSync(path.join(dir, 'auto-update.log'))).toBe(false);
   }, 40_000);
 });
 

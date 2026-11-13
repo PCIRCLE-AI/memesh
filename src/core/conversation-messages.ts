@@ -75,6 +75,8 @@ export class ConversationMessages {
     processAlive?: (pid: number) => boolean;
     /** Explicit source overrides default graph discovery and remains caller-owned. */
     legacySource?: MemeshDatabase;
+    /** Refresh only these legacy messages when the source write lock is held. */
+    legacyMessageIds?: readonly string[];
     /** Internal caller budget; omitted preserves the normal SQLite timeout. */
     busyTimeoutMs?: number;
   } = {}) {
@@ -130,7 +132,7 @@ export class ConversationMessages {
         `);
         for (const target of databaseFiles(file)) removeGroupAndOtherAccess(target);
         const legacySource = options.legacySource ?? ownedSource;
-        if (legacySource) importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine });
+        if (legacySource) importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error) {
         this.db.close();

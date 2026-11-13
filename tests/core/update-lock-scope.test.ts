@@ -117,8 +117,11 @@ describe('auto-update lock scope', () => {
 
     const lock = path.join(home, '.memesh', 'auto-update.lock');
     expect(first).toMatchObject({ state: 'dispatched', lock });
-    expect(second).toMatchObject({ state: 'dispatched', lock });
+    expect(second).toMatchObject({ state: 'throttled' });
+    expect(second.lock).toBeUndefined();
     expect(fs.statSync(path.dirname(lock)).mode & 0o077).toBe(0);
+    expect(fs.existsSync(path.join(home, 'data-a', 'auto-update-attempt'))).toBe(false);
+    expect(fs.existsSync(path.join(home, 'data-b', 'auto-update-attempt'))).toBe(false);
   });
 
   it('routes manual, reinstall, and lock-holder checks through the account lock without moving active state', () => {

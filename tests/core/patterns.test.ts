@@ -36,12 +36,12 @@ describe('computePatterns', () => {
     expect(types).not.toContain('commit');
   });
 
-  it('does not count the session handoff as a focus area', () => {
+  it('counts the retained legacy handoff as an ordinary memory focus area', () => {
     remember({ name: 'e1', type: 'decision', why: 'the simplest layout; revisit if it stops scaling', observations: ['arch choice'] });
     remember({ name: 'session-handoff:p', type: 'session-handoff', observations: ['Stopped right before the release step.'] });
     const types = computePatterns(getDatabase()).focusAreas.map((f) => f.type);
     expect(types).toContain('decision');
-    expect(types).not.toContain('session-handoff');
+    expect(types).toContain('session-handoff');
   });
 
   it('filters by categories when specified', () => {

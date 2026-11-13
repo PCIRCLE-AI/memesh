@@ -177,6 +177,8 @@ describe('memory stays out of the network path', () => {
       'src/core/agent-router.ts',
       'src/core/agent-scope-id.ts',
       'src/core/file-mode.ts',
+      // Shared Windows npm argv builder: only fs.existsSync/path; no memory or SQL.
+      'src/core/npm-launch.ts',
       'src/core/paths.ts',
       'src/core/semver.ts',
       'src/core/time-utils.ts',

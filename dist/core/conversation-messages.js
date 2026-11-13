@@ -87,7 +87,7 @@ export class ConversationMessages {
                     removeGroupAndOtherAccess(target);
                 const legacySource = options.legacySource ?? ownedSource;
                 if (legacySource)
-                    importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine });
+                    importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
                 this.db.transaction(() => this.maintain()).immediate();
             }
             catch (error) {

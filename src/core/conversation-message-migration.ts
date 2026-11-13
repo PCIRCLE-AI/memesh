@@ -85,7 +85,7 @@ export function assertLegacyPathsAreDifferent(sourceFile: string, targetFile: st
 export function importLegacyConversationMessages(
   source: MemeshDatabase,
   target: MemeshDatabase,
-  options: { nowMs: number; localMachine: string },
+  options: { nowMs: number; localMachine: string; messageIds?: readonly string[] },
 ): { imported: number; alreadyImported: number } {
   if (source === target) throw new Error('Legacy source and target must be different databases');
   const targetFile = databaseFile(target);
@@ -98,7 +98,10 @@ export function importLegacyConversationMessages(
     const rows = (table: string, column: string, values: unknown[]): Row[] => tables.has(table)
       ? (source.prepare(`SELECT * FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`).all(JSON.stringify(values)) as Row[])
         .sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
-    return (source.prepare('SELECT * FROM agent_messages ORDER BY message_id').all() as Row[]).flatMap(message => {
+    const messages = options.messageIds === undefined
+      ? source.prepare('SELECT * FROM agent_messages ORDER BY message_id').all()
+      : source.prepare('SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id').all(JSON.stringify(options.messageIds));
+    return (messages as Row[]).flatMap(message => {
       const sentAt = utc(message.created_at); // Invalid time fails the whole snapshot, not a silently skipped row.
       if (Date.parse(sentAt) <= options.nowMs - 14 * 86_400_000) return [];
       const id = text(message.message_id, 'message_id');

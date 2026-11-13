@@ -429,7 +429,7 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
     await req('POST', '/v1/remember', { name: 'lesson-pg-heur-config-error', type: 'lesson_learned' });
     // A project whose name begins with another's: an exact tag match keeps them apart.
     await req('POST', '/v1/remember', { name: 'pg-c-1', type: 'note', tags: ['project:pg-proj-2'] });
-    // The Stop hook's handoff carries the project tag but is not one of its memories.
+    // S2 retains the old handoff entity as an ordinary project memory.
     await req('POST', '/v1/remember', { name: 'session-handoff:pg-proj', type: 'session-handoff', tags: ['project:pg-proj'] });
     // A one-character name is not a project (the chips never read one out of a lesson name).
     await req('POST', '/v1/remember', { name: 'lesson-x-config-error', type: 'lesson_learned' });
@@ -438,9 +438,9 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
   it('pages one project newest-first with limit and offset', async () => {
     const first = await req('GET', '/v1/entities?project=pg-proj&limit=2');
     expect(first.status).toBe(200);
-    expect(names(first)).toEqual(['pg-a-3', 'pg-a-2']);
+    expect(names(first)).toEqual(['session-handoff:pg-proj', 'pg-a-3']);
     const second = await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=2');
-    expect(names(second)).toEqual(['pg-a-1']);
+    expect(names(second)).toEqual(['pg-a-2', 'pg-a-1']);
     expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=50'))).toEqual([]);
   });
 
@@ -462,9 +462,9 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
       const listed = (await req('GET', `/v1/entities?project=${project}&limit=5000`)).body.data.length;
       expect(listed, `${project}: the chip count and the list behind it`).toBe(counted.find((p) => p.name === project)!.count);
     }
-    // Names that share a prefix stay apart, and the handoff is in neither the count nor the list.
+    // Names that share a prefix stay apart; the legacy handoff remains in both count and list.
     expect(names(await req('GET', '/v1/entities?project=pg-proj-2&limit=50'))).toEqual(['pg-c-1']);
-    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('session-handoff:pg-proj');
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).toContain('session-handoff:pg-proj');
     // Too short to be a project from a lesson name: no chip, and no list either.
     expect(counted.find((p) => p.name === 'x')).toBeUndefined();
     expect(names(await req('GET', '/v1/entities?project=x&limit=50'))).toEqual([]);

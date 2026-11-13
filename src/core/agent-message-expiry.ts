@@ -423,7 +423,7 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
         work.transaction(() => {
           renewLease(work, holder);
           // Hold the source write lock through refresh and deletion: later audit facts cannot fall between them.
-          const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+          const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, legacyMessageIds: rows.map(row => row.message_id), clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
           messages.close();
           deleteBatch(work, rows, tally);
           saveRunProgress(work, startedRunId, tally, archiveFile);

@@ -33,6 +33,8 @@ interface RunnerResult {
 
 let tempDir: string;
 let savedMemeshDir: string | undefined;
+let savedHome: string | undefined;
+let savedUserProfile: string | undefined;
 
 function runRunner(lockPath: string, env: NodeJS.ProcessEnv, runner = runnerPath, extraArgs: string[] = []): Promise<RunnerResult> {
   return new Promise((resolve, reject) => {
@@ -51,16 +53,26 @@ function runRunner(lockPath: string, env: NodeJS.ProcessEnv, runner = runnerPath
 beforeEach(() => {
   tempDir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-auto-update-'));
   savedMemeshDir = process.env.MEMESH_DIR;
+  savedHome = process.env.HOME;
+  savedUserProfile = process.env.USERPROFILE;
   process.env.MEMESH_DIR = tempDir;
+  process.env.HOME = path.join(tempDir, 'home');
+  process.env.USERPROFILE = process.env.HOME;
+  fs.mkdirSync(process.env.HOME);
 });
 
 afterEach(() => {
   if (savedMemeshDir === undefined) delete process.env.MEMESH_DIR;
   else process.env.MEMESH_DIR = savedMemeshDir;
+  if (savedHome === undefined) delete process.env.HOME;
+  else process.env.HOME = savedHome;
+  if (savedUserProfile === undefined) delete process.env.USERPROFILE;
+  else process.env.USERPROFILE = savedUserProfile;
   fs.rmSync(tempDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
 });
 
 const lockFile = () => path.join(tempDir, 'auto-update.lock');
+const controlDir = () => path.join(tempDir, 'home', '.memesh');
 const age = (file: string, ms: number) => { const t = new Date(Date.now() - ms); fs.utimesSync(file, t, t); };
 /** A lock file as a runner writes it: token, pid, start time, label, and (when known) the owner's process start time. */
 function writeLock(opts: { pid: number; startTag?: string | null; ageMs: number; startedAgoMs?: number; label?: string }) {
@@ -450,8 +462,9 @@ describe.skipIf(process.platform === 'win32')('auto-update runner process bounda
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('SKIPPED policy is off');
     expect(fs.existsSync(lockFile())).toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: 'policy is off' });
-    expect(fs.readFileSync(path.join(tempDir, 'auto-update.log'), 'utf8')).toContain('SKIPPED: policy is off');
+    expect(JSON.parse(fs.readFileSync(path.join(controlDir(), 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: 'policy is off' });
+    expect(fs.readFileSync(path.join(controlDir(), 'auto-update.log'), 'utf8')).toContain('SKIPPED: policy is off');
+    expect(fs.existsSync(path.join(tempDir, 'auto-update-state.json'))).toBe(false);
   });
 
   it('a damaged old lock does not block the run: it is recovered and a state file is written', async () => {
@@ -461,21 +474,21 @@ describe.skipIf(process.platform === 'win32')('auto-update runner process bounda
     expect(result.code).toBe(0);
     expect(result.stdout).toContain('RECOVERED_STALE');
     expect(fs.existsSync(lockFile())).toBe(false);
-    expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', notice: expect.stringContaining('damaged') });
+    expect(JSON.parse(fs.readFileSync(path.join(controlDir(), 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', notice: expect.stringContaining('damaged') });
   });
 
   it('--manual ignores "off" (the owner asked), but a source checkout still cannot update itself: exit 1 and a record that says why', async () => {
     const result = await runRunner(lockFile(), { ...process.env, MEMESH_AUTO_UPDATE: 'off' }, runnerPath, ['--manual']);
     expect(result.code).toBe(1);
     expect(result.stdout).not.toContain('policy is off');
-    expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: expect.stringContaining('cannot update itself') });
+    expect(JSON.parse(fs.readFileSync(path.join(controlDir(), 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: expect.stringContaining('cannot update itself') });
   });
 
   it('--reinstall means manual too (it ignores "off"): the record says why a source checkout cannot, not "policy is off"', async () => {
     const result = await runRunner(lockFile(), { ...process.env, MEMESH_AUTO_UPDATE: 'off' }, runnerPath, ['--reinstall']);
     expect(result.code).toBe(1);
     expect(result.stdout).not.toContain('policy is off');
-    expect(JSON.parse(fs.readFileSync(path.join(tempDir, 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: expect.stringContaining('cannot update itself') });
+    expect(JSON.parse(fs.readFileSync(path.join(controlDir(), 'auto-update-state.json'), 'utf8'))).toMatchObject({ outcome: 'skipped', reason: expect.stringContaining('cannot update itself') });
   });
 
   it('--manual reports another running update as a failure, not as success', async () => {

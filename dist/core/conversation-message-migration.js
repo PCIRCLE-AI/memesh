@@ -90,7 +90,10 @@ export function importLegacyConversationMessages(source, target, options) {
         const rows = (table, column, values) => tables.has(table)
             ? source.prepare(`SELECT * FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`).all(JSON.stringify(values))
                 .sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
-        return source.prepare('SELECT * FROM agent_messages ORDER BY message_id').all().flatMap(message => {
+        const messages = options.messageIds === undefined
+            ? source.prepare('SELECT * FROM agent_messages ORDER BY message_id').all()
+            : source.prepare('SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id').all(JSON.stringify(options.messageIds));
+        return messages.flatMap(message => {
             const sentAt = utc(message.created_at);
             if (Date.parse(sentAt) <= options.nowMs - 14 * 86_400_000)
                 return [];

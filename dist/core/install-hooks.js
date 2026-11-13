@@ -233,7 +233,8 @@ function installHooksUnguarded(opts, cwd, changes) {
                 });
             }
             existing[event] = [
-                ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e))),
+                ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e)
+                    && !desiredEntries.some((sibling) => entryAlreadyPresent([e], sibling)))),
                 desiredEntry,
             ];
             added++;

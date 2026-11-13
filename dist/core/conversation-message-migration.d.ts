@@ -5,6 +5,7 @@ export declare function assertLegacyPathsAreDifferent(sourceFile: string, target
 export declare function importLegacyConversationMessages(source: MemeshDatabase, target: MemeshDatabase, options: {
     nowMs: number;
     localMachine: string;
+    messageIds?: readonly string[];
 }): {
     imported: number;
     alreadyImported: number;

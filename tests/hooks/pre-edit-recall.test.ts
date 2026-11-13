@@ -846,12 +846,9 @@ syncBuiltinESMExports();
       expect(result).toBe('');
     });
 
-    it('(i-b) excludes a session handoff that names the edited file in its text', () => {
-      // The handoff is a per-project snapshot of the agent's last message,
-      // meant for the start of the next session; repeating it on every edit
-      // of a file it happens to mention would only spend the reader's context.
-      // A note with the same text is the control: it IS recalled, so an empty
-      // result for the handoff is the exclusion at work, not a missed match.
+    it('(i-b) recalls a retained legacy handoff as ordinary memory when it names the edited file', () => {
+      // S2 retains old handoff records as ordinary memories. Both the legacy
+      // record and a note with the same file reference should be recalled.
       const db = createTestDb();
       db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('session-handoff:acme', 'session-handoff');
       const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('session-handoff:acme') as any;
@@ -868,7 +865,7 @@ syncBuiltinESMExports();
 
       const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
       expect(result).toContain('auth-note-control');
-      expect(result).not.toContain('session-handoff');
+      expect(result).toContain('session-handoff');
     });
 
     it("(ii/a) ignores a different file's file: tag, but reaches a curated lesson naming this file literally in prose", () => {

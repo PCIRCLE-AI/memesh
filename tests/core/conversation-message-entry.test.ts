@@ -201,6 +201,26 @@ it('expiry with an empty legacy table does not create a messages database', asyn
   expect(fs.existsSync(path.join(f.data, 'messages.db'))).toBe(false);
 });
 
+it('imports a message added after the initial migration before its later expiry batch deletes it', async () => {
+  const f = fixture(), db = f.source();
+  const first = seed(db, 13);
+  let added: string | undefined;
+  const result = await runAgentMessageExpiry(db, { trigger: 'test-interleaving', nowMs: NOW, fault: { afterBatch(batch) {
+    if (batch === 1) added = seed(db, 2);
+  } } });
+  expect(added).toBeDefined();
+  if (added === undefined) throw new Error('interleaved message was not created');
+  expect(result.outcome).toBe('deleted');
+  expect(result.expired_message_count).toBe(2);
+  expect(db.prepare('SELECT message_id FROM agent_messages WHERE message_id IN (?, ?)').all(first, added)).toEqual([]);
+  const target = new MemeshDatabase(path.join(f.data, 'messages.db'), { readOnly: true });
+  try {
+    const row = target.prepare('SELECT body FROM messages WHERE id = ?').get(added);
+    expect(row?.body).toBe('complete age 2 body');
+    expect(target.prepare("SELECT event FROM events WHERE message_id = ? AND event = 'legacy_imported'").get(added)).toBeDefined();
+  } finally { target.close(); }
+});
+
 it.each([false, true])('refreshes interleaved host acceptance inside the deletion transaction (target fault=%s)', async fault => {
   const f = fixture(), db = f.source(), first = seed(db, 13), late = seed(db, 2);
   const project = 'fixture-project';

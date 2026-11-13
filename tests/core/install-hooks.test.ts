@@ -67,6 +67,23 @@ describe('install-hooks', () => {
     return import('../../src/core/install-hooks.js');
   }
 
+  it('retains desired same-matcher siblings and makes their re-install a filesystem no-op', async () => {
+    const manifestPath = path.join(pluginDir, 'hooks', 'hooks.json');
+    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    manifest.hooks.SessionStart.push({ matcher: '*', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js' }] });
+    fs.writeFileSync(manifestPath, JSON.stringify(manifest));
+    const { installHooks } = await freshModule();
+    const options = { pluginRoot: pluginDir, pluginVersion: '4.13.0', scope: 'user' as const };
+    const first = installHooks(options);
+    const settings = JSON.parse(fs.readFileSync(first.settingsPath, 'utf8'));
+    expect(settings.hooks.SessionStart.map((entry: { hooks: Array<{ command: string }> }) => path.basename(entry.hooks[0].command)))
+      .toEqual(['session-start.js', 'messages.js']);
+    const before = snapshotTree(tmpDir);
+    const again = installHooks(options);
+    expect(again).toMatchObject({ added: 0, skipped: 4, pruned: 0, backupPath: null, settingsWritten: false, markerWritten: false });
+    expect(diffSnapshots(before, snapshotTree(tmpDir))).toEqual([]);
+  });
+
   it('writes 3 memesh hook entries on a fresh user-scope install', async () => {
     const { installHooks } = await freshModule();
     const result = installHooks({ pluginRoot: pluginDir, pluginVersion: '4.1.4', scope: 'user' });

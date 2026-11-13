@@ -32141,7 +32141,8 @@ function importLegacyConversationMessages(source, target, options) {
     if (!tables.has("agent_messages"))
       return [];
     const rows = (table, column, values) => tables.has(table) ? source.prepare(`SELECT * FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`).all(JSON.stringify(values)).sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
-    return source.prepare("SELECT * FROM agent_messages ORDER BY message_id").all().flatMap((message) => {
+    const messages = options.messageIds === void 0 ? source.prepare("SELECT * FROM agent_messages ORDER BY message_id").all() : source.prepare("SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id").all(JSON.stringify(options.messageIds));
+    return messages.flatMap((message) => {
       const sentAt = utc(message.created_at);
       if (Date.parse(sentAt) <= options.nowMs - 14 * 864e5)
         return [];
@@ -32334,7 +32335,7 @@ var ConversationMessages = class {
           removeGroupAndOtherAccess(target);
         const legacySource = options.legacySource ?? ownedSource;
         if (legacySource)
-          importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine });
+          importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error62) {
         this.db.close();
@@ -33030,7 +33031,7 @@ async function runAgentMessageExpiry(db2, options) {
         }
         work.transaction(() => {
           renewLease(work, holder);
-          const messages = new ConversationMessages({ file: path7.join(path7.dirname(file2), "messages.db"), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+          const messages = new ConversationMessages({ file: path7.join(path7.dirname(file2), "messages.db"), legacySource: work, legacyMessageIds: rows.map((row) => row.message_id), clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
           messages.close();
           deleteBatch(work, rows, tally);
           saveRunProgress(work, startedRunId, tally, archiveFile);

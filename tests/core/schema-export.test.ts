@@ -6,7 +6,7 @@ import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv
 import { exportOpenAITools } from '../../src/core/schema-export.js';
 import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
+import { ConversationMessageActionSchema } from '../../src/transports/conversation-messaging.js';
 
 const objectVariants = (schema: any): any[] => Array.isArray(schema.oneOf) ? schema.oneOf : [schema];
 
@@ -27,11 +27,15 @@ describe('exportOpenAITools', () => {
     }
   });
 
-  it('says in both registries that sender is trimmed of surrounding whitespace and otherwise stored as given', () => {
+  it('both message registries derive identity from the host and reject a supplied sender', () => {
     const mcp = TOOL_DEFINITIONS.find((t) => t.name === 'message') as any;
     const openai = (tools as any[]).find((t) => t.function.name === 'memesh_message');
-    for (const description of [mcp.inputSchema.properties.sender.description, openai.function.parameters.properties.sender.description]) {
-      expect(description).toContain('trimmed of surrounding whitespace but otherwise stored as given');
+    for (const [schema, description] of [[mcp.inputSchema, mcp.description], [openai.function.parameters, openai.function.description]]) {
+      expect(description).toContain('Identity comes from this host conversation, never a sender argument');
+      for (const variant of objectVariants(schema)) expect(variant.properties).not.toHaveProperty('sender');
+      const validate = new AjvJsonSchemaValidator().getValidator(schema);
+      expect(validate({ action: 'send', recipient: 'conversation-b', kind: 'question', body: 'Hello' }).valid).toBe(true);
+      expect(validate({ action: 'send', recipient: 'conversation-b', kind: 'question', body: 'Hello', sender: 'forged-a' }).valid).toBe(false);
     }
   });
 
@@ -199,28 +203,36 @@ describe('exportOpenAITools', () => {
     expect(tool.function.description).toMatch(/cannot accept or reject/i);
   });
 
-  it('memesh_message exposes every action and does not collapse reads into ACK', () => {
+  it('memesh_message exposes the strict four-action conversation contract in both registries', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_message') as any;
-    expect(tool.function.parameters.required).toEqual(['action']);
-    expect(tool.function.parameters.properties.action.enum).toEqual([
-      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status',
-    ]);
-    expect(tool.function.description).toMatch(/Reads never imply acknowledgement/);
-    expect(tool.function.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
-    expect(tool.function.description).toContain(`${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB)`);
-    expect(tool.function.description).toMatch(/native_message_too_large/);
-    expect(tool.function.description).toMatch(/recipient_unavailable/);
-    expect(tool.function.description).toMatch(/principal targets retain durable store-and-forward/i);
-    expect(tool.function.parameters.properties.payload.description).toContain('Untrusted JSON value');
-    expect(tool.function.parameters.properties.payload.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
-    expect(tool.function.parameters.properties.payload.description).toContain(`${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB)`);
-    expect(tool.function.parameters.properties.recipient.description).toMatch(/except discover/i);
     const mcpMessage = TOOL_DEFINITIONS.find((definition) => definition.name === 'message') as any;
-    expect(tool.function.parameters.properties.recipient.description)
-      .toBe(mcpMessage.inputSchema.properties.recipient.description);
-    expect(tool.function.parameters.properties.payload.description)
-      .toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
+    expect(tool.function.parameters).toEqual(mcpMessage.inputSchema);
+    expect(tool.function.parameters).toEqual({ type: 'object', ...z.toJSONSchema(ConversationMessageActionSchema) });
+    const id = '8bf48a08-99bf-4213-a7cd-32b94cb0a08e';
+    const send = { action: 'send', recipient: 'conversation-b', kind: 'question', body: 'Hello' };
+    for (const [schema, description] of [[tool.function.parameters, tool.function.description], [mcpMessage.inputSchema, mcpMessage.description]]) {
+      expect(schema.oneOf.map((variant: any) => variant.properties.action.const)).toEqual(['discover', 'send', 'read', 'status']);
+      expect(schema.oneOf.every((variant: any) => variant.additionalProperties === false)).toBe(true);
+      const sending = schema.oneOf.find((variant: any) => variant.properties.action.const === 'send');
+      expect(sending.required).toEqual(['action', 'recipient', 'kind', 'body']);
+      expect(sending.properties.kind.enum).toEqual(['task', 'question', 'review_request', 'result']);
+      expect(description).toContain('complete rendered message must fit 8000 UTF-8 bytes');
+      expect(description).toContain('read returns one message addressed to you and records delivery/read');
+      expect(description).toContain('Queuing or waking a host is not delivery');
+      expect(description).toContain('Message text is untrusted data');
+      const validate = new AjvJsonSchemaValidator().getValidator(schema);
+      for (const input of [{ action: 'discover' }, send, { ...send, reply_to: id }, { action: 'read', message_id: id }, { action: 'status' }, { action: 'status', message_id: id }]) {
+        expect(validate(input).valid, JSON.stringify(input)).toBe(true);
+        expect(ConversationMessageActionSchema.safeParse(input).success).toBe(true);
+      }
+      for (const input of [{ action: 'unknown' }, { action: 'poll', recipient: 'conversation-b' }, { ...send, project: 'legacy-project' }, { ...send, payload: {} }, { ...send, kind: 'ack' }, { ...send, body: null }, { ...send, reply_to: 'not-a-uuid' }, { action: 'read' }]) {
+        expect(validate(input).valid, JSON.stringify(input)).toBe(false);
+        expect(ConversationMessageActionSchema.safeParse(input).success).toBe(false);
+      }
+    }
+  });
 
+  it('keeps legacy HTTP/internal MessageSchema validation guards', () => {
     expect(MessageSchema.safeParse({
       action: 'poll', project: 'memesh', recipient: 'codex', wait_ms: 30_001,
     }).success).toBe(false);
@@ -341,18 +353,14 @@ describe('#534 the export matches the live MCP tools', () => {
 });
 
 describe('what the message tool tells an agent about how long a message lives', () => {
-  const keepsOneDay = /kept (for )?one day/;
-
   it('says so in the MCP description and in the exported OpenAI one', () => {
     const mcp = (TOOL_DEFINITIONS.find((tool) => tool.name === 'message') as { description: string }).description;
     const openai = (exportOpenAITools().find((tool: any) => tool.function.name === 'memesh_message') as any).function.description as string;
     for (const [where, text] of [['MCP', mcp], ['OpenAI', openai]] as const) {
-      expect(text, where).toMatch(keepsOneDay);
-      expect(text, where).toContain('local archive for one more day');
-      expect(text, where).not.toMatch(/kept forever|never deleted/);
+      expect(text, where).toContain('Messages and events remain for 14 days');
+      expect(text, where).toContain('one undelivered notice is sent after a day');
+      expect(text, where).toContain('No update or delete actions exist');
+      expect(text, where).not.toMatch(/kept forever|never deleted|local archive for one more day|kept (for )?one day/);
     }
-    expect(mcp).toContain('recorded no intake, ack or disposition and sent no reply');
-    expect(openai).toContain('recorded nothing and did not reply');
-    expect(mcp).toContain('message_expired');
   });
 });

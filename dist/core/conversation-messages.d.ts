@@ -48,6 +48,7 @@ export declare class ConversationMessages {
         clock?: () => number;
         processAlive?: (pid: number) => boolean;
         legacySource?: MemeshDatabase;
+        legacyMessageIds?: readonly string[];
         busyTimeoutMs?: number;
     });
     close(): void;

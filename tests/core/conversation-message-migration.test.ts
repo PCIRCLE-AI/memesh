@@ -47,6 +47,21 @@ function fixture() {
   return { root, source, target, store, open, add, migrate, rows };
 }
 
+it('imports only explicitly selected IDs, treats an empty selection as empty, and keeps default full import', () => {
+  const f = fixture();
+  f.add('first', 2, 'first body'); f.add('second', 2, 'second body');
+  const run = (messageIds?: string[]) => importLegacyConversationMessages(f.source, f.target, { nowMs: NOW, localMachine: 'test-machine', messageIds });
+  expect(run([])).toEqual({ imported: 0, alreadyImported: 0 });
+  expect(f.store.status()).toEqual([]);
+  expect(run(['second'])).toEqual({ imported: 1, alreadyImported: 0 });
+  expect(f.store.status().map(row => row.id)).toEqual(['second']);
+  expect(run()).toEqual({ imported: 1, alreadyImported: 1 });
+  expect(f.store.status().map(row => row.id).sort()).toEqual(['first', 'second']);
+  f.source.prepare('UPDATE agent_messages SET payload_json=? WHERE message_id=?').run(JSON.stringify('changed'), 'second');
+  expect(() => run(['second'])).toThrow(/Legacy migration conflict/);
+  expect(f.store.status().find(row => row.id === 'second')?.body).toBe('second body');
+});
+
 it('preserves a verified historical sender session so its one-day notice is actually available', () => {
   const f = fixture();
   f.add('notice-original', 2, 'pending', null, { sender_session: 'A', source_host: 'codex' });

@@ -205,7 +205,7 @@ export async function runAgentMessageExpiry(db, options) {
                 }
                 work.transaction(() => {
                     renewLease(work, holder);
-                    const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
+                    const messages = new ConversationMessages({ file: path.join(path.dirname(file), 'messages.db'), legacySource: work, legacyMessageIds: rows.map(row => row.message_id), clock: () => clockMs, busyTimeoutMs: LOCK_WAIT_MS });
                     messages.close();
                     deleteBatch(work, rows, tally);
                     saveRunProgress(work, startedRunId, tally, archiveFile);
