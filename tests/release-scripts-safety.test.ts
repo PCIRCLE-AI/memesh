@@ -266,19 +266,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     const pkg = JSON.parse(read('package.json'));
     expect(pkg.scripts['verify:release']).toContain('node scripts/check-agent-message-sync.mjs');
     const gate = read('scripts/check-agent-message-sync.mjs');
-    const actionsLine = /const ACTIONS = \[([^\]]*)\];/.exec(gate)?.[1] ?? '';
-    const cliActions = /const CLI_ACTIONS = \{([^}]*)\};/.exec(gate)?.[1] ?? '';
-    for (const action of ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status']) {
-      expect(actionsLine, `ACTIONS lists ${action}`).toContain(`'${action}'`);
-      expect(cliActions, `CLI_ACTIONS maps ${action}`).toMatch(new RegExp(`\\b${action}: '`));
-    }
-    expect(gate).toContain('dist/host-adapters/acp-client.js');
-    expect(gate).toContain('dist/transports/agent-messaging.js');
-    expect(gate).toContain('dist/core/agent-router.js');
-    expect(gate).toContain('dist/host-runtime');
-    expect(gate).toContain("'memesh-router'");
+    expect(gate).toContain("['discover', 'send', 'read', 'status']");
     expect(gate).toContain('CLI command');
     expect(gate).toContain('mapped to action');
+    expect(gate).toContain('dist/transports/conversation-messaging.js');
+    expect(gate).toContain('dist/core/conversation-messages.js');
   });
 
   it('makes packaged smoke verify bounded notice native acceptance and an inbox fetch of the body, without poll/watch', () => {
@@ -449,186 +441,51 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     );
   });
 
-  it('fails the sync gate when an installed adapter artifact is missing', () => {
+  it('detects missing actions, incorrect wiring and safety regressions in the conversation gate', () => {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'message-sync-fixture-'));
-    const write = (relative: string, content = '') => {
-      const file = path.join(root, relative);
-      fs.mkdirSync(path.dirname(file), { recursive: true });
-      fs.writeFileSync(file, content);
-    };
-    const actions = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'];
+    const files = [
+      'src/transports/conversation-messaging.ts', 'dist/transports/conversation-messaging.js',
+      'src/transports/mcp/handlers.ts', 'dist/transports/mcp/handlers.js',
+      'src/core/schema-export.ts', 'dist/core/schema-export.js',
+      'src/transports/cli/cli.ts', 'dist/transports/cli/cli.js',
+      'src/core/conversation-messages.ts', 'dist/core/conversation-messages.js',
+      'docs/api/API_REFERENCE.md', 'dist/mcp/server.js', 'src/transports/http/server.ts', 'dist/transports/http/server.js', 'hooks/hooks.json',
+      '.claude-plugin/mcp.json', '.claude-plugin/plugin.json', '.claude-plugin/marketplace.json',
+      '.codex-plugin/mcp.json', '.codex-plugin/plugin.json', 'package.json',
+    ];
     try {
-      write('src/transports/schemas.ts', actions.map(action => `action: z.literal('${action}')`).join('\n') + "\ntarget_kind z.enum(['principal', 'session'])");
-      const messageEnum = (list: string[]) => `name: 'message' inputSchema: { properties: { action: { type: 'string', enum: [${list.map(action => `'${action}'`).join(', ')}], description: 'x' }, target_kind: { type: 'string', enum: ['principal', 'session'] } } } name === 'message' MessageSchema executeAgentMessageAction`;
-      const mcpMessageSchema = messageEnum(actions);
-      write('src/transports/mcp/handlers.ts', mcpMessageSchema);
-      write('src/core/schema-export.ts', actions.map(action => `'${action}'`).join(' '));
-      write('dist/core/schema-export.js', actions.map(action => `'${action}'`).join(' '));
-      write('src/transports/http/server.ts', "executeAgentMessageAction\ntransport: 'http'");
-      const cliMappings = [
-        ['send', 'send'], ['watch', 'poll'], ['discover', 'discover'], ['fetch', 'fetch'], ['intake', 'intake'],
-        ['ack', 'ack'], ['disposition', 'disposition'], ['activation', 'activation'], ['receipts', 'receipts'], ['status', 'status'],
-      ].map(([command, action]) => `.command('${command}')\n.action(() => ({ action: '${action}' }))`).join('\n');
-      const cliRequired = "\n--payload-stdin\nnever argv\nreadCliMessagePayloadFromStdin\nmessageStorageCmd storage report one day from creation, then deleted\n'codex-session'\nmode: host === 'codex-session'\n'ordinary-session-native-queue'";
-      write('src/transports/cli/cli.ts', cliMappings + cliRequired);
-      write('src/transports/agent-messaging.ts', 'target_kind: input.target_kind recipient_unavailable native_accepted');
-      write('src/core/agent-message-storage.ts', 'protected_unresolved_message_count expired_pending_message_count storage_quota_exceeded');
-      write('src/core/agent-router.ts', 'principal session generation host_kind work_summary lease_expires_at_ms');
-      for (const adapter of ['codex-app-server.ts', 'acp-client.ts']) write(`src/host-adapters/${adapter}`, 'adapter');
-      const claudeChannelServer = "'claude/channel' notifications/claude/channel createClaudeChannelServer";
-      write('src/host-adapters/claude-channel.ts', claudeChannelServer);
-      write('src/host-adapters/codex-app-server.ts', 'adapter experimentalApi: true thread/queue/add ws://localhost/rpc perMessageDeflate: false');
-      const codexQueueAdapter = "dispatch(input message = JSON.stringify(messageNotice(input.envelope, input.dispatch_id)) 'queue', '--thread' '--message', message shell: false";
-      const noticeFactory = 'function messageNotice(envelope, deliveryId) { serializeNativeAgentMessage(envelope, deliveryId); return {}; }';
-      write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter);
-      write('src/host-adapters/message-notice.ts', noticeFactory);
-      write('dist/mcp/server.js');
-      write('dist/transports/mcp/handlers.js', mcpMessageSchema);
-      write('dist/transports/http/server.js', 'MessageBody executeAgentMessageAction');
-      write('dist/transports/agent-messaging.js', 'executeAgentMessageAction target_kind: input.target_kind recipient_unavailable native_accepted');
-      write('dist/transports/schemas.js', "target_kind z.enum(['principal', 'session'])");
-      write('dist/transports/cli/cli.js', cliMappings + cliRequired);
-      write('dist/core/agent-message-storage.js', 'protected_unresolved_message_count expired_pending_message_count storage_quota_exceeded');
-      for (const artifact of ['dist/host-adapters/codex-app-server.js', 'dist/host-adapters/acp-client.js']) write(artifact);
-      write('dist/host-adapters/claude-channel.js', claudeChannelServer);
-      write('dist/host-adapters/codex-app-server.js', 'experimentalApi: true thread/queue/add ws://localhost/rpc perMessageDeflate: false');
-      write('dist/host-adapters/codex-cli-queue.js', codexQueueAdapter);
-      write('dist/host-adapters/message-notice.js', noticeFactory);
-      write('dist/core/agent-router.js', 'class AgentRouter host_accept');
-      for (const runtime of ['router', 'router-client', 'config', 'codex', 'codex-session', 'claude', 'acp']) {
-        write(`src/host-runtime/${runtime}.ts`);
-        for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) write(`dist/host-runtime/${runtime}${extension}`);
+      for (const file of files) {
+        fs.mkdirSync(path.dirname(path.join(root, file)), { recursive: true });
+        fs.copyFileSync(path.join(repoRoot, file), path.join(root, file));
       }
-      const codexSession = "CODEX_THREAD_ID hook_event_name !== 'SessionStart' hook_event_name !== 'SessionEnd' adapter_kind: 'codex-cli-queue' launchDetachedCompanion detached: true requestExactCompanionControl(state, 'retire') SESSION_END_GRACE_MS automaticCodexSessionConfig readCodexSessionConfigIfPresent codex-thread-${session.threadId}";
-      write('src/host-runtime/codex-session.ts', codexSession + [
-        "\nif (hookInput.hook_event_name !== 'SessionStart') return null;",
-        "if (hookInput.source !== 'startup' && hookInput.source !== 'resume') return null;",
-        "const identity = { session_instance_id: session.threadId, adapter_kind: 'codex-cli-queue' };",
-      ].join('\n'));
-      write('dist/host-runtime/codex-session.js', codexSession);
-      const codexPrincipal = "CODEX_THREAD_ID codex-thread-${session.threadId}";
-      write('src/core/codex-session-principal.ts', codexPrincipal);
-      write('dist/core/codex-session-principal.js', codexPrincipal);
-      write('tests/host-runtime/codex-session.test.ts', 'automatically registers an ordinary SessionStart without writing a host config accepts a resume SessionStart for automatic registration');
-      write('tests/core/agent-router.test.ts', 'never reroutes or later replays an exact-session delivery and drains principal pending after router restart');
-      write('src/host-runtime/acp.ts', 'session_update_file O_NOFOLLOW');
-      write('dist/host-runtime/acp.js', 'session_update_file O_NOFOLLOW');
-      const apiReference = (list: string[], heading = 'message') => `### ${heading}\n` + list.map(action => `| \`${action}\` | fields | what it does |`).join('\n') + '\nprincipal session generation host_kind work_summary lease_expires_at_ms Local Cloud message storage storage_quota_exceeded';
-      write('docs/api/API_REFERENCE.md', apiReference(actions));
-      const canonicalMessageDoc = [
-        '# Message contract',
-        'principal session generation host_kind work_summary lease_expires_at_ms exact-session principal target Local Cloud Bounded storage and audit retention',
-        '### Ordinary active Codex CLI session',
-        'An ordinary local Codex session requires the MeMesh Codex plugin and packaged SessionStart integration. Each startup or resumed thread then registers automatically under the current project with a thread-scoped principal.',
-        "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.",
-        'If the target Codex session is stopped, missing, disconnected, or no longer matches its configured workspace, MeMesh does not start or replace it. It reports recipient_unavailable. Exact-session failures are not automatically replayed through the native channel on a later registration; the sender must retry deliberately if live delivery is still wanted.',
-        '## Other path',
-      ].join('\n');
-      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
-      write('skills/memesh/SKILL.md', [
-        '# Skill',
-        '## Durable messages and active-host delivery',
-        'message polling. On macOS and Linux, an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart. SessionEnd retains a bounded 45-second idle queue window. This does not wake a stopped UI. Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`. Do not promise a stopped, missing, or replaced session will wake: a failed exact-session native delivery is not replayed automatically. message storage report',
-      ].join('\n'));
-      write('llms-install.md', [
-        '# Install',
-        '## 2. Terminal / CLI (npm global)',
-        '22.16.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
-        'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
-        '## 3. Codex CLI',
-      ].join('\n'));
-      write('README.md', [
-        '# README',
-        '## The fine print',
-        'message registers automatically no manual `agent setup` is required without polling or a human reminder bounded 45-second idle queue window stopped, missing, or disconnected Codex session message storage report',
-        'untrusted JSON-encoded payload is limited to 65,536 UTF-8 bytes (64 KiB); intake, acknowledgement, and workflow disposition are separate facts.',
-        'The complete native envelope is limited to 16,384 bytes (16 KiB); native_message_too_large and recipient_unavailable are distinct. Principal targets retain durable store-and-forward behavior.',
-        'With the plugin, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`.',
-      ].join('\n'));
-      write('README.zh-TW.md', [
-        '# README',
-        '## 細節',
-        'message 自動以 thread-scoped identity 註冊 不需要手動執行 `agent setup` 沒有輪詢或人工提醒 45 秒的有限 idle queue 視窗 停止、缺失或斷線 message storage report',
-        'JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload；intake、acknowledgement 與 workflow disposition 分開記錄。',
-        '完整 native envelope 不超過 16,384 bytes（16 KiB）；native_message_too_large 與 recipient_unavailable 分開回報。Principal target 保留 durable store-and-forward。',
-        '具有有效 identity 並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊。失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。不要假設 Codex Desktop 或未連接的 task 已註冊，除非確切 session 出現在 `message discover`。',
-      ].join('\n'));
-      write('.claude-plugin/mcp.json', 'memesh ${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js');
-      write('.claude-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.claude-plugin/mcp.json"');
-      write('.codex-plugin/plugin.json', '"name": "memesh" "version" "mcpServers": "./.codex-plugin/mcp.json"');
-      write('.codex-plugin/mcp.json', '"mcpServers" "memesh" "command": "node" "args": ["./dist/mcp/server.js"] "cwd": "."');
-      write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
-      write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js prompt-recall.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
-      write('package.json', JSON.stringify({
-        engines: { node: '>=22.16.0' },
-        scripts: { release: 'check-agent-message-sync.mjs test:packaged' },
-        bin: {
-          'memesh-router': 'dist/host-runtime/router.js',
-          'memesh-host-codex': 'dist/host-runtime/codex.js',
-          'memesh-host-codex-session': 'dist/host-runtime/codex-session.js',
-          'memesh-host-claude': 'dist/host-runtime/claude.js',
-          'memesh-host-acp': 'dist/host-runtime/acp.js',
-        },
-      }));
-      const pass = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(pass.status, pass.stderr).toBe(0);
-      const withoutStatus = actions.filter(action => action !== 'status');
-      const gateWith = (files: Record<string, string>, expected: string) => {
-        for (const [file, content] of Object.entries(files)) write(file, content);
-        const result = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-        expect(result.status, `${expected}: ${result.stderr}`).toBe(1);
+      const run = () => spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
+      const baseline = run();
+      expect(baseline.status, baseline.stderr).toBe(0);
+      const mutate = (file: string, from: string, to: string, expected: string) => {
+        const target = path.join(root, file);
+        const original = fs.readFileSync(target, 'utf8');
+        expect(original).toContain(from);
+        fs.writeFileSync(target, original.replace(from, to));
+        const result = run();
+        expect(result.status, result.stderr).toBe(1);
         expect(result.stderr).toContain(expected);
-        write('src/transports/mcp/handlers.ts', mcpMessageSchema); write('dist/transports/mcp/handlers.js', mcpMessageSchema);
-        write('docs/api/API_REFERENCE.md', apiReference(actions));
+        fs.writeFileSync(target, original);
       };
-      gateWith({ 'src/transports/mcp/handlers.ts': messageEnum(withoutStatus) }, 'src/transports/mcp/handlers.ts (MCP message tool action enum');
-      gateWith({ 'dist/transports/mcp/handlers.js': messageEnum(withoutStatus) }, 'dist/transports/mcp/handlers.js (MCP message tool action enum');
-      gateWith({ 'docs/api/API_REFERENCE.md': apiReference(withoutStatus) + ' status' }, 'a table row for the `status` action');
-      // The rows exist, but under another heading: the `message` section does not have them.
-      gateWith({ 'docs/api/API_REFERENCE.md': apiReference(actions, 'memesh message') }, 'section "message" is missing a table row');
-      write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter.replace('messageNotice(input.envelope, input.dispatch_id)', 'input.envelope'));
-      const missingNoticeCall = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(missingNoticeCall.status).toBe(1);
-      expect(missingNoticeCall.stderr).toContain('Codex serializes the shared notice');
-      write('src/host-adapters/codex-cli-queue.ts', codexQueueAdapter);
-      write('src/host-adapters/message-notice.ts', noticeFactory.replace('serializeNativeAgentMessage(envelope, deliveryId);', ''));
-      const missingNoticeGuard = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(missingNoticeGuard.status).toBe(1);
-      expect(missingNoticeGuard.stderr).toContain('shared notice enforces native envelope size');
-      write('src/host-adapters/message-notice.ts', noticeFactory);
-      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('registers automatically', 'does not register automatically'));
-      const negatedRegistration = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(negatedRegistration.status).toBe(1);
-      expect(negatedRegistration.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
-      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace('not automatically replayed', 'automatically replayed'));
-      const negatedNoReplay = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(negatedNoReplay.status).toBe(1);
-      expect(negatedNoReplay.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
-      const desktopSentence = "This guide's supported documented path is ordinary Codex CLI `SessionStart`. Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified. This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.";
-      write('docs/platforms/agent-messaging.md', canonicalMessageDoc.replace(desktopSentence, '').replace('## Other path', `## Other path\n${desktopSentence}`));
-      const relocatedDesktopBoundary = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(relocatedDesktopBoundary.status).toBe(1);
-      expect(relocatedDesktopBoundary.stderr).toContain('positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract');
-      write('docs/platforms/agent-messaging.md', canonicalMessageDoc);
-      write('src/transports/mcp/handlers.ts', "name: 'message' name === 'message' MessageSchema executeAgentMessageAction");
-      const missingPublicTargetKind = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(missingPublicTargetKind.status).toBe(1);
-      expect(missingPublicTargetKind.stderr).toContain('public MCP message target_kind principal/session schema');
-      write('src/transports/mcp/handlers.ts', mcpMessageSchema);
-      write('src/transports/cli/cli.ts', cliMappings.replace(".command('watch')\n.action(() => ({ action: 'poll' }))", ".command('watch')\n.action(() => ({ action: 'fetch' }))") + cliRequired);
-      const wrongMapping = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(wrongMapping.status).toBe(1);
-      expect(wrongMapping.stderr).toContain('CLI command "watch" mapped to action "poll"');
-      write('src/transports/cli/cli.ts', cliMappings + cliRequired);
-      fs.rmSync(path.join(root, 'dist/host-adapters/acp-client.js'));
-      const failed = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(failed.status).toBe(1);
-      expect(failed.stderr).toContain('dist/host-adapters/acp-client.js (missing)');
-      write('dist/host-adapters/acp-client.js');
-      fs.rmSync(path.join(root, 'dist/host-runtime/router.js'));
-      const missingRunner = spawnSync(process.execPath, ['scripts/check-agent-message-sync.mjs', '--root', root], { cwd: repoRoot, encoding: 'utf8' });
-      expect(missingRunner.status).toBe(1);
-      expect(missingRunner.stderr).toContain('dist/host-runtime/router.js (missing)');
+      for (const file of ['src/transports/conversation-messaging.ts', 'dist/transports/conversation-messaging.js']) {
+        mutate(file, "action: z.literal('status')", "action: z.literal('other')", 'conversation actions must be exactly');
+      }
+      mutate('src/transports/cli/cli.ts', 'action: "read", message_id: opts.messageId', 'action: "send", message_id: opts.messageId', 'CLI command "read" mapped to action "read"');
+      mutate('dist/transports/cli/cli.js', 'action: "read", message_id: opts.messageId', 'action: "send", message_id: opts.messageId', 'CLI command "read" mapped to action "read"');
+      mutate('src/core/conversation-messages.ts', 'MESSAGE_MAX_BYTES = 8_000', 'MESSAGE_MAX_BYTES = 80_000', 'MESSAGE_MAX_BYTES');
+      mutate('dist/core/conversation-messages.js', "reason ? 'rejected' : 'queued'", "'queued'", 'rejected');
+      for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {
+        mutate(file, "requirePrivateWritableDirectory(path.dirname(file), 'messages must remain owner-private');", '', 'owner-private directory guard call');
+        mutate(file, 'const tooLarge = Buffer.byteLength', 'const tooLarge = false && Buffer.byteLength', 'rendered-byte limit and rejection branch');
+        mutate(file, 'this.insert(message);', '', 'send insert and rejected audit event');
+        mutate(file, "this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });", '', 'send insert and rejected audit event');
+      }
+      mutate('src/transports/mcp/handlers.ts', 'session: requestContext.hostSession', 'session: args.sender', 'MCP session-bound handler');
+      mutate('docs/api/API_REFERENCE.md', '| `status` | optional `message_id`', '| `other` | optional `message_id`', 'message action rows');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
     }

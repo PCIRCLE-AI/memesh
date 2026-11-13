@@ -1,363 +1,82 @@
 #!/usr/bin/env node
-/**
- * Release gate for the durable-message surface.
- *
- * This is deliberately a source-and-artifact inventory, not a manifest hash
- * check. A skills manifest can be internally consistent while an installed
- * MCP has an old tool schema or no host adapter at all.
- */
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { markdownSection } from './lib/markdown-section.mjs';
 
-const ACTIONS = ['send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts', 'status'];
-const here = path.dirname(fileURLToPath(import.meta.url));
-const defaultRoot = path.resolve(here, '..');
+const ACTIONS = ['discover', 'send', 'read', 'status'];
+const CLI_ACTIONS = { discover: 'discover', send: 'send', read: 'read', status: 'status' };
 const option = process.argv.indexOf('--root');
-const root = option === -1 ? defaultRoot : path.resolve(process.argv[option + 1] ?? '');
-
+const root = option < 0 ? path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..') : path.resolve(process.argv[option + 1] ?? '');
 const missing = [];
-const read = (relative) => {
-  const full = path.join(root, relative);
-  if (!fs.existsSync(full)) {
-    missing.push(`${relative} (missing)`);
-    return '';
-  }
-  return fs.readFileSync(full, 'utf8');
-};
-const requireText = (relative, needles) => {
-  const text = read(relative);
-  for (const needle of needles) {
-    if (!text.includes(needle)) missing.push(`${relative} (missing ${JSON.stringify(needle)})`);
-  }
-};
-const requireAbsent = (relative, why) => {
-  if (fs.existsSync(path.join(root, relative))) missing.push(`${relative} (must NOT exist: ${why})`);
-};
-const requirePattern = (relative, pattern, description) => {
-  const text = read(relative);
-  if (!pattern.test(text)) missing.push(`${relative} (missing ${description})`);
-};
-const requireSectionText = (relative, heading, needles, description) => {
-  const section = markdownSection(read(relative), heading);
-  if (section === null) {
-    missing.push(`${relative} (missing section ${JSON.stringify(heading)})`);
-    return;
-  }
-  const normalized = section.replace(/\s+/g, ' ').trim();
-  for (const needle of needles) {
-    if (!normalized.includes(needle)) {
-      missing.push(`${relative} section ${JSON.stringify(heading)} (missing ${description}: ${JSON.stringify(needle)})`);
-    }
-  }
-};
-const requirePackageBin = (name, target) => {
-  const packageJson = JSON.parse(read('package.json'));
-  if (packageJson.bin?.[name] !== target) {
-    missing.push(`package.json (bin ${JSON.stringify(name)} must map to ${JSON.stringify(target)})`);
-  }
-};
+function read(file) {
+  try { return fs.readFileSync(path.join(root, file), 'utf8'); }
+  catch { missing.push(`${file} (missing)`); return ''; }
+}
+function pattern(file, regex, description) {
+  if (!regex.test(read(file))) missing.push(`${file} (missing ${description})`);
+}
+function tokens(file, list) {
+  const source = read(file);
+  for (const value of list) if (!source.includes(value)) missing.push(`${file} (missing ${JSON.stringify(value)})`);
+}
 
-// One authoritative action list must reach every public transport.
-requireText('src/transports/schemas.ts', ACTIONS.map((action) => `action: z.literal('${action}')`));
-requireText('src/transports/mcp/handlers.ts', ["name === 'message'", 'MessageSchema', 'executeAgentMessageAction']);
-requireText('src/core/schema-export.ts', ACTIONS.map((action) => `'${action}'`));
-requireText('dist/core/schema-export.js', ACTIONS.map((action) => `'${action}'`));
-const publicMessageTargetKind = /name:\s*'message'[\s\S]{0,6000}?target_kind:\s*\{\s*type:\s*'string',\s*enum:\s*\['principal',\s*'session'\]/;
-requirePattern(
-  'src/transports/mcp/handlers.ts',
-  publicMessageTargetKind,
-  'public MCP message target_kind principal/session schema',
-);
-// The MCP tool's own list of actions must be exactly the one above, in the source and in the installed artifact.
-const messageToolActions = (text) => {
-  const at = text.indexOf("name: 'message'");
-  const list = at < 0 ? null : /action:\s*\{[^}]*?enum:\s*\[([^\]]*)\]/s.exec(text.slice(at, at + 8000));
-  return list ? [...list[1].matchAll(/'([a-z_]+)'/g)].map((entry) => entry[1]) : null;
-};
+// The public MCP and CLI share the conversation schema. Legacy HTTP is separate.
+for (const file of ['src/transports/conversation-messaging.ts', 'dist/transports/conversation-messaging.js']) {
+  const source = read(file);
+  const section = /ConversationMessageActionSchema = z\.discriminatedUnion\('action', \[([\s\S]*?)\]\);/.exec(source)?.[1] ?? '';
+  const found = [...section.matchAll(/action:\s*z\.literal\('([^']+)'\)/g)].map(m => m[1]);
+  if (found.join(',') !== ACTIONS.join(',')) missing.push(`${file} (conversation actions must be exactly ${ACTIONS.join(', ')})`);
+  pattern(file, /ConversationMessageActionSchema\.parse\(input\)/, 'action schema validation');
+  pattern(file, /store\.send\(context\.session!?,\s*action\)/, 'session-bound sender');
+  tokens(file, ['CONVERSATION_MESSAGE_INPUT_SCHEMA', 'z.toJSONSchema(ConversationMessageActionSchema)', '!context.session']);
+}
 for (const file of ['src/transports/mcp/handlers.ts', 'dist/transports/mcp/handlers.js']) {
-  const found = messageToolActions(read(file));
-  if (!found || found.join(',') !== ACTIONS.join(',')) {
-    missing.push(`${file} (MCP message tool action enum must be exactly ${ACTIONS.join(', ')}; found ${found ? found.join(', ') : 'none'})`);
-  }
+  pattern(file, /name:\s*'message',\s*description:\s*CONVERSATION_MESSAGE_DESCRIPTION,\s*inputSchema:\s*CONVERSATION_MESSAGE_INPUT_SCHEMA/, 'MCP message schema wiring');
+  pattern(file, /executeConversationMessageAction\(args,\s*\{\s*session:\s*requestContext\.hostSession\s*\}\)/, 'MCP session-bound handler');
 }
-requireText('src/transports/http/server.ts', ['executeAgentMessageAction', "transport: 'http'"]);
-const CLI_ACTIONS = {
-  send: 'send',
-  poll: 'watch',
-  discover: 'discover',
-  fetch: 'fetch',
-  intake: 'intake',
-  ack: 'ack',
-  disposition: 'disposition',
-  activation: 'activation',
-  receipts: 'receipts',
-  status: 'status',
-};
-// dist/transports/cli/cli.js is a self-contained esbuild artifact for
-// node_modules-free marketplace installs. Its transformed command syntax is
-// intentionally not a source-text mirror; runtime coverage lives in
-// tests/codex-plugin-fresh-consumer.test.ts. Keep the source wiring checks
-// below and do not mistake generated bundle text for an independent proof.
+for (const file of ['src/core/schema-export.ts', 'dist/core/schema-export.js']) {
+  pattern(file, /description:\s*CONVERSATION_MESSAGE_DESCRIPTION,\s*parameters:\s*CONVERSATION_MESSAGE_INPUT_SCHEMA/, 'exported message schema wiring');
+}
+for (const file of ['src/transports/cli/cli.ts', 'dist/transports/cli/cli.js']) {
+const cli = read(file);
+const start = cli.indexOf('conversationMessageCmd =');
+const end = cli.indexOf('legacyMessageCmd =', start);
+const publicCli = start >= 0 && end > start ? cli.slice(start, end) : '';
+const commands = [...publicCli.matchAll(/\.command\(["']([^"']+)["']\)/g)].map(m => m[1]);
+if (commands.join(',') !== ['message', ...ACTIONS].join(',')) missing.push(`${file} (public message commands must be exactly four actions)`);
 for (const [action, command] of Object.entries(CLI_ACTIONS)) {
-  // Do not let an unrelated action literal make a command look wired. In
-  // particular, the durable protocol calls this action `poll`, while the CLI
-  // deliberately exposes it as the friendlier `watch` command.
-  requirePattern(
-    'src/transports/cli/cli.ts',
-    new RegExp(`\\.command\\('${command}'\\)[\\s\\S]{0,2400}?action:\\s*'${action}'`),
-    `CLI command ${JSON.stringify(command)} mapped to action ${JSON.stringify(action)}`,
-  );
+  const part = publicCli.split(new RegExp(`\\.command\\(["']${command}["']\\)`))[1]?.split(/\.command\(/)[0] ?? '';
+  if (!new RegExp(`action:\\s*["']${action}["']`).test(part)) missing.push(`${file} (CLI command "${command}" mapped to action "${action}")`);
 }
-requireText('src/transports/cli/cli.ts', ['--payload-stdin', 'never argv', 'readCliMessagePayloadFromStdin']);
-requireText('src/transports/schemas.ts', ['target_kind', "z.enum(['principal', 'session'])"]);
-requireText('dist/transports/schemas.js', ['target_kind', "z.enum(['principal', 'session'])"]);
-requireText('src/transports/agent-messaging.ts', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
-requireText('dist/transports/agent-messaging.js', ['target_kind: input.target_kind', 'recipient_unavailable', 'native_accepted']);
-requireText('src/transports/cli/cli.ts', ['messageStorageCmd', 'storage', 'report', 'one day from creation, then deleted']);
-requireText('src/core/agent-message-storage.ts', ['protected_unresolved_message_count', 'expired_pending_message_count', 'storage_quota_exceeded']);
-requireText('dist/core/agent-message-storage.js', ['protected_unresolved_message_count', 'expired_pending_message_count', 'storage_quota_exceeded']);
-
-// Router/session semantics are a separate lifecycle from durable receipts.
-requireText('src/core/agent-router.ts', [
-  'principal', 'session', 'generation', 'host_kind', 'work_summary', 'lease_expires_at_ms',
-]);
-requireText('dist/core/agent-router.js', ['AgentRouter', 'host_accept']);
-for (const adapter of ['codex-app-server.ts', 'acp-client.ts']) {
-  requireText(`src/host-adapters/${adapter}`, ['adapter']);
+if (!/body:\s*await readConversationMessageBodyFromStdin\(\)/.test(publicCli) || !publicCli.includes('--payload-stdin') || !publicCli.includes('never argv')) missing.push(`${file} (message body must come from stdin)`);
+if (!/session:\s*conversationSession\(["']send["']\)/.test(publicCli)) missing.push(`${file} (session-bound sender)`);
 }
-requireText('src/host-adapters/claude-channel.ts', [
-  "'claude/channel'", 'notifications/claude/channel', 'createClaudeChannelServer',
-]);
-requireText('dist/host-adapters/claude-channel.js', [
-  'notifications/claude/channel', 'createClaudeChannelServer',
-]);
-requirePattern('dist/host-adapters/claude-channel.js', /['"]claude\/channel['"]/, 'claude/channel capability');
-requireText('src/host-adapters/codex-app-server.ts', [
-  'experimentalApi: true', 'thread/queue/add', 'ws://localhost/rpc', 'perMessageDeflate: false',
-]);
-requireText('dist/host-adapters/codex-app-server.js', [
-  'experimentalApi: true', 'thread/queue/add', 'ws://localhost/rpc', 'perMessageDeflate: false',
-]);
-requireText('src/host-adapters/codex-cli-queue.ts', [
-  'dispatch(input', "'queue', '--thread'", "'--message', message", 'shell: false',
-]);
-requireText('dist/host-adapters/codex-cli-queue.js', [
-  'dispatch(input', "'queue', '--thread'", "'--message', message", 'shell: false',
-]);
-for (const file of ['src/host-adapters/codex-cli-queue.ts', 'dist/host-adapters/codex-cli-queue.js']) {
-  requirePattern(file, /message\s*=\s*JSON\.stringify\(messageNotice\(input\.envelope,\s*input\.dispatch_id\)\)/, 'Codex serializes the shared notice');
+for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {
+  tokens(file, ['MESSAGE_MAX_BYTES = 8_000', "Buffer.byteLength(renderConversationMessage(message), 'utf8') > MESSAGE_MAX_BYTES", "'message_too_large'", "'unknown_recipient'", 'message.body = null', "reason ? 'rejected' : 'queued'", '14 * DAY', 'requirePrivateWritableDirectory', '0o700', '0o600']);
+  pattern(file, /requirePrivateWritableDirectory\(path\.dirname\(file\),\s*'messages must remain owner-private'\)/, 'owner-private directory guard call');
+  pattern(file, /const tooLarge = Buffer\.byteLength\(renderConversationMessage\(message\), 'utf8'\) > MESSAGE_MAX_BYTES;\s*const reason = tooLarge \? 'message_too_large' : !to \? 'unknown_recipient' : undefined;\s*if \(tooLarge\)\s*message\.body = null;/, 'rendered-byte limit and rejection branch');
+  pattern(file, /this\.insert\(message\);\s*this\.event\(message\.id, reason \? 'rejected' : 'queued', \{ actor: from\.id, \.\.\.\(reason \? \{ reason \} : \{\}\) \}\);\s*if \(reason\)\s*return \{ message, accepted: false, reason,/, 'send insert and rejected audit event');
+  if (/\b(?:UPDATE|DELETE FROM)\s+(?:messages|events)\b/i.test(read(file).replace(/DELETE FROM messages WHERE sent_at <= \?/g, ''))) missing.push(`${file} (message/event mutation outside expiry)`);
 }
-for (const file of ['src/host-adapters/message-notice.ts', 'dist/host-adapters/message-notice.js']) {
-  requirePattern(file, /function messageNotice\([^)]*\)\s*\{\s*serializeNativeAgentMessage\(envelope,\s*deliveryId\);/, 'shared notice enforces native envelope size');
+const section = markdownSection(read('docs/api/API_REFERENCE.md'), 'message');
+const rows = section === null ? [] : [...section.matchAll(/^\| `([^`]+)` \|/gm)].map(m => m[1]);
+if (rows.join(',') !== ACTIONS.join(',')) missing.push('docs/api/API_REFERENCE.md (message action rows must be exactly four actions)');
+for (const file of ['dist/mcp/server.js', 'dist/transports/http/server.js']) read(file);
+for (const file of ['src/transports/http/server.ts', 'dist/transports/http/server.js']) {
+  tokens(file, ['MessageBody', 'executeAgentMessageAction', "transport: 'http'"]);
 }
-requireText('src/core/codex-session-principal.ts', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
-requireText('dist/core/codex-session-principal.js', ['CODEX_THREAD_ID', 'codex-thread-${session.threadId}']);
-requireText('src/host-runtime/codex-session.ts', [
-  "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
-  "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', "detached: true",
-  "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
-  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent',
-]);
-requireText('dist/host-runtime/codex-session.js', [
-  "hook_event_name !== 'SessionStart'", "adapter_kind: 'codex-cli-queue'",
-  "hook_event_name !== 'SessionEnd'", 'launchDetachedCompanion', 'detached: true',
-  "requestExactCompanionControl(state, 'retire')", 'SESSION_END_GRACE_MS',
-  'automaticCodexSessionConfig', 'readCodexSessionConfigIfPresent',
-]);
-requirePattern(
-  'src/host-runtime/codex-session.ts',
-  /hookInput\.hook_event_name !== 'SessionStart'[\s\S]{0,180}?hookInput\.source !== 'startup' && hookInput\.source !== 'resume'/,
-  'ordinary Codex startup/resume SessionStart validation',
-);
-requirePattern(
-  'src/host-runtime/codex-session.ts',
-  /session_instance_id: session\.threadId,\s*adapter_kind: 'codex-cli-queue'/,
-  'ordinary Codex exact thread bound to the native queue adapter',
-);
-requireText('tests/host-runtime/codex-session.test.ts', [
-  'automatically registers an ordinary SessionStart without writing a host config',
-  'accepts a resume SessionStart for automatic registration',
-]);
-requireText('tests/core/agent-router.test.ts', [
-  'never reroutes or later replays an exact-session delivery and drains principal pending after router restart',
-]);
-requireText('src/transports/cli/cli.ts', [
-  "'codex-session'", "mode: host === 'codex-session'", "'ordinary-session-native-queue'",
-]);
-requireText('src/host-runtime/acp.ts', ['session_update_file', 'O_NOFOLLOW']);
-requireText('dist/host-runtime/acp.js', ['session_update_file', 'O_NOFOLLOW']);
-
-// The Local last mile is not installed by the normal `memesh` CLI alone.
-// Every host-runtime source has a runnable JavaScript artifact plus its
-// declaration/map siblings, and the public bin map must point at the three
-// host runners and router that npm consumers actually execute.
-const hostRuntimeDir = path.join(root, 'src/host-runtime');
-if (!fs.existsSync(hostRuntimeDir)) {
-  missing.push('src/host-runtime (missing)');
-} else {
-  for (const source of fs.readdirSync(hostRuntimeDir).filter((entry) => entry.endsWith('.ts')).sort()) {
-    const stem = source.slice(0, -3);
-    for (const extension of ['.js', '.js.map', '.d.ts', '.d.ts.map']) {
-      read(`dist/host-runtime/${stem}${extension}`);
-    }
-  }
-}
-for (const [name, target] of Object.entries({
-  'memesh-router': 'dist/host-runtime/router.js',
-  'memesh-host-codex': 'dist/host-runtime/codex.js',
-  'memesh-host-codex-session': 'dist/host-runtime/codex-session.js',
-  'memesh-host-claude': 'dist/host-runtime/claude.js',
-  'memesh-host-acp': 'dist/host-runtime/acp.js',
-})) requirePackageBin(name, target);
-
-// A source-only adapter is not installable. These paths are what npm users run.
-for (const artifact of [
-  'dist/mcp/server.js',
-  'dist/transports/mcp/handlers.js',
-  'dist/transports/http/server.js',
-  'dist/transports/cli/cli.js',
-  'dist/transports/agent-messaging.js',
-  'dist/host-adapters/codex-app-server.js',
-  'dist/host-adapters/codex-cli-queue.js',
-  'dist/host-adapters/claude-channel.js',
-  'dist/host-adapters/acp-client.js',
-]) read(artifact);
-requireText('dist/transports/mcp/handlers.js', ["name === 'message'", 'MessageSchema', 'executeAgentMessageAction']);
-requirePattern(
-  'dist/transports/mcp/handlers.js',
-  publicMessageTargetKind,
-  'installed public MCP message target_kind principal/session schema',
-);
-requireText('dist/transports/http/server.js', ['MessageBody', 'executeAgentMessageAction']);
-requireText('dist/transports/agent-messaging.js', ['executeAgentMessageAction']);
-
-// Each action's table row must be in the `message` section: a row (or a CLI row of the same name) elsewhere does not count.
-const messageSection = markdownSection(read('docs/api/API_REFERENCE.md'), 'message');
-for (const action of ACTIONS) {
-  if (messageSection === null || !new RegExp(`^\\| \`${action}\` \\|`, 'm').test(messageSection)) {
-    missing.push(`docs/api/API_REFERENCE.md (section "message" is missing a table row for the \`${action}\` action)`);
-  }
-}
-requireText('docs/api/API_REFERENCE.md', [
-  'principal', 'session', 'generation', 'host_kind', 'work_summary',
-  'lease_expires_at_ms', 'Local', 'Cloud', 'message storage', 'storage_quota_exceeded',
-]);
-requireText('docs/platforms/agent-messaging.md', [
-  'principal', 'session', 'generation', 'host_kind', 'work_summary', 'lease_expires_at_ms',
-  'exact-session', 'principal target', 'Local', 'Cloud', 'Bounded storage and audit retention',
-]);
-requireSectionText(
-  'docs/platforms/agent-messaging.md',
-  'Ordinary active Codex CLI session',
-  [
-    'Each startup or resumed thread then registers automatically under the current project with a thread-scoped principal.',
-    'Codex Desktop or an unattached task is not user-visible native-delivery evidence unless that exact live session registers with the router and the result is directly verified.',
-    'This is a scope boundary for evidence, not a claim that Codex Desktop is universally unsupported.',
-    'If the target Codex session is stopped, missing, disconnected, or no longer matches its configured workspace, MeMesh does not start or replace it.',
-    'Exact-session failures are not automatically replayed through the native channel on a later registration; the sender must retry deliberately if live delivery is still wanted.',
-  ],
-  'positive ordinary-CLI registration, Desktop evidence boundary, and explicit no-replay contract',
-);
-requireSectionText(
-  'skills/memesh/SKILL.md',
-  'Durable messages and active-host delivery',
-  [
-    'an ordinary Codex CLI session with the MeMesh plugin registers automatically at SessionStart',
-    'SessionEnd retains a bounded 45-second idle queue window',
-    'This does not wake a stopped UI',
-    'Codex Desktop and unattached tasks are not presumed registered unless the exact running session appears in `message discover`',
-    'a failed exact-session native delivery is not replayed automatically',
-  ],
-  'qualified ordinary-CLI, Desktop, and no-replay summary',
-);
-requireText('.claude-plugin/mcp.json', ['memesh', '${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js']);
-requireText('.claude-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.claude-plugin/mcp.json"']);
-requireAbsent(
-  '.mcp.json',
-  'Claude Code auto-discovers a root .mcp.json as a PROJECT-scoped MCP config for anyone who ' +
-    'opens this repository, and ${CLAUDE_PLUGIN_ROOT} is undefined there — the server dies with ' +
-    '-32000 Connection closed. Custom component paths supplement the defaults rather than ' +
-    'replacing them, so .claude-plugin/plugin.json declaring a path is only half the fix.'
-);
-requireText('.codex-plugin/plugin.json', [
-  '"name": "memesh"', '"version"', '"mcpServers": "./.codex-plugin/mcp.json"',
-]);
-requireText('.codex-plugin/mcp.json', [
-  '"mcpServers"', '"memesh"', '"command": "node"',
-  '"args": ["./dist/mcp/server.js"]', '"cwd": "."',
-]);
-requireText('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
-requireText('hooks/hooks.json', [
-  'session-start.js', 'session-summary.js', 'pre-compact.js',
-  'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js',
-  'codex-session.js', 'startup|resume', 'SessionEnd',
-]);
-requireText('llms-install.md', [
-  '22.16.0', 'memesh doctor', 'message', 'memesh-router',
-  'memesh-host-codex', 'memesh-host-claude', 'memesh-host-acp', '--config', 'message storage report',
-]);
-requireSectionText(
-  'llms-install.md',
-  '2. Terminal / CLI (npm global)',
-  [
-    'The ordinary Codex path below is the documented bounded native queue path',
-    'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it',
-    'Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
-  ],
-  'qualified ordinary-CLI and no-replay install contract',
-);
-requireText('README.md', [
-  'message', 'registers automatically', 'no manual `agent setup` is required', 'bounded 45-second idle queue window',
-  'stopped, missing, or disconnected Codex session', 'message storage report', '64 KiB', '16 KiB',
-  'untrusted', 'native_message_too_large', 'recipient_unavailable', 'Principal targets retain durable store-and-forward',
-  'acknowledgement', 'workflow disposition',
-]);
-requireText('README.zh-TW.md', [
-  'message', '自動以 thread-scoped identity 註冊', '不需要手動執行 `agent setup`', '45 秒的有限 idle queue 視窗',
-  '停止、缺失或斷線', 'message storage report', '64 KiB', '16 KiB',
-  '不受信任', 'native_message_too_large', 'recipient_unavailable', 'Principal target', 'durable store-and-forward',
-  'acknowledgement', 'workflow disposition',
-]);
-requirePattern(
-  'README.md',
-  /untrusted JSON-encoded payload[^\n]*65,536 UTF-8 bytes \(64 KiB\)[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*separate facts[\s\S]{0,900}?complete native envelope[^\n]*16,384 bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal targets retain durable store-and-forward behavior/,
-  'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the collaboration narrative',
-);
-requireSectionText(
-  'README.md',
-  'The fine print',
-  [
-    'each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity',
-    'a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately',
-    'Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`',
-  ],
-  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary',
-);
-requirePattern(
-  'README.zh-TW.md',
-  /JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*分開記錄[\s\S]{0,1000}?完整 native envelope[^\n]*16,384 bytes（16 KiB）[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal target[^\n]*durable store-and-forward/,
-  'durable=64 KiB, native=16 KiB, and separate lifecycle facts in the Traditional Chinese collaboration narrative',
-);
-requireSectionText(
-  'README.zh-TW.md',
-  '細節',
-  [
-    '並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊',
-    '失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試',
-    '不要假設 Codex Desktop 或未連接的 task 已註冊',
-  ],
-  'qualified ordinary-CLI registration, no-replay, and Desktop evidence boundary in Traditional Chinese',
-);
-const packageJsonText = read('package.json');
-for (const token of ['">=22.16.0"', 'check-agent-message-sync.mjs', 'test:packaged']) {
-  if (!packageJsonText.includes(token)) missing.push(`package.json (missing ${JSON.stringify(token)})`);
-}
-
-if (missing.length > 0) {
+tokens('.claude-plugin/mcp.json', ['memesh', '${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js']);
+tokens('.claude-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.claude-plugin/mcp.json"']);
+tokens('.codex-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.codex-plugin/mcp.json"']);
+tokens('.codex-plugin/mcp.json', ['"mcpServers"', '"memesh"', '"command": "node"', '"args": ["./dist/mcp/server.js"]', '"cwd": "."']);
+tokens('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
+if (fs.existsSync(path.join(root, '.mcp.json'))) missing.push('.mcp.json (must not exist: Claude discovers it as project-scoped)');
+tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'pre-compact.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'codex-session.js', 'startup|resume', 'SessionEnd']);
+tokens('package.json', ['">=22.16.0"', 'check-agent-message-sync.mjs', 'test:packaged']);
+if (missing.length) {
   process.stderr.write(`agent-message-sync: FAIL (${missing.length} drift item(s))\n`);
   for (const item of missing) process.stderr.write(`  - ${item}\n`);
   process.exit(1);
 }
-process.stdout.write(`agent-message-sync: PASS (${ACTIONS.length} actions, router/session lifecycle, host-runtime artifacts, and installed bin mappings)\n`);
+process.stdout.write(`agent-message-sync: PASS (${ACTIONS.length} actions, conversation contract and installed artifacts)\n`);
