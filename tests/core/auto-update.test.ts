@@ -378,6 +378,36 @@ describe('the source check', () => {
 });
 
 describe('the backup', () => {
+  it.skipIf(process.platform === 'win32')('refuses owner-read-only sidecars without widening permissions or creating a backup', () => {
+    const d = tmp();
+    const file = path.join(d, 'knowledge-graph.db');
+    const seed = new DatabaseSync(file);
+    seed.exec("PRAGMA journal_mode=WAL; CREATE TABLE entities(id INTEGER PRIMARY KEY, note TEXT); INSERT INTO entities VALUES(1, 'kept');");
+    seed.close();
+    fs.chmodSync(file, 0o444);
+    const reader = new DatabaseSync(file, { readOnly: true });
+    expect(reader.prepare('SELECT note FROM entities').get()?.note).toBe('kept');
+    reader.close();
+    fs.chmodSync(file, 0o600);
+    for (const suffix of ['-wal', '-shm']) fs.chmodSync(file + suffix, 0o400);
+    expect(fs.statSync(file + '-wal').size).toBe(0);
+    const snapshot = () => ['', '-wal', '-shm'].map(suffix => ({
+      mode: fs.statSync(file + suffix).mode & 0o777,
+      bytes: fs.readFileSync(file + suffix),
+    }));
+    const before = snapshot();
+    expect(() => backupDatabase(file, '4.12.0')).toThrow(expect.objectContaining({ code: 'MEMESH_SIDECAR_PERMISSIONS' }));
+    expect(snapshot()).toEqual(before);
+    expect(fs.existsSync(path.join(d, 'backups'))).toBe(false);
+
+    // The owner's explicit repair restores the existing successful backup path.
+    for (const suffix of ['-wal', '-shm']) fs.chmodSync(file + suffix, 0o600);
+    const made = backupDatabase(file, '4.12.0')!;
+    const copy = new DatabaseSync(made, { readOnly: true });
+    try { expect(copy.prepare('SELECT note FROM entities').get()?.note).toBe('kept'); }
+    finally { copy.close(); }
+  });
+
   it('copies a real database consistently and keeps only the newest few', () => {
     const d = tmp();
     const dbPath = path.join(d, 'knowledge-graph.db');

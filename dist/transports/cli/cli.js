@@ -9853,6 +9853,7 @@ function liveHostPids(dir) {
 function backupDatabase(dbPath, tag) {
   if (!fs13.existsSync(dbPath))
     return null;
+  guardDatabaseFiles(dbPath);
   const backupDir = backupDirectoryFor(dbPath);
   ensureOwnerDir(backupDir);
   let target;

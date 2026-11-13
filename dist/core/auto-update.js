@@ -13,7 +13,7 @@ import { inspectInstall, refreshTargets, refreshInstalls, registryProblemResult,
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 import { writeJustUpgradedMarker } from './update-notice.js';
 import { processStartTag, sameProcessAlive } from './process-identity.js';
-import { removeGroupAndOtherAccess } from './file-mode.js';
+import { guardDatabaseFiles, removeGroupAndOtherAccess } from './file-mode.js';
 import { classifyBump, getInstalledGlobalVersion } from './updater.js';
 export const DEFAULT_AUTO_UPDATE_POLICY = 'major';
 export const PACKAGE_NAME = '@pcircle/memesh';
@@ -538,6 +538,7 @@ export function liveHostPids(dir) {
 export function backupDatabase(dbPath, tag) {
     if (!fs.existsSync(dbPath))
         return null;
+    guardDatabaseFiles(dbPath);
     const backupDir = backupDirectoryFor(dbPath);
     ensureOwnerDir(backupDir);
     let target;

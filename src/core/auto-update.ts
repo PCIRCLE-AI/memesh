@@ -33,7 +33,7 @@ import { inspectInstall, refreshTargets, refreshInstalls, registryProblemResult,
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 import { writeJustUpgradedMarker } from './update-notice.js';
 import { processStartTag, sameProcessAlive } from './process-identity.js';
-import { removeGroupAndOtherAccess } from './file-mode.js';
+import { guardDatabaseFiles, removeGroupAndOtherAccess } from './file-mode.js';
 import { classifyBump, getInstalledGlobalVersion, type AutoUpdatePolicy } from './updater.js';
 
 export const DEFAULT_AUTO_UPDATE_POLICY: AutoUpdatePolicy = 'major';
@@ -653,6 +653,7 @@ export function liveHostPids(dir: string): number[] | null {
 /** A consistent copy of the database (`VACUUM INTO`), keeping the newest few. */
 export function backupDatabase(dbPath: string, tag: string): string | null {
   if (!fs.existsSync(dbPath)) return null;
+  guardDatabaseFiles(dbPath);
   const backupDir = backupDirectoryFor(dbPath);
   ensureOwnerDir(backupDir);
   let target: string;

@@ -26,6 +26,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it, vi } from 'vitest';
+import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 import {
   DEFAULT_WAIT_MS,
   MAX_SOCKET_PATH_BYTES,
@@ -2144,7 +2145,7 @@ describe('Codex proof turn configuration', () => {
   });
 
   it.skipIf(process.platform === 'win32' || !fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(
-    'a real server started with that env never creates ~/.memesh, and one without it does', async () => {
+    'a real server separates explicit data from HOME control, and uses HOME for default data', async () => {
       const { spawn } = await import('node:child_process');
       const serverJs = path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js');
       const until = async (done: () => boolean, ms: number) => {
@@ -2155,30 +2156,54 @@ describe('Codex proof turn configuration', () => {
       const probe = async (withEnv: boolean) => {
         const home = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-home-'));
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dir-'));
+        let cleanupSafe = true;
         try {
+          const env = {
+            ...buildIsolatedSuiteEnv({ PATH: process.env.PATH ?? '' }, { runtimeHome: home }),
+            MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1',
+            ...(withEnv ? { MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'k.db') } : {}),
+          };
+          const account = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').userInfo().homedir)"], { env, encoding: 'utf8' });
+          expect(account.status).toBe(0);
+          expect(account.stdout).toBe(home);
           const child = spawn(process.execPath, [serverJs], {
-            env: { PATH: process.env.PATH ?? '', HOME: home, ...(withEnv ? { MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'k.db') } : {}) },
+            env,
             stdio: ['pipe', 'pipe', 'ignore'],
           });
-          let out = '';
-          child.stdout.on('data', (chunk) => { out += chunk; });
-          const write = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
-          write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
-          expect(await until(() => out.includes('"id":1'), 10_000)).toBe(true);
-          write({ jsonrpc: '2.0', method: 'notifications/initialized' });
-          write({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'message', arguments: { action: 'discover', project: 'p' } } });
-          expect(await until(() => out.includes('"id":2'), 10_000)).toBe(true);
-          child.kill();
-          return { realHomeTouched: fs.existsSync(path.join(home, '.memesh')), dirFiles: fs.readdirSync(dir) };
+          cleanupSafe = false;
+          try {
+            let out = '';
+            child.stdout.on('data', (chunk) => { out += chunk; });
+            const write = (message: unknown) => child.stdin.write(`${JSON.stringify(message)}\n`);
+            write({ jsonrpc: '2.0', id: 1, method: 'initialize', params: { protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 't', version: '1' } } });
+            expect(await until(() => out.includes('"id":1'), 10_000)).toBe(true);
+            write({ jsonrpc: '2.0', method: 'notifications/initialized' });
+            write({ jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'message', arguments: { action: 'discover' } } });
+            const responses = () => out.split('\n').slice(0, -1).map(line => JSON.parse(line));
+            expect(await until(() => responses().some(message => message.id === 2), 10_000)).toBe(true);
+            const response = responses().find(message => message.id === 2);
+            expect(response.error).toBeUndefined();
+            expect(response.result?.isError).not.toBe(true);
+            expect(JSON.parse(response.result.content[0].text).conversations).toEqual(expect.any(Array));
+            const control = path.join(home, '.memesh');
+            expect(fs.statSync(control).mode & 0o077).toBe(0);
+            return { defaultGraph: fs.existsSync(path.join(control, 'knowledge-graph.db')), dirFiles: fs.readdirSync(dir) };
+          } finally {
+            if (child.exitCode === null && child.signalCode === null) child.kill();
+            cleanupSafe = await until(() => child.exitCode !== null || child.signalCode !== null, 3000);
+            expect(cleanupSafe).toBe(true);
+          }
         } finally {
-          fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
-          fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+          if (cleanupSafe) {
+            fs.rmSync(home, { recursive: true, force: true, maxRetries: 5 });
+            fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5 });
+          }
         }
       };
       const explicit = await probe(true);
-      expect(explicit.realHomeTouched).toBe(false);
+      expect(explicit.defaultGraph).toBe(false);
       expect(explicit.dirFiles).toContain('k.db');
       const bare = await probe(false);
-      expect(bare.realHomeTouched).toBe(true);
+      expect(bare.defaultGraph).toBe(true);
     }, 40_000);
 });
