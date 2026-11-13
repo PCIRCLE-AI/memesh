@@ -1139,22 +1139,29 @@ export function replayPendingConversations(env = process.env) {
   }
 }
 
-/** Capture a complete, already attributed event; only lock contention queues it. */
+/** Capture an attributed event; retain write I/O failures alongside lock contention. */
 export function captureConversation(event, env = process.env) {
   const safe = redactTextValues({ ...event, capturedAt: Date.now() });
   conversationDeadline ??= Date.now() + HOOK_BUSY_TIMEOUT_MS;
   let db;
+  let writing = false;
   try {
     ({ db } = openHookDb(env, { fts: true, conversation: true }));
+    writing = true;
     return writeConversation(db, safe);
   } catch (err) {
-    if (!/locked|busy/i.test(String(err.code) + ' ' + String(err.message))) throw err;
+    const locked = /locked|busy/i.test(String(err.code) + ' ' + String(err.message));
+    const writeIoFailed = writing && (err.code === 'EIO' || err.code === 'SQLITE_IOERR'
+      || (Number.isSafeInteger(err.errcode) && err.errcode >= 0 && (err.errcode & 255) === 10));
+    if (!locked && !writeIoFailed) throw err;
     const dir = pendingConversationDir(env);
     ensurePrivateDir(dir);
     // Immutable version files: a drainer that read OLD must never unlink NEW.
     const key = createHash('sha256').update(JSON.stringify(safe)).digest('hex').slice(0, 32);
     writePrivateJsonAtomic(join(dir, `${key}.json`), safe);
-    return { queued: true, reason: 'database locked; redacted conversation pending replay' };
+    return { queued: true, reason: locked
+      ? 'database locked; redacted conversation pending replay'
+      : 'database write I/O failed; redacted conversation pending replay' };
   } finally {
     if (db) try { db.close(); } catch {}
   }
