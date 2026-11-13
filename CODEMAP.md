@@ -104,6 +104,7 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | Command | Fires on | Does |
 |---|---|---|
 | `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice (starts the background auto-update unless the setting is off) |
+| `messages.js` | SessionStart / UserPromptSubmit | register the host conversation, output pending message batches, and record delivery after output succeeds |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
 | `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
