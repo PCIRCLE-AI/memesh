@@ -294,7 +294,7 @@ DatabaseSync.prototype.prepare = function(sql) {
     const fresh = records('post-commit').slice(before);
     expect(fresh).toHaveLength(1);
     expect(fresh[0].outcome).toBe('skipped');
-    expect(fresh[0].reason).toBe('all commits in this range were already processed');
+    expect(fresh[0].reason).toBe(SKIP_REASONS.commitsAlreadyProcessed);
     expect(Object.values(marker().heads)).toContain(next.full);
     expect(commitNames()).toEqual([base.name, next.name].sort());
   });

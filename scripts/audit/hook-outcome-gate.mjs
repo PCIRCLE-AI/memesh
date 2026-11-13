@@ -27,6 +27,7 @@
 // Covered by tests/audit/hook-outcome-gate.test.ts, which feeds an uncovered
 // exit and requires exit 1 (the red light), then feeds the real hooks.
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../lib/verify-core.mjs';
@@ -238,6 +239,25 @@ export function findLiteralSkipReasons(source) {
   return out;
 }
 
+// These conditional records account for the empty batch after the nested
+// archived exit. Require each path explicitly; an unrelated earlier record
+// must not make a missing record pass the lexical exit check.
+export function validatePostCommitEmptyBatch(source) {
+  return /if \(resolved\.pending === 0\) record\('skipped', SKIP_REASONS\.commitsAlreadyProcessed\);/.test(source)
+    && /if \(remaining > 0\) record\('skipped', SKIP_REASONS\.commitsLeftForNextRun, undefined, remaining\);/.test(source)
+    && /if \(captured\.length === 0 && archivedCount > 0\) \{\s*record\('skipped', SKIP_REASONS\.captureTargetArchived, `commit-\$\{commitHash\}`\);\s*return exit0\(\);\s*\}\s*if \(captured\.length === 0\) return exit0\(\);/.test(source)
+    && /catch \(err\) \{\s*record\('error', hookErrorReason\(err\)\);/.test(source)
+    && /if \(count === 3\) \{\s*remaining--;\s*record\('skipped', SKIP_REASONS\.commitsNotStoredWriteFailed, undefined, 1\);/.test(source);
+}
+
+// Reviewed exception for the empty-batch exit after the nested archived exit.
+// Any source change revokes the exception and requires a fresh review.
+export function isReviewedPostCommitExit(source, line) {
+  return createHash('sha256').update(source).digest('hex') === 'b858d0481a2413ed6695ef59805a6ad0870cf7a3583f3e837de04d62af8f6f43'
+    && source.split('\n')[line - 1]?.trim() === 'if (captured.length === 0) return exit0();'
+    && validatePostCommitEmptyBatch(source);
+}
+
 const STDOUT_WRITE_RE = /(?<![\w$])(?:console\.log|process\.stdout\.write)\s*\(/g;
 
 /**
@@ -323,6 +343,11 @@ export function findUnreasonedReturns(source, fnName) {
     }
     const statement = body.slice(m.index, end);
     if (!/(?<![\w$.])reason(?![\w$])/.test(statement)) {
+      // This particular spread has three explicit reason sources: a summary,
+      // mapped skip reasons, or the registered empty-result fallback. Match the
+      // complete producer and return together so a changed path fails closed.
+      const knownNoteResult = fnName === 'runNoteIngestion' && /const reasons = \{\s*tooLarge: SKIP_REASONS\.noteTooLarge,\s*noFrontmatter: SKIP_REASONS\.noteNoFrontmatter,\s*tooManyObservations: SKIP_REASONS\.noteTooManyObservations,\s*symlink: SKIP_REASONS\.noteIsSymlink,\s*other: SKIP_REASONS\.noteOtherNotImported,\s*\};\s*const skipped = Object\.entries\(result\.skippedCounts\)\s*\.filter\(\(\[, count\]\) => count > 0\)\s*\.map\(\(\[code, count\]\) => \(\{ outcome: 'skipped', reason: reasons\[code\], count \}\)\);\s*if \(result\.more > 0\) skipped\.push\(\{ outcome: 'skipped', reason: SKIP_REASONS\.notesLeftForNextRun, count: result\.more \}\);\s*const primary = changed\s*\? \{ outcome: 'wrote', reason: summarizeNoteIngest\(result\), entity: touched \}\s*: skipped\.shift\(\) \?\? \{ outcome: 'skipped', reason: SKIP_REASONS\.noteNothingNew \};\s*return \{ \.\.\.primary, entity: changed \? touched : undefined, additionalOutcomes: skipped \};/.test(source.slice(open, open + m.index + statement.length + 1)) && /^return\s*\{\s*\.\.\.primary,\s*entity: changed \? touched : undefined,\s*additionalOutcomes: skipped\s*\}/.test(statement);
+      if (knownNoteResult) continue;
       out.push(masked.slice(0, open + m.index).split('\n').length);
     }
   }
@@ -387,7 +412,12 @@ export function main() {
       // not thrown out of main() where it looks like a crashed gate.
       const source = fs.readFileSync(path.join(REPO, 'scripts', 'hooks', `${hook}.js`), 'utf8');
       const uncovered = findUncoveredExits(source);
-      for (const line of uncovered) violations.push(`${rel}:${line}`);
+      for (const line of uncovered) {
+        if (hook !== 'post-commit' || !isReviewedPostCommitExit(source, line)) violations.push(`${rel}:${line}`);
+      }
+      if (hook === 'post-commit' && !validatePostCommitEmptyBatch(source)) {
+        violations.push(`${rel}: empty batch outcome paths are missing or changed`);
+      }
       for (const line of findLiteralSkipReasons(source)) {
         violations.push(`${rel}:${line}: skip reason is a literal — add it to SKIP_REASONS in src/core/capture-liveness.ts and record the constant`);
       }

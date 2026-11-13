@@ -414,7 +414,7 @@ process.stdin.on('end', () => {
       // bounded batch. Advance the state only after every selected commit
       // landed or was deliberately skipped, so failures can still retry.
       writeHeadState(state, remaining === 0);
-      if (resolved.pending === 0) record('skipped', 'all commits in this range were already processed');
+      if (resolved.pending === 0) record('skipped', SKIP_REASONS.commitsAlreadyProcessed);
       if (remaining > 0) record('skipped', SKIP_REASONS.commitsLeftForNextRun, undefined, remaining);
       if (captured.length === 0 && archivedCount > 0) {
         record('skipped', SKIP_REASONS.captureTargetArchived, `commit-${commitHash}`);

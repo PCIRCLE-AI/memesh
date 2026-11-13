@@ -69795,6 +69795,7 @@ var init_capture_liveness = __esm({
       commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled",
       commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change",
       commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved",
+      commitsAlreadyProcessed: "all commits in this range were already processed",
       alreadyCaptured: "this session was already captured",
       payloadTooLarge: "payload exceeded the stdin byte cap",
       toolNameAbsent: "tool_name absent in payload",

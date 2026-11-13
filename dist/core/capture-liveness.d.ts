@@ -33,6 +33,7 @@ export declare const SKIP_REASONS: {
     readonly commitHeadBaseline: "recorded the repository HEAD baseline; no history was backfilled";
     readonly commitHeadUnchanged: "a commit-like command completed but repository HEAD did not change";
     readonly commitHeadUnresolvable: "a commit-like command ran but repository HEAD could not be resolved";
+    readonly commitsAlreadyProcessed: "all commits in this range were already processed";
     readonly alreadyCaptured: "this session was already captured";
     readonly payloadTooLarge: "payload exceeded the stdin byte cap";
     readonly toolNameAbsent: "tool_name absent in payload";

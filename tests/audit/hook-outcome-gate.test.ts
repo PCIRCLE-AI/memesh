@@ -8,6 +8,8 @@ import {
   readCaptureHooks,
   validateSessionStart,
   findUnlistedRecordedHooks,
+  validatePostCommitEmptyBatch,
+  isReviewedPostCommitExit,
 } from '../../scripts/audit/hook-outcome-gate.mjs';
 import os from 'os';
 import { spawnSync } from 'child_process';
@@ -19,6 +21,34 @@ import { spawnSync } from 'child_process';
  * directions — it must flag the uncovered exit and stay quiet on a covered one.
  */
 describe('capture-hook outcome gate', () => {
+  it('fails closed when an empty post-commit batch loses a required record', () => {
+    const source = fs.readFileSync(path.resolve('scripts/hooks/post-commit.js'), 'utf8');
+    expect(validatePostCommitEmptyBatch(source)).toBe(true);
+    const uncovered = findUncoveredExits(source);
+    expect(uncovered).toHaveLength(1);
+    expect(isReviewedPostCommitExit(source, uncovered[0])).toBe(true);
+    for (const call of [
+      "record('skipped', SKIP_REASONS.commitsAlreadyProcessed);",
+      "record('skipped', SKIP_REASONS.commitsLeftForNextRun, undefined, remaining);",
+      "record('skipped', SKIP_REASONS.captureTargetArchived, `commit-${commitHash}`);",
+      "record('error', hookErrorReason(err));",
+      "record('skipped', SKIP_REASONS.commitsNotStoredWriteFailed, undefined, 1);",
+    ]) {
+      expect(source).toContain(call);
+      expect(validatePostCommitEmptyBatch(source.replace(call, ''))).toBe(false);
+      expect(isReviewedPostCommitExit(source.replace(call, ''), uncovered[0])).toBe(false);
+    }
+  });
+
+  it('accepts only the proven note result spread and rejects lost reasons', () => {
+    const source = fs.readFileSync(path.resolve('scripts/hooks/_stop-notes.js'), 'utf8');
+    expect(findUnreasonedReturns(source, 'runNoteIngestion')).toEqual([]);
+    for (const reason of ['reason: summarizeNoteIngest(result)', 'reason: reasons[code]', 'reason: SKIP_REASONS.noteNothingNew']) {
+      expect(source).toContain(reason);
+      expect(findUnreasonedReturns(source.replace(reason, 'reasonMissing: undefined'), 'runNoteIngestion')).not.toEqual([]);
+    }
+    expect(findUnreasonedReturns('function runNoteIngestion() { return { ...anything }; }', 'runNoteIngestion')).toEqual([1]);
+  });
   it('flags an early exit with no record before it', () => {
     const source = [
       'process.stdin.on("end", () => {', // 1

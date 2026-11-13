@@ -339,6 +339,7 @@ export const SKIP_REASONS = {
   commitHeadUnchanged: 'a commit-like command completed but repository HEAD did not change',
   /** post-commit #321: repository state could not identify a commit safely. */
   commitHeadUnresolvable: 'a commit-like command ran but repository HEAD could not be resolved',
+  commitsAlreadyProcessed: 'all commits in this range were already processed',
   /** LEGACY (#322), no longer written — see NOT_TRIGGERED_SKIP_REASONS below. */
   alreadyCaptured: 'this session was already captured',
   // Every other skip reason a hook records. They live HERE, not as literals
