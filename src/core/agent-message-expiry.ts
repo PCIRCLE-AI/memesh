@@ -396,19 +396,21 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
 
     const notes: string[] = [];
     let purgeFailed = false;
+    let preservationBlocked = false;
     for (const [file, ownOnly] of purges) {
       try {
-        const purged = await purgeArchive(work, file, holder, ownOnly);
+        const purged = await purgeArchive(work, file, holder, ownOnly, clockMs);
         if (purged > 0) notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file}, the archive an earlier MeMesh shared between databases` : ''}`);
       } catch (error) {
         if (isBusy(error)) throw error;
         purgeFailed = true;
+        if (error instanceof ArchivePreservationError) preservationBlocked = true;
         notes.push(`could not remove archive rows older than a day (${file}: ${errorText(error)}); they stay until the next pass`);
       }
     }
 
     let archiveFailure: string | null = null;
-    if (seen.deletable && archiveFile !== null) {
+    if (!preservationBlocked && seen.deletable && archiveFile !== null) {
       for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
         const rows = selectBatch(work, cutoff, inFlightCutoff);
         if (rows.length === 0) break;
@@ -457,7 +459,8 @@ export async function runAgentMessageExpiry(db: MemeshDatabase, options: AgentMe
     if (remaining > 0) notes.push(`${remaining} expired message(s) left for the next pass`);
     if (archiveFailure !== null) notes.unshift(archiveFailure);
     const detail = notes.length > 0 ? notes.join('; ') : null;
-    const outcome = archiveFailure !== null ? 'archive_failed'
+    const outcome = preservationBlocked ? 'failed'
+      : archiveFailure !== null ? 'archive_failed'
       : tally.expired > 0 ? 'deleted'
       : tally.presenceFacts + tally.connections > 0 ? 'presence_cleared'
         : seen.purgeable ? (purgeFailed ? 'failed' : 'archive_purged')
@@ -971,7 +974,9 @@ function archiveHasPurgeableRows(db: MemeshDatabase, file: string, nowMs: number
  * process. `ownOnly`: only what this database deleted, from a file other databases
  * share. The archive is attached only inside each synchronous step.
  */
-async function purgeArchive(db: MemeshDatabase, file: string, holder: string, ownOnly: boolean): Promise<number> {
+class ArchivePreservationError extends Error {}
+
+async function purgeArchive(db: MemeshDatabase, file: string, holder: string, ownOnly: boolean, clockMs: number): Promise<number> {
   let purged = 0;
   for (;;) {
     if (fs.lstatSync(file, { throwIfNoEntry: false }) === undefined) return purged;
@@ -981,10 +986,21 @@ async function purgeArchive(db: MemeshDatabase, file: string, holder: string, ow
       removed = db.transaction(() => {
         renewLease(db, holder);
         const batch = (db.prepare(`
-          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
-          ${ownOnly ? 'AND message_id IN (SELECT message_id FROM main.agent_message_expiries)' : ''} LIMIT ?
-        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE) as Array<{ message_id: string }>).map((row) => row.message_id);
-        const ids = JSON.stringify(batch);
+          SELECT l.message_id, m.created_at FROM ${ARCHIVE}.archive_log l
+          LEFT JOIN ${ARCHIVE}.agent_messages m ON m.message_id = l.message_id
+          WHERE l.archived_at_ms < ?
+          ${ownOnly ? 'AND l.message_id IN (SELECT message_id FROM main.agent_message_expiries)' : ''} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE) as Array<{ message_id: string; created_at: unknown }>);
+        const cutoff = clockMs - 14 * 86_400_000;
+        const preserved = batch.filter(row => {
+          if (typeof row.created_at !== 'string') return true;
+          const iso = sqliteUtcToIso(row.created_at);
+          if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(iso)) return true;
+          const ms = Date.parse(iso);
+          return !Number.isFinite(ms) || new Date(ms).toISOString() !== (iso.includes('.') ? iso : iso.replace('Z', '.000Z')) || ms > cutoff;
+        });
+        if (preserved.length) throw new ArchivePreservationError(`${preserved.length} archived message(s) have an invalid time or are younger than 14 days; preserved for recovery`);
+        const ids = JSON.stringify(batch.map(row => row.message_id));
         for (const table of [...ARCHIVED_TABLES].reverse()) {
           db.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
         }

@@ -175,9 +175,10 @@ export async function runAgentMessageExpiry(db, options) {
         startedRunId = beginRun(work, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
         const notes = [];
         let purgeFailed = false;
+        let preservationBlocked = false;
         for (const [file, ownOnly] of purges) {
             try {
-                const purged = await purgeArchive(work, file, holder, ownOnly);
+                const purged = await purgeArchive(work, file, holder, ownOnly, clockMs);
                 if (purged > 0)
                     notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file}, the archive an earlier MeMesh shared between databases` : ''}`);
             }
@@ -185,11 +186,13 @@ export async function runAgentMessageExpiry(db, options) {
                 if (isBusy(error))
                     throw error;
                 purgeFailed = true;
+                if (error instanceof ArchivePreservationError)
+                    preservationBlocked = true;
                 notes.push(`could not remove archive rows older than a day (${file}: ${errorText(error)}); they stay until the next pass`);
             }
         }
         let archiveFailure = null;
-        if (seen.deletable && archiveFile !== null) {
+        if (!preservationBlocked && seen.deletable && archiveFile !== null) {
             for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
                 const rows = selectBatch(work, cutoff, inFlightCutoff);
                 if (rows.length === 0)
@@ -237,12 +240,13 @@ export async function runAgentMessageExpiry(db, options) {
         if (archiveFailure !== null)
             notes.unshift(archiveFailure);
         const detail = notes.length > 0 ? notes.join('; ') : null;
-        const outcome = archiveFailure !== null ? 'archive_failed'
-            : tally.expired > 0 ? 'deleted'
-                : tally.presenceFacts + tally.connections > 0 ? 'presence_cleared'
-                    : seen.purgeable ? (purgeFailed ? 'failed' : 'archive_purged')
-                        : tally.notices > 0 ? 'notices_sent'
-                            : remaining > 0 ? 'deferred_in_flight' : 'nothing_expired';
+        const outcome = preservationBlocked ? 'failed'
+            : archiveFailure !== null ? 'archive_failed'
+                : tally.expired > 0 ? 'deleted'
+                    : tally.presenceFacts + tally.connections > 0 ? 'presence_cleared'
+                        : seen.purgeable ? (purgeFailed ? 'failed' : 'archive_purged')
+                            : tally.notices > 0 ? 'notices_sent'
+                                : remaining > 0 ? 'deferred_in_flight' : 'nothing_expired';
         return finish(outcome, detail);
     }
     catch (error) {
@@ -651,7 +655,9 @@ function archiveHasPurgeableRows(db, file, nowMs, ownOnly) {
         return false;
     }
 }
-async function purgeArchive(db, file, holder, ownOnly) {
+class ArchivePreservationError extends Error {
+}
+async function purgeArchive(db, file, holder, ownOnly, clockMs) {
     let purged = 0;
     for (;;) {
         if (fs.lstatSync(file, { throwIfNoEntry: false }) === undefined)
@@ -662,10 +668,24 @@ async function purgeArchive(db, file, holder, ownOnly) {
             removed = db.transaction(() => {
                 renewLease(db, holder);
                 const batch = db.prepare(`
-          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
-          ${ownOnly ? 'AND message_id IN (SELECT message_id FROM main.agent_message_expiries)' : ''} LIMIT ?
-        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE).map((row) => row.message_id);
-                const ids = JSON.stringify(batch);
+          SELECT l.message_id, m.created_at FROM ${ARCHIVE}.archive_log l
+          LEFT JOIN ${ARCHIVE}.agent_messages m ON m.message_id = l.message_id
+          WHERE l.archived_at_ms < ?
+          ${ownOnly ? 'AND l.message_id IN (SELECT message_id FROM main.agent_message_expiries)' : ''} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE);
+                const cutoff = clockMs - 14 * 86_400_000;
+                const preserved = batch.filter(row => {
+                    if (typeof row.created_at !== 'string')
+                        return true;
+                    const iso = sqliteUtcToIso(row.created_at);
+                    if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(iso))
+                        return true;
+                    const ms = Date.parse(iso);
+                    return !Number.isFinite(ms) || new Date(ms).toISOString() !== (iso.includes('.') ? iso : iso.replace('Z', '.000Z')) || ms > cutoff;
+                });
+                if (preserved.length)
+                    throw new ArchivePreservationError(`${preserved.length} archived message(s) have an invalid time or are younger than 14 days; preserved for recovery`);
+                const ids = JSON.stringify(batch.map(row => row.message_id));
                 for (const table of [...ARCHIVED_TABLES].reverse()) {
                     db.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
                 }

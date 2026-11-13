@@ -1005,7 +1005,7 @@ describe('a long pass does not hold the process', () => {
   });
 
   it('lets other work run while it clears a large archive', async () => {
-    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    const old = new Date(Date.now() - 15 * 86_400_000).toISOString();
     db().transaction(() => {
       for (let i = 0; i < 1600; i++) bareMessage(old, 'alice');
     }).immediate();
@@ -1293,10 +1293,79 @@ function inArchive(sql: string): void {
 }
 
 describe('the archive of deleted messages is kept one more day', () => {
+  it.each(['younger', 'invalid'])('preserves an archive-only %s message and warns instead of reporting success', async kind => {
+    const lost = send('alice', 'bob');
+    populate(lost);
+    age(lost.message_id, '-15 days');
+    expect((await run()).outcome).toBe('deleted');
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+    inArchive(kind === 'younger'
+      ? "UPDATE agent_messages SET created_at = datetime('now', '-2 days')"
+      : "UPDATE agent_messages SET created_at = '2026-02-30 00:00:00'");
+    const target = new DatabaseSync(path.join(path.dirname(dbHandle.dbPath), 'messages.db'), { readOnly: true });
+    try { expect(target.prepare('SELECT COUNT(*) AS n FROM messages WHERE id = ?').get(lost.message_id)).toEqual({ n: 0 }); }
+    finally { target.close(); }
+    const pending = send('carol', 'bob');
+    age(pending.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('failed');
+    expect(result.detail).toContain('1 archived message(s) have an invalid time or are younger than 14 days');
+    expect(countIn(archiveFile(), 'agent_messages')).toBe(1);
+    expect(countIn(archiveFile(), 'archive_log')).toBe(1);
+    expect(countIn(archiveFile(), 'agent_message_receipts')).toBeGreaterThan(0);
+    const after = new DatabaseSync(path.join(path.dirname(dbHandle.dbPath), 'messages.db'), { readOnly: true });
+    try { expect(after.prepare('SELECT COUNT(*) AS n FROM messages WHERE id = ?').get(lost.message_id)).toEqual({ n: 0 }); }
+    finally { after.close(); }
+    expect(ids()).toContain(pending.message_id);
+    const row = await doctorRow();
+    expect(row?.status).toBe('warn');
+    expect(row?.summary).toContain('preserved for recovery');
+  });
+
+  it('still purges an archive message older than 14 days', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id, '-15 days');
+    await run();
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+    expect(await run()).toMatchObject({ outcome: 'archive_purged' });
+    expect(countIn(archiveFile(), 'agent_messages')).toBe(0);
+    expect(countIn(archiveFile(), 'archive_log')).toBe(0);
+  });
+
+  it.each([0, 1])('uses the migration clock at the 14-day boundary (offset %i ms)', async offset => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id, '-15 days');
+    await run();
+    const nowMs = Date.now();
+    const created = new Date(nowMs - 14 * 86_400_000 + offset).toISOString();
+    inArchive(`UPDATE agent_messages SET created_at = '${created}'`);
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${nowMs - 25 * 3_600_000}`);
+    const result = await run({ nowMs });
+    expect(result.outcome).toBe(offset === 0 ? 'archive_purged' : 'failed');
+    expect(countIn(archiveFile(), 'agent_messages')).toBe(offset);
+  });
+
+  it('stops the archive loop when an unresolved batch contains 100 entries', async () => {
+    const lost = send('alice', 'bob');
+    age(lost.message_id, '-15 days');
+    await run();
+    const archive = new DatabaseSync(archiveFile());
+    try {
+      archive.prepare('UPDATE archive_log SET archived_at_ms = ?').run(Date.now() - 25 * 3_600_000);
+      const insert = archive.prepare('INSERT INTO archive_log (message_id, archived_at_ms) VALUES (?, ?)');
+      for (let i = 0; i < 100; i++) insert.run(`missing-${i}`, Date.now() - 25 * 3_600_000);
+    } finally { archive.close(); }
+    const result = await run();
+    expect(result.outcome).toBe('failed');
+    expect(result.detail).toContain('preserved for recovery');
+    expect(countIn(archiveFile(), 'archive_log')).toBe(101);
+    expect(countIn(archiveFile(), 'agent_messages')).toBe(1);
+  });
+
   it('removes what was archived more than a day ago, by the time in the archive and not by file name, and keeps what this pass archived', async () => {
     const first = send('alice', 'bob');
     populate(first);
-    age(first.message_id);
+    age(first.message_id, '-15 days');
     await run();
     expect(countIn(archiveFile(), 'agent_messages')).toBe(1);
     // That batch was archived 25 hours ago.
@@ -1314,7 +1383,7 @@ describe('the archive of deleted messages is kept one more day', () => {
 
   it('removes it even when nothing new is expiring, and records that', async () => {
     const first = send('alice', 'bob');
-    age(first.message_id);
+    age(first.message_id, '-15 days');
     await run();
     inArchive("UPDATE archive_log SET archived_at_ms = " + (Date.now() - 25 * 3_600_000));
     const result = await run();
@@ -1336,7 +1405,7 @@ describe('the archive of deleted messages is kept one more day', () => {
     expect(countIn(archiveFile(), 'agent_messages')).toBe(2);
     // And when the purge does run (a third copy is past its day), it still keeps those two.
     const third = send('dave', 'bob');
-    age(third.message_id);
+    age(third.message_id, '-15 days');
     await run();
     inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000} WHERE message_id = '${third.message_id}'`);
     expect(await run()).toMatchObject({ outcome: 'archive_purged' });
@@ -1345,7 +1414,7 @@ describe('the archive of deleted messages is kept one more day', () => {
 
   it('says so, and does not call it a purge, when old archive rows cannot be removed', async () => {
     const first = send('alice', 'bob');
-    age(first.message_id);
+    age(first.message_id, '-15 days');
     await run();
     inArchive("UPDATE archive_log SET archived_at_ms = " + (Date.now() - 25 * 3_600_000));
     inArchive("CREATE TRIGGER refuse_purge BEFORE DELETE ON archive_log BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
@@ -1380,7 +1449,7 @@ describe('the archive of deleted messages is kept one more day', () => {
   async function archivedNotDeleted(): Promise<SentAgentMessage> {
     const lost = send('alice', 'bob');
     populate(lost);
-    age(lost.message_id);
+    age(lost.message_id, '-15 days');
     db().exec("CREATE TRIGGER refuse_delete BEFORE DELETE ON agent_messages BEGIN SELECT RAISE(ABORT, 'refused for the test'); END");
     expect((await run()).outcome).toBe('failed');
     db().exec('DROP TRIGGER refuse_delete');
@@ -1438,7 +1507,7 @@ describe('the archive of deleted messages is kept one more day', () => {
 
   it('still removes archive rows past their extra day when a batch cannot be archived', async () => {
     const first = send('alice', 'bob');
-    age(first.message_id);
+    age(first.message_id, '-15 days');
     await run();
     inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
     const second = send('carol', 'bob');
@@ -2245,6 +2314,25 @@ describe('an archive that keeps failing does not stop the work that does not nee
     `).run(PROJECT, Date.now() - 3 * 86_400_000);
   }
 
+  it('writes owed notices and clears stale presence when a young archive must be preserved', async () => {
+    const first = send('alice', 'bob');
+    age(first.message_id);
+    expect((await runAgentMessageExpiry(db(), { trigger: 'test', fault: { afterBatch: () => { throw new Error('stopped for the test'); } } })).outcome).toBe('failed');
+    inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
+    stalePresence();
+    const next = send('carol', 'bob');
+    age(next.message_id);
+    const result = await run();
+    expect(result.outcome).toBe('failed');
+    expect(result.detail).toContain('preserved for recovery');
+    expect(result.notice_count).toBe(1);
+    expect(noticesTo('alice')).toHaveLength(1);
+    expect(result.connection_count).toBe(1);
+    expect(ids()).toContain(next.message_id);
+    expect(countIn(archiveFile(), 'agent_messages')).toBe(1);
+    expect((await doctorRow())?.status).toBe('warn');
+  });
+
   it('writes the notices it owes and clears old presence, and still deletes nothing more', async () => {
     const first = send('alice', 'bob');
     age(first.message_id);
@@ -2286,7 +2374,7 @@ describe('an archive that keeps failing does not stop the work that does not nee
 
 describe('clearing a large archive', () => {
   it('renews its lease as it goes, and stops when another process took the lease over', async () => {
-    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    const old = new Date(Date.now() - 15 * 86_400_000).toISOString();
     db().transaction(() => { for (let i = 0; i < 300; i++) bareMessage(old, 'alice'); }).immediate();
     expect((await run()).expired_message_count).toBe(300);
     inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
@@ -2334,7 +2422,7 @@ describe('the notice count of a pass is what it committed', () => {
 });
 
 describe('the archive an earlier MeMesh shared between the databases of a folder', () => {
-  it('a database not named knowledge-graph.db removes its own rows from it after their extra day, and nobody else\'s', async () => {
+  it('a database not named knowledge-graph.db removes its own rows older than 14 days, and nobody else\'s', async () => {
     const workPath = path.join(path.dirname(dbHandle.dbPath), 'work.db');
     const work = new MemeshDatabase(workPath);
     work.exec(SCHEMA_SQL);
@@ -2342,7 +2430,7 @@ describe('the archive an earlier MeMesh shared between the databases of a folder
       const theirs = sendAgentMessage(work, {
         project: PROJECT, sender: 'alice', recipient: 'bob', idempotency_key: 'work-key', content_type: 'application/json', payload: { body: 'work' },
       });
-      work.prepare("UPDATE agent_messages SET created_at = datetime('now', '-2 days') WHERE message_id = ?").run(theirs.message_id);
+      work.prepare("UPDATE agent_messages SET created_at = datetime('now', '-15 days') WHERE message_id = ?").run(theirs.message_id);
       const first = await runAgentMessageExpiry(work, { trigger: 'test' });
       expect(first.outcome).toBe('deleted');
       // What an earlier MeMesh did: every database of the folder archived into the one shared file.
@@ -2370,6 +2458,34 @@ describe('the archive an earlier MeMesh shared between the databases of a folder
     } finally {
       work.close();
     }
+  });
+
+  it('preserves its young shared-archive row without changing another graph or archive', async () => {
+    const own = send('alice', 'bob');
+    age(own.message_id, '-15 days');
+    await run();
+    const work = new MemeshDatabase(path.join(path.dirname(dbHandle.dbPath), 'work.db'));
+    work.exec(SCHEMA_SQL);
+    try {
+      const other = sendAgentMessage(work, { project: PROJECT, sender: 'carol', recipient: 'bob', idempotency_key: 'work-young', content_type: 'application/json', payload: { body: 'work' } });
+      work.prepare("UPDATE agent_messages SET created_at = datetime('now', '-15 days') WHERE message_id = ?").run(other.message_id);
+      const first = await runAgentMessageExpiry(work, { trigger: 'test' });
+      const shared = path.join(path.dirname(first.backup_path!), 'agent-messages-expired.db');
+      fs.renameSync(first.backup_path!, shared);
+      const handle = new DatabaseSync(shared);
+      try {
+        handle.exec("UPDATE agent_messages SET created_at = datetime('now', '-2 days')");
+        handle.prepare('UPDATE archive_log SET archived_at_ms = ?').run(Date.now() - 25 * 3_600_000);
+      } finally { handle.close(); }
+      const ownArchiveBefore = fs.readFileSync(archiveFile());
+      const result = await runAgentMessageExpiry(work, { trigger: 'test' });
+      expect(result.outcome).toBe('failed');
+      expect(result.detail).toContain('preserved for recovery');
+      expect(countIn(shared, 'archive_log')).toBe(1);
+      expect(countIn(shared, 'agent_messages')).toBe(1);
+      expect(fs.readFileSync(archiveFile()).equals(ownArchiveBefore)).toBe(true);
+      expect(countIn(archiveFile(), 'agent_messages')).toBe(1);
+    } finally { work.close(); }
   });
 });
 
@@ -2563,7 +2679,7 @@ describe('rules a review found unguarded', () => {
   });
 
   it('gives the archive\'s freed pages back as it removes old copies', async () => {
-    const old = agentMessageExpiryCutoff(Date.now() - 60_000);
+    const old = new Date(Date.now() - 15 * 86_400_000).toISOString();
     const insert = db().prepare(`
       INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json, created_at)
       VALUES (?, ?, 'alice', 'bob', 'text/plain', 'private', ?, '{}', ?)
@@ -2753,7 +2869,7 @@ describe('two databases in one folder', () => {
 describe('doctor and the archive', () => {
   it('does not say the deleted messages are kept in an archive that the next day emptied', async () => {
     const lost = send('alice', 'bob');
-    age(lost.message_id);
+    age(lost.message_id, '-15 days');
     await run();
     inArchive(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 25 * 3_600_000}`);
     const purged = await run();

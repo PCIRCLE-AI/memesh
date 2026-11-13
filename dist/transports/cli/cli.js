@@ -39103,20 +39103,23 @@ async function runAgentMessageExpiry(db2, options) {
     startedRunId = beginRun(work, startedAtMs, options.trigger, seen.deletable ? archiveFile : null);
     const notes = [];
     let purgeFailed = false;
+    let preservationBlocked = false;
     for (const [file3, ownOnly] of purges) {
       try {
-        const purged = await purgeArchive(work, file3, holder, ownOnly);
+        const purged = await purgeArchive(work, file3, holder, ownOnly, clockMs);
         if (purged > 0)
           notes.push(`removed ${purged} archived message(s) past their extra day${ownOnly ? ` from ${file3}, the archive an earlier MeMesh shared between databases` : ""}`);
       } catch (error62) {
         if (isBusy(error62))
           throw error62;
         purgeFailed = true;
+        if (error62 instanceof ArchivePreservationError)
+          preservationBlocked = true;
         notes.push(`could not remove archive rows older than a day (${file3}: ${errorText2(error62)}); they stay until the next pass`);
       }
     }
     let archiveFailure = null;
-    if (seen.deletable && archiveFile !== null) {
+    if (!preservationBlocked && seen.deletable && archiveFile !== null) {
       for (let batch = 1; batch <= MAX_BATCHES_PER_PASS; batch++) {
         const rows = selectBatch(work, cutoff, inFlightCutoff);
         if (rows.length === 0)
@@ -39163,7 +39166,7 @@ async function runAgentMessageExpiry(db2, options) {
     if (archiveFailure !== null)
       notes.unshift(archiveFailure);
     const detail = notes.length > 0 ? notes.join("; ") : null;
-    const outcome = archiveFailure !== null ? "archive_failed" : tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
+    const outcome = preservationBlocked ? "failed" : archiveFailure !== null ? "archive_failed" : tally.expired > 0 ? "deleted" : tally.presenceFacts + tally.connections > 0 ? "presence_cleared" : seen.purgeable ? purgeFailed ? "failed" : "archive_purged" : tally.notices > 0 ? "notices_sent" : remaining > 0 ? "deferred_in_flight" : "nothing_expired";
     return finish(outcome, detail);
   } catch (error62) {
     if (isBusy(error62)) {
@@ -39552,7 +39555,7 @@ function archiveHasPurgeableRows(db2, file2, nowMs, ownOnly) {
     return false;
   }
 }
-async function purgeArchive(db2, file2, holder, ownOnly) {
+async function purgeArchive(db2, file2, holder, ownOnly, clockMs) {
   let purged = 0;
   for (; ; ) {
     if (fs32.lstatSync(file2, { throwIfNoEntry: false }) === void 0)
@@ -39563,10 +39566,24 @@ async function purgeArchive(db2, file2, holder, ownOnly) {
       removed = db2.transaction(() => {
         renewLease(db2, holder);
         const batch = db2.prepare(`
-          SELECT message_id FROM ${ARCHIVE}.archive_log WHERE archived_at_ms < ?
-          ${ownOnly ? "AND message_id IN (SELECT message_id FROM main.agent_message_expiries)" : ""} LIMIT ?
-        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE).map((row) => row.message_id);
-        const ids = JSON.stringify(batch);
+          SELECT l.message_id, m.created_at FROM ${ARCHIVE}.archive_log l
+          LEFT JOIN ${ARCHIVE}.agent_messages m ON m.message_id = l.message_id
+          WHERE l.archived_at_ms < ?
+          ${ownOnly ? "AND l.message_id IN (SELECT message_id FROM main.agent_message_expiries)" : ""} LIMIT ?
+        `).all(Date.now() - AGENT_MESSAGE_TTL_MS, BATCH_SIZE);
+        const cutoff = clockMs - 14 * 864e5;
+        const preserved = batch.filter((row) => {
+          if (typeof row.created_at !== "string")
+            return true;
+          const iso = sqliteUtcToIso(row.created_at);
+          if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(iso))
+            return true;
+          const ms = Date.parse(iso);
+          return !Number.isFinite(ms) || new Date(ms).toISOString() !== (iso.includes(".") ? iso : iso.replace("Z", ".000Z")) || ms > cutoff;
+        });
+        if (preserved.length)
+          throw new ArchivePreservationError(`${preserved.length} archived message(s) have an invalid time or are younger than 14 days; preserved for recovery`);
+        const ids = JSON.stringify(batch.map((row) => row.message_id));
         for (const table of [...ARCHIVED_TABLES].reverse()) {
           db2.prepare(`DELETE FROM ${ARCHIVE}.${table.name} WHERE ${where(ARCHIVE, table.by)}`).run(ids);
         }
@@ -39776,7 +39793,7 @@ function reportProblem(message) {
   } catch {
   }
 }
-var AGENT_MESSAGE_EXPIRY_INTERVAL_MS, AGENT_MESSAGE_EXPIRED_ID_KEEP_MS, AGENT_MESSAGE_ARCHIVE_FILE, RUN_LOG_KEEP, LEASE_MS, BATCH_SIZE, MAX_BATCHES_PER_PASS, IN_FLIGHT_GRACE_MS, NOTICE_LIST_MAX, ARCHIVE, LOCK_WAIT_MS, DUE_SLACK_MS, AGENT_MESSAGE_EXPIRY_NOTICE_SENDER, AGENT_MESSAGE_EXPIRY_TRANSPORT, NOTICE_OWED_SQL, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, NO_NOTICE, WAS_READ_SQL, IN_FLIGHT_SQL, DEAD_CONNECTIONS_SQL, LIVE_CONNECTIONS_SQL, STALE_FACTS_SQL, ARCHIVED_TABLES, unrecorded, abandonedLeases, SQLITE_HEADER;
+var AGENT_MESSAGE_EXPIRY_INTERVAL_MS, AGENT_MESSAGE_EXPIRED_ID_KEEP_MS, AGENT_MESSAGE_ARCHIVE_FILE, RUN_LOG_KEEP, LEASE_MS, BATCH_SIZE, MAX_BATCHES_PER_PASS, IN_FLIGHT_GRACE_MS, NOTICE_LIST_MAX, ARCHIVE, LOCK_WAIT_MS, DUE_SLACK_MS, AGENT_MESSAGE_EXPIRY_NOTICE_SENDER, AGENT_MESSAGE_EXPIRY_TRANSPORT, NOTICE_OWED_SQL, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, NO_NOTICE, WAS_READ_SQL, IN_FLIGHT_SQL, DEAD_CONNECTIONS_SQL, LIVE_CONNECTIONS_SQL, STALE_FACTS_SQL, ARCHIVED_TABLES, unrecorded, abandonedLeases, SQLITE_HEADER, ArchivePreservationError;
 var init_agent_message_expiry = __esm({
   "dist/core/agent-message-expiry.js"() {
     "use strict";
@@ -39865,6 +39882,8 @@ var init_agent_message_expiry = __esm({
     unrecorded = /* @__PURE__ */ new Map();
     abandonedLeases = /* @__PURE__ */ new Set();
     SQLITE_HEADER = "SQLite format 3\0";
+    ArchivePreservationError = class extends Error {
+    };
   }
 });
 
