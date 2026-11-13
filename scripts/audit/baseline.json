@@ -675,6 +675,21 @@
       "class": "SAFE-SEEDED-RECORDS-AND-REAL-HANDSHAKE",
       "reason": "Empty data/account directories assert isolation after positive HOME lock argv, exact attempt bytes and durable log checks. Seeded PID records prove dead-only cleanup. The real MCP child requires a successful parsed initialize result, HOME registry and data DB, with explicit ESRCH cleanup; routing it back to account makes the HOME registry assertion fail.",
       "triaged": "2026-11-13 T1 HOME-control integration triage"
+    },
+    "C1 tests/cli/doctor-message-probe.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "Zero is the compiled probe process verdict for an asserted exact four-action MCP schema; real stdio stale-ten and missing-read controls must exit 1 with AssertionError.",
+      "triaged": "2026-11-14 verification audit"
+    },
+    "C1 tests/core/conversation-message-entry.test.ts": {
+      "class": "SAFE-EMPTY-STATE-ASSERTION",
+      "reason": "Empty status intentionally proves explicit destinations ignore an invalid ambient graph and missing default graphs stay absent; paired byte/existence checks and seeded import bodies/events pin the contrasting paths.",
+      "triaged": "2026-11-14 verification audit"
+    },
+    "C6 tests/readme-tool-parity.test.ts": {
+      "class": "SOURCE-CONTRACT-PIN",
+      "reason": "The source read supplies a real factory fixture to the executed static documentation parser; description/schema and invalid-wiring mutations assert stale certification and fail-closed behavior rather than runtime behavior from text.",
+      "triaged": "2026-11-14 verification audit"
     }
   }
 }
