@@ -9,7 +9,7 @@ import { salvageWithNode } from './node-salvage.js';
 import { repairCommand } from './database-diagnosis.js';
 import { backupDirectoryFor } from './db-copy.js';
 import { liveHostPids, updateControlDir } from './auto-update.js';
-import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory } from './file-mode.js';
+import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory, refuseMismatchedSidecars, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
 
 const SUFFIXES = ['', '-wal', '-shm'] as const;
 type Family = Record<(typeof SUFFIXES)[number], string | null>;
@@ -62,8 +62,11 @@ function memoryCount(db: MemeshDatabase): number {
   if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='entities'").get()) throw new Error('No memory table');
   return (db.prepare('SELECT COUNT(*) AS n FROM entities NOT INDEXED').get() as { n: number }).n;
 }
-const openReadOnly = (file: string): MemeshDatabase =>
-  new MemeshDatabase(hasPagesWaiting(file) ? file : immutableAddress(file), { readOnly: true });
+const openReadOnly = (file: string): MemeshDatabase => {
+  const pending = hasPagesWaiting(file);
+  if (pending) refuseMismatchedSidecars(file, { readOnly: true });
+  return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });
+};
 function inspect(file: string): { memories: number } {
   const db = openReadOnly(file);
   try {
@@ -165,6 +168,7 @@ function installRecovered(source: string, recovered: string, copy: string, expec
   try {
     if (!same(family(source), expected)) throw new Error('Database changed during salvage; stop other writers and retry');
     try {
+      refuseMismatchedSidecars(source);
       lock = new MemeshDatabase(source);
       lock.exec('PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;');
       // The lock must cover the final byte check AND replacement. SQLite's
@@ -220,6 +224,7 @@ export function repairDatabase(database: string, options: {
   try {
     if (!options.fromBackup) {
       try { inspect(source); return { status: 'healthy' }; } catch (error) {
+        if ((error as NodeJS.ErrnoException).code === SIDECAR_PERMISSIONS_CODE) throw error;
         if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(error instanceof Error ? error.message : String(error))) throw error;
         // Corruption can prevent both the integrity check and the table read.
       }

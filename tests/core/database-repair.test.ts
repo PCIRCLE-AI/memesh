@@ -33,7 +33,7 @@ function inspect() {
   try { return { quick: db.prepare('PRAGMA quick_check').get(), count: db.prepare('SELECT COUNT(*) AS n FROM entities').get() }; }
   finally { db.close(); }
 }
-function pendingWal(): void {
+function pendingWal(corrupt = true): void {
   seed();
   const db = getDatabase();
   const row = db.prepare("SELECT rootpage FROM sqlite_master WHERE name='agent_message_deliveries'").get() as { rootpage: number };
@@ -48,6 +48,7 @@ function pendingWal(): void {
   `, fixture.dbPath], { encoding: 'utf8' });
   expect(child.signal).toBe('SIGKILL');
   expect(fs.statSync(`${fixture.dbPath}-wal`).size).toBeGreaterThan(0);
+  if (!corrupt) return;
   const fd = fs.openSync(fixture.dbPath, 'r+');
   try { fs.writeSync(fd, Buffer.alloc(page, 0xa5), 0, page, (row.rootpage - 1) * page); }
   finally { fs.closeSync(fd); }
@@ -76,6 +77,74 @@ describe('one-command database repair', () => {
     const before = bytes();
     expect(repairDatabase(fixture.dbPath, { sqliteExecutable: missingSqlite() })).toEqual({ status: 'healthy' });
     expect(bytes()).toEqual(before);
+  });
+  it.skipIf(process.platform === 'win32').each([
+    { empty: false, mode: 0o400, refused: false },
+    { empty: true, mode: 0o400, refused: true },
+    { empty: true, mode: 0o600, refused: false },
+  ])('preserves committed WAL with empty=$empty sidecar mode=$mode', ({ empty, mode, refused }) => {
+    pendingWal(false);
+    const file = fixture.dbPath;
+    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expect(fs.statSync(file + '-wal').size).toBeGreaterThan(32);
+    expect(fs.statSync(file + '-shm').size).toBeGreaterThan(0);
+    if (empty) fs.truncateSync(file + '-shm', 0);
+    for (const suffix of ['-wal', '-shm']) fs.chmodSync(file + suffix, mode);
+    const family = () => ['', '-wal', '-shm'].map(suffix => ({
+      mode: fs.statSync(file + suffix).mode & 0o777,
+      bytes: fs.readFileSync(file + suffix),
+    }));
+    const before = family();
+    const namesBefore = fs.readdirSync(fixture.tmpDir).sort();
+    if (refused) {
+      expect(() => repairDatabase(file, { sqliteExecutable: missingSqlite() })).toThrow(/fewer owner permissions/);
+      expect(fs.readdirSync(fixture.tmpDir).sort()).toEqual(namesBefore);
+    } else expect(repairDatabase(file)).toEqual({ status: 'healthy' });
+    const after = family();
+    if (mode === 0o400) expect(after).toEqual(before);
+    else {
+      expect(after.slice(0, 2)).toEqual(before.slice(0, 2));
+      expect(after[2].mode).toBe(0o600);
+    }
+    // Read a disposable clone, never reopen the measured original to check data.
+    const copy = path.join(fixture.tmpDir, 'wal-check.db');
+    for (const suffix of ['', '-wal', '-shm']) fs.copyFileSync(file + suffix, copy + suffix, fs.constants.COPYFILE_EXCL);
+    const db = new MemeshDatabase(copy, { readOnly: true });
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM entities').get()).toMatchObject({ n: 21 });
+      expect(db.prepare("SELECT content FROM observations JOIN entities ON entities.id=observations.entity_id WHERE entities.name='wal-only'").get()).toMatchObject({ content: 'wal recovery token' });
+    } finally { db.close(); }
+  });
+  it.skipIf(process.platform === 'win32')('refuses empty owner-mismatched sidecars before the fromBackup writable replacement lock', () => {
+    pendingWal(false);
+    const file = fixture.dbPath;
+    const backup = path.join(fixture.tmpDir, 'standalone-backup.db');
+    // The checkpointed main has 20 memories; the last committed memory is only in WAL.
+    fs.copyFileSync(file, backup, fs.constants.COPYFILE_EXCL);
+    const backupDb = new MemeshDatabase(backup, { readOnly: true });
+    try {
+      expect(backupDb.prepare('PRAGMA quick_check').get()).toMatchObject({ quick_check: 'ok' });
+      expect(backupDb.prepare('SELECT COUNT(*) AS n FROM entities').get()).toMatchObject({ n: 20 });
+    } finally { backupDb.close(); }
+    fs.truncateSync(file + '-shm', 0);
+    for (const suffix of ['-wal', '-shm']) fs.chmodSync(file + suffix, 0o400);
+    const family = () => ['', '-wal', '-shm'].map(suffix => ({
+      mode: fs.statSync(file + suffix).mode & 0o777,
+      bytes: fs.readFileSync(file + suffix),
+    }));
+    const before = family();
+    const replace = vi.fn();
+    expect(() => repairDatabase(file, { fromBackup: backup, replaceFile: replace })).toThrow(/fewer owner permissions/);
+    expect(replace).not.toHaveBeenCalled();
+    expect(family()).toEqual(before);
+    // Damaged-copy artifacts are allowed; the original must retain the WAL-only memory.
+    const copy = path.join(fixture.tmpDir, 'replacement-check.db');
+    for (const suffix of ['', '-wal', '-shm']) fs.copyFileSync(file + suffix, copy + suffix, fs.constants.COPYFILE_EXCL);
+    const db = new MemeshDatabase(copy, { readOnly: true });
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM entities').get()).toMatchObject({ n: 21 });
+      expect(db.prepare("SELECT content FROM observations JOIN entities ON entities.id=observations.entity_id WHERE entities.name='wal-only'").get()).toMatchObject({ content: 'wal recovery token' });
+    } finally { db.close(); }
   });
   it('uses the built-in fallback without sqlite3 and preserves all 20 readable memories', () => {
     seed(); damage('agent_message_deliveries');

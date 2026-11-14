@@ -9,7 +9,7 @@ import { salvageWithNode } from './node-salvage.js';
 import { repairCommand } from './database-diagnosis.js';
 import { backupDirectoryFor } from './db-copy.js';
 import { liveHostPids, updateControlDir } from './auto-update.js';
-import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory } from './file-mode.js';
+import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory, refuseMismatchedSidecars, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
 const SUFFIXES = ['', '-wal', '-shm'];
 function hash(file, keepOpen) {
     let fd;
@@ -65,7 +65,12 @@ function memoryCount(db) {
         throw new Error('No memory table');
     return db.prepare('SELECT COUNT(*) AS n FROM entities NOT INDEXED').get().n;
 }
-const openReadOnly = (file) => new MemeshDatabase(hasPagesWaiting(file) ? file : immutableAddress(file), { readOnly: true });
+const openReadOnly = (file) => {
+    const pending = hasPagesWaiting(file);
+    if (pending)
+        refuseMismatchedSidecars(file, { readOnly: true });
+    return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });
+};
 function inspect(file) {
     const db = openReadOnly(file);
     try {
@@ -200,6 +205,7 @@ function installRecovered(source, recovered, copy, expected, replace) {
         if (!same(family(source), expected))
             throw new Error('Database changed during salvage; stop other writers and retry');
         try {
+            refuseMismatchedSidecars(source);
             lock = new MemeshDatabase(source);
             lock.exec('PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;');
             const locked = family(source, hashHandles);
@@ -257,6 +263,8 @@ export function repairDatabase(database, options = {}) {
                 return { status: 'healthy' };
             }
             catch (error) {
+                if (error.code === SIDECAR_PERMISSIONS_CODE)
+                    throw error;
                 if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(error instanceof Error ? error.message : String(error)))
                     throw error;
             }

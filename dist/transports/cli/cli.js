@@ -6993,7 +6993,7 @@ function requirePrivateWritableDirectory(dir, purpose) {
     throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
   }
 }
-function refuseMismatchedSidecars(dbPath) {
+function refuseMismatchedSidecars(dbPath, options = {}) {
   if (process.platform === "win32")
     return;
   const [real, wal, shm] = databaseFiles(dbPath);
@@ -7008,6 +7008,8 @@ function refuseMismatchedSidecars(dbPath) {
   for (const sidecar of [wal, shm]) {
     const stat = fs4.statSync(sidecar, { throwIfNoEntry: false });
     if (!stat)
+      continue;
+    if (options.readOnly && stat.size > 0)
       continue;
     const missing = database.mode & ~stat.mode & (stat.size === 0 ? 448 : 384);
     const added = stat.mode & ~database.mode & 448;
@@ -74227,7 +74229,12 @@ function memoryCount(db2) {
     throw new Error("No memory table");
   return db2.prepare("SELECT COUNT(*) AS n FROM entities NOT INDEXED").get().n;
 }
-var openReadOnly = (file2) => new MemeshDatabase(hasPagesWaiting(file2) ? file2 : immutableAddress(file2), { readOnly: true });
+var openReadOnly = (file2) => {
+  const pending = hasPagesWaiting(file2);
+  if (pending)
+    refuseMismatchedSidecars(file2, { readOnly: true });
+  return new MemeshDatabase(pending ? file2 : immutableAddress(file2), { readOnly: true });
+};
 function inspect(file2) {
   const db2 = openReadOnly(file2);
   try {
@@ -74363,6 +74370,7 @@ function installRecovered(source, recovered, copy, expected, replace) {
     if (!same(family(source), expected))
       throw new Error("Database changed during salvage; stop other writers and retry");
     try {
+      refuseMismatchedSidecars(source);
       lock = new MemeshDatabase(source);
       lock.exec("PRAGMA busy_timeout=0; PRAGMA locking_mode=EXCLUSIVE; BEGIN EXCLUSIVE;");
       const locked = family(source, hashHandles);
@@ -74415,6 +74423,8 @@ function repairDatabase(database, options = {}) {
         inspect(source);
         return { status: "healthy" };
       } catch (error62) {
+        if (error62.code === SIDECAR_PERMISSIONS_CODE)
+          throw error62;
         if (/database is locked|SQLITE_BUSY|SQLITE_LOCKED/i.test(error62 instanceof Error ? error62.message : String(error62)))
           throw error62;
       }

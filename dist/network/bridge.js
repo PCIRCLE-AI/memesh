@@ -179,7 +179,7 @@ var SIDECAR_PERMISSIONS_CODE = "MEMESH_SIDECAR_PERMISSIONS";
 var OWNER_LETTERS = [[256, "r"], [128, "w"], [64, "x"]];
 var quoted = (files) => files.map(shellQuote).join(" ");
 var letters = (bits) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join("");
-function refuseMismatchedSidecars(dbPath) {
+function refuseMismatchedSidecars(dbPath, options = {}) {
   if (process.platform === "win32")
     return;
   const [real, wal, shm] = databaseFiles(dbPath);
@@ -194,6 +194,8 @@ function refuseMismatchedSidecars(dbPath) {
   for (const sidecar of [wal, shm]) {
     const stat = fs.statSync(sidecar, { throwIfNoEntry: false });
     if (!stat)
+      continue;
+    if (options.readOnly && stat.size > 0)
       continue;
     const missing = database.mode & ~stat.mode & (stat.size === 0 ? 448 : 384);
     const added = stat.mode & ~database.mode & 448;

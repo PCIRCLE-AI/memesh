@@ -151,7 +151,7 @@ const letters = (bits: number) => OWNER_LETTERS.filter(([bit]) => bits & bit).ma
  * A non-empty sidecar with more permissions is left alone by SQLite, so a
  * read-only database next to it still opens for reads.
  */
-export function refuseMismatchedSidecars(dbPath: string): void {
+export function refuseMismatchedSidecars(dbPath: string, options: { readOnly?: boolean } = {}): void {
   if (process.platform === 'win32') return; // no owner/group/other bits there
   const [real, wal, shm] = databaseFiles(dbPath);
   const database = fs.statSync(real, { throwIfNoEntry: false });
@@ -164,6 +164,9 @@ export function refuseMismatchedSidecars(dbPath: string): void {
   for (const sidecar of [wal, shm]) {
     const stat = fs.statSync(sidecar, { throwIfNoEntry: false });
     if (!stat) continue;
+    // Read-only opens can use an existing nonempty sidecar without changing
+    // its owner bits. Empty sidecars can still be chmod'ed by SQLite.
+    if (options.readOnly && stat.size > 0) continue;
     // SQLite copies the whole owner triplet (x included) onto an EMPTY
     // sidecar; a non-empty one only needs read and write.
     const missing = database.mode & ~stat.mode & (stat.size === 0 ? 0o700 : 0o600);
