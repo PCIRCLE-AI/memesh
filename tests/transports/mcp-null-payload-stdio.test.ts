@@ -54,6 +54,7 @@ it('#553 packaged MCP preserves nulls inside text and rejects null or misplaced 
     expect(extra.text).toContain('payload');
     const afterRejectedReads = await call({ action: 'status', message_id }, 'A');
     expect(afterRejectedReads.isError, afterRejectedReads.text).toBe(false);
+    expect(JSON.parse(afterRejectedReads.text).messages).toHaveLength(1);
     expect(JSON.parse(afterRejectedReads.text).messages[0].events.map((event: { event: string }) => event.event)).toEqual(['queued']);
     const read = await call({ action: 'read', message_id }, 'B');
     expect(read.isError, read.text).toBe(false);
