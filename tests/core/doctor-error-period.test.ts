@@ -159,11 +159,11 @@ describe('Feature: doctor on a Node that cannot run MeMesh, by cause', () => {
 
   it('the Node runtime row fails (it used to pass) when node:sqlite is missing from a new-enough Node, and says what helps', () => {
     const root = path.join(__dirname, '..', '..');
-    const row = inspectNodeRuntime(root, fs.existsSync, fs.readFileSync, 'v24.15.0', '137', () => false);
+    const row = inspectNodeRuntime(root, fs.existsSync, fs.readFileSync, 'v24.22.3', '137', () => false);
     expect(row.status).toBe('fail');
     expect(row.fix).toContain('--no-experimental-sqlite');
     expect(row.fix).not.toMatch(/upgrade/i);
-    expect(inspectNodeRuntime(root, fs.existsSync, fs.readFileSync, 'v24.15.0', '137', () => true).status).toBe('pass');
+    expect(inspectNodeRuntime(root, fs.existsSync, fs.readFileSync, 'v24.22.3', '137', () => true).status).toBe('pass');
   });
 
   it('the Update status row does not tell a Node that cannot run MeMesh to run `memesh status`', async () => {

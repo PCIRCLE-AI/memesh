@@ -10,10 +10,13 @@ import { MIN_NODE_VERSION, MemeshDatabase, fts5ProbeResult, UnsupportedNodeError
 const yes = () => true;
 
 describe('Feature: the Node floor check', () => {
-  it('floor is 22.16.0 and matches package.json engines', () => {
+  it('keeps the SQLite capability floor below every supported security release', () => {
     const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
     expect(MIN_NODE_VERSION).toBe('22.16.0');
-    expect(pkg.engines.node).toBe(`>=${MIN_NODE_VERSION}`);
+    expect(pkg.engines.node).toBe('^22.23.5 || ^24.22.3 || ^26.13.1');
+    for (const version of ['22.23.5', '24.22.3', '26.13.1']) {
+      expect(nodeSupportProblem(version, yes)).toBeNull();
+    }
   });
 
   it.each(['22.13.0', '22.14.0', '22.15.0', '22.15.1', '21.9.0', '20.19.0', 'garbage'])('rejects %s', (version) => {

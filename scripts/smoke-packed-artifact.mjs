@@ -1,15 +1,13 @@
 import assert from 'node:assert/strict';
-import { execFileSync, spawn, spawnSync } from 'node:child_process';
+import { execFileSync, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import fs from 'node:fs';
-import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { binTargets, hookCommands, mcpEntry, mcpManifestPath } from './lib/executable-targets.mjs';
 import { buildIsolatedRuntimeEnv } from './lib/isolated-env.mjs';
 import { npmSync } from './lib/npm-bin.mjs';
-import { writeNodeShim } from './lib/node-shim.mjs';
 
 const repoRoot = process.cwd();
 
@@ -658,6 +656,10 @@ try {
   const sendArgs = { action: 'send', recipient: 'B', kind: 'task', body };
   rejected(await message(sendArgs), /conversation_identity_unavailable/, 'missing session');
   rejected(await message({ action: 'poll' }, 'A'), /action|Invalid|invalid/, 'legacy poll');
+  for (const action of ['update', 'delete']) {
+    rejected(await message({ action }, 'A'), /action|Invalid|invalid/, action);
+  }
+  rejected(await message({ ...sendArgs, sender: 'C' }, 'A'), /sender|Unrecognized/, 'forged sender');
   rejected(await message({ ...sendArgs, project: 'obsolete' }, 'A'), /project|Unrecognized/, 'unknown field');
   assert.deepEqual(value(await message({ action: 'status' }, 'A'), 'empty status').messages, []);
 
@@ -698,6 +700,13 @@ try {
   assert.equal(refused[0].body_bytes, Buffer.byteLength(oversized, 'utf8'));
   assert.deepEqual(refused[0].events.map((event) => event.event), ['rejected']);
   assert.ok(Buffer.byteLength(JSON.stringify(refused[0]), 'utf8') < 2000, 'oversized audit retained unbounded content');
+  rejected(await message({ ...sendArgs, recipient: 'unknown-conversation' }, 'A'), /unknown_recipient/, 'unknown recipient');
+  const unknownAudit = value(await message({ action: 'status' }, 'A'), 'unknown recipient audit').messages
+    .find(row => row.recipient === 'unknown-conversation');
+  assert.equal(unknownAudit.body, body);
+  assert.equal(unknownAudit.state, 'rejected');
+  assert.deepEqual(unknownAudit.events.map(event => event.event), ['rejected']);
+  assert.deepEqual(value(await message({ action: 'status' }, 'C'), 'unrelated conversation status').messages, []);
 } finally {
   await client.close();
 }
@@ -714,506 +723,132 @@ try {
   }
 );
 
-// This is intentionally a process-level installed-artifact check, not a
-// source import or a direct AgentRouter test. It starts the `memesh-router`
-// binary npm installed for this consumer, connects a controlled host through
-// the installed router-client module, and sends through the installed `memesh`
-// CLI with a payload on stdin. This verifies the installed-artifact
-// router-to-adapter notice contract using a controlled host and a fake
-// queue; it does not create or observe a real Codex task or user-visible
-// notification. The contract is exercised without poll/watch: exact-session
-// send returns only after the router persists native host acceptance.
-//
-// Windows does not provide the owner-private Unix-domain-socket contract this
-// local runner implements, so a Windows package still gets the manifest and
-// MCP checks above but cannot run this POSIX router-to-adapter contract. No
-// result from this harness, on any platform, is evidence of a real Codex task
-// or a user-visible notification.
-async function waitFor(condition, description, timeoutMs = 5_000) {
-  const deadline = Date.now() + timeoutMs;
-  while (Date.now() < deadline) {
-    if (condition()) return;
-    await new Promise((resolve) => setTimeout(resolve, 25));
-  }
-  throw new Error(`Timed out waiting for ${description}`);
-}
+const installedCliEntry = path.join(installedRoot,
+  JSON.parse(fs.readFileSync(path.join(installedRoot, 'package.json'), 'utf8')).bin.memesh);
 
-async function stopChild(child, timeoutMs = 5_000) {
-  if (!child || child.exitCode !== null || child.signalCode !== null) return;
-  const exited = new Promise((resolve) => child.once('exit', resolve));
-  child.kill('SIGTERM');
-  const stopped = await Promise.race([
-    exited.then(() => true),
-    new Promise((resolve) => setTimeout(() => resolve(false), timeoutMs)),
-  ]);
-  if (stopped) return;
-  child.kill('SIGKILL');
-  await Promise.race([
-    exited,
-    new Promise((resolve) => setTimeout(resolve, timeoutMs)),
-  ]);
-}
-
-async function terminateCodexCompanion(statePath) {
-  if (!statePath || !fs.existsSync(statePath)) return;
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8'));
-  assert.equal(typeof state.token, 'string', 'packaged Codex companion state omitted its control token');
-  assert.equal(typeof state.control_socket, 'string', 'packaged Codex companion state omitted its control socket');
-  await new Promise((resolve, reject) => {
-    const socket = net.createConnection(state.control_socket);
-    let response = '';
-    socket.setEncoding('utf8');
-    socket.setTimeout(2_000, () => socket.destroy(new Error('Timed out stopping packaged Codex companion.')));
-    socket.on('data', (chunk) => { response += chunk; });
-    socket.once('error', reject);
-    socket.once('close', (hadError) => {
-      if (hadError) return;
-      if (response.trim() !== 'terminated') {
-        reject(new Error(`Packaged Codex companion rejected termination: ${response.trim()}`));
-        return;
-      }
-      resolve();
-    });
-    socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
-  });
-  await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
-}
-
-function installedBin(name) {
-  return path.join(consumerDir, 'node_modules', '.bin', process.platform === 'win32' ? `${name}.cmd` : name);
-}
-
-function readHostAcceptance(databasePath, deliveryId) {
-  const result = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    import { DatabaseSync } from 'node:sqlite';
-    const db = new DatabaseSync(${JSON.stringify(databasePath)}, { readOnly: true });
-    try {
-      const deliveryId = ${JSON.stringify(deliveryId)};
-      const acceptance = db.prepare('SELECT adapter_kind, receipt_json FROM agent_host_accepts WHERE delivery_id = ?').get(deliveryId);
-      const attempts = db.prepare('SELECT COUNT(*) AS count FROM agent_dispatch_attempts WHERE delivery_id = ?').get(deliveryId);
-      process.stdout.write(JSON.stringify({ acceptance: acceptance ?? null, attempts: attempts?.count ?? 0 }));
-    } finally { db.close(); }
-  `], { encoding: 'utf8', env: { ...process.env } });
-  return JSON.parse(result);
-}
-
-function readDeliveryId(databasePath, messageId) {
-  const result = execFileSync(process.execPath, ['--input-type=module', '-e', `
-    import { DatabaseSync } from 'node:sqlite';
-    const db = new DatabaseSync(${JSON.stringify(databasePath)}, { readOnly: true });
-    try {
-      const row = db.prepare('SELECT delivery_id FROM agent_message_deliveries WHERE message_id = ?').get(${JSON.stringify(messageId)});
-      process.stdout.write(JSON.stringify(row ?? null));
-    } finally { db.close(); }
-  `], { encoding: 'utf8', env: { ...process.env } });
-  return JSON.parse(result)?.delivery_id ?? null;
-}
-
-if (process.platform !== 'win32') {
-  // The router deliberately rejects socket paths over 103 bytes. macOS's
-  // per-user temporary root is already long, and nesting this under smokeDir
-  // would turn a valid installed router into a false release failure.
+// Real installed public CLI, with synthetic registration only. No host wake.
+{
   const nativeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'mr-'));
   const nativeDir = path.join(nativeHome, '.memesh');
   const nativeDbPath = path.join(nativeDir, 'knowledge-graph.db');
-  // These are the automatic Codex SessionStart companion defaults, so the
-  // installed companion and the installed router meet without host config.
-  const routerSocket = path.join(nativeDir, 'agent-router-v2.sock');
-  const routerToken = path.join(nativeDir, 'agent-router.token');
-  const fakeBin = path.join(nativeHome, 'bin');
-  const queueCapture = path.join(nativeHome, 'codex-queue.json');
-  writeNodeShim(fakeBin, 'codex', `#!/usr/bin/env node
-const fs = require('node:fs');
-const args = process.argv.slice(2);
-if (args[0] !== 'queue' || args[1] !== '--thread' || args[3] !== '--message' || !args[2] || !args[4]) {
-  process.stderr.write('unexpected codex queue arguments\\n');
-  process.exit(2);
-}
-fs.writeFileSync(process.env.MEMESH_CODEX_QUEUE_CAPTURE, JSON.stringify({ thread_id: args[2], message: JSON.parse(args[4]) }));
-`, 'commonjs');
-  // `getMemeshDirFromDbPath()` (src/host-runtime/router.ts) follows
-  // MEMESH_DB_PATH, not MEMESH_DIR — so setting MEMESH_DIR alone here left an
-  // ambient MEMESH_DB_PATH free to send the router's data directory (and the
-  // `fs.mkdirSync` that creates it) somewhere other than `nativeDir`, while
-  // MEMESH_ROUTER_TOKEN_FILE below still pointed at a `nativeDir` nothing had
-  // created. Reproduced: `MEMESH_DB_PATH=/private/tmp/x/kg.db npm run
-  // test:packaged` failed with ENOENT opening `<nativeHome>/.memesh/router.token`.
-  // buildIsolatedRuntimeEnv overrides both together.
   const nativeEnv = {
     ...buildIsolatedRuntimeEnv(process.env, {
       runtimeHome: nativeHome,
       memeshDir: nativeDir,
       dbPath: nativeDbPath,
     }),
-    MEMESH_ROUTER_SOCKET: routerSocket,
-    MEMESH_ROUTER_TOKEN_FILE: routerToken,
-    MEMESH_CODEX_QUEUE_CAPTURE: queueCapture,
     MEMESH_AUTO_CAPTURE: 'false',
-    PATH: `${fakeBin}${path.delimiter}${process.env.PATH ?? ''}`,
   };
-  const router = spawn(installedBin('memesh-router'), [], {
-    cwd: consumerDir,
-    env: nativeEnv,
-    stdio: ['ignore', 'pipe', 'pipe'],
-  });
-  let routerStderr = '';
-  router.stderr.setEncoding('utf8');
-  router.stderr.on('data', (chunk) => { routerStderr += chunk; });
-  let routerExit = null;
-  router.once('exit', (code, signal) => { routerExit = { code, signal }; });
-
-  let host;
-  let companionA;
-  let companionB;
   const sessionA = '11a041b4-5c67-75b3-9505-4e33d7942b8e';
   const sessionB = '22a041b4-5c67-75b3-9505-4e33d7942b8e';
-  const companionState = (sessionId) => path.join(nativeDir, 'runtime', 'codex-session', `${sessionId}.json`);
+  const sessionC = '33a041b4-5c67-75b3-9505-4e33d7942b8e';
+  const offlineSession = '44a041b4-5c67-75b3-9505-4e33d7942b8e';
+  delete nativeEnv.CLAUDE_CODE_SESSION_ID;
+  delete nativeEnv.CODEX_THREAD_ID;
+  const messagesModule = pathToFileURL(path.join(installedRoot, 'dist/core/conversation-messages.js')).href;
+  const call = (args, session, input) => spawnSync(process.execPath, [installedCliEntry, 'message', ...args], {
+    cwd: consumerDir, env: { ...nativeEnv, ...(session ? { CODEX_THREAD_ID: session } : {}) },
+    input, encoding: 'utf8', timeout: 10_000, maxBuffer: 1024 * 1024,
+  });
+  const value = result => {
+    assert.equal(result.error, undefined, 'CLI launcher failed');
+    assert.equal(result.status, 0, result.stderr);
+    return JSON.parse(result.stdout);
+  };
+  const rejected = (result, pattern) => {
+    assert.equal(result.error, undefined, 'rejection was a launcher failure');
+    assert.equal(result.status, 1, result.stderr);
+    assert.match(result.stderr, pattern);
+  };
   try {
-    await waitFor(
-      () => fs.existsSync(routerSocket) || routerExit !== null,
-      'the installed memesh-router socket',
-    );
-    assert.equal(routerExit, null, `installed memesh-router exited before listening: ${routerStderr}`);
-    assert.ok(fs.statSync(routerSocket).isSocket(), 'installed memesh-router did not create a socket');
-    assert.equal(fs.statSync(routerSocket).mode & 0o077, 0, 'installed router socket is not owner-private');
-    await waitFor(() => fs.existsSync(routerToken), 'the installed router token');
+    execFileSync(process.execPath, ['--input-type=module', '-e', `
+      import { ConversationMessages } from ${JSON.stringify(messagesModule)};
+      import { hostname } from 'node:os';
+      const s = new ConversationMessages();
+      try {
+        for (const id of ${JSON.stringify([sessionA, sessionB, sessionC, offlineSession])}) {
+          s.register({id,host:'codex',machine:hostname(),pid:id===${JSON.stringify(offlineSession)}?2147483647:${process.pid},wake:{}});
+        }
+      } finally { s.close(); }
+    `], {cwd:consumerDir,env:nativeEnv,timeout:10_000});
+    const roster = value(call(['discover'])).conversations;
+    assert.deepEqual(roster.map(row => row.address), [sessionA, sessionB, sessionC, offlineSession]);
+    assert.equal(roster.find(row => row.address === offlineSession).online, false);
+    const body = 'CLI-HEAD\n' + '全文-middle-'.repeat(160) + '\nCLI-TAIL';
+    const args = ['send','--recipient',sessionB,'--kind','task','--payload-stdin'];
+    rejected(call(args, undefined, body), /without a host session identity/);
+    rejected(call([...args,'--sender','forged'],sessionA,body), /unknown option/);
+    const status = () => value(call(['status','--json'])).messages;
+    assert.deepEqual(status(), []);
+    const sent = value(call(args,sessionA,body));
+    assert.equal(sent.state,'queued');
+    const original = () => status().find(row => row.id === sent.message_id);
+    assert.equal(original().body,body);
+    assert.equal(original().body_bytes,Buffer.byteLength(body));
+    assert.equal(original().sender,sessionA);
+    assert.equal(original().recipient,sessionB);
+    assert.deepEqual(original().events.map(e=>e.event),['queued']);
+    const denied = call(['read','--message-id',sent.message_id],sessionC);
+    rejected(denied,/not addressed to this conversation/);
+    assert.equal((denied.stdout+denied.stderr).includes(body),false);
+    assert.equal(value(call(['read','--message-id',sent.message_id],sessionB)).message.body,body);
+    assert.deepEqual(original().events.map(e=>e.event),['queued','delivered','read']);
+    rejected(call(['send','--recipient',sessionC,'--kind','result','--reply-to',sent.message_id,'--payload-stdin'],sessionB,'wrong reply'),/Reply must address/);
+    assert.equal(status().length,1,'invalid reply left a partial message');
+    const reply = value(call(['send','--recipient',sessionA,'--kind','result','--reply-to',sent.message_id,'--payload-stdin'],sessionB,'CLI full reply'));
+    const replyRead = value(call(['read','--message-id',reply.message_id],sessionA)).message;
+    assert.equal(replyRead.body,'CLI full reply');
+    assert.equal(replyRead.reply_to,sent.message_id);
+    assert.equal(original().state,'replied');
+    const offline = value(call(['send','--recipient',offlineSession,'--kind','question','--payload-stdin'],sessionA,'offline body'));
+    assert.equal(offline.state,'queued');
+    assert.deepEqual(status().find(row=>row.id===offline.message_id).events.map(e=>e.event),['queued']);
+    rejected(call(['send','--recipient','unknown-conversation','--kind','task','--payload-stdin'],sessionA,'unknown body'),/unknown_recipient/);
+    const oversized = '密'.repeat(8000);
+    rejected(call(args,sessionA,oversized),/message_too_large/);
+    const refused = status().filter(row=>row.state==='rejected');
+    assert.equal(refused.length,2);
+    const large = refused.find(row=>row.body===null);
+    assert.equal(large.body_bytes,Buffer.byteLength(oversized));
+    assert.ok(Buffer.byteLength(JSON.stringify(large))<2000);
+    assert.ok(refused.every(row=>row.events.length===1&&row.events[0].event==='rejected'));
+    assert.equal(refused.find(row=>row.recipient==='unknown-conversation').body,'unknown body');
+    for (const action of ['update','delete','poll','fetch','intake','storage']) rejected(call([action],sessionA),/unknown command/);
+    assert.equal(status().length,5,'unsupported public action changed messages');
 
-    const hostProgram = `
-      import assert from 'node:assert/strict';
-      import fs from 'node:fs';
-      import { connectRouterHost } from ${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'host-runtime', 'router-client.js')).href)};
-      const token = fs.readFileSync(process.env.MEMESH_ROUTER_TOKEN_FILE, 'utf8').trim();
-      const connection = await connectRouterHost({
-        socket_path: process.env.MEMESH_ROUTER_SOCKET,
-        auth_token: token,
-        identity: {
-          project: 'packaged-native-smoke',
-          principal_id: 'installed-active-host',
-          session_instance_id: '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-          adapter_kind: 'codex-cli-queue',
-        },
-        async deliver(delivery) {
-          process.stdout.write(JSON.stringify({ type: 'unexpected-payload-delivery', delivery_id: delivery.delivery_id }) + '\\n');
-          throw new Error('codex-cli-queue delivery is owned by the router adapter');
-        },
-      });
-      process.stdout.write(JSON.stringify({ type: 'registered', connection_id: connection.connection_id, generation: connection.generation }) + '\\n');
-      const shutdown = async () => { await connection.close(); process.exit(0); };
-      process.once('SIGINT', () => { void shutdown(); });
-      process.once('SIGTERM', () => { void shutdown(); });
-    `;
-    host = spawn(process.execPath, ['--input-type=module', '-e', hostProgram], {
-      cwd: consumerDir,
-      env: nativeEnv,
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let hostOutput = '';
-    let hostStderr = '';
-    let hostExit = null;
-    host.stdout.setEncoding('utf8');
-    host.stderr.setEncoding('utf8');
-    host.stdout.on('data', (chunk) => { hostOutput += chunk; });
-    host.stderr.on('data', (chunk) => { hostStderr += chunk; });
-    host.once('exit', (code, signal) => { hostExit = { code, signal }; });
-    await waitFor(
-      () => hostOutput.includes('"registered"') || hostExit !== null,
-      'the controlled installed host registration',
-    );
-    assert.equal(hostExit, null, `installed host stub exited before registration: ${hostStderr}`);
-
-    const send = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'send',
-      '--project', 'packaged-native-smoke',
-      '--sender', 'installed-cli-sender',
-      '--recipient', '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-      '--target-kind', 'session',
-      '--idempotency-key', 'installed-native-delivery-1',
-      '--content-type', 'application/json',
-      '--payload-stdin',
-    ], {
-      cwd: consumerDir,
-      env: nativeEnv,
-      encoding: 'utf8',
-      input: JSON.stringify({ marker: 'installed-native-stdin' }),
-    }));
-    await waitFor(
-      () => fs.existsSync(queueCapture) || hostExit !== null,
-      'installed-artifact router-to-adapter notice dispatch to the fake queue',
-    );
-    assert.equal(hostExit, null, `controlled host exited during router-to-adapter dispatch: ${hostStderr}`);
-    assert.equal(hostOutput.includes('"unexpected-payload-delivery"'), false, 'router bypassed the Codex native adapter');
-    const queued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
-    assert.equal(queued.thread_id, '01a041b4-5c67-75b3-9505-4e33d7942b8e');
-    // The Codex queue carries only a notice naming the message; the body stays in
-    // the durable inbox and is read back by the fetch below.
-    assert.deepEqual(queued.message, {
-      message_type: 'memesh_message_notice',
-      handling: queued.message.handling,
-      project: 'packaged-native-smoke',
-      recipient: '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-      target_kind: 'session',
-      message_id: send.message_id,
-      delivery_id: send.delivery_id,
-    }, 'the queued Codex notice carried other fields than the exact routing');
-    assert.equal(typeof queued.message.handling, 'string');
-    assert.equal(send.native_delivery.status, 'native_accepted', 'exact-session send returned before native acceptance');
-    assert.equal(JSON.stringify(queued).includes('installed-native-stdin'), false, 'the queued notice carried the message body');
-    const accepted = readHostAcceptance(nativeDbPath, send.delivery_id);
-    assert.equal(accepted.attempts, 1, 'router-to-adapter dispatch did not persist exactly one dispatch attempt');
-    assert.equal(accepted.acceptance?.adapter_kind, 'codex-cli-queue', 'router-to-adapter dispatch did not persist host_accept');
-    assert.equal(JSON.parse(accepted.acceptance.receipt_json).host, 'codex-cli');
-    assert.equal(JSON.parse(accepted.acceptance.receipt_json).content, 'notice', 'host_accept did not record a notice-only acceptance');
-
-    const fetched = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'fetch',
-      '--project', 'packaged-native-smoke',
-      '--recipient', '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-      '--target-kind', 'session',
-      '--message-id', send.message_id,
-    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
-    assert.equal(fetched.message_id, send.message_id, 'scoped fetch returned a different message');
-    assert.deepEqual(fetched.payload, { marker: 'installed-native-stdin' }, 'scoped fetch did not return the durable payload');
-
-    const receipts = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'receipts',
-      '--project', 'packaged-native-smoke',
-      '--recipient', '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-      '--message-id', send.message_id,
-    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
-    assert.ok(receipts.some((receipt) => receipt.receipt_kind === 'host_accept'), 'fake queue acceptance was absent from receipt readback');
-    assert.equal(receipts.some((receipt) => receipt.receipt_kind === 'ack'), false, 'fetch or native dispatch implicitly acknowledged the message');
-    assert.equal(receipts.some((receipt) => receipt.receipt_kind === 'disposition'), false, 'fetch or native dispatch implicitly set workflow disposition');
-
-    // No host is registered for this exact session. The sender reports the
-    // unavailable native boundary while preserving only scoped recovery data;
-    // it must not reroute to the active unrelated session.
-    let noHostFailure;
-    try {
-      execFileSync(installedBin('memesh'), [
-        'message', 'send',
-        '--project', 'packaged-native-smoke',
-        '--sender', 'installed-cli-sender',
-        '--recipient', 'stopped-or-missing-session',
-        '--target-kind', 'session',
-        '--idempotency-key', 'installed-no-host-1',
-        '--content-type', 'application/json',
-        '--payload-stdin',
-      ], {
-        cwd: consumerDir,
-        env: nativeEnv,
-        encoding: 'utf8',
-        input: JSON.stringify({ marker: 'no-host-must-not-wake' }),
-      });
-    } catch (error) {
-      noHostFailure = error;
-    }
-    assert.ok(noHostFailure, 'unregistered exact-session send unexpectedly succeeded');
-    assert.match(String(noHostFailure.stderr), /recipient_unavailable/);
-    const recoveryOutput = execFileSync(installedBin('memesh'), [
-      'message', 'watch',
-      '--project', 'packaged-native-smoke',
-      '--recipient', 'stopped-or-missing-session',
-      '--wait-ms', '0',
-    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' });
-    const recovery = recoveryOutput.trim().split('\n').map(line => JSON.parse(line)).at(-1);
-    const noHostMessage = recovery.events[0];
-    const noHostDeliveryId = readDeliveryId(nativeDbPath, noHostMessage.message_id);
-    assert.ok(noHostDeliveryId, 'unavailable exact-session send did not preserve scoped recovery data');
-    await new Promise((resolve) => setTimeout(resolve, 100));
-    const absent = readHostAcceptance(nativeDbPath, noHostDeliveryId);
-    assert.equal(absent.attempts, 0, 'a stopped/no-host target unexpectedly received a dispatch attempt');
-    assert.equal(absent.acceptance, null, 'a stopped/no-host target unexpectedly persisted host_accept');
-    assert.equal(fs.readFileSync(queueCapture, 'utf8'), JSON.stringify(queued), 'the active host received a wakeup for another principal');
-
-    const storageReport = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'storage', 'report',
-    ], {
-      cwd: consumerDir,
-      env: nativeEnv,
-      encoding: 'utf8',
-    }));
-    assert.equal(storageReport.message_count, 2, 'installed storage report did not see both durable messages');
-    assert.equal(storageReport.protected_unresolved_message_count, 2, 'installed storage report did not protect unresolved messages');
-    assert.equal(storageReport.policy.retention, 'one day from creation, then deleted', 'installed storage report did not state the one-day rule');
-    assert.equal(storageReport.expired_pending_message_count, 0, 'installed storage report found messages past their day in a fresh smoke database');
-
-    let quotaFailure;
-    try {
-      execFileSync(installedBin('memesh'), [
-        'message', 'send',
-        '--project', 'packaged-native-smoke',
-        '--sender', 'installed-cli-sender',
-        '--recipient', 'installed-active-host',
-        '--idempotency-key', 'installed-quota-rejection-1',
-        '--payload-stdin',
-      ], {
-        cwd: consumerDir,
-        env: { ...nativeEnv, MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES: '0' },
-        encoding: 'utf8',
-        input: 'must fail atomically',
-      });
-    } catch (error) {
-      quotaFailure = error;
-    }
-    assert.ok(quotaFailure, 'installed over-quota send unexpectedly succeeded');
-    assert.match(String(quotaFailure.stderr), /Agent message storage quota exceeded/);
-    const afterQuota = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'storage', 'report',
-    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
-    assert.equal(afterQuota.message_count, 2, 'installed quota rejection left a partial message');
-
-    // The queue/host stub above proves the adapter contract in isolation. The
-    // two children below are the actual packaged Codex SessionStart companion
-    // runtime: each owns a distinct exact-session identity on this router.
-    const startCompanion = (sessionId) => {
-      const child = spawn(process.execPath, [path.join(installedRoot, 'dist', 'host-runtime', 'codex-session.js')], {
-        cwd: consumerDir,
-        env: { ...nativeEnv, PLUGIN_ROOT: installedRoot },
-        stdio: ['pipe', 'ignore', 'pipe'],
-      });
-      let stderr = '';
-      child.stderr.setEncoding('utf8');
-      child.stderr.on('data', (chunk) => { stderr += chunk; });
-      child.stdin.end(JSON.stringify({
-        hook_event_name: 'SessionStart',
-        source: 'startup',
-        session_id: sessionId,
-        cwd: consumerDir,
-      }));
-      return { child, stderr: () => stderr };
-    };
-    companionA = startCompanion(sessionA);
-    companionB = startCompanion(sessionB);
-    await Promise.all([
-      waitFor(() => fs.existsSync(companionState(sessionA)), 'the first installed Codex companion lifecycle state'),
-      waitFor(() => fs.existsSync(companionState(sessionB)), 'the second installed Codex companion lifecycle state'),
-      waitFor(() => companionA.child.exitCode !== null, 'the first installed Codex SessionStart launcher to exit'),
-      waitFor(() => companionB.child.exitCode !== null, 'the second installed Codex SessionStart launcher to exit'),
-    ]);
-    assert.equal(companionA.child.exitCode, 0, `first installed Codex SessionStart launcher failed: ${companionA.stderr()}`);
-    assert.equal(companionB.child.exitCode, 0, `second installed Codex SessionStart launcher failed: ${companionB.stderr()}`);
-
-    // The earlier CLI dispatch has already been fully asserted, so a fresh
-    // capture makes this exchange's exact recipient observable by itself.
-    fs.unlinkSync(queueCapture);
-    const mcpExchange = JSON.parse(execFileSync(
-      process.execPath,
-      [
-        '--input-type=module',
-        '-e',
-        `import assert from 'node:assert/strict';
-import { Client } from '@modelcontextprotocol/sdk/client/index.js';
-import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
-import { getProjectName } from ${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'core', 'paths.js')).href)};
-
-const project = getProjectName(${JSON.stringify(consumerDir)});
-const sessionA = ${JSON.stringify(sessionA)};
-const sessionB = ${JSON.stringify(sessionB)};
-const expected = [
-  { session_id: sessionA, principal_id: 'codex-thread-' + sessionA, project },
-  { session_id: sessionB, principal_id: 'codex-thread-' + sessionB, project },
-];
-const serverParameters = {
-  command: process.execPath,
-  args: [${JSON.stringify(protocolServer)}],
-  env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false' },
-};
-const transportA = new StdioClientTransport(serverParameters);
-const transportB = new StdioClientTransport(serverParameters);
-const clientA = new Client({ name: 'packaged-native-mcp-client-a', version: '1.0.0' });
-const clientB = new Client({ name: 'packaged-native-mcp-client-b', version: '1.0.0' });
-
-async function messageJson(client, arguments_, label) {
-  const result = await client.callTool({ name: 'message', arguments: arguments_ });
-  assert.notEqual(result.isError, true, label + ' returned an MCP error: ' + JSON.stringify(result.content));
-  const text = result.content.find((block) => block.type === 'text')?.text;
-  assert.equal(typeof text, 'string', label + ' returned no JSON text');
-  return JSON.parse(text);
-}
-
-function hasExpectedCards(result) {
-  const cards = Array.isArray(result.cards) ? result.cards.filter((card) => card?.host_kind === 'codex') : [];
-  return expected.every((wanted) => cards.some((card) => (
-    card.session_id === wanted.session_id
-    && card.principal_id === wanted.principal_id
-    && card.project === wanted.project
-  )));
-}
-
-try {
-  await Promise.all([clientA.connect(transportA), clientB.connect(transportB)]);
-  assert.ok(Number.isInteger(transportA.pid) && transportA.pid > 0, 'MCP client A did not start a server process');
-  assert.ok(Number.isInteger(transportB.pid) && transportB.pid > 0, 'MCP client B did not start a server process');
-  assert.notEqual(transportA.pid, transportB.pid, 'MCP clients unexpectedly share one server process');
-
-  let discoveredA;
-  let discoveredB;
-  const deadline = Date.now() + 5_000;
-  while (Date.now() < deadline) {
-    [discoveredA, discoveredB] = await Promise.all([
-      messageJson(clientA, { action: 'discover', project, limit: 50 }, 'MCP client A discover'),
-      messageJson(clientB, { action: 'discover', project, limit: 50 }, 'MCP client B discover'),
-    ]);
-    if (hasExpectedCards(discoveredA) && hasExpectedCards(discoveredB)) break;
-    await new Promise((resolve) => setTimeout(resolve, 50));
-  }
-  assert.ok(hasExpectedCards(discoveredA), 'MCP client A could not discover both Codex SessionStart companions');
-  assert.ok(hasExpectedCards(discoveredB), 'MCP client B could not discover both Codex SessionStart companions');
-
-  const payload = { marker: 'packaged-native-mcp-a-to-b' };
-  const sent = await messageJson(clientA, {
-    action: 'send', project, sender: 'codex-thread-' + sessionA,
-    recipient: sessionB, target_kind: 'session', idempotency_key: 'packaged-native-mcp-a-to-b',
-    payload, content_type: 'application/json', privacy: 'private',
-  }, 'MCP client A exact-session send');
-  assert.equal(sent.native_delivery?.status, 'native_accepted', 'MCP exact-session send returned before native acceptance');
-  assert.equal(sent.native_delivery?.adapter_kind, 'codex-cli-queue', 'MCP exact-session send used the wrong native adapter');
-  assert.equal(sent.recipient, sessionB, 'MCP exact-session send returned a different recipient');
-
-  const fetched = await messageJson(clientB, {
-    action: 'fetch', project, recipient: sessionB, target_kind: 'session', message_id: sent.message_id,
-  }, 'MCP client B exact-session fetch');
-  assert.deepEqual(fetched.payload, payload, 'MCP client B fetched a payload different from client A sent');
-
-  const denied = await clientB.callTool({ name: 'message', arguments: {
-    action: 'fetch', project, recipient: sessionA, target_kind: 'session', message_id: sent.message_id,
-  }});
-  assert.equal(denied.isError, true, 'MCP client B cross-session fetch was accepted');
-  assert.doesNotMatch(JSON.stringify(denied), /packaged-native-mcp-a-to-b/, 'cross-session fetch leaked the private payload');
-
-  process.stdout.write(JSON.stringify({ project, sender: sent.sender, recipient: sessionB, message_id: sent.message_id, delivery_id: sent.delivery_id, payload }) + '\\n');
-} finally {
-  await Promise.all([clientA.close(), clientB.close()]);
-}
-`,
-      ],
-      { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' },
-    ));
-    await waitFor(() => fs.existsSync(queueCapture), 'MCP A-to-B native queue dispatch');
-    const mcpQueued = JSON.parse(fs.readFileSync(queueCapture, 'utf8'));
-    assert.equal(mcpQueued.thread_id, sessionB, 'MCP A-to-B queue dispatch targeted the wrong Codex session');
-    assert.equal(mcpQueued.message.delivery_id, mcpExchange.delivery_id, 'MCP A-to-B queue dispatch used the wrong delivery');
-    assert.equal(mcpQueued.message.message_type, 'memesh_message_notice', 'MCP A-to-B queue dispatch was not a notice');
-    assert.equal(mcpQueued.message.message_id, mcpExchange.message_id, 'MCP A-to-B notice named another message');
-    assert.equal('envelope' in mcpQueued.message, false, 'MCP A-to-B notice carried an envelope');
-    assert.equal(JSON.stringify(mcpQueued).includes(mcpExchange.payload.marker), false, 'MCP A-to-B notice carried the message body');
-    const mcpAccepted = readHostAcceptance(nativeDbPath, mcpExchange.delivery_id);
-    assert.equal(mcpAccepted.attempts, 1, 'MCP A-to-B dispatch did not persist exactly one attempt');
-    assert.equal(mcpAccepted.acceptance?.adapter_kind, 'codex-cli-queue', 'MCP A-to-B dispatch did not persist host_accept');
-    const mcpReceipts = JSON.parse(execFileSync(installedBin('memesh'), [
-      'message', 'receipts', '--project', mcpExchange.project,
-      '--recipient', mcpExchange.recipient, '--message-id', mcpExchange.message_id,
-    ], { cwd: consumerDir, env: nativeEnv, encoding: 'utf8' }));
-    assert.ok(mcpReceipts.some((receipt) => receipt.receipt_kind === 'host_accept'), 'MCP A-to-B receipt readback omitted host_accept');
-    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'ack'), false, 'MCP fetch or native dispatch implicitly acknowledged the message');
-    assert.equal(mcpReceipts.some((receipt) => receipt.receipt_kind === 'disposition'), false, 'MCP fetch or native dispatch implicitly set workflow disposition');
+    // Installed clock seeds only this separate private fixture. The real CLI
+    // open below must retain 13-day data, notify once, and remove 15-day data.
+    const timeDir = path.join(nativeHome,'time');
+    fs.mkdirSync(timeDir,{mode:0o700});
+    const timeEnv = {...nativeEnv,MEMESH_DIR:timeDir,MEMESH_DB_PATH:path.join(timeDir,'graph.db')};
+    const fixture = JSON.parse(execFileSync(process.execPath,['--input-type=module','-e',`
+      import { ConversationMessages } from ${JSON.stringify(messagesModule)};
+      import { hostname } from 'node:os';
+      const file=${JSON.stringify(path.join(timeDir,'messages.db'))},now=Date.now(),day=86400000;
+      const make=(age,body)=>{
+        const s=new ConversationMessages({file,clock:()=>now-age*day});
+        try {
+          for(const id of ['time-A','time-B'])s.register({id,host:'codex',machine:hostname(),pid:process.pid,wake:{}});
+          return s.send('time-A',{recipient:'time-B',kind:'task',body}).message.id;
+        } finally {s.close();}
+      };
+      // Newer first: fixture construction cannot expire or notify older rows.
+      const retained=make(13,'thirteen day full body'),expired=make(15,'fifteen day body');
+      process.stdout.write(JSON.stringify({retained,expired}));
+    `],{cwd:consumerDir,env:timeEnv,encoding:'utf8',timeout:10_000}));
+    const timeStatus=()=>JSON.parse(execFileSync(process.execPath,[installedCliEntry,'message','status','--json'],{cwd:consumerDir,env:timeEnv,encoding:'utf8',timeout:10_000})).messages;
+    const first=timeStatus();
+    assert.equal(first.some(row=>row.id===fixture.expired),false);
+    assert.equal(first.find(row=>row.id===fixture.retained).body,'thirteen day full body');
+    assert.equal(first.filter(row=>row.sender==='memesh'&&row.reply_to===fixture.retained).length,1);
+    assert.equal(first.find(row=>row.id===fixture.retained).events.filter(e=>e.event==='undelivered_notified').length,1);
+    assert.deepEqual(timeStatus(),first,'maintenance repeated notice');
+    execFileSync(process.execPath,['--input-type=module','-e',`
+      import assert from 'node:assert/strict';import { DatabaseSync } from 'node:sqlite';
+      const db=new DatabaseSync(${JSON.stringify(path.join(timeDir,'messages.db'))},{readOnly:true});
+      try {assert.equal(db.prepare('SELECT count(*) AS n FROM events WHERE message_id=?').get(${JSON.stringify(fixture.expired)}).n,0);}finally{db.close();}
+    `],{cwd:consumerDir,env:timeEnv,timeout:10_000});
   } finally {
-    await Promise.all([
-      terminateCodexCompanion(companionState(sessionA)),
-      terminateCodexCompanion(companionState(sessionB)),
-    ]);
-    await Promise.all([stopChild(companionA?.child), stopChild(companionB?.child), stopChild(host)]);
-    await stopChild(router);
     fs.rmSync(nativeHome, { recursive: true, force: true });
   }
 }
@@ -1223,4 +858,4 @@ fs.rmSync(smokeDir, { recursive: true, force: true });
 // Say something on success. A check that prints nothing when it passes is
 // indistinguishable from one that did not run — the exact failure mode this
 // repo has spent several releases removing from its own code.
-console.log('✅ Packaged artifact smoke test passed — tarball installs outside the repo, completes MCP lifecycle exchanges, and verifies the installed-artifact router-to-adapter notice contract via a controlled host and fake queue → synchronous native_accepted readback → persisted notice host_accept with no implicit ACK/disposition → message body fetched from the durable inbox');
+console.log('✅ Packaged artifact smoke passed: installed CLI/MCP four-action messaging, complete bodies, recipient isolation, reply/audit and 14-day retention. Synthetic registration only; native wake is not verified.');

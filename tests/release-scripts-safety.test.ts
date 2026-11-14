@@ -273,27 +273,14 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(gate).toContain('dist/core/conversation-messages.js');
   });
 
-  it('makes packaged smoke verify bounded notice native acceptance and an inbox fetch of the body, without poll/watch', () => {
+  it('runs the installed four-action CLI without claiming synthetic registration proves native wake', () => {
     const smoke = read('scripts/smoke-packed-artifact.mjs');
-    expect(smoke).toContain("installedBin('memesh-router')");
-    expect(smoke).toContain("'dist', 'host-runtime', 'router-client.js'");
-    expect(smoke).toContain("'message', 'send'");
-    expect(smoke).toContain("'message', 'fetch'");
-    expect(smoke).toContain("'message', 'receipts'");
-    expect(smoke).toContain("'--payload-stdin'");
-    expect(smoke).toContain("adapter_kind: 'codex-cli-queue'");
-    expect(smoke).toContain('agent_host_accepts');
-    expect(smoke).toContain('no implicit ACK/disposition');
-    expect(smoke).toContain('stopped-or-missing-session');
-    expect(smoke).toContain('without poll/watch');
-    expect(smoke).toContain('installed-artifact router-to-adapter notice contract');
-    expect(smoke).toContain("message_type: 'memesh_message_notice'");
-    expect(smoke).toContain('message body fetched from the durable inbox');
-    expect(smoke).toContain('fake queue');
-    expect(smoke).toContain('does not create or observe a real Codex task');
-    expect(smoke).toContain('user-visible');
-    expect(smoke).not.toContain('host-native proof');
-    expect(smoke).not.toContain('metadata-only native queue admission');
+    // Runtime assertions live in the packaged process. This only guards the
+    // installed binary wiring and its evidence label, not message semantics.
+    expect(smoke).toContain("spawnSync(process.execPath, [installedCliEntry, 'message', ...args]");
+    expect(smoke).toContain("['send','--recipient',sessionB,'--kind','task','--payload-stdin']");
+    expect(smoke).toContain('Synthetic registration only; native wake is not verified.');
+    expect(smoke).not.toContain("installedBin('memesh-router')");
     expect(smoke).toContain('consumerInstallTimeoutMs');
     expect(smoke).toContain('timeout: consumerInstallTimeoutMs');
   });
@@ -1152,12 +1139,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(read('scripts/smoke-packed-upgrade.mjs')).toContain("const registry = 'https://registry.npmjs.org/'");
   });
 
-  // #477: each smoke script writes its fake binary through the shared helper,
+  // #477: the upgrade smoke writes its fake npm through the shared helper,
   // with the module type its `require` body needs, so an ancestor
   // package.json declaring "type": "module" cannot turn the shim into ESM.
-  it('smoke scripts write their fake binaries through writeNodeShim as commonjs', () => {
+  it('the upgrade smoke writes its fake npm through writeNodeShim as commonjs', () => {
     for (const [rel, call] of [
-      ['scripts/smoke-packed-artifact.mjs', "writeNodeShim(fakeBin, 'codex',"],
       ['scripts/smoke-packed-upgrade.mjs', "writeNodeShim(shimDir, 'npm',"],
     ]) {
       const source = read(rel);
