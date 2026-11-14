@@ -546,7 +546,8 @@ const transport = new StdioClientTransport({
   args: [${JSON.stringify(protocolServer)}],
   env: { ...process.env, MEMESH_AUTO_CAPTURE: 'false', MEMESH_PROJECT_ROOT: ${JSON.stringify(protocolProjectRoot)} },
 });
-const client = new Client({ name: 'memesh-packaged-smoke', version: '1.0.0' });
+// Controlled SDK declaration selects per-call threadId; this is not a native Codex host test.
+const client = new Client({ name: 'codex-mcp-client', version: '1.0.0' });
 try {
   await client.connect(transport);
 
@@ -628,92 +629,75 @@ try {
     'learn rejected rootCause without identifying the invalid request'
   );
 
-  const sentMessage = await client.callTool({
-    name: 'message',
-    arguments: {
-      action: 'send',
-      project: 'packaged-protocol-smoke',
-      sender: 'packaged-smoke-sender',
-      recipient: 'packaged-smoke-recipient',
-      idempotency_key: 'packaged-message-1',
-      payload: { marker: 'packaged-payload-marker' },
-      content_type: 'application/json',
-    },
-  });
-  assert.notEqual(
-    sentMessage.isError,
-    true,
-    'message send returned an MCP tool error: ' + JSON.stringify(sentMessage.content)
-  );
-  const sentMessageData = JSON.parse(sentMessage.content[0].text);
+  // Register only synthetic sessions in this protocol child's isolated messages.db.
+  const { ConversationMessages } = await import(${JSON.stringify(pathToFileURL(path.join(installedRoot, 'dist', 'core', 'conversation-messages.js')).href)});
+  const { hostname } = await import('node:os');
+  const registrations = new ConversationMessages();
+  try {
+    for (const id of ['A', 'B', 'C']) {
+      registrations.register({ id, host: 'codex', machine: hostname(), pid: process.pid, wake: {} });
+    }
+  } finally { registrations.close(); }
 
-  const polledMessage = await client.callTool({
-    name: 'message',
-    arguments: {
-      action: 'poll',
-      project: 'packaged-protocol-smoke',
-      recipient: 'packaged-smoke-recipient',
-      wait_ms: 0,
-    },
-  });
-  assert.notEqual(polledMessage.isError, true, 'message poll returned an MCP tool error');
-  const polledMessageData = JSON.parse(polledMessage.content[0].text);
-  assert.equal(polledMessageData.events[0].message_id, sentMessageData.message_id);
-  assert.doesNotMatch(JSON.stringify(polledMessageData.events[0]), /packaged-payload-marker/);
+  const message = (args, session) => client.callTool({ name: 'message', arguments: args,
+    ...(session ? { _meta: { threadId: session } } : {}) });
+  const value = (result, label) => {
+    assert.notEqual(result.isError, true, label + ': ' + JSON.stringify(result.content));
+    return JSON.parse(result.content[0].text);
+  };
+  const rejected = (result, pattern, label) => {
+    assert.equal(result.isError, true, label + ' was accepted');
+    assert.match(JSON.stringify(result.content), pattern, label + ' returned the wrong error');
+  };
 
-  const fetchedMessage = await client.callTool({
-    name: 'message',
-    arguments: {
-      action: 'fetch',
-      project: 'packaged-protocol-smoke',
-      recipient: 'packaged-smoke-recipient',
-      message_id: sentMessageData.message_id,
-    },
-  });
-  assert.notEqual(fetchedMessage.isError, true, 'message fetch returned an MCP tool error');
-  assert.equal(JSON.parse(fetchedMessage.content[0].text).payload.marker, 'packaged-payload-marker');
+  const roster = value(await message({ action: 'discover' }, 'A'), 'discover');
+  assert.deepEqual(roster.conversations.map((row) => row.address), ['A', 'B', 'C']);
+  assert.ok(roster.conversations.every((row) => row.host === 'codex' && row.online));
 
-  const intake = await client.callTool({ name: 'message', arguments: {
-    action: 'intake', project: 'packaged-protocol-smoke', recipient: 'packaged-smoke-recipient',
-    message_id: sentMessageData.message_id, idempotency_key: 'packaged-intake-1', intake_state: 'ingested',
-  }});
-  assert.notEqual(intake.isError, true, 'message intake returned an MCP tool error');
-  const ack = await client.callTool({ name: 'message', arguments: {
-    action: 'ack', project: 'packaged-protocol-smoke', recipient: 'packaged-smoke-recipient',
-    message_id: sentMessageData.message_id, idempotency_key: 'packaged-ack-1',
-  }});
-  assert.notEqual(ack.isError, true, 'message ack returned an MCP tool error');
-  const disposition = await client.callTool({ name: 'message', arguments: {
-    action: 'disposition', project: 'packaged-protocol-smoke', recipient: 'packaged-smoke-recipient',
-    message_id: sentMessageData.message_id, idempotency_key: 'packaged-disposition-1', disposition: 'accepted',
-  }});
-  assert.notEqual(disposition.isError, true, 'message disposition returned an MCP tool error');
-  const activation = await client.callTool({ name: 'message', arguments: {
-    action: 'activation', project: 'packaged-protocol-smoke', recipient: 'packaged-smoke-recipient',
-    message_id: sentMessageData.message_id, idempotency_key: 'packaged-activation-1', activation: 'manual_resume_required',
-  }});
-  assert.notEqual(activation.isError, true, 'message activation returned an MCP tool error');
-  const receipts = await client.callTool({ name: 'message', arguments: {
-    action: 'receipts', project: 'packaged-protocol-smoke', recipient: 'packaged-smoke-recipient', message_id: sentMessageData.message_id,
-  }});
-  assert.notEqual(receipts.isError, true, 'message receipts returned an MCP tool error');
-  assert.equal(JSON.parse(receipts.content[0].text).length, 4, 'receipt lifecycle was not persisted');
+  const body = ['packaged-first-marker', 'packaged-middle-marker', 'packaged-last-marker'].join(String.fromCharCode(10));
+  const sendArgs = { action: 'send', recipient: 'B', kind: 'task', body };
+  rejected(await message(sendArgs), /conversation_identity_unavailable/, 'missing session');
+  rejected(await message({ action: 'poll' }, 'A'), /action|Invalid|invalid/, 'legacy poll');
+  rejected(await message({ ...sendArgs, project: 'obsolete' }, 'A'), /project|Unrecognized/, 'unknown field');
+  assert.deepEqual(value(await message({ action: 'status' }, 'A'), 'empty status').messages, []);
 
-  const replay = await client.callTool({ name: 'message', arguments: {
-    action: 'send', project: 'packaged-protocol-smoke', sender: 'packaged-smoke-sender', recipient: 'packaged-smoke-recipient',
-    idempotency_key: 'packaged-message-1', payload: { marker: 'packaged-payload-marker' }, content_type: 'application/json',
-  }});
-  assert.notEqual(replay.isError, true, 'idempotent replay returned an MCP tool error');
-  assert.equal(JSON.parse(replay.content[0].text).message_id, sentMessageData.message_id, 'idempotent replay created a second message');
-  const conflict = await client.callTool({ name: 'message', arguments: {
-    action: 'send', project: 'packaged-protocol-smoke', sender: 'packaged-smoke-sender', recipient: 'packaged-smoke-recipient',
-    idempotency_key: 'packaged-message-1', payload: { marker: 'conflict' }, content_type: 'application/json',
-  }});
-  assert.equal(conflict.isError, true, 'conflicting idempotency replay was accepted');
-  const deniedFetch = await client.callTool({ name: 'message', arguments: {
-    action: 'fetch', project: 'packaged-protocol-smoke', recipient: 'other-recipient', message_id: sentMessageData.message_id,
-  }});
-  assert.equal(deniedFetch.isError, true, 'cross-recipient fetch was accepted');
+  const sent = value(await message(sendArgs, 'A'), 'send');
+  assert.equal(sent.state, 'queued');
+  assert.match(sent.message_id, /^[0-9a-f-]{36}$/i);
+  const denied = await message({ action: 'read', message_id: sent.message_id }, 'C');
+  rejected(denied, /not addressed to this conversation/i, 'cross-recipient read');
+  const queued = value(await message({ action: 'status', message_id: sent.message_id }, 'A'), 'queued status');
+  assert.equal(queued.messages.length, 1);
+  assert.equal(queued.messages[0].body, body);
+  assert.deepEqual(queued.messages[0].events.map((event) => event.event), ['queued']);
+
+  const read = value(await message({ action: 'read', message_id: sent.message_id }, 'B'), 'read');
+  assert.equal(read.message.body, body);
+  assert.equal(read.message.sender, 'A');
+  assert.equal(read.message.recipient, 'B');
+  const readStatus = value(await message({ action: 'status', message_id: sent.message_id }, 'A'), 'read status');
+  assert.deepEqual(readStatus.messages[0].events.map((event) => event.event), ['queued', 'delivered', 'read']);
+
+  const replyBody = 'packaged-reply-marker';
+  const reply = value(await message({ action: 'send', recipient: 'A', kind: 'result', body: replyBody,
+    reply_to: sent.message_id }, 'B'), 'reply');
+  assert.equal(reply.state, 'queued');
+  const original = value(await message({ action: 'status', message_id: sent.message_id }, 'A'), 'replied status');
+  assert.equal(original.messages[0].state, 'replied');
+  assert.deepEqual(original.messages[0].events.map((event) => event.event), ['queued', 'delivered', 'read', 'replied']);
+  const replyRead = value(await message({ action: 'read', message_id: reply.message_id }, 'A'), 'read reply');
+  assert.equal(replyRead.message.body, replyBody);
+  assert.equal(replyRead.message.reply_to, sent.message_id);
+
+  const oversized = '密'.repeat(8000);
+  rejected(await message({ ...sendArgs, body: oversized }, 'A'), /message_too_large/, 'oversized send');
+  const audit = value(await message({ action: 'status' }, 'A'), 'oversized audit');
+  const refused = audit.messages.filter((row) => row.state === 'rejected');
+  assert.equal(refused.length, 1);
+  assert.equal(refused[0].body, null);
+  assert.equal(refused[0].body_bytes, Buffer.byteLength(oversized, 'utf8'));
+  assert.deepEqual(refused[0].events.map((event) => event.event), ['rejected']);
+  assert.ok(Buffer.byteLength(JSON.stringify(refused[0]), 'utf8') < 2000, 'oversized audit retained unbounded content');
 } finally {
   await client.close();
 }
