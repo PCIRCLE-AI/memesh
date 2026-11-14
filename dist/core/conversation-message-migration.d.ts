@@ -1,4 +1,6 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
+export declare function legacyConversationArchiveFiles(graph: string, target: string): string[];
+export declare function assertLegacyConversationArchiveSchema(source: MemeshDatabase): void;
 export declare const LEGACY_CONVERSATION_PREFIX = "legacy:";
 export declare function assertLegacyDestinationIsDifferent(source: MemeshDatabase, targetFile: string): void;
 export declare function assertLegacyPathsAreDifferent(sourceFile: string, targetFile: string): void;

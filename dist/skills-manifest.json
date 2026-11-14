@@ -108,13 +108,13 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-message-migration.js",
-      "sha256": "f0e88f22040e389ff2020e9e1ec3b601d4dc962c8c558456d24c6187f1fc304a",
-      "bytes": 13176
+      "sha256": "32709e6e3be288ff343f0bf5e3f521bae50fd0bec9763ac9a39a9a38cc66e6a4",
+      "bytes": 15802
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "91acc0ea07b0e948d5e3fc061c4dccddffcb2a8275bdb6ed65b9ce1074b2e490",
-      "bytes": 15648
+      "sha256": "3d351b55e9202d87240a274539461e3bef7a699c196078589219034818d19ea4",
+      "bytes": 16473
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",

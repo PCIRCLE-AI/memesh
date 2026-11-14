@@ -32062,6 +32062,66 @@ import { randomUUID as randomUUID2 } from "node:crypto";
 import { createHash as createHash3 } from "node:crypto";
 import fs4 from "node:fs";
 import path2 from "node:path";
+function legacyConversationArchiveFiles(graph, target) {
+  const directory = path2.dirname(path2.resolve(graph));
+  if (directory !== path2.dirname(path2.resolve(target)))
+    throw new Error("Legacy archive and message store must share a data directory");
+  const backups = path2.join(directory, "backups");
+  const names = /* @__PURE__ */ new Set([path2.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path2.basename(graph)}`, "agent-messages-expired.db"]);
+  const privateEntry = (file2, directoryEntry) => {
+    const stat = fs4.lstatSync(file2);
+    if (stat.isSymbolicLink() || !(directoryEntry ? stat.isDirectory() : stat.isFile()) || process.platform !== "win32" && ((stat.mode & 63) !== 0 || typeof process.getuid === "function" && stat.uid !== process.getuid())) {
+      throw new Error(`Unsafe legacy archive path: ${file2}`);
+    }
+  };
+  const candidates = [...names].map((name) => path2.join(backups, name)).filter((file2) => {
+    try {
+      return fs4.lstatSync(file2) !== void 0;
+    } catch (error62) {
+      const code = error62.code;
+      if (code === "ENOENT" || code === "ENOTDIR")
+        return false;
+      throw error62;
+    }
+  });
+  if (candidates.length === 0)
+    return [];
+  privateEntry(directory, true);
+  privateEntry(backups, true);
+  const files = [];
+  for (const file2 of candidates) {
+    privateEntry(file2, false);
+    assertLegacyPathsAreDifferent(file2, graph);
+    assertLegacyPathsAreDifferent(file2, target);
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      if (fs4.lstatSync(file2 + suffix, { throwIfNoEntry: false }))
+        privateEntry(file2 + suffix, false);
+    }
+    refuseMismatchedSidecars(file2, { readOnly: true });
+    files.push(file2);
+  }
+  return files;
+}
+function assertLegacyConversationArchiveSchema(source) {
+  const tables = new Set(source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+  for (const name of [
+    "agent_messages",
+    "agent_message_deliveries",
+    "agent_network_outbox",
+    "agent_message_events",
+    "agent_message_idempotency",
+    "agent_message_receipts",
+    "agent_retention_facts",
+    "agent_dispatch_attempts",
+    "agent_host_accepts",
+    "agent_ack_facts",
+    "agent_workflow_facts",
+    "archive_log"
+  ]) {
+    if (!tables.has(name))
+      throw new Error(`Invalid legacy archive: missing ${name}`);
+  }
+}
 var LEGACY_CONVERSATION_PREFIX = "legacy:";
 function historicalHostMatches(adapter, host, origin) {
   const family = adapter === "codex-cli-queue" ? "codex" : adapter === "claude-channel" || adapter === "claude-inbox" ? "claude" : void 0;
@@ -32286,6 +32346,7 @@ var ConversationMessages = class {
     const legacyFile = options.file === void 0 && options.legacySource === void 0 ? getDbPath() : void 0;
     if (legacyFile !== void 0)
       assertLegacyPathsAreDifferent(legacyFile, file2);
+    const archiveFiles = legacyFile === void 0 ? [] : legacyConversationArchiveFiles(legacyFile, file2);
     this.machine = identifier(options.machine ?? os2.hostname()).toLowerCase();
     this.clock = options.clock ?? Date.now;
     this.processAlive = options.processAlive ?? ((pid) => {
@@ -32338,6 +32399,17 @@ var ConversationMessages = class {
         const legacySource = options.legacySource ?? ownedSource;
         if (legacySource)
           importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
+        for (const archiveFile of archiveFiles) {
+          const archive = new MemeshDatabase(archiveFile, { readOnly: true });
+          try {
+            if (busyTimeoutMs !== void 0)
+              archive.pragma(`busy_timeout = ${busyTimeoutMs}`);
+            assertLegacyConversationArchiveSchema(archive);
+            importLegacyConversationMessages(archive, this.db, { nowMs: this.clock(), localMachine: this.machine });
+          } finally {
+            archive.close();
+          }
+        }
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error62) {
         this.db.close();

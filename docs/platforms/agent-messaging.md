@@ -42,7 +42,7 @@ Messages and their audit events are retained for 14 days when store maintenance 
 
 Both plugin manifests declare the SessionStart and UserPromptSubmit message hook. Claude Stop can block with complete pending envelopes; Codex also emits them after Bash tool calls. Output must succeed before delivery is recorded; overflow or a failed pipe remains queued. Private per-conversation ledgers and locks retain repeat, active-Stop and concurrency safeguards. Previously surfaced IDs are excluded before applying the 8,000-byte budget, so they cannot hide a later new message. Memory hooks no longer print principal addresses or instructions for retired actions. Private subprocess/MCP checks do not prove native-host execution, wakeup or model reading.
 
-Opening the conversation store imports available graph messages younger than 14 days, including handled history, with their original content and audit. An unidentifiable legacy name stays in an unclaimable audit namespace; the owner CLI can inspect it. Legacy cleanup refreshes the audit under its source write lock before deleting a batch. A failed later refresh preserves that batch, while earlier committed batches, an existing archive and the failed diagnostic can remain. This is not recovery of already removed history or proof of an installed older-release upgrade.
+The default conversation-store opening imports available legacy graph messages younger than 14 days, including handled history, and checks the configured graph path's parent directory for its named archive and the historical shared archive. It preserves original message IDs, bodies, send times and available audit facts; importing does not restart the 14-day lifetime. Explicit destinations or borrowed sources do not discover ambient archives. Archive sources are not deleted or chmodded by the import; the live graph still uses its existing file guard, and a read-only SQLite open can create private auxiliary files. Unsafe or unreadable sources cause a visible failure instead of being silently treated as imported. An unidentifiable legacy name stays in an unclaimable audit namespace; the owner CLI can inspect it. Legacy cleanup refreshes the audit under its source write lock before deleting a batch. A failed later refresh preserves that batch, while earlier committed batches, an existing archive and the failed diagnostic can remain. This is not recovery of already removed history or proof of an installed older-release upgrade.
 
 ## Legacy HTTP messaging
 
@@ -62,6 +62,6 @@ and native wakeup remain separately unverified.
 5. Confirm that an unknown address and an oversized envelope produce rejected
    audit events. Queue acceptance alone does not satisfy steps3 or4.
 
-An old graph message id is not a conversation-store id. Preserve an old
-notice as pending when the new tool cannot read it; pending-message migration
-is unfinished. Do not delete the old message or claim it was delivered.
+After successful migration, the owner can use the original message id in
+conversation-store status. If it is not listed, preserve the old notice as
+pending; do not delete the old message or claim it was delivered.

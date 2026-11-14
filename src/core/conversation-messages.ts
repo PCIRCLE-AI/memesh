@@ -5,7 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, requirePrivateWritableDirectory, removeGroupAndOtherAccess } from './file-mode.js';
 import { getDbPath, getMemeshDirFromDbPath } from './paths.js';
-import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, importLegacyConversationMessages, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
+import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
 
 export const MESSAGE_MAX_BYTES = 8_000;
 const DAY = 86_400_000;
@@ -88,6 +88,7 @@ export class ConversationMessages {
     if (options.legacySource) assertLegacyDestinationIsDifferent(options.legacySource, file);
     const legacyFile = options.file === undefined && options.legacySource === undefined ? getDbPath() : undefined;
     if (legacyFile !== undefined) assertLegacyPathsAreDifferent(legacyFile, file);
+    const archiveFiles = legacyFile === undefined ? [] : legacyConversationArchiveFiles(legacyFile, file);
     this.machine = identifier(options.machine ?? os.hostname()).toLowerCase();
     this.clock = options.clock ?? Date.now;
     this.processAlive = options.processAlive ?? ((pid) => {
@@ -133,6 +134,14 @@ export class ConversationMessages {
         for (const target of databaseFiles(file)) removeGroupAndOtherAccess(target);
         const legacySource = options.legacySource ?? ownedSource;
         if (legacySource) importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
+        for (const archiveFile of archiveFiles) {
+          const archive = new MemeshDatabase(archiveFile, { readOnly: true });
+          try {
+            if (busyTimeoutMs !== undefined) archive.pragma(`busy_timeout = ${busyTimeoutMs}`);
+            assertLegacyConversationArchiveSchema(archive);
+            importLegacyConversationMessages(archive, this.db, { nowMs: this.clock(), localMachine: this.machine });
+          } finally { archive.close(); }
+        }
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error) {
         this.db.close();

@@ -3,6 +3,55 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { sqliteUtcToIso } from './time-utils.js';
+import { refuseMismatchedSidecars } from './file-mode.js';
+
+/** Only the active data directory's named archive and historical shared archive. */
+export function legacyConversationArchiveFiles(graph: string, target: string): string[] {
+  const directory = path.dirname(path.resolve(graph));
+  if (directory !== path.dirname(path.resolve(target))) throw new Error('Legacy archive and message store must share a data directory');
+  const backups = path.join(directory, 'backups');
+  const names = new Set([path.basename(graph) === 'knowledge-graph.db'
+    ? 'agent-messages-expired.db' : `agent-messages-expired-${path.basename(graph)}`, 'agent-messages-expired.db']);
+  const privateEntry = (file: string, directoryEntry: boolean) => {
+    const stat = fs.lstatSync(file);
+    if (stat.isSymbolicLink() || !(directoryEntry ? stat.isDirectory() : stat.isFile())
+      || (process.platform !== 'win32' && ((stat.mode & 0o077) !== 0
+        || (typeof process.getuid === 'function' && stat.uid !== process.getuid())))) {
+      throw new Error(`Unsafe legacy archive path: ${file}`);
+    }
+  };
+  const candidates = [...names].map(name => path.join(backups, name)).filter(file => {
+    try { return fs.lstatSync(file) !== undefined; }
+    catch (error) {
+      const code = (error as NodeJS.ErrnoException).code;
+      if (code === 'ENOENT' || code === 'ENOTDIR') return false;
+      throw error;
+    }
+  });
+  if (candidates.length === 0) return [];
+  privateEntry(directory, true); privateEntry(backups, true);
+  const files: string[] = [];
+  for (const file of candidates) {
+    privateEntry(file, false);
+    assertLegacyPathsAreDifferent(file, graph); assertLegacyPathsAreDifferent(file, target);
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      if (fs.lstatSync(file + suffix, { throwIfNoEntry: false })) privateEntry(file + suffix, false);
+    }
+    refuseMismatchedSidecars(file, { readOnly: true });
+    files.push(file);
+  }
+  return files;
+}
+
+/** Real legacy archives contain these copied tables, not live session registries. */
+export function assertLegacyConversationArchiveSchema(source: MemeshDatabase): void {
+  const tables = new Set((source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all() as Array<{ name: string }>).map(row => row.name));
+  for (const name of ['agent_messages', 'agent_message_deliveries', 'agent_network_outbox', 'agent_message_events',
+    'agent_message_idempotency', 'agent_message_receipts', 'agent_retention_facts', 'agent_dispatch_attempts',
+    'agent_host_accepts', 'agent_ack_facts', 'agent_workflow_facts', 'archive_log']) {
+    if (!tables.has(name)) throw new Error(`Invalid legacy archive: missing ${name}`);
+  }
+}
 
 /** Reserved for audit-only identities, never a newly registered conversation. */
 export const LEGACY_CONVERSATION_PREFIX = 'legacy:';

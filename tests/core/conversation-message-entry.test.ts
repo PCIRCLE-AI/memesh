@@ -5,7 +5,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { SCHEMA_SQL } from '../../src/storage/schema.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { recordAgentReceipt, sendAgentMessage } from '../../src/core/agent-messaging.js';
 import { runAgentMessageExpiry } from '../../src/core/agent-message-expiry.js';
 import { AgentRouter } from '../../src/core/agent-router.js';
 
@@ -140,6 +140,120 @@ it('explicit destination without source ignores an ambient invalid graph, while 
   fs.unlinkSync(f.graph);
   expect(f.open().status()).toEqual([]);
   expect(fs.existsSync(f.graph)).toBe(false);
+});
+
+it.skipIf(process.platform === 'win32')('default opening keeps a private cross-directory graph symlink with empty backups and no archives', () => {
+  const f = fixture();
+  const actualDirectory = path.join(f.root, 'actual'); fs.mkdirSync(actualDirectory, { mode: 0o700 });
+  const actualGraph = path.join(actualDirectory, 'graph.db');
+  const source = new MemeshDatabase(actualGraph); handles.push(source); source.exec(SCHEMA_SQL);
+  const id = seed(source, 0); fs.chmodSync(actualGraph, 0o600);
+  fs.symlinkSync(actualGraph, f.graph);
+  const backups = path.join(f.data, 'backups'); fs.mkdirSync(backups, { mode: 0o700 });
+  fs.chmodSync(backups, 0o755); // No archive exists: archive-only restrictions must not apply.
+  const before = snapshot(source), bytes = fs.readFileSync(actualGraph), mode = fs.statSync(actualGraph).mode;
+  expect(f.open().status().find(row => row.id === id)?.body).toBe('complete age 0 body');
+  expect(snapshot(source)).toEqual(before);
+  expect(fs.readFileSync(actualGraph)).toEqual(bytes); expect(fs.statSync(actualGraph).mode).toBe(mode);
+  expect(fs.readlinkSync(f.graph)).toBe(actualGraph);
+  expect(fs.readdirSync(path.join(f.data, 'backups'))).toEqual([]);
+  expect(fs.existsSync(path.join(f.data, 'messages.db'))).toBe(true);
+  expect(fs.existsSync(path.join(actualDirectory, 'messages.db'))).toBe(false);
+  fs.chmodSync(backups, 0o700);
+  const archivedGraph = path.join(f.root, 'archive-fixture.db');
+  const archived = new MemeshDatabase(archivedGraph); handles.push(archived); archived.exec(SCHEMA_SQL);
+  const archivedId = seed(archived, 13);
+  recordAgentReceipt(archived, { project: 'fixture-project', recipient: 'recipient', message_id: archivedId,
+    receipt_kind: 'intake', intake_state: 'ingested', actor: 'recipient', caller_session: 'recipient-session', idempotency_key: 'symlink-archive-intake' });
+  const archivePath = path.join(backups, 'agent-messages-expired.db');
+  fs.closeSync(fs.openSync(archivePath, 'wx', 0o600));
+  const archive = new MemeshDatabase(archivePath); handles.push(archive);
+  archive.prepare('ATTACH DATABASE ? AS fixture_source').run(archivedGraph);
+  try {
+    for (const table of ['agent_messages', 'agent_message_deliveries', 'agent_network_outbox', 'agent_message_events',
+      'agent_message_idempotency', 'agent_message_receipts', 'agent_retention_facts', 'agent_dispatch_attempts',
+      'agent_host_accepts', 'agent_ack_facts', 'agent_workflow_facts']) archive.exec(`CREATE TABLE ${table} AS SELECT * FROM fixture_source.${table}`);
+  } finally { archive.exec('DETACH DATABASE fixture_source'); }
+  archive.exec('CREATE TABLE archive_log(message_id TEXT PRIMARY KEY, archived_at_ms INTEGER NOT NULL)');
+  archive.prepare('INSERT INTO archive_log VALUES (?,?)').run(archivedId, NOW - 2 * 86400000);
+  const archiveBefore = snapshot(archive), archiveBytes = fs.readFileSync(archivePath), archiveMode = fs.statSync(archivePath).mode;
+  expect(f.open().status().find(row => row.id === archivedId)).toMatchObject({
+    body: 'complete age 13 body', sent_at: new Date(NOW - 13 * 86400000).toISOString(),
+  });
+  expect(snapshot(archive)).toEqual(archiveBefore); expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
+  expect(fs.statSync(archivePath).mode).toBe(archiveMode); expect(snapshot(source)).toEqual(before);
+  expect(fs.readlinkSync(f.graph)).toBe(actualGraph);
+});
+
+it('default custom graph opening imports another project from the historical shared eleven-table archive once', () => {
+  const f = fixture(), live = f.source(), control = seed(live, 0);
+  fs.chmodSync(f.graph, 0o600);
+  const original = new MemeshDatabase(path.join(f.data, 'other.db')); handles.push(original);
+  original.exec(SCHEMA_SQL);
+  const sent = sendAgentMessage(original, { project: 'another-project', sender: 'old-sender', recipient: 'old-recipient',
+    idempotency_key: 'archive-only', content_type: 'text/plain', payload: 'complete thirteen-day archived body' });
+  const at = new Date(NOW - 13 * 86400000).toISOString();
+  original.prepare('UPDATE agent_messages SET created_at=? WHERE message_id=?').run(at, sent.message_id);
+  recordAgentReceipt(original, { project: sent.project, recipient: sent.recipient, message_id: sent.message_id,
+    receipt_kind: 'intake', intake_state: 'ingested', actor: sent.recipient, idempotency_key: 'archive-intake' });
+  const tables = ['agent_messages', 'agent_message_deliveries', 'agent_network_outbox', 'agent_message_events',
+    'agent_message_idempotency', 'agent_message_receipts', 'agent_retention_facts', 'agent_dispatch_attempts',
+    'agent_host_accepts', 'agent_ack_facts', 'agent_workflow_facts'];
+  const backups = path.join(f.data, 'backups'); fs.mkdirSync(backups, { mode: 0o700 });
+  const archivePath = path.join(backups, 'agent-messages-expired.db');
+  fs.closeSync(fs.openSync(archivePath, 'wx', 0o600));
+  const archive = new MemeshDatabase(archivePath); handles.push(archive);
+  archive.prepare('ATTACH DATABASE ? AS fixture_source').run(path.join(f.data, 'other.db'));
+  try {
+    for (const table of tables) archive.exec(`CREATE TABLE ${table} AS SELECT * FROM fixture_source.${table}`);
+  } finally { archive.exec('DETACH DATABASE fixture_source'); }
+  archive.exec('CREATE TABLE archive_log(message_id TEXT PRIMARY KEY, archived_at_ms INTEGER NOT NULL)');
+  archive.prepare('INSERT INTO archive_log VALUES (?,?)').run(sent.message_id, NOW - 2 * 86400000);
+  expect(Object.keys(snapshot(archive)).sort()).toEqual([...tables, 'archive_log'].sort());
+  const beforeArchive = snapshot(archive), beforeLive = snapshot(live);
+  const archiveBytes = fs.readFileSync(archivePath), archiveMode = fs.statSync(archivePath).mode;
+  const message = original.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(sent.message_id);
+  const first = f.open().status();
+  const restored = first.find(row => row.id === sent.message_id);
+  expect(restored).toMatchObject({ id: sent.message_id, body: 'complete thirteen-day archived body', sent_at: at, kind: 'legacy' });
+  const imported = restored!.events.filter(event => event.event === 'legacy_imported');
+  expect(imported).toHaveLength(1);
+  const importedSource = JSON.parse(imported[0].detail).source;
+  expect(importedSource.message).toEqual(message);
+  for (const table of tables.filter(table => table !== 'agent_messages')) {
+    expect(importedSource.facts[table].map((row: unknown) => JSON.stringify(row)).sort()).toEqual(
+      archive.prepare(`SELECT * FROM ${table}`).all().map(row => JSON.stringify(JSON.parse(JSON.stringify(row)), Object.keys(row).sort())).sort());
+  }
+  expect(importedSource.facts.agent_session_instances).toEqual([]);
+  expect(restored!.sender).toMatch(/^legacy:/);
+  expect(first.find(row => row.id === control)?.body).toBe('complete age 0 body');
+  expect(first).toHaveLength(2);
+  expect(f.open().status()).toEqual(first);
+  expect(snapshot(live)).toEqual(beforeLive); expect(snapshot(archive)).toEqual(beforeArchive);
+  expect(fs.readFileSync(archivePath)).toEqual(archiveBytes); expect(fs.statSync(archivePath).mode).toBe(archiveMode);
+  for (const directory of [f.home, f.config]) expect(fs.readdirSync(directory)).toEqual(['sentinel']);
+});
+
+it.skipIf(process.platform === 'win32').each(['symlink', 'public-mode', 'empty-sidecar'] as const)('refuses unsafe default archive %s without modifying it or creating the target', reason => {
+  const f = fixture(), db = f.source(); seed(db, 0);
+  fs.chmodSync(f.graph, 0o600);
+  const backups = path.join(f.data, 'backups'); fs.mkdirSync(backups, { mode: 0o700 });
+  const archive = path.join(backups, 'agent-messages-expired.db');
+  fs.writeFileSync(archive, 'untouched fixture', { mode: 0o600 });
+  if (reason === 'symlink') {
+    fs.renameSync(archive, archive + '.original'); fs.symlinkSync(archive + '.original', archive);
+  } else if (reason === 'public-mode') {
+    fs.chmodSync(archive, 0o640);
+  } else {
+    fs.writeFileSync(archive + '-shm', '', { mode: 0o400 });
+  }
+  const before = fs.readdirSync(backups).map(name => ({ name, mode: fs.lstatSync(path.join(backups, name)).mode, bytes: fs.readFileSync(path.join(backups, name)) }));
+  expect(() => f.open()).toThrow();
+  expect(fs.existsSync(path.join(f.data, 'messages.db'))).toBe(false);
+  expect(fs.readdirSync(backups).map(name => ({ name, mode: fs.lstatSync(path.join(backups, name)).mode, bytes: fs.readFileSync(path.join(backups, name)) }))).toEqual(before);
+  // Explicit destinations and borrowed sources must never inspect this ambient archive.
+  expect(f.open({ file: path.join(f.root, 'explicit.db') }).status()).toEqual([]);
+  expect(f.open({ file: path.join(f.root, 'borrowed.db'), legacySource: db }).status()).toHaveLength(1);
 });
 
 it.each([false, true])('refuses default graph basename messages.db before side effects (exists=%s)', exists => {
