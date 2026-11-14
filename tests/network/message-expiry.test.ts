@@ -154,7 +154,7 @@ describe('a message to another machine that ran out its day', () => {
     }
   });
 
-  it('removes the archived outbox row with its message when the extra day is over', async () => {
+  it('preserves young archived outbox rows, then removes them once the message is older than 14 days', async () => {
     const joined = join();
     const id = await sendRemote('k-purge');
     queueAndAttempt(joined, { delivered: true });
@@ -163,7 +163,18 @@ describe('a message to another machine that ran out its day', () => {
     db.exec(`ATTACH DATABASE '${result.backup_path}' AS inspected`);
     db.prepare('UPDATE inspected.archive_log SET archived_at_ms = ?').run(Date.now() - AGENT_MESSAGE_TTL_MS - 60_000);
     db.exec('DETACH DATABASE inspected');
-    await runAgentMessageExpiry(db, { trigger: 'test' });
+    const preserved = await runAgentMessageExpiry(db, { trigger: 'test' });
+    expect(preserved.outcome).toBe('failed');
+    expect(preserved.detail).toContain('younger than 14 days');
+    db.exec(`ATTACH DATABASE '${result.backup_path}' AS inspected`);
+    try {
+      expect(db.prepare('SELECT COUNT(*) AS n FROM inspected.agent_network_outbox').get()).toEqual({ n: 1 });
+      expect(db.prepare('SELECT COUNT(*) AS n FROM inspected.agent_message_deliveries').get()).toEqual({ n: 1 });
+      db.prepare("UPDATE inspected.agent_messages SET created_at = datetime('now', '-15 days') WHERE message_id = ?").run(id);
+    } finally {
+      db.exec('DETACH DATABASE inspected');
+    }
+    expect((await runAgentMessageExpiry(db, { trigger: 'test' })).outcome).toBe('archive_purged');
     db.exec(`ATTACH DATABASE '${result.backup_path}' AS inspected`);
     try {
       expect(db.prepare('SELECT COUNT(*) AS n FROM inspected.agent_network_outbox').get()).toEqual({ n: 0 });

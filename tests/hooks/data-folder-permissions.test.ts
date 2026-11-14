@@ -332,12 +332,14 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // in-memory probe; agent-message-expiry.ts's is the cleanup pass's own second connection to the file the process
     // already opened through openDatabase (its guard ran at that open); sqlite.ts's is a comment.
     // Backup and conversation stores guard their file families before opening.
+    // Archive reads first pass private-path, alias and sidecar checks in legacyConversationArchiveFiles.
     // Repair/salvage inputs use immutable reads without pending pages, otherwise
     // readonly sidecar refusal; repair's original write lock uses strict refusal.
     // Rebuild/salvage outputs are private new files created with wx/0600 by their callers.
     const known = [
       "core/auto-update.ts: const db = new MemeshDatabase(dbPath, { readOnly: true });",
       "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });",
+      "core/conversation-messages.ts: const archive = new MemeshDatabase(archiveFile, { readOnly: true });",
       "core/conversation-messages.ts: this.db = new MemeshDatabase(file);",
       "core/database-repair.ts: return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });",
       "core/database-repair.ts: const db = new MemeshDatabase(file);",

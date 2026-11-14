@@ -636,11 +636,6 @@
       "reason": "The initial zero pending count is paired with an exact positive count of one after creating a real pending file; an always-zero result fails. The unreadable private body must not be read or echoed.",
       "triaged": "2026-11-12 S1 pending doctor; exact toBe(1) count pin is not recognised by the heuristic."
     },
-    "C1 tests/cli/conversation-messages.test.ts": {
-      "class": "SAFE-EXIT-AND-DURABLE-READBACK",
-      "reason": "The zeroes are process exits. START/MID/END bodies, queued-to-delivered-to-read events and the rejection audit row are asserted exactly; the only empty cases are the no-identity and no-graph refusals.",
-      "triaged": "2026-11-13 T0 reviewed triage"
-    },
     "C1 tests/core/doctor-capture-liveness.test.ts": {
       "class": "SAFE-SEEDED-COUNTERS",
       "reason": "The fixture seeds 48/20 outcomes and asserts exact hook, status and triggeredRuns=20; the notify fixture asserts notifies=2 and runs=3 before asserting writes/errors=0.",
@@ -679,11 +674,6 @@
     "C1 tests/cli/doctor-message-probe.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
       "reason": "Zero is the compiled probe process verdict for an asserted exact four-action MCP schema; real stdio stale-ten and missing-read controls must exit 1 with AssertionError.",
-      "triaged": "2026-11-14 verification audit"
-    },
-    "C1 tests/core/conversation-message-entry.test.ts": {
-      "class": "SAFE-EMPTY-STATE-ASSERTION",
-      "reason": "Empty status intentionally proves explicit destinations ignore an invalid ambient graph and missing default graphs stay absent; paired byte/existence checks and seeded import bodies/events pin the contrasting paths.",
       "triaged": "2026-11-14 verification audit"
     },
     "C6 tests/readme-tool-parity.test.ts": {
