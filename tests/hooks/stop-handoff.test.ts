@@ -92,6 +92,40 @@ it.skipIf(process.platform === 'win32')('retains a redacted assistant in pending
   expect(rows().filter(row => row.type === 'conversation')).toHaveLength(1);
 });
 
+it.skipIf(process.platform === 'win32')('refuses mismatched empty quote sidecars without chmod and replays once after repair', () => {
+  const file = path.join(home, '.memesh/messages.db');
+  const store = new ConversationMessages({ file });
+  const peer = 'Peer-origin instruction text that must not become the assistant memory.';
+  const own = 'My independent conclusion stays complete.';
+  for (const id of ['sender', 's1']) store.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+  const message = store.send('sender', { recipient: 's1', kind: 'task', body: peer }).message;
+  store.recordHookDelivery('s1', [message.id], 'UserPromptSubmit');
+  store.close();
+  expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+  for (const suffix of ['-wal', '-shm']) {
+    expect(fs.existsSync(file + suffix)).toBe(false);
+    fs.writeFileSync(file + suffix, '', { flag: 'wx', mode: 0o600 });
+    fs.chmodSync(file + suffix, 0o400);
+  }
+  const family = () => ['', '-wal', '-shm', '-journal'].map(suffix => {
+    const name = file + suffix;
+    return fs.existsSync(name) ? { suffix, mode: fs.statSync(name).mode & 0o777, bytes: fs.readFileSync(name) } : { suffix, missing: true };
+  });
+  const before = family();
+  stop(`${own} ${peer}`);
+  expect(family()).toEqual(before);
+  expect(rows().filter(row => row.type === 'conversation')).toEqual([]);
+  const pending = path.join(home, '.memesh/pending-conversations');
+  expect(fs.readdirSync(pending)).toHaveLength(1);
+  expect(fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8')).toContain('conversation quote source unavailable');
+  for (const suffix of ['-wal', '-shm']) fs.chmodSync(file + suffix, 0o600);
+  start();
+  expect(rows().filter(row => row.type === 'conversation').map(row => row.content)).toEqual([`${own} [text from an agent message omitted]`]);
+  expect(fs.readdirSync(pending)).toEqual([]);
+  start();
+  expect(rows().filter(row => row.type === 'conversation')).toHaveLength(1);
+});
+
 it('does not create messages.db for memory-only capture', () => {
   stop('My complete independent assistant response.');
   expect(fs.existsSync(path.join(home, '.memesh/messages.db'))).toBe(false);

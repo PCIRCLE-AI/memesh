@@ -1108,7 +1108,12 @@ function checkedConversationQuotes(event, env) {
       throw new Error('unsafe quote source');
     }
     for (const suffix of ['-wal', '-shm', '-journal']) {
-      try { if (!privateFile(lstatSync(file + suffix))) throw new Error('unsafe quote sidecar'); }
+      try {
+        const sidecar = lstatSync(file + suffix);
+        if (!privateFile(sidecar) || (process.platform !== 'win32' && (sidecar.mode & 0o700) !== (stat.mode & 0o700))) {
+          throw new Error('unsafe quote sidecar');
+        }
+      }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
     // Read-only SQLite may create a missing SHM for a WAL. Refuse rather than write it.
