@@ -1,9 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync, rmSync, statSync, chmodSync, truncateSync, existsSync, copyFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { salvageWithNode } from '../../src/core/node-salvage.js';
+import { hasPagesWaiting, SIDECAR_PERMISSIONS_CODE } from '../../src/core/file-mode.js';
 
 function fixture(run: (src: string, out: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'node-salvage-'));
@@ -16,6 +18,54 @@ function damage(file: string, pages: number[], size = 512) {
   writeFileSync(file, bytes);
 }
 describe('node salvage', () => {
+  it.skipIf(process.platform === 'win32').each([
+    { mode: 0o600, empty: true },
+    { mode: 0o400, empty: false },
+    { mode: 0o400, empty: true },
+  ])('preserves readonly input permissions with WAL: $mode / empty SHM $empty', ({ mode, empty }) => fixture((src, out) => {
+    const db = new MemeshDatabase(src);
+    db.exec("PRAGMA journal_mode=WAL; CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE observations(entity_id INTEGER, content TEXT); INSERT INTO entities VALUES(1,'base-note'); PRAGMA wal_checkpoint(TRUNCATE)");
+    db.close(); chmodSync(src, 0o600);
+    const writer = spawnSync(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      const db = new DatabaseSync(process.argv[1]);
+      db.exec("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0; INSERT INTO entities VALUES(2,'wal-only'); INSERT INTO observations VALUES(2,'committed WAL observation')");
+      process.kill(process.pid, 'SIGKILL');
+    `, src], { encoding: 'utf8', timeout: 5000 });
+    expect(writer.signal).toBe('SIGKILL');
+    expect(() => process.kill(writer.pid, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
+    expect(statSync(src + '-wal').size).toBeGreaterThan(32);
+    expect(statSync(src + '-shm').size).toBeGreaterThan(0);
+    if (empty) truncateSync(src + '-shm', 0);
+    for (const suffix of ['-wal', '-shm']) chmodSync(src + suffix, mode);
+    const suffixes = ['', '-wal', '-shm', '-journal'];
+    const family = () => suffixes.map(suffix => existsSync(src + suffix)
+      ? { bytes: readFileSync(src + suffix), mode: statSync(src + suffix).mode & 0o777 } : null);
+    const before = family();
+    expect(hasPagesWaiting(src)).toBe(true);
+    let readFrom = out;
+    if (empty && mode === 0o400) {
+      expect(() => salvageWithNode(src, out)).toThrow(expect.objectContaining({ code: SIDECAR_PERMISSIONS_CODE }));
+      expect(family()).toEqual(before);
+      expect(existsSync(out)).toBe(false);
+      readFrom = out + '.disposable-clone';
+      for (const suffix of suffixes) if (existsSync(src + suffix)) {
+        copyFileSync(src + suffix, readFrom + suffix);
+        chmodSync(readFrom + suffix, 0o600);
+      }
+    } else {
+      expect(salvageWithNode(src, out).tables).toContainEqual({ name: 'entities', copied: 2, complete: true });
+      expect(family().map(row => row?.mode)).toEqual(before.map(row => row?.mode));
+      expect(readFileSync(src)).toEqual(before[0]!.bytes);
+      expect(readFileSync(src + '-wal')).toEqual(before[1]!.bytes);
+    }
+    const restored = new MemeshDatabase(readFrom, { readOnly: true });
+    try {
+      expect(restored.prepare('SELECT name FROM entities ORDER BY id').all().map(row => row.name)).toEqual(['base-note', 'wal-only']);
+      expect(restored.prepare('SELECT content FROM observations WHERE entity_id=2').all().map(row => row.content)).toEqual(['committed WAL observation']);
+    } finally { restored.close(); }
+    if (empty && mode === 0o400) expect(family()).toEqual(before);
+  }));
   it('keeps all 20 memories when another root is damaged; reports an unreadable entity root', () => fixture((src, out) => {
     const db = new MemeshDatabase(src);
     db.exec('PRAGMA page_size=512; CREATE TABLE entities(id INTEGER PRIMARY KEY, name TEXT); CREATE TABLE deliveries(id INTEGER PRIMARY KEY)');

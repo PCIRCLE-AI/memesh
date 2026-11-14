@@ -1,6 +1,6 @@
 import { openSync, closeSync } from 'node:fs';
 import { MemeshDatabase, type SqlInputValue, type SqlOutputValue } from '../storage/sqlite.js';
-import { hasPagesWaiting, immutableAddress } from './file-mode.js';
+import { hasPagesWaiting, immutableAddress, refuseMismatchedSidecars } from './file-mode.js';
 
 const q = (s: string): string => '"' + s.replaceAll('"', '""') + '"';
 const MIN = -(1n << 63n), MAX = (1n << 63n) - 1n;
@@ -17,7 +17,9 @@ function corrupt(e: unknown): boolean {
 export function salvageWithNode(sourcePath: string, outputPath: string): {
   tables: Array<{ name: string; copied: number; complete: boolean }>;
 } {
-  const src = new MemeshDatabase(hasPagesWaiting(sourcePath) ? sourcePath : immutableAddress(sourcePath), { readOnly: true });
+  const pending = hasPagesWaiting(sourcePath);
+  if (pending) refuseMismatchedSidecars(sourcePath, { readOnly: true });
+  const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });
   let dst: MemeshDatabase | undefined;
   try {
     src.exec('PRAGMA trusted_schema=OFF; BEGIN');

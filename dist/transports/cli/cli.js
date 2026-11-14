@@ -74013,7 +74013,10 @@ function corrupt(e) {
   return typeof code === "number" && [11, 26].includes(code & 255);
 }
 function salvageWithNode(sourcePath, outputPath) {
-  const src = new MemeshDatabase(hasPagesWaiting(sourcePath) ? sourcePath : immutableAddress(sourcePath), { readOnly: true });
+  const pending = hasPagesWaiting(sourcePath);
+  if (pending)
+    refuseMismatchedSidecars(sourcePath, { readOnly: true });
+  const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });
   let dst;
   try {
     src.exec("PRAGMA trusted_schema=OFF; BEGIN");
