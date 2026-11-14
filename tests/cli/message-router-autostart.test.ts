@@ -1,73 +1,140 @@
-// Through the built CLI: `memesh message discover` starts the router when it
-// is not running, never starts a second one, and says one sentence when it
-// cannot. Spawns `dist` because the router it starts is dist/host-runtime/router.js.
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { spawn, spawnSync } from 'child_process';
-import fs from 'fs';
-import os from 'os';
-import path from 'path';
+// The retained HTTP discover path starts the real packaged router when needed.
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import type { ChildProcess } from 'node:child_process';
+import { spawn } from 'node:child_process';
+import type { Server } from 'node:http';
+import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
+import net from 'node:net';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
-const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
+const captured = vi.hoisted(() => ({ children: [] as Array<{ child: ChildProcess; pid: number | undefined; argv: string[]; started: number; exited: boolean }>, witness: [] as ChildProcess[] }));
 
-describe('memesh message discover starts the router', () => {
+vi.mock('node:child_process', async importOriginal => {
+  const real = await importOriginal<typeof import('node:child_process')>();
+  return { ...real, spawn: (...args: Parameters<typeof real.spawn>) => {
+    const child = real.spawn(...args);
+    const argv = Array.isArray(args[1]) ? args[1] : [];
+    if (args[0] === process.execPath && argv[0] === '-e' && argv[1] === 'process.exit(0)') captured.witness.push(child);
+    if (args[0] === process.execPath && argv.length === 1 && argv[0].endsWith('/dist/host-runtime/router.js')) {
+      const record = { child, pid: child.pid, argv: [...argv], started: Date.now(), exited: false };
+      captured.children.push(record);
+      child.once('exit', () => { record.exited = true; });
+    }
+    return child;
+  } };
+});
+
+describe('legacy HTTP discover starts the packaged router', () => {
   let home: string;
-  let socketDir: string;
   let socket: string;
-  const env = (): NodeJS.ProcessEnv => {
-    const e: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: path.join(home, '.memesh'), MEMESH_ROUTER_SOCKET: socket };
-    for (const key of ['MEMESH_DB_PATH', 'MEMESH_PROJECT_ROOT']) delete e[key];
-    return e;
-  };
-  const discoverArgs = [CLI_PATH, 'message', 'discover', '--project', 'demo'];
-  const listeners = (): string[] => {
-    const r = spawnSync('lsof', ['-t', socket], { encoding: 'utf8' });
-    return [...new Set(r.stdout.split('\n').filter(Boolean))];
-  };
-  const discoverAsync = () => new Promise<{ status: number | null; stdout: string; stderr: string }>((resolve) => {
-    const child = spawn('node', discoverArgs, { env: env() });
-    let stdout = ''; let stderr = '';
-    child.stdout.on('data', (c) => { stdout += c; });
-    child.stderr.on('data', (c) => { stderr += c; });
-    child.on('close', (status) => resolve({ status, stdout, stderr }));
+  let server: Server;
+  let attempted: boolean;
+  let verifiedPreSpawn: boolean;
+  let closeDatabase: () => void;
+
+  beforeEach(async () => {
+    captured.children.length = 0;
+    captured.witness.length = 0;
+    attempted = false;
+    verifiedPreSpawn = false;
+    home = fs.mkdtempSync(path.join(os.tmpdir(), 'router-'));
+    socket = path.join(home, 'r.sock');
+    vi.stubEnv('HOME', home);
+    vi.stubEnv('USERPROFILE', home);
+    vi.stubEnv('MEMESH_DIR', path.join(home, 'data'));
+    vi.stubEnv('MEMESH_DB_PATH', path.join(home, 'graph.db'));
+    vi.stubEnv('MEMESH_ROUTER_SOCKET', socket);
+    const db = await import('../../dist/db.js');
+    closeDatabase = db.closeDatabase;
+    db.openDatabase(path.join(home, 'graph.db'));
+    const { app } = await import('../../dist/transports/http/server.js');
+    server = app.listen(0, '127.0.0.1');
+    await new Promise<void>(resolve => server.once('listening', resolve));
   });
 
-  beforeEach(() => {
-    home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-autostart-home-'));
-    // A short path: a Unix socket path has a small length limit.
-    socketDir = fs.mkdtempSync('/tmp/mr-');
-    socket = path.join(socketDir, 'r.sock');
-  });
-  afterEach(() => {
-    if (fs.existsSync(socket)) for (const pid of listeners()) { try { process.kill(Number(pid)); } catch { /* already gone */ } }
-    removeTempDir(home, socketDir);
+  afterEach(async () => {
+    let clean = !attempted || captured.children.length > 0 || verifiedPreSpawn;
+    await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    for (const record of captured.children) {
+      if (!record.exited && record.child.exitCode === null && record.child.signalCode === null) {
+        const exited = new Promise<boolean>(resolve => {
+          const timer = setTimeout(() => resolve(false), 3000);
+          record.child.once('exit', () => { clearTimeout(timer); resolve(true); });
+        });
+        record.child.kill('SIGTERM');
+        if (!await exited) clean = false;
+      }
+      console.info('router cleanup', JSON.stringify({ pid: record.pid, exited: record.exited, exitCode: record.child.exitCode, signalCode: record.child.signalCode }));
+    }
+    closeDatabase();
+    vi.unstubAllEnvs();
+    if (clean) removeTempDir(home);
+    expect(clean, `router child status unknown; fixture retained at ${home}`).toBe(true);
   });
 
-  it('starts it when it is not running, then answers', () => {
+  async function discover() {
+    attempted = true;
+    const address = server.address();
+    if (!address || typeof address === 'string') throw new Error('Missing HTTP address');
+    const response = await fetch(`http://127.0.0.1:${address.port}/v1/message`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'discover', project: 'demo' }),
+    });
+    const body = await response.json();
+    const errorCode = typeof body === 'object' && body !== null && 'errorCode' in body ? body.errorCode : null;
+    const kind = (p: string) => fs.existsSync(p) ? (fs.lstatSync(p).isSocket() ? 'socket' : fs.lstatSync(p).isFile() ? 'file' : 'other') : 'absent';
+    console.info('router response', JSON.stringify({ status: response.status, errorCode, captured: captured.children.length, graph: kind(path.join(home, 'graph.db')), socket: kind(process.env.MEMESH_ROUTER_SOCKET!) }));
+    return { status: response.status, body };
+  }
+
+  it('starts a real router on the private socket, then answers', async () => {
+    const witness = spawn(process.execPath, ['-e', 'process.exit(0)'], { stdio: 'ignore' });
+    expect(captured.witness).toEqual([witness]);
+    expect(await new Promise<number | null>(resolve => witness.once('exit', resolve))).toBe(0);
     expect(fs.existsSync(socket)).toBe(false);
-    const r = spawnSync('node', discoverArgs, { encoding: 'utf8', env: env(), timeout: 60000 });
-    expect(r.status, r.stderr).toBe(0);
-    expect(JSON.parse(r.stdout)).toBeTypeOf('object');
-    expect(listeners()).toHaveLength(1);
+    const result = await discover();
+    expect(captured.children.length, 'real packaged spawn must be captured').toBeGreaterThan(0);
+    expect(captured.children[0].argv).toEqual([path.resolve('dist/host-runtime/router.js')]);
+    console.info('router captured', JSON.stringify({ pid: captured.children[0].pid, argv: captured.children[0].argv, started: captured.children[0].started }));
+    expect(result.status).toBe(200);
+    expect(result.body).toBeTypeOf('object');
+    expect(fs.lstatSync(socket).isSocket()).toBe(true);
+    expect(captured.children.filter(r => !r.exited)).toHaveLength(1);
+    expect(captured.children[0].pid).toBeGreaterThan(0);
   }, 90_000);
 
-  it('two commands at once end with one router, and a later one reuses it', async () => {
-    const both = await Promise.all([discoverAsync(), discoverAsync()]);
-    for (const r of both) expect(r.status, r.stderr).toBe(0);
-    const before = listeners();
-    expect(before).toHaveLength(1);
-    const later = spawnSync('node', discoverArgs, { encoding: 'utf8', env: env(), timeout: 60000 });
-    expect(later.status, later.stderr).toBe(0);
-    expect(listeners()).toEqual(before);
+  it('concurrent discovers share one router, which a later request reuses', async () => {
+    const both = await Promise.all([discover(), discover()]);
+    expect(both.map(r => r.status)).toEqual([200, 200]);
+    await vi.waitFor(() => expect(captured.children.filter(r => !r.exited)).toHaveLength(1));
+    const running = captured.children.find(r => !r.exited)!;
+    const later = await discover();
+    expect(later.status).toBe(200);
+    expect(captured.children.filter(r => !r.exited)).toEqual([running]);
+    expect(fs.lstatSync(socket).isSocket()).toBe(true);
   }, 120_000);
 
-  it('says one sentence, exit 1, when the router cannot start', () => {
-    const e = { ...env(), MEMESH_ROUTER_SOCKET: '/nonexistent-memesh-dir/r.sock' };
-    const r = spawnSync('node', discoverArgs, { encoding: 'utf8', env: e, timeout: 60000 });
-    expect(r.status).toBe(1);
-    expect(r.stdout).toBe('');
-    expect(r.stderr.trim().split('\n')).toHaveLength(1);
-    expect(r.stderr).toContain('router_unreachable: the MeMesh message router is not running and could not be started');
-    expect(r.stderr).toContain('`memesh-router`');
+  it('reports the concrete router error when startup cannot succeed', async () => {
+    const blocker = path.join(home, 'not-a-directory');
+    fs.writeFileSync(blocker, 'fixture');
+    const blockedSocket = path.join(blocker, 'r.sock');
+    attempted = true;
+    const errno = await new Promise<string | undefined>(resolve => {
+      const connection = net.createConnection(blockedSocket);
+      connection.setTimeout(3000, () => connection.destroy(new Error('socket probe timeout')));
+      connection.once('error', error => { connection.destroy(); resolve((error as NodeJS.ErrnoException).code); });
+      connection.once('connect', () => { connection.destroy(); resolve('CONNECTED'); });
+    });
+    console.info('private socket errno', errno);
+    expect(errno).toBe('ENOTDIR');
+    vi.stubEnv('MEMESH_ROUTER_SOCKET', blockedSocket);
+    const result = await discover();
+    expect(result.status).toBe(400);
+    expect(result.body).toMatchObject({ success: false, errorCode: 'operation.failed', error: expect.stringContaining('router_unreachable') });
+    expect(JSON.stringify(result.body)).toContain('memesh-router');
+    expect(captured.children).toHaveLength(0);
+    verifiedPreSpawn = true;
   }, 90_000);
 });
