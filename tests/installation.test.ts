@@ -195,37 +195,37 @@ describe('Installation Verification', () => {
 
     it('teaches durable message delivery without claiming stopped-session wakeup', () => {
       const skill = fs.readFileSync('skills/memesh/SKILL.md', 'utf8');
-      expect(skill).toContain('bounded 45-second idle queue window');
-      expect(skill).toContain('This does not wake a stopped UI');
-      expect(skill).toContain('removes polling');
-      expect(skill).toContain('stopped, missing, or replaced session');
+      expect(skill).toContain('exactly four actions');
+      for (const action of ['discover', 'send', 'read', 'status']) {
+        expect(skill).toContain(`\`${action}\``);
+      }
+      expect(skill).toContain('Queued is not delivery, read, reply, completion, wakeup, or authorization');
+      expect(skill).toContain('Output must succeed before delivery is recorded');
+      expect(skill).toContain('Private hook/MCP checks do not establish native-host/model reading or wakeup');
+      expect(skill).toContain('older HTTP agent-message protocol remains compatibility-only');
     });
 
-    it('documents owner-private reusable setup for every installed managed Local host', () => {
+    it('separates conversation actions from optional owner-only legacy host setup', () => {
       const install = fs.readFileSync('llms-install.md', 'utf8');
       const guide = fs.readFileSync('docs/platforms/agent-messaging.md', 'utf8');
-      for (const command of ['memesh-router', 'memesh-host-codex', 'memesh-host-claude']) {
-        expect(install).toContain(command);
-        expect(guide).toContain(command);
-      }
-      expect(install).toContain('memesh agent setup codex');
-      expect(install).toContain('memesh agent setup claude');
-      expect(install).not.toContain('memesh agent setup gemini');
-      expect(guide).toContain('Experimental ACP runner (not release-gated)');
-      expect(guide).toContain('owner-private');
-      expect(install).toContain('No manual host setup is required');
-      expect(guide).toContain('No manual `agent setup` is required');
-      expect(guide).toContain('stopped, missing, disconnected, or replaced');
+      expect(install).toContain('Optional legacy local-host setup');
+      expect(install).toContain('conversation MCP/CLI interface needs no router setup command');
+      expect(install).toContain('Keep its private configuration owner-only and require explicit Channel admission');
+      expect(install).toContain('`memesh-router` is its owner diagnostic/legacy entrypoint, not a prerequisite');
+      expect(install).toContain('Host-native/Codex acceptance remains separate runtime verification');
       for (const document of [install, guide]) {
-        // #474: `--project` no longer decides routing for any managed host —
-        // each derives it automatically from its own working directory or
-        // `--workspace`, so pairing Claude Channel with a Codex session in
-        // the same repository needs no value copied between the two setup
-        // commands any more.
-        expect(document).toContain('No `--project`');
-        expect(document).toContain('for routing (#474)');
-        expect(document).toContain('memesh briefing --json');
+        for (const action of ['discover', 'send', 'read', 'status']) {
+          expect(document).toContain(`\`${action}\``);
+        }
+        expect(document).toContain('--payload-stdin');
+        expect(document).toContain('8,000 UTF-8 bytes');
+        expect(document).toContain('14 days');
       }
+      expect(guide).toContain('Identity is derived from the host session');
+      expect(guide).toContain('Do not pass `project`, `sender`');
+      expect(guide).toContain('`send` reads its body from stdin, never an argv body flag');
+      expect(guide).toContain('Do not mix its `poll`, `fetch`, `intake`, `ack`, `disposition`, or `receipts` fields into a conversation call');
+      expect(guide).toContain('Private subprocess/MCP checks do not prove native-host execution, wakeup or model reading');
     });
   });
 

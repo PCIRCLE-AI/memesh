@@ -356,9 +356,21 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(fixed.exitCode, `stderr: ${fixed.stderr}`).toBe(0);
   }, 60_000);
 
-  it('--name without --replace still needs --type', () => {
+  it('a new --name without --type is refused without saving the memory', () => {
     const r = runCli(['remember', '--name=r3', '--obs=a new memory'], { HOME: tmpHome });
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toContain('--name and --type');
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('There is no memory named "r3" to inherit a type from');
+    expect(r.stderr).toContain('pass `type` to create it');
+    const databasePath = path.join(tmpHome, '.memesh', 'knowledge-graph.db');
+    if (fs.existsSync(databasePath)) {
+      const db = new MemeshDatabase(databasePath, { readOnly: true });
+      try {
+        expect(db.prepare("SELECT name FROM entities WHERE name = 'r3'").all()).toEqual([]);
+      } finally {
+        db.close();
+      }
+    } else {
+      expect(fs.existsSync(databasePath)).toBe(false);
+    }
   }, 60_000);
 });

@@ -17,8 +17,9 @@ describe('session-start guidance in MCP tool descriptions (#444)', () => {
   it('briefing is called at session start only when the hook has not injected the block', () => {
     const text = description('briefing');
     expect(text).not.toMatch(/Call once at the START of a session/i);
-    expect(text).toMatch(/only when the host has not already injected this block/);
-    expect(text).toMatch(/Codex plugin once Codex runs its hooks/);
+    expect(text).toMatch(/Call at session start only when the host has not already injected the block/);
+    expect(text).toContain('or when the user asks what is remembered');
+    expect(text).toContain('use recall for specific questions');
   });
 
   it('user_patterns is not part of loading a session', () => {
