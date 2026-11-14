@@ -1824,9 +1824,13 @@ describe('the session handoff leads every briefing (#434 step 2)', () => {
     expect(result.hasHandoff).toBe(true);
     expect(result.text).toContain('HANDOFF-END: next, run the migration.');
     for (let i = 1; i <= 5; i++) expect(result.text, `decision ${i} lost its room`).toContain(`ROOM-DECISION-${i}`);
-    const block = result.text.slice(result.text.indexOf(HEADER));
-    const handoffText = block.slice(0, block.indexOf('\n\n'));
+    const lines = result.text.split('\n');
+    const headers = lines.flatMap((line, index) => line.startsWith(HEADER) ? [index] : []);
+    expect(headers).toHaveLength(1);
+    const handoffText = lines.slice(headers[0], headers[0] + 2).join('\n');
+    expect(handoffText).toContain('HANDOFF-END: next, run the migration.');
     expect(Buffer.byteLength(handoffText, 'utf8')).toBeLessThanOrEqual(HANDOFF_MAX_BYTES);
+    expect(Buffer.byteLength(result.text, 'utf8')).toBeLessThanOrEqual(8000);
   });
 
   it.each(['minimal', 'standard'])('at %s the whole memory block stays within its budget with an oversized remembered handoff', (level) => {
@@ -2318,8 +2322,8 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     }
   });
 
-  it('many long inbox notices cannot push the block past 4000 or crowd every decision out, on either reader', () => {
-    const { newestDecision } = seedCrowded(6, 0);
+  it('priority task and tail fit 8000 bytes, with decisions using the remaining space on both readers', () => {
+    const { hugeGoal, newestDecision } = seedCrowded(6, 0);
     // Five projects with a waiting message for a 200-character recipient: five long notice lines.
     const recipient = 'r'.repeat(200);
     const db = getDatabase();
@@ -2333,13 +2337,27 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     vi.stubEnv('MEMESH_BRIEFING', 'full');
     const briefing = assembleBriefing(project, recipient).text;
     const { context } = runHook('full', 30, { MEMESH_RECIPIENT: recipient });
-    for (const [label, text] of [['core', briefing], ['hook', context.slice(0, context.indexOf(WORK_PACKAGE_NOTICE))]] as const) {
+    for (const [label, text] of [['core', briefing], ['hook', context]] as const) {
       const body = fenceBody(text);
-      expect(body.length, label).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
-      expect(body, label).toContain('Last reply from a recent session');                    // the handoff is kept whole
-      // The hook lists unread messages from every project; core's briefing only the current one's.
-      if (label === 'hook') expect(body, label).toMatch(/- … \(\d+ more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
-      expect(body, label).toContain(newestDecision);                          // decisions still get room
+      expect(Buffer.byteLength(text, 'utf8'), label).toBeLessThanOrEqual(8000);
+      expect(body, label).toContain('Last reply from a recent session');
+      expect(body, label).toContain('目標😀');
+      expect(body, label).toContain('Run both readers');
+      expect(body, label).toContain('stated 20');
+      expect(text, label).not.toMatch(LONE_SURROGATE);
+      // Whole messages now have a separate hook; memory injection must not teach retired actions.
+      if (label === 'hook') expect(body, label).not.toContain('until their intake is recorded');
+    }
+    expect(getTaskState(project).state.goal).toBe(hugeGoal.trim());
+    // No fixed memory reserve: shortening the priority state makes room for ranked decisions.
+    setTaskState({ project, patch: { goal: 'Short priority goal' } });
+    for (const [label, text] of [
+      ['core', assembleBriefing(project, recipient).text],
+      ['hook', runHook('full', 30, { MEMESH_RECIPIENT: recipient }).context],
+    ] as const) {
+      expect(Buffer.byteLength(text, 'utf8'), label).toBeLessThanOrEqual(8000);
+      expect(fenceBody(text), label).toContain('Short priority goal');
+      expect(fenceBody(text), label).toContain(newestDecision);
     }
   }, 60_000);
 

@@ -194,20 +194,16 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
 
     // issue #412: `isolatedEnv` carries no MEMESH_BRIEFING override, so this
     // is what a real install actually gets — the default level (`minimal`).
-    // A goal/next is `standard`+-only content (briefing-level.ts POLICIES);
-    // the remembered sentinel is not level-gated at all. Asserting BOTH —
-    // goal absent, sentinel present — at the level every fresh install ships
-    // with is the point: `tests/core/briefing.test.ts` already covers this
-    // at the unit/subprocess layer, but nothing at the journey layer (real
-    // CLI + real SessionStart hook, glued together) exercised the default
-    // before this fix; only `standard` was ever run here.
+    // S2 keeps stated task fields and their dates at every level, ahead of
+    // memories. This small fixture has room for both state and the sentinel;
+    // the complete emitted opening must still fit 8000 UTF-8 bytes.
     const defaultBriefing = json(
       mustSucceed(invokeCli(['briefing', '--project', project, '--json']), 'default-level briefing readback'),
       'default-level briefing readback',
     );
     if (defaultBriefing.level !== 'minimal') throw new Error(`briefing ran at unexpected default level: ${defaultBriefing.level}`);
-    if (defaultBriefing.text?.includes(goal) || defaultBriefing.text?.includes(next)) {
-      throw new Error('CLI briefing included task state at the default (minimal) level, which must omit it');
+    if (!defaultBriefing.text?.includes(goal) || !defaultBriefing.text?.includes(next)) {
+      throw new Error('CLI briefing omitted task state at the default (minimal) level');
     }
     if (!defaultBriefing.text?.includes(sentinel)) {
       throw new Error('CLI briefing omitted the remembered sentinel at the default (minimal) level');
@@ -219,8 +215,17 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
     if (!additionalContext?.includes(sentinel)) {
       throw new Error('SessionStart did not inject the recalled memory at the default (minimal) level');
     }
-    if (additionalContext.includes(goal) || additionalContext.includes(next)) {
-      throw new Error('SessionStart injected task state at the default (minimal) level, which must omit it');
+    if (!additionalContext.includes(goal) || !additionalContext.includes(next)) {
+      throw new Error('SessionStart omitted task state at the default (minimal) level');
+    }
+    for (const [label, text] of [['CLI briefing', defaultBriefing.text], ['SessionStart', additionalContext]]) {
+      for (const field of ['goal', 'next']) {
+        const statedAt = task.state?.stated_at?.[field];
+        if (typeof statedAt !== 'string' || !text.includes(`stated ${statedAt}`)) {
+          throw new Error(`${label} omitted the ${field} statement date at the default level`);
+        }
+      }
+      if (Buffer.byteLength(text, 'utf8') > 8000) throw new Error(`${label} exceeded the 8000-byte opening budget`);
     }
 
     // Separately, confirm the `standard` override itself still works
@@ -257,7 +262,7 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
       'session-start-briefing',
       { observed: true, operations: ['task_state', 'briefing', 'SessionStart'] },
       { observed: true, databaseFailureBanner: true },
-      { observed: true, taskStateReadback: true, cliBriefing: true, hookSpecificOutput: true, defaultLevelExcludesTaskState: true, standardLevelOverrideStillWorks: true },
+      { observed: true, taskStateReadback: true, cliBriefing: true, hookSpecificOutput: true, defaultLevelIncludesTaskState: true, defaultLevelIncludesStatementDates: true, defaultOpeningWithin8000Bytes: true, standardLevelOverrideStillWorks: true },
     );
   })));
 
@@ -304,9 +309,34 @@ export async function runCoreLiveJourneys({ repoRoot, runDir, env = {}, cli = de
       throw new Error('session insight lost the transcript-specific failure observation');
     }
     const before = outcomeRows(memeshDir, 'session-summary').length;
-    mustSucceed(runNode(hook, { cwd: repoRoot, env: isolatedEnv, input: JSON.stringify({ ...payload, session_id: `missing-${sentinel}`, transcript_path: path.join(journeyDir, 'missing.jsonl') }) }), 'session-summary missing transcript');
-    const rows = outcomeRows(memeshDir, 'session-summary');
-    if (rows.length !== before + 1 || rows.at(-1)?.reason !== 'the transcript file named by the payload is gone') throw new Error('missing transcript did not record its explicit skip');
+    const missingSession = `missing-${sentinel}`;
+    const missingPayload = { ...payload, session_id: missingSession, transcript_path: path.join(journeyDir, 'missing.jsonl') };
+    mustSucceed(runNode(hook, { cwd: repoRoot, env: isolatedEnv, input: JSON.stringify(missingPayload) }), 'session-summary missing transcript');
+    const rows = outcomeRows(memeshDir, 'session-summary').slice(before);
+    // Conversation capture and the still-present activity capture diagnose
+    // their own missing inputs; neither may claim to have stored content.
+    const expectedReasons = ['the Stop payload and the transcript held no assistant message', 'the transcript file named by the payload is gone'];
+    if (rows.length !== 2 || rows.some((row, index) => row.outcome !== 'skipped' || row.reason !== expectedReasons[index])
+      || typeof rows[0].run !== 'string' || !rows[0].run || rows[0].run !== rows[1].run) {
+      throw new Error('missing transcript did not record its explicit conversation and activity skips');
+    }
+    const missingReadback = json(mustSucceed(invokeCli(['recall', '--tag', `session:${missingSession}`, '--json']), 'missing session recall'), 'missing session recall');
+    if (!Array.isArray(missingReadback.entities) || missingReadback.entities.length !== 0) throw new Error('missing assistant input created session content');
+    const insightAfterMissing = json(mustSucceed(invokeCli(['recall', sentinel, '--json']), 'retained insight recall'), 'retained insight recall');
+    if (!insightAfterMissing.entities?.some(entity => entity.type === 'session-insight'
+      && entity.observations?.some(observation => observation.includes(`controlled session failure ${sentinel}`)))) {
+      throw new Error('missing-input Stop changed the existing insight');
+    }
+    const payloadSession = `payload-${sentinel}`;
+    const assistantText = `Payload reply ${sentinel}\nThe complete final assistant paragraph remains available without a transcript.`;
+    mustSucceed(runNode(hook, { cwd: repoRoot, env: isolatedEnv, input: JSON.stringify({ ...missingPayload, session_id: payloadSession, last_assistant_message: assistantText }) }), 'session-summary payload without transcript');
+    const payloadReadback = json(mustSucceed(invokeCli(['recall', '--tag', `session:${payloadSession}`, '--json']), 'payload assistant recall'), 'payload assistant recall');
+    const assistants = payloadReadback.entities?.filter(entity => entity.type === 'conversation' && entity.tags?.includes('role:assistant'));
+    if (assistants?.length !== 1 || !assistants[0].tags?.includes(`project:${project}`)
+      || !assistants[0].tags?.includes(`session:${payloadSession}`)
+      || assistants[0].observations?.length !== 1 || assistants[0].observations[0] !== assistantText) {
+      throw new Error('Stop payload assistant was not stored in full under its own session and project');
+    }
     return result('stop-session-insight', { observed: true, transcriptCaptured: true }, { observed: true, missingTranscriptSkip: rows.at(-1)?.reason }, { observed: true, insightRecalled: true, sentinel });
   })));
 
