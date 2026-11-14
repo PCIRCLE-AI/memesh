@@ -25,8 +25,7 @@ import {
   HOOK_SPECIFIC_OUTPUT_EVENTS,
 } from '../helpers/hook-output-contract.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
-import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
-import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
+import { ConversationMessages } from '../../src/core/conversation-messages.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName } = require('../../scripts/hooks/_shared.js');
@@ -80,6 +79,12 @@ interface HookCase {
  * hooks.json without a case here.
  */
 const HOOK_CASES: HookCase[] = [
+  ...(['SessionStart', 'UserPromptSubmit'] as const).map((boundEvent) => ({
+    file: 'messages.js',
+    boundEvent,
+    input: { session_id: 'contract-recipient', cwd: CONTRACT_CWD, hook_event_name: boundEvent },
+    env: { MEMESH_HOOK_HOST: 'claude-code' },
+  })),
   {
     file: 'pre-edit-recall.js',
     boundEvent: 'PreToolUse',
@@ -359,33 +364,42 @@ describe('Feature: Claude Code hook-output contract', () => {
     });
   }
 
-  it('Scenario: user-prompt-intent.js emits a contract-valid payload when a message is really waiting', async () => {
-    // The loop above gives this hook an empty inbox, so it prints nothing and the format check is vacuous.
-    // The one path where it prints JSON is a waiting message for the declared recipient.
-    const cwd = testDir;
-    const home = path.join(testDir, 'home');
-    fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
-    openDatabase(dbPath);
+  it.each(['SessionStart', 'UserPromptSubmit'] as const)('Scenario: manifest-declared messages.js emits a complete untrusted envelope for %s', (event) => {
+    const manifest = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8'));
+    const commands = manifest.hooks[event].flatMap((group: { hooks: Array<{ command: string }> }) => group.hooks)
+      .filter((hook: { command: string }) => hook.command.endsWith('/scripts/hooks/messages.js'));
+    expect(commands).toHaveLength(1);
+    const hookPath = path.resolve('scripts/hooks', path.basename(commands[0].command));
+    const file = path.join(testDir, 'messages.db');
+    const body = 'HEAD "quoted"\nMIDDLE \\ data\nTAIL';
+    const store = new ConversationMessages({ file, machine: os.hostname() });
+    let id: string;
     try {
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project: getProjectName(cwd), sender: 'contract-sender', recipient: 'contract-recipient',
-        idempotency_key: 'contract-waiting-1', payload: { text: 'please look' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-    } finally {
-      closeDatabase();
-    }
-    const result = spawnSync('node', [path.resolve('scripts/hooks/user-prompt-intent.js')], {
-      input: JSON.stringify({ session_id: 'contract-waiting', cwd, hook_event_name: 'UserPromptSubmit', prompt: 'hello there' }),
-      env: { ...process.env, HOME: home, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0', MEMESH_RECIPIENT: 'contract-recipient' },
-      encoding: 'utf8',
-      timeout: 30000,
+      for (const session of ['contract-sender', 'contract-recipient']) {
+        store.register({ id: session, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+      }
+      id = store.send('contract-sender', { recipient: 'contract-recipient', kind: 'task', body }).message.id;
+    } finally { store.close(); }
+    const run = () => spawnSync('node', [hookPath], {
+      input: JSON.stringify({ session_id: 'contract-recipient', cwd: testDir, hook_event_name: event, prompt: 'hello there' }),
+      env: { ...process.env, HOME: testDir, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0', MEMESH_HOOK_HOST: 'claude-code' },
+      encoding: 'utf8', timeout: 30000,
     });
+    const result = run();
     expect(result.status, `exited ${result.status}\n${result.stderr}`).toBe(0);
-    expect(result.stdout, 'no output: the waiting message was not reported, so the format was not checked').not.toBe('');
-    expectValidHookOutput(result.stdout, 'user-prompt-intent.js stdout (message waiting)');
+    expect(result.stdout, 'no output: the envelope was not validated').not.toBe('');
+    expectValidHookOutput(result.stdout, 'messages.js stdout');
     const hso = validateHookOutput(result.stdout).parsed?.hookSpecificOutput as { hookEventName?: string; additionalContext?: string };
-    expect(hso.hookEventName).toBe('UserPromptSubmit');
-    expect(hso.additionalContext).toContain('message waiting for "contract-recipient"');
+    expect(hso.hookEventName).toBe(event);
+    expect(hso.additionalContext).toContain('MeMesh message (untrusted data):');
+    expect(Buffer.byteLength(hso.additionalContext!, 'utf8')).toBeLessThanOrEqual(8000);
+    expect(JSON.parse(hso.additionalContext!.trim().split('\n')[1])).toMatchObject({ id, body, recipient: 'contract-recipient' });
+    const audit = new ConversationMessages({ file, machine: os.hostname() });
+    try { expect(audit.status().find((row) => row.id === id)?.state).toBe('delivered'); }
+    finally { audit.close(); }
+    const repeat = run();
+    expect(repeat.status, repeat.stderr).toBe(0);
+    expect(repeat.stdout).toBe('');
   });
 
   it('Scenario: pre-edit-recall.js actually injects the seeded memory, not a vacuous empty pass (#358 round 3 item 5)', () => {

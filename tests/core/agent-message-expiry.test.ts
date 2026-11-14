@@ -10,6 +10,7 @@ import { sqliteUtcToIso } from '../../src/core/time-utils.js';
 import { startServer } from '../../src/transports/http/server.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { describe, expect, it } from 'vitest';
+import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import {
   AGENT_MESSAGE_EXPIRY_INTERVAL_MS,
   lastAgentMessageExpiryRun,
@@ -1584,133 +1585,135 @@ describe('the archive of deleted messages is kept one more day', () => {
   });
 });
 
-describe('getting deleted messages back from the archive', () => {
-  const haveSqlite = process.platform !== 'win32' && spawnSync('sqlite3', ['-version']).status === 0;
+describe('getting legacy archive messages through the default conversation store', () => {
+  const DAY = 86_400_000;
 
-  function guideCommand(): string {
-    const guide = fs.readFileSync(path.join(process.cwd(), 'docs/platforms/agent-messaging.md'), 'utf8');
-    const block = /```bash\n((?:(?!```)[\s\S])*?ATTACH(?:(?!```)[\s\S])*?)```/.exec(guide)?.[1];
-    expect(block, 'the guide must show the restore command').toBeTruthy();
-    // The block sits inside a list item, indented by two spaces; a reader copying it from the rendered page gets it without.
-    return block!.replace(/^ {2}/gm, '');
+  function rows(file: string): Record<string, Record<string, unknown>[]> {
+    const handle = new DatabaseSync(file, { readOnly: true });
+    try {
+      const tables = handle.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%' ORDER BY name").all() as Array<{ name: string }>;
+      return Object.fromEntries(tables.map(({ name }) => [name, handle.prepare(`SELECT * FROM "${name}"`).all()
+        .sort((a, b) => JSON.stringify(a) < JSON.stringify(b) ? -1 : JSON.stringify(a) > JSON.stringify(b) ? 1 : 0)]));
+    } finally { handle.close(); }
   }
 
-  async function prepared(): Promise<{ home: string; live: string; lostId: string; keepId: string }> {
+  async function prepared() {
     const lost = send('alice', 'bob');
     populate(lost);
     const keep = send('alice', 'bob');
-    age(lost.message_id);
-    await run();
-    const later = send('carol', 'bob'); // written after the deletion
-    expect(later.message_id).toBeTruthy();
+    age(lost.message_id, '-13 days');
+    const original = db().prepare('SELECT * FROM agent_messages WHERE message_id = ?').get(lost.message_id)!;
+    expect(await run()).toMatchObject({ outcome: 'deleted', expired_message_count: 1 });
+    const archivePath = archiveFile();
     db().exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    closeDatabase();
+    const archive = new DatabaseSync(archivePath);
+    try { archive.exec('PRAGMA wal_checkpoint(TRUNCATE)'); } finally { archive.close(); }
+    // The writer also creates messages.db. Copy ONLY the legacy pair to a fresh scope.
     const home = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'home-'));
-    fs.mkdirSync(path.join(home, '.memesh', 'backups'), { recursive: true });
-    const live = path.join(home, '.memesh', 'knowledge-graph.db');
-    fs.copyFileSync(dbHandle.dbPath, live);
-    fs.chmodSync(live, 0o600);
-    fs.copyFileSync(archiveFile(), path.join(home, '.memesh', 'backups', 'agent-messages-expired.db'));
-    return { home, live, lostId: lost.message_id, keepId: keep.message_id };
+    const directory = path.join(home, '.memesh');
+    fs.mkdirSync(directory, { mode: 0o700 });
+    fs.mkdirSync(path.join(directory, 'backups'), { mode: 0o700 });
+    const live = path.join(directory, 'knowledge-graph.db');
+    const saved = path.join(directory, 'backups', 'agent-messages-expired.db');
+    fs.copyFileSync(dbHandle.dbPath, live); fs.copyFileSync(archivePath, saved);
+    fs.chmodSync(live, 0o600); fs.chmodSync(saved, 0o600);
+    return { home, live, saved, original, lostId: lost.message_id, keepId: keep.message_id };
   }
 
-  it.skipIf(!haveSqlite)('the restore command in the guide puts the deleted message back for another day and leaves everything else as it is', async () => {
-    const { home, live, lostId, keepId } = await prepared();
-    const before = countIn(live, 'agent_messages');
-    const handleBefore = new DatabaseSync(live, { readOnly: true });
+  function fresh(fixture: Awaited<ReturnType<typeof prepared>>, live = fixture.live, saved = fixture.saved) {
+    expect(fs.existsSync(path.join(path.dirname(live), 'messages.db'))).toBe(false);
+    const graphRows = rows(live).agent_messages!;
+    expect(graphRows.some(row => row.message_id === fixture.lostId)).toBe(false);
+    expect(graphRows.some(row => row.message_id === fixture.keepId)).toBe(true);
+    const archiveRows = rows(saved);
+    expect(archiveRows.agent_messages!.find(row => row.message_id === fixture.lostId)).toEqual(fixture.original);
+    expect(archiveRows.agent_message_events!.some(row => row.message_id === fixture.lostId)).toBe(true);
+    return archiveRows;
+  }
+
+  function status(home: string, live: string | undefined, directory: string | undefined, now = Date.now()) {
+    const keys = ['HOME', 'MEMESH_DB_PATH', 'MEMESH_DIR'] as const;
+    const prior = keys.map(key => process.env[key]);
     try {
-      expect(handleBefore.prepare('SELECT COUNT(*) AS n FROM agent_messages WHERE message_id = ?').get(lostId)).toEqual({ n: 0 });
+      for (const [index, value] of [home, live, directory].entries()) {
+        if (value === undefined) delete process.env[keys[index]!]; else process.env[keys[index]!] = value;
+      }
+      const store = new ConversationMessages({ clock: () => now });
+      try { return store.status(); } finally { store.close(); }
     } finally {
-      handleBefore.close();
+      keys.forEach((key, index) => { if (prior[index] === undefined) delete process.env[key]; else process.env[key] = prior[index]; });
     }
-    const ran = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: '', MEMESH_DIR: '' }, encoding: 'utf8' });
-    // `${MEMESH_DB_PATH:-...}` treats an empty value as unset.
-    expect(ran.status, ran.stderr).toBe(0);
-    const handle = new DatabaseSync(live, { readOnly: true });
-    try {
-      const ids = (handle.prepare("SELECT message_id FROM agent_messages WHERE sender <> 'memesh'").all() as Array<{ message_id: string }>).map((r) => r.message_id);
-      expect(ids).toContain(lostId);
-      expect(ids).toContain(keepId);
-      expect((handle.prepare('SELECT COUNT(*) AS n FROM agent_messages').get() as { n: number }).n).toBe(before + 1);
-      const restored = handle.prepare('SELECT created_at FROM agent_messages WHERE message_id = ?').get(lostId) as { created_at: string };
-      expect(restored.created_at >= agentMessageExpiryCutoff(Date.now() - 120_000)).toBe(true);
-      expect(handle.prepare('SELECT COUNT(*) AS n FROM agent_message_events WHERE message_id = ?').get(lostId)).toEqual({ n: 1 });
-      expect(handle.prepare('SELECT COUNT(*) AS n FROM agent_message_expiries WHERE message_id = ?').get(lostId)).toEqual({ n: 0 });
-      expect(handle.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
-    } finally {
-      handle.close();
+  }
+
+  it('imports original archive contents and audit without changing sources, and reopens without duplicates', async () => {
+    const fixture = await prepared();
+    const facts = fresh(fixture);
+    const graphBefore = rows(fixture.live);
+    const bytes = [fixture.live, fixture.saved].map(file => fs.readFileSync(file));
+    const modes = [fixture.live, fixture.saved].map(file => fs.statSync(file).mode);
+    const first = status(fixture.home, undefined, undefined);
+    const restored = first.find(row => row.id === fixture.lostId)!;
+    expect(restored).toMatchObject({ id: fixture.lostId, body: fixture.original.payload_json, sent_at: new Date(sqliteUtcToIso(String(fixture.original.created_at))).toISOString() });
+    const imported = restored.events.filter(event => event.event === 'legacy_imported');
+    expect(imported).toHaveLength(1);
+    expect(JSON.parse(imported[0]!.detail).source.message).toEqual(fixture.original);
+    const importedFacts = restored.events.filter(event => ['legacy_fact', 'legacy_handled'].includes(event.event)).map(event => JSON.parse(event.detail));
+    for (const [table, records] of Object.entries(facts)) {
+      if (table === 'agent_messages' || table === 'archive_log') continue;
+      for (const row of records.filter(row => row.message_id === fixture.lostId)) {
+        expect(importedFacts).toContainEqual({ table, row });
+      }
     }
-    // Running it again changes nothing.
-    const eventsAfterFirst = countIn(live, 'agent_message_events');
-    const again = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: '', MEMESH_DIR: '' }, encoding: 'utf8' });
-    expect(again.status, again.stderr).toBe(0);
-    expect(countIn(live, 'agent_messages')).toBe(before + 1);
-    expect(countIn(live, 'agent_message_events')).toBe(eventsAfterFirst);
+    expect(first.some(row => row.id === fixture.keepId)).toBe(true);
+    expect(status(fixture.home, undefined, undefined)).toEqual(first);
+    expect(rows(fixture.live)).toEqual(graphBefore); expect(rows(fixture.saved)).toEqual(facts);
+    expect([fixture.live, fixture.saved].map(file => fs.readFileSync(file))).toEqual(bytes);
+    expect([fixture.live, fixture.saved].map(file => fs.statSync(file).mode)).toEqual(modes);
   });
 
-  it.skipIf(!haveSqlite)('the restored message can be read again, and is deleted again a day later', async () => {
-    const { home, live, lostId } = await prepared();
-    const ran = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: '', MEMESH_DIR: '' }, encoding: 'utf8' });
-    expect(ran.status, ran.stderr).toBe(0);
-    // Put the restored database in place of the live one.
-    const restored = new MemeshDatabase(live);
-    restored.exec('PRAGMA foreign_keys = ON');
-    try {
-      expect(fetchAgentMessage(restored, { project: PROJECT, recipient: 'bob', message_id: lostId }).message_id).toBe(lostId);
-      expect(pollAgentEvents(restored, { project: PROJECT, recipient: 'bob' }).events.map((e) => e.message_id)).toContain(lostId);
-      // A day later, with no pass in between: it is deleted again, and its copy is in the archive for another day.
-      const restoredArchive = path.join(home, '.memesh', 'backups', 'agent-messages-expired.db');
-      const archiveHandle = new DatabaseSync(restoredArchive);
-      archiveHandle.exec(`UPDATE archive_log SET archived_at_ms = ${Date.now() - 30 * 3_600_000}`);
-      archiveHandle.close();
-      for (const table of ['agent_messages', 'agent_message_deliveries', 'agent_message_events']) {
-        restored.prepare(`UPDATE ${table} SET created_at = datetime('now', '-25 hours') WHERE message_id = ?`).run(lostId);
-      }
-      expect(await runAgentMessageExpiry(restored, { trigger: 'test' })).toMatchObject({ outcome: 'deleted', expired_message_count: 1 });
-      const after = new DatabaseSync(restoredArchive, { readOnly: true });
-      try {
-        expect(after.prepare('SELECT COUNT(*) AS n FROM agent_messages WHERE message_id = ?').get(lostId)).toEqual({ n: 1 });
-        expect(after.prepare('SELECT COUNT(*) AS n FROM archive_log WHERE message_id = ?').get(lostId)).toEqual({ n: 1 });
-      } finally {
-        after.close();
-      }
-    } finally {
-      restored.close();
-    }
+  it('expires messages and events fourteen days from original send time without resetting or reimporting them', async () => {
+    const fixture = await prepared();
+    const archiveBefore = fresh(fixture);
+    const sent = Date.parse(sqliteUtcToIso(String(fixture.original.created_at)));
+    expect(status(fixture.home, undefined, undefined, sent + 14 * DAY - 1).some(row => row.id === fixture.lostId)).toBe(true);
+    expect(status(fixture.home, undefined, undefined, sent + 14 * DAY).some(row => row.id === fixture.lostId)).toBe(false);
+    expect(status(fixture.home, undefined, undefined, sent + 14 * DAY + 1).some(row => row.id === fixture.lostId)).toBe(false);
+    expect(rows(path.join(path.dirname(fixture.live), 'messages.db')).events!.some(row => row.message_id === fixture.lostId)).toBe(false);
+    expect(rows(fixture.saved)).toEqual(archiveBefore);
   });
 
-  it.skipIf(!haveSqlite)('finds the files from MEMESH_DB_PATH, and from MEMESH_DIR, as the guide says', async () => {
-    const { home } = await prepared();
+  it('selects the DB_PATH named archive ahead of a decoy DIR, and supports the DIR shared archive', async () => {
+    const fixture = await prepared();
+    fresh(fixture);
     const elsewhere = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'elsewhere-'));
-    fs.mkdirSync(path.join(elsewhere, 'backups'));
-    fs.copyFileSync(path.join(home, '.memesh', 'knowledge-graph.db'), path.join(elsewhere, 'custom.db'));
-    fs.copyFileSync(archiveFile(), path.join(elsewhere, 'backups', 'agent-messages-expired-custom.db'));
-    const before = countIn(path.join(elsewhere, 'custom.db'), 'agent_messages');
-    const ran = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: path.join(elsewhere, 'custom.db') }, encoding: 'utf8' });
-    expect(ran.status, ran.stderr).toBe(0);
-    expect(countIn(path.join(elsewhere, 'custom.db'), 'agent_messages')).toBe(before + 1);
-
-    const dirHome = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'dir-'));
-    fs.mkdirSync(path.join(dirHome, 'backups'));
-    fs.copyFileSync(path.join(home, '.memesh', 'knowledge-graph.db'), path.join(dirHome, 'knowledge-graph.db'));
-    fs.copyFileSync(archiveFile(), path.join(dirHome, 'backups', 'agent-messages-expired.db'));
-    const viaDir = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: '', MEMESH_DIR: dirHome }, encoding: 'utf8' });
-    expect(viaDir.status, viaDir.stderr).toBe(0);
-    expect(countIn(path.join(dirHome, 'knowledge-graph.db'), 'agent_messages')).toBe(before + 1);
+    fs.mkdirSync(path.join(elsewhere, 'backups'), { mode: 0o700 });
+    const custom = path.join(elsewhere, 'custom.db');
+    const saved = path.join(elsewhere, 'backups', 'agent-messages-expired-custom.db');
+    fs.copyFileSync(fixture.live, custom); fs.copyFileSync(fixture.saved, saved);
+    fresh(fixture, custom, saved);
+    const before = [rows(custom), rows(saved), rows(fixture.live), rows(fixture.saved)];
+    expect(status(fixture.home, custom, path.dirname(fixture.live)).some(row => row.id === fixture.lostId)).toBe(true);
+    expect(fs.existsSync(path.join(elsewhere, 'messages.db'))).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(fixture.live), 'messages.db'))).toBe(false);
+    fresh(fixture);
+    expect(status(fixture.home, undefined, path.dirname(fixture.live)).some(row => row.id === fixture.lostId)).toBe(true);
+    expect([rows(custom), rows(saved), rows(fixture.live), rows(fixture.saved)]).toEqual(before);
   });
 
-  it.skipIf(!haveSqlite)('works when MEMESH_DB_PATH is a symlink to the database, and when the path holds a quote', async () => {
-    const { home } = await prepared();
-    // The archive is beside the real file, which is where MeMesh writes it.
-    const real = fs.mkdtempSync(path.join(dbHandle.tmpDir, "it's real-"));
-    fs.mkdirSync(path.join(real, 'backups'));
-    fs.copyFileSync(path.join(home, '.memesh', 'knowledge-graph.db'), path.join(real, 'work.db'));
-    fs.copyFileSync(archiveFile(), path.join(real, 'backups', 'agent-messages-expired-work.db'));
-    const links = fs.mkdtempSync(path.join(dbHandle.tmpDir, 'links-'));
-    fs.symlinkSync(path.join(real, 'work.db'), path.join(links, 'kg.db'));
-    const before = countIn(path.join(real, 'work.db'), 'agent_messages');
-    const ran = spawnSync('sh', ['-c', guideCommand()], { env: { ...process.env, HOME: home, MEMESH_DB_PATH: path.join(links, 'kg.db') }, encoding: 'utf8' });
-    expect(ran.status, ran.stderr).toBe(0);
-    expect(countIn(path.join(real, 'work.db'), 'agent_messages')).toBe(before + 1);
+  it('supports a graph file symlink and a quote in the configured archive directory without crossing its scope', async () => {
+    const fixture = await prepared();
+    const links = fs.mkdtempSync(path.join(dbHandle.tmpDir, "it's links-"));
+    fs.mkdirSync(path.join(links, 'backups'), { mode: 0o700 });
+    const live = path.join(links, 'kg.db');
+    const saved = path.join(links, 'backups', 'agent-messages-expired-kg.db');
+    fs.symlinkSync(fixture.live, live); fs.copyFileSync(fixture.saved, saved);
+    const archiveBefore = fresh(fixture, live, saved);
+    const graphBefore = rows(fixture.live);
+    expect(status(fixture.home, live, undefined).some(row => row.id === fixture.lostId)).toBe(true);
+    expect(fs.existsSync(path.join(links, 'messages.db'))).toBe(true);
+    expect(fs.existsSync(path.join(path.dirname(fixture.live), 'messages.db'))).toBe(false);
+    expect(rows(fixture.live)).toEqual(graphBefore); expect(rows(saved)).toEqual(archiveBefore);
   });
 });
 
@@ -2715,18 +2718,23 @@ describe('rules a review found unguarded', () => {
 });
 
 describe('a creation time that cannot be read', () => {
-  it('does not stop the pass: such a message is deleted like any other past its day, and the run says so', async () => {
+  it('fails visibly without deleting unknown-age or valid source messages or creating an archive', async () => {
     const empty = bareMessage('', 'alice');
     const normal = bareMessage(agentMessageExpiryCutoff(Date.now() - 60_000), 'carol');
+    const before = Object.fromEntries(MESSAGE_TABLES.map(table => [table, db().prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]));
+    const runsBefore = count('agent_message_expiry_runs');
     const result = await run();
-    expect(result).toMatchObject({ outcome: 'deleted', expired_message_count: 2 });
-    expect(result.detail).toContain('1 message(s) had a creation time that cannot be read');
-    expect(ids()).not.toContain(empty);
-    expect(ids()).not.toContain(normal);
-    expect(countIn(archiveFile(), 'agent_messages')).toBe(2);
-    // A later read of it gets the ordinary expired answer, not a crash on the time.
-    expect(() => fetchAgentMessage(db(), { project: PROJECT, recipient: 'alice', message_id: empty }))
-      .toThrow(/message_expired: .*expired at an unknown time/);
+    expect(result).toMatchObject({ outcome: 'failed', expired_message_count: 0 });
+    expect(result.detail).toContain('Legacy message has invalid timestamp');
+    expect(ids()).toEqual(expect.arrayContaining([empty, normal]));
+    expect(Object.fromEntries(MESSAGE_TABLES.map(table => [table, db().prepare(`SELECT * FROM ${table} ORDER BY rowid`).all()]))).toEqual(before);
+    expect(fs.existsSync(archiveFile())).toBe(false);
+    const target = new DatabaseSync(path.join(path.dirname(dbHandle.dbPath), 'messages.db'), { readOnly: true });
+    try { expect(target.prepare('SELECT COUNT(*) AS n FROM messages').get()).toEqual({ n: 0 }); }
+    finally { target.close(); }
+    // The existing failed-run diagnostic is an intentional write, not lost source data.
+    expect(count('agent_message_expiry_runs')).toBe(runsBefore + 1);
+    expect(lastAgentMessageExpiryRun(db())).toMatchObject({ outcome: 'failed' });
   });
 });
 
