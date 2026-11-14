@@ -35,18 +35,18 @@ const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..'
 const workflowDir = path.join(repoRoot, '.github', 'workflows');
 
 /** The major version in a `>=X.Y.Z` engines range. */
-function declaredFloor(): { range: string; major: number } {
+function declaredFloor(): { range: string; versions: string[] } {
   const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as {
     engines?: { node?: string };
   };
   const range = pkg.engines?.node;
   expect(range, 'package.json declares no engines.node').toBeTypeOf('string');
-  const match = /^>=\s*(\d+)\./.exec(range as string);
+  const versions = (range as string).split('||').map((part) => part.trim());
   expect(
-    match,
-    `engines.node is "${range}"; this test only understands ">=X.Y.Z" and will not guess at a range it cannot read`
-  ).not.toBeNull();
-  return { range: range as string, major: Number((match as RegExpExecArray)[1]) };
+    versions.every((part) => /^\^\d+\.\d+\.\d+$/.test(part)),
+    `engines.node is "${range}"; expected a union of full caret versions`
+  ).toBe(true);
+  return { range: range as string, versions: versions.map((version) => version.slice(1)) };
 }
 
 /**
@@ -55,8 +55,8 @@ function declaredFloor(): { range: string; major: number } {
  * Two shapes: the build matrix's `node: ['22', '24']` plus its `include:`
  * entries, and the standalone jobs' `node-version: '22'`.
  */
-function pinnedNodeVersions(): Array<{ file: string; where: string; major: number }> {
-  const found: Array<{ file: string; where: string; major: number }> = [];
+function pinnedNodeVersions(): Array<{ file: string; where: string; version: string }> {
+  const found: Array<{ file: string; where: string; version: string }> = [];
   const files = fs.readdirSync(workflowDir).filter((f) => f.endsWith('.yml') || f.endsWith('.yaml'));
   expect(files.length, 'no workflow files found — did .github/workflows move?').toBeGreaterThan(0);
 
@@ -68,18 +68,18 @@ function pinnedNodeVersions(): Array<{ file: string; where: string; major: numbe
       for (const raw of m[1].split(',')) {
         const version = raw.trim().replace(/^['"]|['"]$/g, '');
         if (version === '') continue;
-        found.push({ file, where: `matrix node: [… ${version} …]`, major: Number(version.split('.')[0]) });
+        found.push({ file, where: `matrix node: [… ${version} …]`, version });
       }
     }
 
     // `node: '26'` — a matrix `include:` entry.
-    for (const m of text.matchAll(/^\s*-?\s*node:\s*['"](\d+)[^'"]*['"]\s*$/gm)) {
-      found.push({ file, where: `matrix include node: '${m[1]}'`, major: Number(m[1]) });
+    for (const m of text.matchAll(/^\s*-?\s*node:\s*['"](\d[^'"]*)['"]\s*$/gm)) {
+      found.push({ file, where: `matrix include node: '${m[1]}'`, version: m[1] });
     }
 
     // `node-version: '22'` — a standalone job. Skips `${{ matrix.node }}`.
-    for (const m of text.matchAll(/^\s*node-version:\s*['"]?(\d+)[^'"\s]*['"]?\s*$/gm)) {
-      found.push({ file, where: `node-version: '${m[1]}'`, major: Number(m[1]) });
+    for (const m of text.matchAll(/^\s*node-version:\s*['"]?(\d[^'"\s]*)['"]?\s*$/gm)) {
+      found.push({ file, where: `node-version: '${m[1]}'`, version: m[1] });
     }
   }
   return found;
@@ -95,21 +95,21 @@ describe('the CI matrix and engines.node cannot drift apart', () => {
     expect(pins.length, 'no Node version was extracted from any workflow — the patterns stopped matching').toBeGreaterThanOrEqual(5);
 
     for (const pin of pins) {
-      expect(
-        pin.major,
-        `${pin.file} runs Node ${pin.major} (${pin.where}) but engines.node is "${floor.range}" — CI is testing a runtime the package tells users not to use`
-      ).toBeGreaterThanOrEqual(floor.major);
+      expect(pin.version, `${pin.file} ${pin.where} must pin a complete version`).toMatch(/^\d+\.\d+\.\d+$/);
+      const have = pin.version.split('.').map(Number);
+      const minimum = floor.versions.map((version) => version.split('.').map(Number)).find((version) => version[0] === have[0]);
+      expect(minimum, `${pin.file} ${pin.where} is outside ${floor.range}`).toBeDefined();
+      expect(have[1] > minimum![1] || (have[1] === minimum![1] && have[2] >= minimum![2]), `${pin.file} ${pin.where} is below ${floor.range}`).toBe(true);
     }
   });
 
   it('actually runs the floor it declares', () => {
     const floor = declaredFloor();
     const pins = pinnedNodeVersions();
-    const majors = [...new Set(pins.map((p) => p.major))].sort((a, b) => a - b);
-
-    expect(
-      majors,
-      `engines.node is "${floor.range}" but no job runs Node ${floor.major}; CI covers ${majors.join(', ')}. The oldest runtime users may run is the one nobody tests.`
-    ).toContain(floor.major);
+    const buildPins = pins.filter((pin) => pin.file === 'ci.yml').map((pin) => pin.version);
+    for (const version of floor.versions) expect(buildPins, `CI must run declared floor ${version}`).toContain(version);
+    expect(floor.versions).toContain(fs.readFileSync(path.join(repoRoot, '.nvmrc'), 'utf8').trim());
+    const workflow = fs.readFileSync(path.join(workflowDir, 'ci.yml'), 'utf8');
+    expect(workflow).toMatch(/os:\s*macos-latest\s*\n\s*node:\s*['"]26\.13\.1['"]/);
   });
 });

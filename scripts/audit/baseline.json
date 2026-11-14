@@ -1,15 +1,15 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
-    "C4 .github/workflows/ci.yml:222": {
+    "C4 .github/workflows/ci.yml:203": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 245\u2192222 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 245\u2192222 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical); re-keyed 222 to 203 after matrix edits, statement unchanged"
     },
-    "C4 .github/workflows/ci.yml:228": {
+    "C4 .github/workflows/ci.yml:209": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected first; this grep independently checks the skills and hooks content.",
-      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 251\u2192228 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical)"
+      "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-09-12 (the workflow_dispatch trigger added 23 lines above the unchanged statement); re-keyed 2026-10-01 (the coverage job and the lint step above the unchanged statement were folded away); re-keyed 2026-10-01 251\u2192228 (the matrix comments and steps above reworked to shorten pull request feedback; statement byte-identical); re-keyed 228 to 209 after matrix edits, statement unchanged"
     },
     "C4 scripts/release-verify.sh:111": {
       "class": "SAFE-DIAGNOSTIC",
@@ -195,6 +195,11 @@
       "class": "SAFE",
       "reason": "the zeros are exit codes, and the refusal cases are paired with an import that must still succeed",
       "triaged": "2026-08-10 (P7 batch 2)"
+    },
+    "C6 tests/ci-matrix-covers-engines.test.ts": {
+      "class": "SOURCE-CONTRACT-PIN",
+      "reason": "The workflow is the configuration under test: the test extracts Node pins and checks each against the declared engine floors, including the macOS matrix leg.",
+      "triaged": "Node security floor and CI matrix contract"
     },
     "C6 tests/relation-types-documented.test.ts": {
       "class": "WIRING-PIN",

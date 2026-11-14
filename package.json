@@ -88,7 +88,7 @@
     "url": "git+https://github.com/PCIRCLE-AI/memesh.git"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "commander": "^14.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "8.5.1",
@@ -96,33 +96,37 @@
     "zod": "4.6.6"
   },
   "overrides": {
-    "@hono/node-server": "^2.0.12",
+    "@hono/node-server": "^2.1.8",
     "@protobufjs/utf8": "^1.1.2",
     "adm-zip": "^0.6.0",
-    "body-parser": "^2.3.0",
-    "brace-expansion": "^5.0.9",
-    "fast-uri": "^3.1.4",
-    "hono": "^4.12.32",
+    "body-parser": "^2.4.0",
+    "brace-expansion": "^5.0.13",
+    "fast-uri": "^3.1.9",
+    "hono": "^4.13.18",
+    "ip-address": "^10.7.6",
+    "minimatch": "^11.0.8",
     "postcss": "^8.5.25",
     "protobufjs": "^7.6.5",
-    "qs": "^6.15.3",
+    "proxy-addr": "^2.0.8",
+    "qs": "^6.17.1",
     "sharp": "^0.35.3",
+    "source-map-js": "^1.2.2",
     "ws": "$ws",
-    "vite": "7.3.6"
+    "vite": "7.3.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/node": "25.6.2",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "4.1.12",
     "esbuild": "0.28.1",
     "eslint": "^10.3.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.2",
-    "vitest": "4.1.5"
+    "vitest": "4.1.12"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": "^22.23.5 || ^24.22.3 || ^26.13.1"
   }
 }

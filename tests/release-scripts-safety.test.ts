@@ -379,7 +379,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(buildJob).not.toMatch(/\n {4}if:/);
     expect(buildJob).not.toContain('continue-on-error');
     // Adds `coverage` to the existing ubuntu/24 combination; it is not a new leg.
-    expect(buildJob).toMatch(/- os: ubuntu-latest\n\s+node: '24'\n\s+coverage: true\n/);
+    expect(buildJob).toMatch(/- os: ubuntu-latest\n\s+node: '24\.22\.3'\n\s+coverage: true\n/);
     unconditionalStep(buildJob, "${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}");
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     expect(pkg.scripts['test:coverage']).toBe('node scripts/run-tests-isolated.mjs --coverage');
@@ -528,7 +528,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('llms-install.md', [
         '# Install',
         '## 2. Terminal / CLI (npm global)',
-        '22.13.0 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
+        '22.23.5 memesh doctor message memesh-router memesh-host-codex memesh-host-claude memesh-host-acp --config message storage report. The ordinary Codex path below is the documented bounded native queue path.',
         'If the session is stopped, missing, or disconnected, MeMesh neither starts nor replaces it. Failed exact-session native delivery is not replayed automatically after a later registration; the sender must retry deliberately.',
         '## 3. Codex CLI',
       ].join('\n'));
@@ -555,7 +555,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       write('.claude-plugin/marketplace.json', '"name": "pcircle-memesh" "version"');
       write('hooks/hooks.json', 'session-start.js session-summary.js pre-compact.js user-prompt-intent.js pre-edit-recall.js guard-check.js post-commit.js codex-session.js startup|resume SessionEnd');
       write('package.json', JSON.stringify({
-        engines: { node: '>=22.13.0' },
+        engines: { node: '^22.23.5 || ^24.22.3 || ^26.13.1' },
         scripts: { release: 'check-agent-message-sync.mjs test:packaged' },
         bin: {
           'memesh-router': 'dist/host-runtime/router.js',
