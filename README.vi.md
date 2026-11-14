@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — làm theo [hướng dẫn kết nối MeMesh với Hermes](docs/platforms/hermes-agent.md) để tìm lại và ghi nhận thông tin vào bộ nhớ.
 
-Nếu cần dùng cả công cụ dòng lệnh, hãy cài [Node.js 22.16+](https://nodejs.org), rồi chạy:
+Nếu cần dùng cả công cụ dòng lệnh, hãy cài [Node.js](https://nodejs.org) 26.13.1 trở lên trong nhánh 26.x (khuyến nghị), 24.22.3 trở lên trong nhánh 24.x, hoặc 22.23.5 trở lên trong nhánh 22.x, rồi chạy:
 
 ```bash
 npm install -g @pcircle/memesh

@@ -285,8 +285,10 @@ export function checkCurrentDocumentationContracts(input) {
       if (!changelogAnchors.has(anchor)) errors.push(`LongMemEval references missing CHANGELOG heading ${anchor}`);
     }
   }
-  const engineFloor = input.packageJson.engines?.node?.match(/(\d+\.\d+\.\d+)/)?.[1];
-  if (!engineFloor || !input.reproduce.includes(`Node.js >= ${engineFloor}`)) {
+  const parts = (input.packageJson.engines?.node ?? '').split('||').map((part) => part.trim());
+  const floors = parts.map((part) => /^(?:\^|>=\s*)(\d+\.\d+\.\d+)$/.exec(part)?.[1]);
+  const nodeLines = input.reproduce.split('\n').filter((line) => line.includes('Node.js'));
+  if (floors.some((floor) => !floor) || !nodeLines.some((line) => floors.every((floor) => line.includes(floor)))) {
     errors.push('LongMemEval reproduction Node floor differs from package.json');
   }
 

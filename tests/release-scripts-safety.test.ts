@@ -374,7 +374,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(buildJob).not.toMatch(/\n {4}if:/);
     expect(buildJob).not.toContain('continue-on-error');
     // Adds `coverage` to the existing ubuntu/24 combination; it is not a new leg.
-    expect(buildJob).toMatch(/- os: ubuntu-latest\n\s+node: '24'\n\s+coverage: true\n/);
+    expect(buildJob).toMatch(/- os: ubuntu-latest\n\s+node: '24\.22\.3'\n\s+coverage: true\n/);
     unconditionalStep(buildJob, "${{ matrix.coverage && 'npm run test:coverage' || 'npm test -- --run' }}");
     const pkg = JSON.parse(read('package.json')) as { scripts: Record<string, string> };
     expect(pkg.scripts['test:coverage']).toBe('node scripts/run-tests-isolated.mjs --coverage');

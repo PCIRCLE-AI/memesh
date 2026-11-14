@@ -88,29 +88,9 @@ jobs:
       fail-fast: false
       # Which runtimes this matrix covers, and why each is here.
       #
-      #   20 — GONE. It was kept while `engines` still said `>=20` on the
-      #        rule written here: "the leg goes when the claim goes, not
-      #        before." The claim went (`>=22.13.0`), so the leg went. Node 20
-      #        was passing on all three OSes when it was removed — this was a
-      #        support-policy change, not a fix.
-      #   22 — LTS (Jod), and the floor. `engines` names 22.16.0 specifically
-      #        because that is where `node:sqlite` gained FTS5 and `backup()`
-      #        (it needed no `--experimental-sqlite` flag from 22.13);
-      #        the matrix cannot pin a patch, so this leg runs whatever
-      #        22.x is current and
-      #        `tests/ci-matrix-covers-engines.test.ts` is what actually holds
-      #        the two together.
-      #   24 — LTS (Krypton). Was untested entirely, which is the gap this
-      #        matrix change exists to close: the LTS line most users are
-      #        actually on had no coverage at all.
-      #   26 — Current, ubuntu only. Deliberately not on macOS or Windows:
-      #        `better-sqlite3@12.9.0` publishes NO prebuilt binary for Node
-      #        26's ABI (147). Measured: `prebuild-install warn install No
-      #        prebuilt binaries found (target=26.5.1 ... platform=darwin)`
-      #        followed by a `node-gyp rebuild`, which took 18s on
-      #        macOS/arm64 and needs a full toolchain — MSVC on Windows. One
-      #        Linux leg gives early warning that Node 26 works at all
-      #        without paying for a source build on three runners.
+      #   22 and 24: minimum security patch in each supported line, all OSes.
+      #   26: minimum security patch, exercised on Linux and macOS. Node 26
+      #       Windows remains outside this matrix; do not infer it passed.
       #
       # ubuntu/24 also enforces the coverage floor. Coverage runs the same
       # suite with v8 instrumentation and thresholds, and the numbers do not
@@ -118,16 +98,17 @@ jobs:
       # separate job on this same OS and Node, running the whole suite a
       # second time; the first `include` entry adds `coverage` to the existing
       # ubuntu/24 leg (it creates no new leg), so the suite runs once there.
-      # An include entry matches only the original os/node values, so it cannot attach to the Node 26 leg.
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: ['22', '24']
+        node: ['22.23.5', '24.22.3']
         include:
           - os: ubuntu-latest
-            node: '24'
+            node: '24.22.3'
             coverage: true
           - os: ubuntu-latest
-            node: '26'
+            node: '26.13.1'
+          - os: macos-latest
+            node: '26.13.1'
 
     steps:
       - name: Checkout
@@ -257,7 +238,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '22.23.5'
           cache: 'npm'
 
       - name: Install dependencies
@@ -301,7 +282,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '22.23.5'
           cache: 'npm'
 
       - name: Install dependencies

@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — 依 [MeMesh 記憶整合指南](docs/platforms/hermes-agent.md)連接 Hermes，即可使用記憶查找與擷取功能。
 
-若也需要命令列工具，先安裝 [Node.js 22.16+](https://nodejs.org)，再執行：
+若也需要命令列工具，先安裝 [Node.js](https://nodejs.org) 26.13.1 以上的 26.x 版本（建議）、24.22.3 以上的 24.x 版本，或 22.23.5 以上的 22.x 版本，再執行：
 
 ```bash
 npm install -g @pcircle/memesh

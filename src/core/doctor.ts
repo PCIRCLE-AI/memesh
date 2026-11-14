@@ -2382,11 +2382,11 @@ function defaultNativeBindingProbe(_packageRoot: string): NativeBindingProbeResu
 }
 
 /**
- * Compare a running Node version against a `>=X.Y.Z` engines range.
+ * Compare a running Node version against a minimum or a union of major caret ranges.
  *
  * Deliberately narrow: it understands exactly the one form this package
  * publishes, and says so when it meets anything else. A looser parser that
- * guessed at `^`, `||` or `<` ranges would answer confidently and sometimes
+ * guessed at other ranges would answer confidently and sometimes
  * wrongly, and the row it feeds is allowed to FAIL — a wrong answer there
  * tells a healthy install it is broken. Returning `null` makes the caller
  * report "not checked", which is the true statement.
@@ -2397,7 +2397,21 @@ export function satisfiesMinimumNodeRange(
 ): boolean | null {
   const min = /^>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$/.exec(range.trim());
   const running = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-  if (!min || !running) return null;
+  if (!running) return null;
+
+  if (!min) {
+    if (!/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version.trim())) return null;
+    const parts = range.split('||').map((part) => part.trim());
+    if (parts.length < 2) return null;
+    const bounds = parts.map((part) => /^\^([1-9]\d*)\.(\d+)\.(\d+)$/.exec(part));
+    if (bounds.some((bound) => !bound)) return null;
+    const have = running.slice(1, 4).map(Number);
+    return bounds.some((bound) => {
+      const wanted = bound!.slice(1, 4).map(Number);
+      return have[0] === wanted[0] && (have[1] > wanted[1] ||
+        (have[1] === wanted[1] && have[2] >= wanted[2]));
+    });
+  }
 
   const wanted = [Number(min[1]), Number(min[2] ?? 0), Number(min[3] ?? 0)];
   const have = [Number(running[1]), Number(running[2]), Number(running[3])];

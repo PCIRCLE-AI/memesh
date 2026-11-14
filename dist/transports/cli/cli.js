@@ -42609,7 +42609,7 @@ var require_utf32 = __commonJS({
     }
     Utf32Encoder.prototype.write = function(str) {
       var src = Buffer3.from(str, "ucs2");
-      var dst = Buffer3.alloc(src.length * 2);
+      var dst = Buffer3.alloc(src.length * 2 + 4);
       var write32 = this.isLE ? dst.writeUInt32LE : dst.writeUInt32BE;
       var offset = 0;
       for (var i = 0; i < src.length; i += 2) {
@@ -42676,9 +42676,9 @@ var require_utf32 = __commonJS({
         }
         if (overflow.length === 4) {
           if (isLE) {
-            codepoint = overflow[i] | overflow[i + 1] << 8 | overflow[i + 2] << 16 | overflow[i + 3] << 24;
+            codepoint = overflow[0] | overflow[1] << 8 | overflow[2] << 16 | overflow[3] << 24;
           } else {
-            codepoint = overflow[i + 3] | overflow[i + 2] << 8 | overflow[i + 1] << 16 | overflow[i] << 24;
+            codepoint = overflow[3] | overflow[2] << 8 | overflow[1] << 16 | overflow[0] << 24;
           }
           overflow.length = 0;
           offset = _writeCodepoint(dst, offset, codepoint, badChar);
@@ -42713,7 +42713,11 @@ var require_utf32 = __commonJS({
       return offset;
     }
     Utf32Decoder.prototype.end = function() {
+      if (this.overflow.length === 0) {
+        return;
+      }
       this.overflow.length = 0;
+      return String.fromCharCode(this.badChar);
     };
     exports.utf32 = Utf32AutoCodec;
     exports.ucs4 = "utf32";
@@ -43338,6 +43342,8 @@ var require_sbcs_data = __commonJS({
       elot928: "iso88597",
       hebrew: "iso88598",
       hebrew8: "iso88598",
+      iso88598i: "iso88598",
+      iso88598e: "iso88598",
       turkish: "iso88599",
       turkish8: "iso88599",
       thai: "iso885911",
@@ -56275,14 +56281,17 @@ var require_dist2 = __commonJS({
       return result;
     }
     function parse3(header, options) {
+      const stopChar = options?.comma === true ? COMMA : 65536;
       const len = header.length;
-      let index = skipOWS(header, 0, len);
+      let index = skipOWS(header, options?.start ?? 0, len);
       const valueStart = index;
-      index = skipValue(header, index, len);
+      index = skipValue(header, index, len, stopChar);
       const valueEnd = trailingOWS(header, valueStart, index);
       const type = header.slice(valueStart, valueEnd).toLowerCase();
-      const parameters = options?.parameters === false ? new NullObject() : parseParameters(header, index, len);
-      return { type, parameters };
+      if (options?.parameters === false) {
+        return { type, index, parameters: new NullObject() };
+      }
+      return parseParameters(header, type, index, len, stopChar);
     }
     var SP = 32;
     var HTAB = 9;
@@ -56290,13 +56299,18 @@ var require_dist2 = __commonJS({
     var EQ = 61;
     var DQUOTE = 34;
     var BSLASH = 92;
-    function parseParameters(header, index, len) {
+    var COMMA = 44;
+    function parseParameters(header, type, index, len, stopChar) {
       const parameters = new NullObject();
       parameter: while (index < len) {
+        if (header.charCodeAt(index) === stopChar)
+          break;
         index = skipOWS(header, index + 1, len);
         const keyStart = index;
         while (index < len) {
           const code = header.charCodeAt(index);
+          if (code === stopChar)
+            break parameter;
           if (code === SEMI)
             continue parameter;
           if (code === EQ) {
@@ -56309,7 +56323,7 @@ var require_dist2 = __commonJS({
               while (index < len) {
                 const code2 = header.charCodeAt(index++);
                 if (code2 === DQUOTE) {
-                  index = skipValue(header, index, len);
+                  index = skipValue(header, index, len, stopChar);
                   if (parameters[key] === void 0)
                     parameters[key] = value;
                   break;
@@ -56323,7 +56337,7 @@ var require_dist2 = __commonJS({
               continue parameter;
             }
             const valueStart = index;
-            index = skipValue(header, index, len);
+            index = skipValue(header, index, len, stopChar);
             if (parameters[key] === void 0) {
               const valueEnd = trailingOWS(header, valueStart, index);
               parameters[key] = header.slice(valueStart, valueEnd);
@@ -56333,12 +56347,12 @@ var require_dist2 = __commonJS({
           index++;
         }
       }
-      return parameters;
+      return { type, index, parameters };
     }
-    function skipValue(str, index, len) {
+    function skipValue(str, index, len, stopChar) {
       while (index < len) {
-        const char = str.charCodeAt(index);
-        if (char === SEMI)
+        const code = str.charCodeAt(index);
+        if (code === SEMI || code === stopChar)
           break;
         index++;
       }
@@ -56372,23 +56386,187 @@ var require_dist2 = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/utils.js
-var require_utils = __commonJS({
-  "node_modules/body-parser/lib/utils.js"(exports, module) {
+// node_modules/body-parser/lib/read.js
+var require_read = __commonJS({
+  "node_modules/body-parser/lib/read.js"(exports, module) {
     "use strict";
-    var bytes = require_bytes();
+    var createError = require_http_errors();
+    var getBody = require_raw_body();
+    var iconv = require_lib();
+    var onFinished = require_on_finished();
+    var zlib = __require("node:zlib");
+    var hasBody = require_type_is().hasBody;
     var contentType = require_dist2();
-    var typeis = require_type_is();
-    module.exports = {
-      getCharset,
-      normalizeOptions,
-      passthrough
-    };
+    module.exports = read;
+    var hasZstandardSupport = "createZstdDecompress" in zlib;
+    function read(req, res, next, parse3, debug, options) {
+      if (onFinished.isFinished(req)) {
+        debug("body already parsed");
+        next();
+        return;
+      }
+      if (!("body" in req)) {
+        req.body = void 0;
+      }
+      if (!hasBody(req)) {
+        debug("skip empty body");
+        next();
+        return;
+      }
+      debug("content-type %j", req.headers["content-type"]);
+      if (!options.shouldParse(req)) {
+        debug("skip parsing");
+        next();
+        return;
+      }
+      let encoding = null;
+      if (options?.skipCharset !== true) {
+        encoding = getCharset(req) || options.defaultCharset;
+        if (!!options?.isValidCharset && !options.isValidCharset(encoding)) {
+          debug("invalid charset");
+          next(createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
+            charset: encoding,
+            type: "charset.unsupported"
+          }));
+          return;
+        }
+      }
+      let length;
+      let stream;
+      const verify2 = options.verify;
+      if (verify2 && encoding !== null && !iconv.encodingExists(encoding)) {
+        return next(createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
+          charset: encoding.toLowerCase(),
+          type: "charset.unsupported"
+        }));
+      }
+      try {
+        const contentEncoding = (req.headers["content-encoding"] || "identity").toLowerCase();
+        debug('content-encoding "%s"', contentEncoding);
+        if (options.inflate === false && contentEncoding !== "identity") {
+          throw createError(415, "content encoding unsupported", {
+            encoding: contentEncoding,
+            type: "encoding.unsupported"
+          });
+        }
+        if (contentEncoding === "identity") {
+          length = req.headers["content-length"];
+          stream = req;
+        } else {
+          stream = createDecompressionStream(contentEncoding, debug);
+          req.pipe(stream);
+        }
+      } catch (err) {
+        return next(err);
+      }
+      const rawBodyOptions = {
+        length,
+        encoding: verify2 ? null : encoding,
+        limit: options.limit
+      };
+      debug("read body");
+      getBody(stream, rawBodyOptions, function(error62, body) {
+        if (error62) {
+          let _error;
+          if (error62.type === "encoding.unsupported") {
+            _error = createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
+              charset: encoding.toLowerCase(),
+              type: "charset.unsupported"
+            });
+          } else {
+            _error = createError(400, error62);
+          }
+          if (stream !== req) {
+            req.unpipe();
+            stream.destroy();
+          }
+          dump(req, function onfinished() {
+            next(createError(400, _error));
+          });
+          return;
+        }
+        if (stream !== req) {
+          req.unpipe(stream);
+          stream.on("error", () => {
+          });
+          stream.destroy();
+          req.resume();
+        }
+        if (verify2) {
+          try {
+            debug("verify body");
+            verify2(req, res, body, encoding);
+          } catch (err) {
+            next(createError(403, err, {
+              body,
+              type: err.type || "entity.verify.failed"
+            }));
+            return;
+          }
+        }
+        let str = body;
+        try {
+          debug("parse body");
+          str = typeof body !== "string" && encoding !== null ? iconv.decode(body, encoding) : body;
+          req.body = parse3(str, encoding);
+        } catch (err) {
+          next(createError(400, err, {
+            body: str,
+            type: err.type || "entity.parse.failed"
+          }));
+          return;
+        }
+        next();
+      });
+    }
+    function createDecompressionStream(encoding, debug) {
+      switch (encoding) {
+        case "deflate":
+          debug("inflate body");
+          return zlib.createInflate();
+        case "gzip":
+          debug("gunzip body");
+          return zlib.createGunzip();
+        case "br":
+          debug("brotli decompress body");
+          return zlib.createBrotliDecompress();
+        case "zstd":
+          if (hasZstandardSupport) {
+            debug("zstd decompress body");
+            return zlib.createZstdDecompress();
+          }
+      }
+      throw createError(415, 'unsupported content encoding "' + encoding + '"', {
+        encoding,
+        type: "encoding.unsupported"
+      });
+    }
+    function dump(req, callback) {
+      if (onFinished.isFinished(req)) {
+        callback(null);
+      } else {
+        onFinished(req, callback);
+        req.resume();
+      }
+    }
     function getCharset(req) {
       const header = req.headers["content-type"];
       if (!header) return void 0;
       return contentType.parse(header).parameters.charset?.toLowerCase();
     }
+  }
+});
+
+// node_modules/body-parser/lib/utils.js
+var require_utils = __commonJS({
+  "node_modules/body-parser/lib/utils.js"(exports, module) {
+    "use strict";
+    var bytes = require_bytes();
+    var typeis = require_type_is();
+    module.exports = {
+      normalizeOptions,
+      passthrough
+    };
     function typeChecker(type) {
       return function checkType(req) {
         return Boolean(typeis(req, type));
@@ -56424,164 +56602,6 @@ var require_utils = __commonJS({
   }
 });
 
-// node_modules/body-parser/lib/read.js
-var require_read = __commonJS({
-  "node_modules/body-parser/lib/read.js"(exports, module) {
-    "use strict";
-    var createError = require_http_errors();
-    var getBody = require_raw_body();
-    var iconv = require_lib();
-    var onFinished = require_on_finished();
-    var zlib = __require("node:zlib");
-    var hasBody = require_type_is().hasBody;
-    var { getCharset } = require_utils();
-    module.exports = read;
-    function read(req, res, next, parse3, debug, options) {
-      if (onFinished.isFinished(req)) {
-        debug("body already parsed");
-        next();
-        return;
-      }
-      if (!("body" in req)) {
-        req.body = void 0;
-      }
-      if (!hasBody(req)) {
-        debug("skip empty body");
-        next();
-        return;
-      }
-      debug("content-type %j", req.headers["content-type"]);
-      if (!options.shouldParse(req)) {
-        debug("skip parsing");
-        next();
-        return;
-      }
-      let encoding = null;
-      if (options?.skipCharset !== true) {
-        encoding = getCharset(req) || options.defaultCharset;
-        if (!!options?.isValidCharset && !options.isValidCharset(encoding)) {
-          debug("invalid charset");
-          next(createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
-            charset: encoding,
-            type: "charset.unsupported"
-          }));
-          return;
-        }
-      }
-      let length;
-      const opts = options;
-      let stream;
-      const verify2 = opts.verify;
-      try {
-        stream = contentstream(req, debug, opts.inflate);
-        length = stream.length;
-        stream.length = void 0;
-      } catch (err) {
-        return next(err);
-      }
-      opts.length = length;
-      opts.encoding = verify2 ? null : encoding;
-      if (opts.encoding === null && encoding !== null && !iconv.encodingExists(encoding)) {
-        return next(createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
-          charset: encoding.toLowerCase(),
-          type: "charset.unsupported"
-        }));
-      }
-      debug("read body");
-      getBody(stream, opts, function(error62, body) {
-        if (error62) {
-          let _error;
-          if (error62.type === "encoding.unsupported") {
-            _error = createError(415, 'unsupported charset "' + encoding.toUpperCase() + '"', {
-              charset: encoding.toLowerCase(),
-              type: "charset.unsupported"
-            });
-          } else {
-            _error = createError(400, error62);
-          }
-          if (stream !== req) {
-            req.unpipe();
-            stream.destroy();
-          }
-          dump(req, function onfinished() {
-            next(createError(400, _error));
-          });
-          return;
-        }
-        if (verify2) {
-          try {
-            debug("verify body");
-            verify2(req, res, body, encoding);
-          } catch (err) {
-            next(createError(403, err, {
-              body,
-              type: err.type || "entity.verify.failed"
-            }));
-            return;
-          }
-        }
-        let str = body;
-        try {
-          debug("parse body");
-          str = typeof body !== "string" && encoding !== null ? iconv.decode(body, encoding) : body;
-          req.body = parse3(str, encoding);
-        } catch (err) {
-          next(createError(400, err, {
-            body: str,
-            type: err.type || "entity.parse.failed"
-          }));
-          return;
-        }
-        next();
-      });
-    }
-    function contentstream(req, debug, inflate) {
-      const encoding = (req.headers["content-encoding"] || "identity").toLowerCase();
-      const length = req.headers["content-length"];
-      debug('content-encoding "%s"', encoding);
-      if (inflate === false && encoding !== "identity") {
-        throw createError(415, "content encoding unsupported", {
-          encoding,
-          type: "encoding.unsupported"
-        });
-      }
-      if (encoding === "identity") {
-        req.length = length;
-        return req;
-      }
-      const stream = createDecompressionStream(encoding, debug);
-      req.pipe(stream);
-      return stream;
-    }
-    function createDecompressionStream(encoding, debug) {
-      switch (encoding) {
-        case "deflate":
-          debug("inflate body");
-          return zlib.createInflate();
-        case "gzip":
-          debug("gunzip body");
-          return zlib.createGunzip();
-        case "br":
-          debug("brotli decompress body");
-          return zlib.createBrotliDecompress();
-        default:
-          throw createError(415, 'unsupported content encoding "' + encoding + '"', {
-            encoding,
-            type: "encoding.unsupported"
-          });
-      }
-    }
-    function dump(req, callback) {
-      if (onFinished.isFinished(req)) {
-        callback(null);
-      } else {
-        onFinished(req, callback);
-        req.resume();
-      }
-    }
-  }
-});
-
 // node_modules/body-parser/lib/types/json.js
 var require_json = __commonJS({
   "node_modules/body-parser/lib/types/json.js"(exports, module) {
@@ -56590,7 +56610,7 @@ var require_json = __commonJS({
     var read = require_read();
     var { normalizeOptions } = require_utils();
     module.exports = json2;
-    var FIRST_CHAR_REGEXP = /^[\x20\x09\x0a\x0d]*([^\x20\x09\x0a\x0d])/;
+    var FIRST_NON_WHITESPACE_REGEXP = /^[\x20\x09\x0a\x0d]*([^\x20\x09\x0a\x0d]|$)/;
     var JSON_SYNTAX_CHAR = "#";
     var JSON_SYNTAX_REGEXP = /#+/g;
     function json2(options) {
@@ -56613,10 +56633,12 @@ var require_json = __commonJS({
           if (body.length === 0) {
             return {};
           }
-          const first = firstchar(body);
-          if (first !== "{" && first !== "[") {
-            debug("strict violation");
-            throw createStrictSyntaxError(body, first);
+          if (body[0] !== "{" && body[0] !== "[") {
+            const first = firstNonWhitespaceChar(body);
+            if (first !== "{" && first !== "[") {
+              debug("strict violation");
+              throw createStrictSyntaxError(body, first);
+            }
           }
           try {
             debug("parse json");
@@ -56662,9 +56684,9 @@ var require_json = __commonJS({
         });
       }
     }
-    function firstchar(str) {
-      const match = FIRST_CHAR_REGEXP.exec(str);
-      return match ? match[1] : void 0;
+    function firstNonWhitespaceChar(str) {
+      const match = FIRST_NON_WHITESPACE_REGEXP.exec(str);
+      return match && match[1] ? match[1] : void 0;
     }
     function normalizeJsonSyntaxError(error62, obj) {
       const keys = Object.getOwnPropertyNames(error62);
@@ -58354,7 +58376,8 @@ var require_formats = __commonJS({
     var percentTwenties = /%20/g;
     var Format = {
       RFC1738: "RFC1738",
-      RFC3986: "RFC3986"
+      RFC3986: "RFC3986",
+      WHATWG: "WHATWG"
     };
     module.exports = {
       "default": Format.RFC3986,
@@ -58364,10 +58387,14 @@ var require_formats = __commonJS({
         },
         RFC3986: function(value) {
           return String(value);
+        },
+        WHATWG: function(value) {
+          return replace.call(value, percentTwenties, "+");
         }
       },
       RFC1738: Format.RFC1738,
-      RFC3986: Format.RFC3986
+      RFC3986: Format.RFC3986,
+      WHATWG: Format.WHATWG
     };
   }
 });
@@ -58394,6 +58421,17 @@ var require_utils2 = __commonJS({
     };
     var setMaxIndex = function setMaxIndex2(obj, maxIndex) {
       overflowChannel.set(obj, maxIndex);
+    };
+    var conflictChannel = getSideChannel();
+    var markConflict = function markConflict2(obj, maxIndex) {
+      conflictChannel.set(obj, maxIndex);
+      return obj;
+    };
+    var isConflict = function isConflict2(obj) {
+      return conflictChannel.has(obj);
+    };
+    var getConflictIndex = function getConflictIndex2(obj) {
+      return conflictChannel.get(obj);
     };
     var hexTable = (function() {
       var array2 = [];
@@ -58438,6 +58476,36 @@ var require_utils2 = __commonJS({
         obj[key] = value;
       }
     };
+    var maxNumericIndex = function maxNumericIndex2(obj, min) {
+      var max = min;
+      var keys = Object.keys(obj);
+      for (var i = 0; i < keys.length; ++i) {
+        var num = parseInt(keys[i], 10);
+        if (String(num) === keys[i] && num > max) {
+          max = num;
+        }
+      }
+      return max;
+    };
+    var countElements = function countElements2(arr) {
+      var count = 0;
+      for (var i = 0; i < arr.length; ++i) {
+        if (has.call(arr, i)) {
+          count += 1;
+        }
+      }
+      return count;
+    };
+    var limitedPair = function limitedPair2(first, second, options) {
+      var pair = [first, second];
+      if (options && typeof options.arrayLimit === "number" && pair.length > options.arrayLimit) {
+        if (options.throwOnLimitExceeded) {
+          throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+        }
+        return markOverflow(arrayToObject(pair, options), 1);
+      }
+      return pair;
+    };
     var merge3 = function merge4(target, source, options) {
       if (!source) {
         return target;
@@ -58445,7 +58513,7 @@ var require_utils2 = __commonJS({
       if (typeof source !== "object" && typeof source !== "function") {
         if (isArray(target)) {
           var nextIndex = target.length;
-          if (options && typeof options.arrayLimit === "number" && nextIndex >= options.arrayLimit) {
+          if (options && typeof options.arrayLimit === "number" && countElements(target) >= options.arrayLimit) {
             if (options.throwOnLimitExceeded) {
               throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
             }
@@ -58457,13 +58525,21 @@ var require_utils2 = __commonJS({
             var newIndex = getMaxIndex(target) + 1;
             target[newIndex] = source;
             setMaxIndex(target, newIndex);
+          } else if (options && options.strictMerge && isConflict(target)) {
+            var nextConflict = getConflictIndex(target) + 1;
+            if (options.throwOnLimitExceeded && typeof options.arrayLimit === "number" && nextConflict >= options.arrayLimit) {
+              throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
+            }
+            target[nextConflict] = source;
+            markConflict(target, nextConflict);
           } else if (options && options.strictMerge) {
-            return [target, source];
+            var conflict = limitedPair(target, source, options);
+            return isArray(conflict) ? markConflict(conflict, 1) : conflict;
           } else if (options && (options.plainObjects || options.allowPrototypes) || !has.call(Object.prototype, source)) {
             target[source] = true;
           }
         } else {
-          return [target, source];
+          return limitedPair(target, source, options);
         }
         return target;
       }
@@ -58489,6 +58565,9 @@ var require_utils2 = __commonJS({
       var mergeTarget = target;
       if (isArray(target) && !isArray(source)) {
         mergeTarget = arrayToObject(target, options);
+        if (isConflict(target)) {
+          markConflict(mergeTarget, target.length - 1);
+        }
       }
       if (isArray(target) && isArray(source)) {
         source.forEach(function(item, i) {
@@ -58503,7 +58582,7 @@ var require_utils2 = __commonJS({
             target[i] = item;
           }
         });
-        if (options && typeof options.arrayLimit === "number" && target.length > options.arrayLimit) {
+        if (options && typeof options.arrayLimit === "number" && countElements(target) > options.arrayLimit) {
           if (options.throwOnLimitExceeded) {
             throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
           }
@@ -58519,12 +58598,18 @@ var require_utils2 = __commonJS({
           setProperty(acc, key, value);
         }
         if (isOverflow(source) && !isOverflow(acc)) {
-          markOverflow(acc, getMaxIndex(source));
+          markOverflow(acc, maxNumericIndex(acc, getMaxIndex(source)));
         }
         if (isOverflow(acc)) {
           var keyNum = parseInt(key, 10);
           if (String(keyNum) === key && keyNum >= 0 && keyNum > getMaxIndex(acc)) {
             setMaxIndex(acc, keyNum);
+          }
+        }
+        if (isConflict(acc)) {
+          var conflictKey = parseInt(key, 10);
+          if (String(conflictKey) === key && conflictKey > getConflictIndex(acc)) {
+            markConflict(acc, conflictKey);
           }
         }
         return acc;
@@ -58537,6 +58622,9 @@ var require_utils2 = __commonJS({
       }, target);
     };
     var decode3 = function(str, defaultDecoder, charset) {
+      if (typeof str === "string" && str.indexOf("%") === -1) {
+        return str.indexOf("+") === -1 ? str : str.replace(/\+/g, " ");
+      }
       var strWithoutPlus = str.replace(/\+/g, " ");
       if (charset === "iso-8859-1") {
         return strWithoutPlus.replace(/%[0-9a-f]{2}/gi, unescape);
@@ -58547,6 +58635,52 @@ var require_utils2 = __commonJS({
         return strWithoutPlus;
       }
     };
+    var hasToPrimitive = typeof Symbol === "function" && typeof Symbol.toPrimitive === "symbol";
+    var arrayJoin = Array.prototype.join;
+    var arrayToString = Array.prototype.toString;
+    var objectToString = Object.prototype.toString;
+    var toCoercible = function toCoercible2(value, joining) {
+      if (!value || typeof value !== "object" && typeof value !== "function") {
+        return value;
+      }
+      if (hasToPrimitive && value[Symbol.toPrimitive] != null) {
+        return value;
+      }
+      if (isArray(value) && value.toString === arrayToString && value.join === arrayJoin) {
+        var ancestors = joining || getSideChannel();
+        if (ancestors.has(value)) {
+          return "";
+        }
+        ancestors.set(value, true);
+        var copy;
+        for (var i = 0; i < value.length; i += 1) {
+          var item = value[i];
+          var coerced = toCoercible2(item, ancestors);
+          if (!copy && coerced !== item) {
+            copy = [];
+            for (var j = 0; j < i; j += 1) {
+              copy[j] = value[j];
+            }
+          }
+          if (copy) {
+            copy[i] = coerced;
+          }
+        }
+        ancestors["delete"](value);
+        return copy || value;
+      }
+      if (typeof value.toString === "function") {
+        return value;
+      }
+      var valueOf = value.valueOf;
+      if (typeof valueOf === "function") {
+        var primitive = valueOf.call(value);
+        if (!primitive || typeof primitive !== "object" && typeof primitive !== "function") {
+          return String(primitive);
+        }
+      }
+      return objectToString.call(value);
+    };
     var limit = 1024;
     var encode3 = function encode4(str, defaultEncoder, charset, kind, format) {
       if (str.length === 0) {
@@ -58556,12 +58690,12 @@ var require_utils2 = __commonJS({
       if (typeof str === "symbol") {
         string4 = Symbol.prototype.toString.call(str);
       } else if (typeof str !== "string") {
-        string4 = String(str);
+        string4 = String(toCoercible(str));
       }
       if (charset === "iso-8859-1") {
         return escape(string4).replace(/%u[0-9a-f]{4}/gi, function($0) {
           return "%26%23" + parseInt($0.slice(2), 16) + "%3B";
-        });
+        }).replace(/\+/g, "%2B");
       }
       var out = "";
       for (var j = 0; j < string4.length; j += limit) {
@@ -58576,7 +58710,7 @@ var require_utils2 = __commonJS({
         var arr = [];
         for (var i = 0; i < segment.length; ++i) {
           var c = segment.charCodeAt(i);
-          if (c === 45 || c === 46 || c === 95 || c === 126 || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || format === formats.RFC1738 && (c === 40 || c === 41)) {
+          if (c === 45 || c === 46 || c === 95 || c === 126 && format !== formats.WHATWG || c >= 48 && c <= 57 || c >= 65 && c <= 90 || c >= 97 && c <= 122 || format === formats.RFC1738 && (c === 40 || c === 41) || format === formats.WHATWG && c === 42) {
             arr[arr.length] = segment.charAt(i);
             continue;
           }
@@ -58592,9 +58726,14 @@ var require_utils2 = __commonJS({
             arr[arr.length] = hexTable[224 | c >> 12] + hexTable[128 | c >> 6 & 63] + hexTable[128 | c & 63];
             continue;
           }
-          i += 1;
-          c = 65536 + ((c & 1023) << 10 | segment.charCodeAt(i) & 1023);
-          arr[arr.length] = hexTable[240 | c >> 18] + hexTable[128 | c >> 12 & 63] + hexTable[128 | c >> 6 & 63] + hexTable[128 | c & 63];
+          var next = segment.charCodeAt(i + 1);
+          if (c <= 56319 && next >= 56320 && next <= 57343) {
+            i += 1;
+            c = 65536 + ((c & 1023) << 10 | next & 1023);
+            arr[arr.length] = hexTable[240 | c >> 18] + hexTable[128 | c >> 12 & 63] + hexTable[128 | c >> 6 & 63] + hexTable[128 | c & 63];
+          } else {
+            arr[arr.length] = "%EF%BF%BD";
+          }
         }
         out += arr.join("");
       }
@@ -58626,15 +58765,19 @@ var require_utils2 = __commonJS({
       if (!obj || typeof obj !== "object") {
         return false;
       }
-      return !!(obj.constructor && obj.constructor.isBuffer && obj.constructor.isBuffer(obj));
+      return !!(obj.constructor && typeof obj.constructor.isBuffer === "function" && obj.constructor.isBuffer(obj));
     };
     var combine = function combine2(a, b, arrayLimit, plainObjects, throwOnLimitExceeded) {
       if (isOverflow(a)) {
         if (throwOnLimitExceeded) {
           throw new RangeError("Array limit exceeded. Only " + arrayLimit + " element" + (arrayLimit === 1 ? "" : "s") + " allowed in an array.");
         }
-        var newIndex = getMaxIndex(a) + 1;
-        a[newIndex] = b;
+        var bValues = isArray(b) ? b : [b];
+        var newIndex = getMaxIndex(a);
+        for (var i = 0; i < bValues.length; ++i) {
+          newIndex += 1;
+          a[newIndex] = bValues[i];
+        }
         setMaxIndex(a, newIndex);
         return a;
       }
@@ -58669,7 +58812,9 @@ var require_utils2 = __commonJS({
       isRegExp,
       markOverflow,
       maybeMap,
-      merge: merge3
+      merge: merge3,
+      setProperty,
+      toCoercible
     };
   }
 });
@@ -58710,6 +58855,7 @@ var require_stringify = __commonJS({
       charsetSentinel: false,
       commaRoundTrip: false,
       delimiter: "&",
+      depth: Infinity,
       encode: true,
       encodeDotInKeys: false,
       encoder: utils.encode,
@@ -58729,8 +58875,11 @@ var require_stringify = __commonJS({
       return typeof v === "string" || typeof v === "number" || typeof v === "boolean" || typeof v === "symbol" || typeof v === "bigint";
     };
     var sentinel = {};
-    var stringify = function stringify2(object2, prefix, generateArrayPrefix, commaRoundTrip, allowEmptyArrays, strictNullHandling, skipNulls, encodeDotInKeys, encoder, filter, sort, allowDots, serializeDate, format, formatter, encodeValuesOnly, charset, sideChannel) {
+    var stringify = function stringify2(object2, prefix, generateArrayPrefix, commaRoundTrip, allowEmptyArrays, strictNullHandling, skipNulls, encodeDotInKeys, encoder, filter, sort, allowDots, serializeDate, format, formatter, encodeValuesOnly, charset, sideChannel, depth, currentDepth) {
       var obj = object2;
+      if (currentDepth > depth) {
+        throw new RangeError("Input depth exceeded depth option of " + depth);
+      }
       var tmpSc = sideChannel;
       var step = 0;
       var findFlag = false;
@@ -58748,9 +58897,8 @@ var require_stringify = __commonJS({
           step = 0;
         }
       }
-      if (typeof filter === "function") {
-        obj = filter(prefix, obj);
-      } else if (obj instanceof Date) {
+      obj = typeof filter === "function" ? filter(prefix, obj) : obj;
+      if (obj instanceof Date) {
         obj = serializeDate(obj);
       } else if (generateArrayPrefix === "comma" && isArray(obj)) {
         obj = utils.maybeMap(obj, function(value2) {
@@ -58781,20 +58929,20 @@ var require_stringify = __commonJS({
       if (generateArrayPrefix === "comma" && isArray(obj)) {
         if (encodeValuesOnly && encoder) {
           obj = utils.maybeMap(obj, function(v) {
-            return v == null ? v : encoder(v);
+            return v == null ? v : encoder(v, defaults.encoder, charset, "value", format);
           });
         }
-        objKeys = [{ value: obj.length > 0 ? obj.join(",") || null : void 0 }];
+        objKeys = [{ value: obj.length > 0 ? utils.toCoercible(obj).join(",") || null : void 0 }];
       } else if (isArray(filter)) {
         objKeys = filter;
       } else {
         var keys = Object.keys(obj);
         objKeys = sort ? keys.sort(sort) : keys;
       }
-      var encodedPrefix = encodeDotInKeys ? String(prefix).replace(/\./g, "%2E") : String(prefix);
+      var encodedPrefix = String(prefix);
       var adjustedPrefix = commaRoundTrip && isArray(obj) && obj.length === 1 ? encodedPrefix + "[]" : encodedPrefix;
-      if (allowEmptyArrays && isArray(obj) && obj.length === 0) {
-        return adjustedPrefix + "[]";
+      if (allowEmptyArrays && isArray(obj) && obj.length === 0 && Object.keys(obj).length === 0) {
+        return formatter(encoder && !encodeValuesOnly ? encoder(adjustedPrefix, defaults.encoder, charset, "key", format) : adjustedPrefix) + "[]";
       }
       for (var j = 0; j < objKeys.length; ++j) {
         var key = objKeys[j];
@@ -58825,7 +58973,9 @@ var require_stringify = __commonJS({
           formatter,
           encodeValuesOnly,
           charset,
-          valueSideChannel
+          valueSideChannel,
+          depth,
+          currentDepth + 1
         ));
       }
       return values;
@@ -58860,7 +59010,7 @@ var require_stringify = __commonJS({
         filter = opts.filter;
       }
       var arrayFormat;
-      if (opts.arrayFormat in arrayPrefixGenerators) {
+      if (has.call(arrayPrefixGenerators, opts.arrayFormat)) {
         arrayFormat = opts.arrayFormat;
       } else if ("indices" in opts) {
         arrayFormat = opts.indices ? "indices" : "repeat";
@@ -58880,6 +59030,7 @@ var require_stringify = __commonJS({
         charsetSentinel: typeof opts.charsetSentinel === "boolean" ? opts.charsetSentinel : defaults.charsetSentinel,
         commaRoundTrip: !!opts.commaRoundTrip,
         delimiter: typeof opts.delimiter === "undefined" ? defaults.delimiter : opts.delimiter,
+        depth: typeof opts.depth === "number" ? opts.depth : defaults.depth,
         encode: typeof opts.encode === "boolean" ? opts.encode : defaults.encode,
         encodeDotInKeys: typeof opts.encodeDotInKeys === "boolean" ? opts.encodeDotInKeys : defaults.encodeDotInKeys,
         encoder: typeof opts.encoder === "function" ? opts.encoder : defaults.encoder,
@@ -58902,7 +59053,7 @@ var require_stringify = __commonJS({
         filter = options.filter;
         obj = filter("", obj);
       } else if (isArray(options.filter)) {
-        filter = options.filter;
+        filter = options.filter.slice();
         objKeys = filter;
       }
       var keys = [];
@@ -58927,9 +59078,10 @@ var require_stringify = __commonJS({
         if (options.skipNulls && value === null) {
           continue;
         }
+        var encodedKey = options.encodeDotInKeys ? String(key).replace(/\./g, "%2E") : String(key);
         pushToArray(keys, stringify(
           value,
-          key,
+          encodedKey,
           generateArrayPrefix,
           commaRoundTrip,
           options.allowEmptyArrays,
@@ -58937,7 +59089,7 @@ var require_stringify = __commonJS({
           options.skipNulls,
           options.encodeDotInKeys,
           options.encode ? options.encoder : null,
-          options.filter,
+          filter,
           options.sort,
           options.allowDots,
           options.serializeDate,
@@ -58945,7 +59097,9 @@ var require_stringify = __commonJS({
           options.formatter,
           options.encodeValuesOnly,
           options.charset,
-          sideChannel
+          sideChannel,
+          options.depth,
+          0
         ));
       }
       var joined = keys.join(options.delimiter);
@@ -58966,9 +59120,54 @@ var require_stringify = __commonJS({
 var require_parse = __commonJS({
   "node_modules/qs/lib/parse.js"(exports, module) {
     "use strict";
+    var getSideChannel = require_side_channel();
     var utils = require_utils2();
     var has = Object.prototype.hasOwnProperty;
     var isArray = Array.isArray;
+    var getPrototypeOf = Object.getPrototypeOf;
+    var fromCharCode = String.fromCharCode;
+    var isPlainContainer = function isPlainContainer2(value) {
+      if (!value || typeof value !== "object") {
+        return false;
+      }
+      if (isArray(value)) {
+        return true;
+      }
+      var proto = getPrototypeOf(value);
+      return proto === Object.prototype || proto === null;
+    };
+    var emptyCopyOf = function emptyCopyOf2(value) {
+      if (isArray(value)) {
+        var arr = [];
+        arr.length = value.length;
+        return arr;
+      }
+      return getPrototypeOf(value) === null ? { __proto__: null } : {};
+    };
+    var copyInput = function copyInput2(input2) {
+      var copies = getSideChannel();
+      var result = {};
+      var queue = [{ source: input2, target: result }];
+      for (var i = 0; i < queue.length; ++i) {
+        var source = queue[i].source;
+        var target = queue[i].target;
+        var keys = Object.keys(source);
+        for (var j = 0; j < keys.length; ++j) {
+          var value = source[keys[j]];
+          if (isPlainContainer(value)) {
+            if (!copies.has(value)) {
+              var copy = emptyCopyOf(value);
+              copies.set(value, copy);
+              queue[queue.length] = { source: value, target: copy };
+            }
+            utils.setProperty(target, keys[j], copies.get(value));
+          } else {
+            utils.setProperty(target, keys[j], value);
+          }
+        }
+      }
+      return result;
+    };
     var defaults = {
       allowDots: false,
       allowEmptyArrays: false,
@@ -58995,12 +59194,17 @@ var require_parse = __commonJS({
     };
     var interpretNumericEntities = function(str) {
       return str.replace(/&#(\d+);/g, function($0, numberStr) {
-        return String.fromCharCode(parseInt(numberStr, 10));
+        var c = parseInt(numberStr, 10);
+        if (c > 65535 && c <= 1114111) {
+          c -= 65536;
+          return fromCharCode(55296 | c >> 10, 56320 | c & 1023);
+        }
+        return fromCharCode(c);
       });
     };
-    var parseArrayValue = function(val, options, currentArrayLength, isFlatArrayValue) {
+    var parseArrayValue = function(val, options, currentArrayLength) {
       if (val && typeof val === "string" && options.comma && val.indexOf(",") > -1) {
-        if (isFlatArrayValue && options.throwOnLimitExceeded) {
+        if (options.throwOnLimitExceeded) {
           var commaCount = 0;
           var commaIndex = val.indexOf(",");
           while (commaIndex > -1) {
@@ -59013,7 +59217,7 @@ var require_parse = __commonJS({
         }
         return val.split(",");
       }
-      if (options.throwOnLimitExceeded && currentArrayLength >= options.arrayLimit) {
+      if (options.throwOnLimitExceeded && currentArrayLength >= options.arrayLimit && currentArrayLength > 0) {
         throw new RangeError("Array limit exceeded. Only " + options.arrayLimit + " element" + (options.arrayLimit === 1 ? "" : "s") + " allowed in an array.");
       }
       return val;
@@ -59055,6 +59259,7 @@ var require_parse = __commonJS({
         var part = parts[i];
         var bracketEqualsPos = part.indexOf("]=");
         var pos = bracketEqualsPos === -1 ? part.indexOf("=") : bracketEqualsPos + 1;
+        var isEmptyBracketKey = pos > 1 && part.slice(pos - 2, pos) === "[]";
         var key;
         var val;
         if (pos === -1) {
@@ -59067,8 +59272,7 @@ var require_parse = __commonJS({
               parseArrayValue(
                 part.slice(pos + 1),
                 options,
-                isArray(obj[key]) ? obj[key].length : 0,
-                part.indexOf("[]=") === -1
+                isArray(obj[key]) && (options.duplicates === "combine" || isEmptyBracketKey) ? obj[key].length : 0
               ),
               function(encodedVal) {
                 return options.decoder(encodedVal, defaults.decoder, charset, "value");
@@ -59077,9 +59281,11 @@ var require_parse = __commonJS({
           }
         }
         if (val && options.interpretNumericEntities && charset === "iso-8859-1") {
-          val = interpretNumericEntities(String(val));
+          val = utils.maybeMap(val, function(value) {
+            return value ? interpretNumericEntities(String(value)) : value;
+          });
         }
-        if (part.indexOf("[]=") > -1) {
+        if (isEmptyBracketKey) {
           val = isArray(val) ? [val] : val;
         }
         if (options.comma && isArray(val) && val.length > options.arrayLimit) {
@@ -59087,7 +59293,7 @@ var require_parse = __commonJS({
         }
         if (key !== null) {
           var existing = has.call(obj, key);
-          if (existing && (options.duplicates === "combine" || part.indexOf("[]=") > -1)) {
+          if (existing && (options.duplicates === "combine" || isEmptyBracketKey)) {
             obj[key] = utils.combine(
               obj[key],
               val,
@@ -59101,6 +59307,9 @@ var require_parse = __commonJS({
         }
       }
       return obj;
+    };
+    var stripWrappingBrackets = function stripWrappingBrackets2(key) {
+      return key.charAt(0) === "[" && key.charAt(key.length - 1) === "]" ? key.slice(1, -1) : key;
     };
     var parseObject = function(chain, val, options, valuesParsed) {
       var currentArrayLength = 0;
@@ -59126,12 +59335,12 @@ var require_parse = __commonJS({
           }
         } else {
           obj = options.plainObjects ? { __proto__: null } : {};
-          var cleanRoot = root.charAt(0) === "[" && root.charAt(root.length - 1) === "]" ? root.slice(1, -1) : root;
-          var decodedRoot = options.decodeDotInKeys ? cleanRoot.replace(/%2E/g, ".") : cleanRoot;
+          var cleanRoot = stripWrappingBrackets(root);
+          var decodedRoot = options.decodeDotInKeys ? cleanRoot.replace(/%2E/gi, ".") : cleanRoot;
           var index = parseInt(decodedRoot, 10);
           var isValidArrayIndex = !isNaN(index) && root !== decodedRoot && String(index) === decodedRoot && index >= 0 && options.parseArrays;
           if (!options.parseArrays && decodedRoot === "") {
-            obj = { 0: leaf };
+            obj[0] = leaf;
           } else if (isValidArrayIndex && index < options.arrayLimit) {
             obj = [];
             obj[index] = leaf;
@@ -59148,10 +59357,37 @@ var require_parse = __commonJS({
       }
       return leaf;
     };
+    var topLevelDotsToBrackets = function topLevelDotsToBrackets2(key) {
+      var result = "";
+      var depth = 0;
+      for (var i = 0; i < key.length; i += 1) {
+        var cu = key.charCodeAt(i);
+        if (cu === 91) {
+          depth += 1;
+          result += "[";
+        } else if (cu === 93) {
+          if (depth > 0) {
+            depth -= 1;
+          }
+          result += "]";
+        } else if (cu === 46 && depth === 0 && i + 1 < key.length && key.charCodeAt(i + 1) !== 46 && key.charCodeAt(i + 1) !== 91) {
+          var start = i + 1;
+          var j = start;
+          while (j < key.length && key.charCodeAt(j) !== 46 && key.charCodeAt(j) !== 91) {
+            j += 1;
+          }
+          result += "[" + key.slice(start, j) + "]";
+          i = j - 1;
+        } else {
+          result += key.charAt(i);
+        }
+      }
+      return result;
+    };
     var splitKeyIntoSegments = function splitKeyIntoSegments2(originalKey, options) {
-      var key = options.allowDots ? originalKey.replace(/\.([^.[]+)/g, "[$1]") : originalKey;
+      var key = options.allowDots ? topLevelDotsToBrackets(originalKey) : originalKey;
       if (options.depth <= 0) {
-        if (!options.plainObjects && has.call(Object.prototype, key)) {
+        if (!options.plainObjects && has.call(Object.prototype, stripWrappingBrackets(key))) {
           if (!options.allowPrototypes) {
             return;
           }
@@ -59275,7 +59511,7 @@ var require_parse = __commonJS({
       if (str === "" || str === null || typeof str === "undefined") {
         return options.plainObjects ? { __proto__: null } : {};
       }
-      var tempObj = typeof str === "string" ? parseValues(str, options) : str;
+      var tempObj = typeof str === "string" ? parseValues(str, options) : copyInput(str);
       var obj = options.plainObjects ? { __proto__: null } : {};
       var keys = Object.keys(tempObj);
       for (var i = 0; i < keys.length; ++i) {
@@ -60726,6 +60962,9 @@ var require_proxy_addr = __commonJS({
       return function trust(addr) {
         if (!isip(addr)) return false;
         var ip = parseip(addr);
+        if (ip.kind() === "ipv6" && ip.isIPv4MappedAddress()) {
+          ip = ip.toIPv4Address();
+        }
         var ipconv;
         var kind = ip.kind();
         for (var i = 0; i < subnets.length; i++) {
@@ -60738,10 +60977,15 @@ var require_proxy_addr = __commonJS({
             if (subnetkind === "ipv4" && !ip.isIPv4MappedAddress()) {
               continue;
             }
+            if (subnetkind !== "ipv4" && !(subnetrange >= 96 && subnetip.isIPv4MappedAddress())) {
+              continue;
+            }
             if (!ipconv) {
               ipconv = subnetkind === "ipv4" ? ip.toIPv4Address() : ip.toIPv4MappedAddress();
             }
             trusted = ipconv;
+          } else if (kind === "ipv6" && subnetip.isIPv4MappedAddress()) {
+            continue;
           }
           if (trusted.match(subnetip, subnetrange)) {
             return true;
@@ -60758,12 +61002,20 @@ var require_proxy_addr = __commonJS({
       return function trust(addr) {
         if (!isip(addr)) return false;
         var ip = parseip(addr);
+        if (ip.kind() === "ipv6" && ip.isIPv4MappedAddress()) {
+          ip = ip.toIPv4Address();
+        }
         var kind = ip.kind();
         if (kind !== subnetkind) {
           if (subnetisipv4 && !ip.isIPv4MappedAddress()) {
             return false;
           }
+          if (!subnetisipv4 && !(subnetrange >= 96 && subnetip.isIPv4MappedAddress())) {
+            return false;
+          }
           ip = subnetisipv4 ? ip.toIPv4Address() : ip.toIPv4MappedAddress();
+        } else if (kind === "ipv6" && subnetip.isIPv4MappedAddress()) {
+          return false;
         }
         return ip.match(subnetip, subnetrange);
       };
@@ -64725,6 +64977,8 @@ var require_common2 = __commonJS({
     Object.defineProperty(exports, "__esModule", { value: true });
     exports.isInSubnet = isInSubnet;
     exports.isHostInSubnet = isHostInSubnet;
+    exports.isGloballyReachable = isGloballyReachable;
+    exports.offsetBigInt = offsetBigInt;
     exports.isCorrect = isCorrect;
     exports.prefixLengthFromMask = prefixLengthFromMask;
     exports.assertByteArray = assertByteArray;
@@ -64739,7 +64993,33 @@ var require_common2 = __commonJS({
       return isHostInSubnet.call(this, address);
     }
     function isHostInSubnet(address) {
+      if (this.binaryZeroPad().length !== address.binaryZeroPad().length) {
+        return false;
+      }
       return this.mask(address.subnetMask) === address.mask();
+    }
+    function isGloballyReachable(entries) {
+      let best = null;
+      for (let i = 0; i < entries.length; i++) {
+        const entry = entries[i];
+        if (entry.reachable !== null && isHostInSubnet.call(this, entry.subnet) && (best === null || entry.subnet.subnetMask > best.subnet.subnetMask)) {
+          best = entry;
+        }
+      }
+      return best === null ? true : best.reachable;
+    }
+    function offsetBigInt(value, n, bits, family2) {
+      if (typeof n === "number" && !Number.isSafeInteger(n)) {
+        throw new address_error_1.AddressError(`${family2} offset must be an integer`);
+      }
+      if (typeof n !== "number" && typeof n !== "bigint") {
+        throw new address_error_1.AddressError(`${family2} offset must be an integer`);
+      }
+      const result = value + BigInt(n);
+      if (result < BigInt(0) || result > (BigInt(1) << BigInt(bits)) - BigInt(1)) {
+        throw new address_error_1.AddressError(`${family2} offset leaves the address space`);
+      }
+      return result;
     }
     function isCorrect(defaultBits) {
       return function isCorrectForm() {
@@ -64784,10 +65064,10 @@ var require_common2 = __commonJS({
     }
     function testBit(binaryValue, position) {
       const { length } = binaryValue;
-      if (position > length) {
+      if (position >= length) {
         return false;
       }
-      const positionInString = length - position;
+      const positionInString = length - position - 1;
       return binaryValue.substring(positionInString, positionInString + 1) === "1";
     }
   }
@@ -64798,11 +65078,39 @@ var require_constants = __commonJS({
   "node_modules/ip-address/dist/v4/constants.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.RE_SUBNET_STRING = exports.RE_ADDRESS = exports.GROUPS = exports.BITS = void 0;
+    exports.SPECIAL_PURPOSE = exports.RE_SUBNET_STRING = exports.RE_ADDRESS = exports.GROUPS = exports.BITS = void 0;
     exports.BITS = 32;
     exports.GROUPS = 4;
     exports.RE_ADDRESS = /^(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])\.(25[0-5]|2[0-4][0-9]|1[0-9][0-9]|[1-9]?[0-9])$/g;
     exports.RE_SUBNET_STRING = /\/\d{1,2}$/;
+    exports.SPECIAL_PURPOSE = [
+      ["0.0.0.0/8", "This network", false],
+      ["0.0.0.0/32", "This host on this network", false],
+      ["10.0.0.0/8", "Private-Use", false],
+      ["100.64.0.0/10", "Shared Address Space", false],
+      ["127.0.0.0/8", "Loopback", false],
+      ["169.254.0.0/16", "Link Local", false],
+      ["172.16.0.0/12", "Private-Use", false],
+      ["192.0.0.0/24", "IETF Protocol Assignments", false],
+      ["192.0.0.0/29", "IPv4 Service Continuity Prefix", false],
+      ["192.0.0.8/32", "IPv4 dummy address", false],
+      ["192.0.0.9/32", "Port Control Protocol Anycast", true],
+      ["192.0.0.10/32", "Traversal Using Relays around NAT Anycast", true],
+      ["192.0.0.170/32", "NAT64/DNS64 Discovery", false],
+      ["192.0.0.171/32", "NAT64/DNS64 Discovery", false],
+      ["192.0.2.0/24", "Documentation (TEST-NET-1)", false],
+      ["192.31.196.0/24", "AS112-v4", true],
+      ["192.52.193.0/24", "AMT", true],
+      ["192.88.99.0/24", "Deprecated (6to4 Relay Anycast)", null],
+      ["192.88.99.2/32", "6a44-relay anycast address", false],
+      ["192.168.0.0/16", "Private-Use", false],
+      ["192.175.48.0/24", "Direct Delegation AS112 Service", true],
+      ["198.18.0.0/15", "Benchmarking", false],
+      ["198.51.100.0/24", "Documentation (TEST-NET-2)", false],
+      ["203.0.113.0/24", "Documentation (TEST-NET-3)", false],
+      ["240.0.0.0/4", "Reserved", false],
+      ["255.255.255.255/32", "Limited Broadcast", false]
+    ];
   }
 });
 
@@ -64865,6 +65173,10 @@ var require_ipv4 = __commonJS({
             throw new address_error_1.AddressError("Invalid subnet mask.");
           }
           address = address.replace(constants.RE_SUBNET_STRING, "");
+        }
+        const longest = constants.GROUPS * 4 - 1;
+        if (address.length > longest) {
+          throw new address_error_1.AddressError(`IPv4 addresses are at most ${longest} characters.`);
         }
         this.addressMinusSuffix = address;
         this.parsedAddress = this.parse(address);
@@ -65002,15 +65314,22 @@ var require_ipv4 = __commonJS({
         return _Address4.fromHex(integer2.toString(16).padStart(8, "0"));
       }
       /**
-       * Return an address from in-addr.arpa form
+       * Return an address from in-addr.arpa form: the four octets reversed, with
+       * or without the `.in-addr.arpa` suffix and root dot, in any case. Throws
+       * `AddressError` unless the reversed labels form a valid IPv4 address, so
+       * `fromArpa(x.reverseForm())` round-trips {@link reverseForm}.
        * @param {string} arpaFormAddress - an 'in-addr.arpa' form ipv4 address
        * @returns {Adress4}
        * @example
-       * var address = Address4.fromArpa(42.2.0.192.in-addr.arpa.)
+       * var address = Address4.fromArpa('42.2.0.192.in-addr.arpa.')
        * address.correctForm(); // '192.0.2.42'
        */
       static fromArpa(arpaFormAddress) {
-        const leader = arpaFormAddress.replace(/(\.in-addr\.arpa)?\.$/, "");
+        const longest = constants.GROUPS * 4 - 1 + "/32".length + ".in-addr.arpa.".length;
+        if (arpaFormAddress.length > longest) {
+          throw new address_error_1.AddressError(`in-addr.arpa names are at most ${longest} characters.`);
+        }
+        const leader = arpaFormAddress.replace(/(\.in-addr\.arpa)?\.?$/i, "");
         const address = leader.split(".").reverse().join(".");
         return new _Address4(address);
       }
@@ -65072,6 +65391,33 @@ var require_ipv4 = __commonJS({
       startAddressExclusive() {
         const adjust = BigInt("1");
         return _Address4.fromBigInt(this._startAddress() + adjust);
+      }
+      /**
+       * Returns the address `n` addresses after this one (or before, when `n` is
+       * negative), keeping this address's subnet mask. Throws `AddressError` when
+       * the result would fall outside the IPv4 address space or `n` is not an
+       * integer.
+       * @param {number | bigint} n
+       * @returns {Address4}
+       * @example
+       * new Address4('10.0.0.0/24').offset(1).correctForm(); // '10.0.0.1'
+       */
+      offset(n) {
+        return _Address4.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants.BITS, "IPv4")).withSubnetMask(this.subnetMask);
+      }
+      /**
+       * Returns the network that follows this address's network: the address after
+       * {@link endAddress}, with the same subnet mask. Throws `AddressError` when
+       * this network is the last one in the address space.
+       * @returns {Address4}
+       * @example
+       * new Address4('10.0.0.0/24').nextNetwork().networkForm(); // '10.0.1.0/24'
+       */
+      nextNetwork() {
+        return _Address4.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants.BITS, "IPv4")).withSubnetMask(this.subnetMask);
+      }
+      withSubnetMask(subnetMask) {
+        return new _Address4(`${this.correctForm()}/${subnetMask}`);
       }
       /**
        * Helper function getting end address.
@@ -65136,7 +65482,10 @@ var require_ipv4 = __commonJS({
         return _Address4.fromHex(bigInt.toString(16).padStart(8, "0"));
       }
       /**
-       * Convert a byte array to an Address4 object.
+       * Convert a byte array to an Address4 object. Throws `AddressError` unless
+       * given exactly 4 integers from 0 to 255. Signed bytes are rejected, so
+       * this differs from `Address6.fromByteArray`, which folds them; the two
+       * contracts converge on this stricter form in the next major version.
        *
        * To convert from a Node.js `Buffer`, spread it: `Address4.fromByteArray([...buf])`.
        * @param {Array<number>} bytes - an array of 4 bytes (0-255)
@@ -65147,7 +65496,12 @@ var require_ipv4 = __commonJS({
         return this.fromUnsignedByteArray(bytes);
       }
       /**
-       * Convert an unsigned byte array to an Address4 object
+       * Convert an unsigned byte array to an Address4 object. Throws
+       * `AddressError` unless given exactly 4 bytes, and rejects values outside
+       * 0 to 255 when parsing the resulting address.
+       *
+       * To convert from a Node.js `Buffer`, spread it:
+       * `Address4.fromUnsignedByteArray([...buf])`.
        * @param {Array<number>} bytes - an array of 4 unsigned bytes (0-255)
        * @returns {Address4}
        */
@@ -65177,7 +65531,8 @@ var require_ipv4 = __commonJS({
         return this.binaryZeroPad().slice(start, end);
       }
       /**
-       * Return the reversed ip6.arpa form of the address
+       * Return the reversed in-addr.arpa form of the address, e.g.
+       * `42.2.0.192.in-addr.arpa.` for `192.0.2.42`.
        * @param {Object} options
        * @param {boolean} options.omitSuffix - omit the "in-addr.arpa" suffix
        * @returns {String}
@@ -65242,6 +65597,43 @@ var require_ipv4 = __commonJS({
         return this.isHostInSubnet(CGNAT_V4);
       }
       /**
+       * Returns true if the address is in one of the documentation ranges
+       * `192.0.2.0/24`, `198.51.100.0/24`, or `203.0.113.0/24` ([RFC 5737](https://datatracker.ietf.org/doc/html/rfc5737)).
+       * @returns {boolean}
+       */
+      isDocumentation() {
+        return DOCUMENTATION_V4.some((subnet) => this.isHostInSubnet(subnet));
+      }
+      /**
+       * Returns true if the address is in the benchmarking range `198.18.0.0/15` ([RFC 2544](https://datatracker.ietf.org/doc/html/rfc2544)).
+       * @returns {boolean}
+       */
+      isBenchmarking() {
+        return this.isHostInSubnet(BENCHMARKING_V4);
+      }
+      /**
+       * Returns true if the address is in the reserved range `240.0.0.0/4` ([RFC 1112](https://datatracker.ietf.org/doc/html/rfc1112)),
+       * which includes the limited broadcast address.
+       * @returns {boolean}
+       */
+      isReserved() {
+        return this.isHostInSubnet(RESERVED_V4);
+      }
+      /**
+       * Returns true if the address is globally reachable: not multicast, and not
+       * in any block the [IANA IPv4 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv4-special-registry/)
+       * marks as not globally reachable. That covers everything the individual
+       * classifiers name (private, loopback, link-local, CGNAT, unspecified,
+       * broadcast, documentation, benchmarking, reserved) and the blocks they do
+       * not, such as `0.0.0.0/8` and the IETF protocol assignments in
+       * `192.0.0.0/24`. This is the single predicate to use where a request must
+       * not reach an internal or special-purpose destination; see SECURITY.md.
+       * @returns {boolean}
+       */
+      isGlobal() {
+        return !this.isMulticast() && common.isGloballyReachable.call(this, SPECIAL_PURPOSE_V4);
+      }
+      /**
        * Returns a zero-padded base-2 string representation of the address
        * @returns {string}
        */
@@ -65252,7 +65644,12 @@ var require_ipv4 = __commonJS({
         return this._binaryZeroPad;
       }
       /**
-       * Groups an IPv4 address for inclusion at the end of an IPv6 address
+       * Groups an IPv4 address for inclusion at the end of an IPv6 address.
+       *
+       * Returns an HTML fragment: each half of the address is wrapped in a
+       * `<span>` carrying the group classes an address-inspector UI hovers on.
+       * The address content is HTML-escaped; anything you concatenate around it
+       * is your responsibility.
        * @returns {String}
        */
       groupForV6() {
@@ -65272,6 +65669,17 @@ var require_ipv4 = __commonJS({
     var UNSPECIFIED_V4 = new Address4("0.0.0.0/32");
     var BROADCAST_V4 = new Address4("255.255.255.255/32");
     var CGNAT_V4 = new Address4("100.64.0.0/10");
+    var DOCUMENTATION_V4 = [
+      new Address4("192.0.2.0/24"),
+      new Address4("198.51.100.0/24"),
+      new Address4("203.0.113.0/24")
+    ];
+    var BENCHMARKING_V4 = new Address4("198.18.0.0/15");
+    var RESERVED_V4 = new Address4("240.0.0.0/4");
+    var SPECIAL_PURPOSE_V4 = constants.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
+      subnet: new Address4(cidr),
+      reachable
+    }));
   }
 });
 
@@ -65280,7 +65688,7 @@ var require_constants2 = __commonJS({
   "node_modules/ip-address/dist/v6/constants.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
-    exports.RE_URL_WITH_PORT = exports.RE_URL = exports.RE_ZONE_STRING = exports.RE_SUBNET_STRING = exports.RE_BAD_ADDRESS = exports.RE_BAD_CHARACTERS = exports.TYPES = exports.SCOPES = exports.GROUPS = exports.BITS = void 0;
+    exports.SPECIAL_PURPOSE = exports.RE_URL_WITH_PORT = exports.RE_URL = exports.RE_ZONE_STRING = exports.RE_SUBNET_STRING = exports.RE_BAD_ADDRESS = exports.RE_BAD_CHARACTERS = exports.TYPES = exports.SCOPES = exports.GROUPS = exports.BITS = void 0;
     exports.BITS = 128;
     exports.GROUPS = 8;
     exports.SCOPES = {
@@ -65318,8 +65726,14 @@ var require_constants2 = __commonJS({
       "ff00::/8": "Multicast",
       "fe80::/10": "Link-local unicast",
       "fc00::/7": "Unique local",
+      "2001::/32": "Teredo",
+      "2001:2::/48": "Benchmarking",
       "2002::/16": "6to4",
       "2001:db8::/32": "Documentation",
+      "3fff::/20": "Documentation",
+      "100::/64": "Discard-only",
+      "fec0::/10": "Site-local unicast (deprecated)",
+      "::/96": "IPv4-compatible (deprecated)",
       "64:ff9b::/96": "NAT64 (well-known)",
       "64:ff9b:1::/48": "NAT64 (local-use)"
     };
@@ -65329,6 +65743,33 @@ var require_constants2 = __commonJS({
     exports.RE_ZONE_STRING = /%.*$/;
     exports.RE_URL = /^(?:\[([0-9a-f:.]+)\]|([0-9a-f:.]+))(?:[/?#].*)?$/i;
     exports.RE_URL_WITH_PORT = /^\[([0-9a-f:.]+)\]:([0-9]{1,5})(?:[/?#].*)?$/i;
+    exports.SPECIAL_PURPOSE = [
+      ["::1/128", "Loopback Address", false],
+      ["::/128", "Unspecified Address", false],
+      ["::ffff:0:0/96", "IPv4-mapped Address", false],
+      ["64:ff9b::/96", "IPv4-IPv6 Translat.", true],
+      ["64:ff9b:1::/48", "IPv4-IPv6 Translat.", false],
+      ["100::/64", "Discard-Only Address Block", false],
+      ["100:0:0:1::/64", "Dummy IPv6 Prefix", false],
+      ["2001::/23", "IETF Protocol Assignments", false],
+      ["2001::/32", "TEREDO", false],
+      ["2001:1::1/128", "Port Control Protocol Anycast", true],
+      ["2001:1::2/128", "Traversal Using Relays around NAT Anycast", true],
+      ["2001:1::3/128", "DNS-SD Service Registration Protocol Anycast", true],
+      ["2001:2::/48", "Benchmarking", false],
+      ["2001:3::/32", "AMT", true],
+      ["2001:4:112::/48", "AS112-v6", true],
+      ["2001:10::/28", "Deprecated (previously ORCHID)", null],
+      ["2001:20::/28", "ORCHIDv2", true],
+      ["2001:30::/28", "Drone Remote ID Protocol Entity Tags (DETs) Prefix", true],
+      ["2001:db8::/32", "Documentation", false],
+      ["2002::/16", "6to4", false],
+      ["2620:4f:8000::/48", "Direct Delegation AS112 Service", true],
+      ["3fff::/20", "Documentation", false],
+      ["5f00::/16", "Segment Routing (SRv6) SIDs", false],
+      ["fc00::/7", "Unique-Local", false],
+      ["fe80::/10", "Link-Local Unicast", false]
+    ];
   }
 });
 
@@ -65571,10 +66012,14 @@ var require_ipv6 = __commonJS({
         if (/\//.test(address)) {
           throw new address_error_1.AddressError("Invalid subnet mask.");
         }
-        const zone = constants6.RE_ZONE_STRING.exec(address);
-        if (zone) {
-          this.zone = zone[0];
-          address = address.replace(constants6.RE_ZONE_STRING, "");
+        const zoneStart = address.indexOf("%");
+        if (zoneStart !== -1 && /^.*$/.test(address.slice(zoneStart))) {
+          this.zone = address.slice(zoneStart);
+          address = address.slice(0, zoneStart);
+        }
+        const longest = this.groups * 5 + 5;
+        if (address.length > longest) {
+          throw new address_error_1.AddressError(`IPv6 addresses are at most ${longest} characters.`);
         }
         this.addressMinusSuffix = address;
         this.parsedAddress = this.parse(this.addressMinusSuffix);
@@ -65630,26 +66075,21 @@ var require_ipv6 = __commonJS({
         let host;
         let port = null;
         let result;
+        let error62;
         const stripped = url2.replace(/^[a-z][a-z0-9+.-]*:\/\//i, "");
         if (stripped.indexOf("[") !== -1 && stripped.indexOf("]:") !== -1) {
+          error62 = "failed to parse address with port";
           result = constants6.RE_URL_WITH_PORT.exec(stripped);
           if (result === null) {
-            return {
-              error: "failed to parse address with port",
-              address: null,
-              port: null
-            };
+            return { error: error62, address: null, port: null };
           }
           host = result[1];
           port = result[2];
         } else {
+          error62 = "failed to parse address from URL";
           result = constants6.RE_URL.exec(stripped);
           if (result === null) {
-            return {
-              error: "failed to parse address from URL",
-              address: null,
-              port: null
-            };
+            return { error: error62, address: null, port: null };
           }
           host = (_a3 = result[1]) !== null && _a3 !== void 0 ? _a3 : result[2];
         }
@@ -65661,10 +66101,13 @@ var require_ipv6 = __commonJS({
         } else {
           port = null;
         }
-        return {
-          address: new _Address6(host),
-          port
-        };
+        let address;
+        try {
+          address = new _Address6(host);
+        } catch {
+          return { error: error62, address: null, port: null };
+        }
+        return { address, port };
       }
       /**
        * Construct an `Address6` from an address and a hex subnet mask given as
@@ -65762,26 +66205,30 @@ var require_ipv6 = __commonJS({
         return new _Address6(`::ffff:${address4.correctForm()}/${mask6}`);
       }
       /**
-       * Return an address from ip6.arpa form
+       * Return an address from ip6.arpa form. A full 32-nibble name gives a /128
+       * address; a shorter name, as used for a delegated reverse zone, gives the
+       * network it covers, with a subnet mask of four bits per nibble, so
+       * `fromArpa(x.reverseForm())` round-trips {@link reverseForm} for any prefix.
        * @param {string} arpaFormAddress - an 'ip6.arpa' form address
        * @returns {Adress6}
        * @example
        * var address = Address6.fromArpa(e.f.f.f.3.c.2.6.f.f.f.e.6.6.8.e.1.0.6.7.9.4.e.c.0.0.0.0.1.0.0.2.ip6.arpa.)
        * address.correctForm(); // '2001:0:ce49:7601:e866:efff:62c3:fffe'
+       * Address6.fromArpa('8.b.d.0.1.0.0.2.ip6.arpa.').networkForm(); // '2001:db8::/32'
        */
       static fromArpa(arpaFormAddress) {
-        let address = arpaFormAddress.replace(/(\.ip6\.arpa)?\.$/, "");
-        const semicolonAmount = 7;
-        if (address.length !== 63) {
+        const nibbles = arpaFormAddress.replace(/(\.ip6\.arpa)?\.?$/i, "");
+        if (!/^[0-9a-f](\.[0-9a-f]){0,31}$/i.test(nibbles)) {
           throw new address_error_1.AddressError("Invalid 'ip6.arpa' form.");
         }
-        const parts = address.split(".").reverse();
-        for (let i = semicolonAmount; i > 0; i--) {
-          const insertIndex = i * 4;
-          parts.splice(insertIndex, 0, ":");
+        const reversed = nibbles.split(".").reverse();
+        const subnetMask = reversed.length * 4;
+        const hex3 = reversed.join("").padEnd(32, "0");
+        const groups = [];
+        for (let i = 0; i < constants6.GROUPS; i++) {
+          groups.push(hex3.slice(i * 4, (i + 1) * 4));
         }
-        address = parts.join("");
-        return new _Address6(address);
+        return new _Address6(`${groups.join(":")}/${subnetMask}`);
       }
       /**
        * Return the Microsoft UNC transcription of the address
@@ -65845,21 +66292,52 @@ var require_ipv6 = __commonJS({
         return BigInt(`0b${this.mask() + "1".repeat(constants6.BITS - this.subnetMask)}`);
       }
       /**
-       * The last address in the range given by this address' subnet
-       * Often referred to as the Broadcast
+       * The last address in the range given by this address's subnet. IPv6 has
+       * no broadcast address, so this is an ordinary assignable address (in a
+       * 64-bit-interface-identifier subnet it falls inside the reserved
+       * subnet-anycast block of [RFC 2526](https://datatracker.ietf.org/doc/html/rfc2526)).
        * @returns {Address6}
        */
       endAddress() {
         return _Address6.fromBigInt(this._endAddress());
       }
       /**
-       * The last host address in the range given by this address's subnet ie
-       * the last address prior to the Broadcast Address
+       * The address one before {@link endAddress}. This is the IPv6 counterpart
+       * of the IPv4 method that skips the broadcast address; IPv6 has no broadcast,
+       * so it drops exactly one address and does not model the 128 reserved
+       * subnet-anycast identifiers of [RFC 2526](https://datatracker.ietf.org/doc/html/rfc2526).
        * @returns {Address6}
        */
       endAddressExclusive() {
         const adjust = BigInt("1");
         return _Address6.fromBigInt(this._endAddress() - adjust);
+      }
+      /**
+       * Returns the address `n` addresses after this one (or before, when `n` is
+       * negative), keeping this address's subnet mask. Throws `AddressError` when
+       * the result would fall outside the IPv6 address space or `n` is not an
+       * integer.
+       * @param {number | bigint} n
+       * @returns {Address6}
+       * @example
+       * new Address6('2001:db8::/64').offset(1).correctForm(); // '2001:db8::1'
+       */
+      offset(n) {
+        return _Address6.fromBigInt(common.offsetBigInt(this.bigInt(), n, constants6.BITS, "IPv6")).withSubnetMask(this.subnetMask);
+      }
+      /**
+       * Returns the network that follows this address's network: the address after
+       * {@link endAddress}, with the same subnet mask. Throws `AddressError` when
+       * this network is the last one in the address space.
+       * @returns {Address6}
+       * @example
+       * new Address6('2001:db8::/64').nextNetwork().networkForm(); // '2001:db8:0:1::/64'
+       */
+      nextNetwork() {
+        return _Address6.fromBigInt(common.offsetBigInt(this._endAddress(), 1, constants6.BITS, "IPv6")).withSubnetMask(this.subnetMask);
+      }
+      withSubnetMask(subnetMask) {
+        return new _Address6(`${this.correctForm()}/${subnetMask}`);
       }
       /**
        * The hex form of the subnet mask, e.g. `ffff:ffff:ffff:ffff::` for a
@@ -66082,7 +66560,7 @@ var require_ipv6 = __commonJS({
         address = this.parse4in6(address);
         const badCharacters = address.match(constants6.RE_BAD_CHARACTERS);
         if (badCharacters) {
-          throw new address_error_1.AddressError(`Bad character${badCharacters.length > 1 ? "s" : ""} detected in address: ${badCharacters.join("")}`, address.replace(constants6.RE_BAD_CHARACTERS, '<span class="parse-error">$1</span>'));
+          throw new address_error_1.AddressError(`Bad character${badCharacters.length > 1 ? "s" : ""} detected in address: ${badCharacters.join("")}`, address.replace(constants6.RE_BAD_CHARACTERS, (character) => `<span class="parse-error">${helpers.escapeHtml(character)}</span>`));
         }
         const badAddress = address.match(constants6.RE_BAD_ADDRESS);
         if (badAddress) {
@@ -66384,7 +66862,10 @@ var require_ipv6 = __commonJS({
         return this.addressMinusSuffix === this.canonicalForm();
       }
       /**
-       * Returns true if the address is a link local address, false otherwise
+       * Returns true if the address is a link-local unicast address in `fe80::/10`
+       * ([RFC 4291 §2.4](https://datatracker.ietf.org/doc/html/rfc4291#section-2.4))
+       * or an IPv4-mapped / NAT64 address whose embedded IPv4 address is link-local
+       * (`169.254.0.0/16`, e.g. `::ffff:169.254.169.254`), false otherwise.
        * @returns {boolean}
        */
       isLinkLocal() {
@@ -66392,10 +66873,7 @@ var require_ipv6 = __commonJS({
         if (embedded) {
           return embedded.isLinkLocal();
         }
-        if (this.getBitsBase2(0, 64) === "1111111010000000000000000000000000000000000000000000000000000000") {
-          return true;
-        }
-        return false;
+        return this.isHostInSubnet(LINK_LOCAL_SUBNET);
       }
       /**
        * Returns true if the address is a multicast address, false otherwise
@@ -66487,12 +66965,20 @@ var require_ipv6 = __commonJS({
       }
       /**
        * Returns true if the address is private, i.e. a Unique Local Address in
-       * `fc00::/7` ([RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193)) or an
-       * IPv4-mapped / NAT64 address whose embedded IPv4 address is in one of the
-       * [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918) private ranges
-       * (e.g. `::ffff:10.0.0.1`). This is the IPv6 counterpart to
+       * `fc00::/7` ([RFC 4193](https://datatracker.ietf.org/doc/html/rfc4193)), an
+       * address in the NAT64 local-use range `64:ff9b:1::/48`
+       * ([RFC 8215](https://datatracker.ietf.org/doc/html/rfc8215)), or an
+       * IPv4-mapped / NAT64 well-known address whose embedded IPv4 address is in
+       * one of the [RFC 1918](https://datatracker.ietf.org/doc/html/rfc1918)
+       * private ranges (e.g. `::ffff:10.0.0.1`). This is the IPv6 counterpart to
        * {@link Address4.isPrivate}; use it instead of {@link isULA} when you need to
        * catch mapped RFC 1918 addresses as well as native ULAs.
+       *
+       * The local-use NAT64 range is reported private as a whole rather than by
+       * its embedded IPv4 address: an operator may carve a prefix of any RFC 6052
+       * length out of `64:ff9b:1::/48`, so the same bits decode to different IPv4
+       * addresses under different deployments and no single decoding is correct.
+       * Use {@link toAddress4Nat64} with the deployment's prefix to decode one.
        * @returns {boolean}
        */
       isPrivate() {
@@ -66500,7 +66986,7 @@ var require_ipv6 = __commonJS({
         if (embedded) {
           return embedded.isPrivate();
         }
-        return this.isULA();
+        return this.isULA() || this.isHostInSubnet(NAT64_LOCAL_USE_SUBNET);
       }
       /**
        * Returns true if the address is an IPv4-mapped / NAT64 address whose embedded
@@ -66548,7 +67034,48 @@ var require_ipv6 = __commonJS({
        * @returns {boolean}
        */
       isDocumentation() {
-        return this.isHostInSubnet(DOCUMENTATION_SUBNET);
+        return DOCUMENTATION_SUBNETS.some((subnet) => this.isHostInSubnet(subnet));
+      }
+      /**
+       * Returns true if the address is in the benchmarking range `2001:2::/48`
+       * ([RFC 5180](https://datatracker.ietf.org/doc/html/rfc5180)) or is an
+       * IPv4-mapped / NAT64 address whose embedded IPv4 address is in
+       * `198.18.0.0/15`, false otherwise.
+       * @returns {boolean}
+       */
+      isBenchmarking() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+          return embedded.isBenchmarking();
+        }
+        return this.isHostInSubnet(BENCHMARKING_SUBNET);
+      }
+      /**
+       * Returns true if the address is globally reachable: inside the global
+       * unicast allocation `2000::/3` (the only range the [IANA IPv6 Address Space
+       * Registry](https://www.iana.org/assignments/ipv6-address-space/) assigns
+       * for global unicast; everything else is reserved, ULA, link-local, or
+       * multicast) and not in any block the [IANA IPv6 Special-Purpose Address Registry](https://www.iana.org/assignments/iana-ipv6-special-registry/)
+       * marks as not globally reachable. An IPv4-mapped or NAT64 well-known
+       * address answers for its embedded IPv4 address, so `::ffff:10.0.0.1` and
+       * `64:ff9b::7f00:1` are not global. Teredo (`2001::/32`) and 6to4
+       * (`2002::/16`) are not global either: the registry lists them as N/A and a
+       * packet to one needs a relay.
+       *
+       * This covers everything the individual classifiers name and the blocks they
+       * do not: the discard-only prefix `100::/64`, the IETF protocol assignments
+       * in `2001::/23`, the deprecated site-local `fec0::/10` and IPv4-compatible
+       * `::/96` ranges, and unallocated space such as `4000::/3`. It is the single
+       * predicate to use where a request must not reach an internal or
+       * special-purpose destination; see SECURITY.md.
+       * @returns {boolean}
+       */
+      isGlobal() {
+        const embedded = this.embeddedIPv4();
+        if (embedded) {
+          return embedded.isGlobal();
+        }
+        return this.isHostInSubnet(GLOBAL_UNICAST_SUBNET) && common.isGloballyReachable.call(this, SPECIAL_PURPOSE_V6);
       }
       // #endregion
       // #region HTML
@@ -66600,7 +67127,12 @@ var require_ipv6 = __commonJS({
         return `<a href="${safeHref}">${safeForm}</a>`;
       }
       /**
-       * Groups an address
+       * Groups an address.
+       *
+       * Returns an HTML fragment: each group is wrapped in a `<span>` carrying
+       * the group classes an address-inspector UI hovers on. The address content
+       * is HTML-escaped; anything you concatenate around it is your
+       * responsibility.
        * @returns {String}
        */
       group() {
@@ -66691,9 +67223,17 @@ var require_ipv6 = __commonJS({
     var TEREDO_SUBNET = new Address62("2001::/32");
     var SIX_TO_FOUR_SUBNET = new Address62("2002::/16");
     var ULA_SUBNET = new Address62("fc00::/7");
-    var DOCUMENTATION_SUBNET = new Address62("2001:db8::/32");
+    var LINK_LOCAL_SUBNET = new Address62("fe80::/10");
+    var DOCUMENTATION_SUBNETS = [new Address62("2001:db8::/32"), new Address62("3fff::/20")];
+    var BENCHMARKING_SUBNET = new Address62("2001:2::/48");
+    var GLOBAL_UNICAST_SUBNET = new Address62("2000::/3");
+    var SPECIAL_PURPOSE_V6 = constants6.SPECIAL_PURPOSE.map(([cidr, , reachable]) => ({
+      subnet: new Address62(cidr),
+      reachable
+    }));
     var IPV4_MAPPED_SUBNET = new Address62("::ffff:0:0/96");
     var NAT64_WELL_KNOWN_SUBNET = new Address62("64:ff9b::/96");
+    var NAT64_LOCAL_USE_SUBNET = new Address62("64:ff9b:1::/48");
   }
 });
 
@@ -71009,8 +71549,23 @@ function defaultNativeBindingProbe(_packageRoot) {
 function satisfiesMinimumNodeRange(version2, range) {
   const min = /^>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$/.exec(range.trim());
   const running = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version2.trim());
-  if (!min || !running)
+  if (!running)
     return null;
+  if (!min) {
+    if (!/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version2.trim()))
+      return null;
+    const parts = range.split("||").map((part) => part.trim());
+    if (parts.length < 2)
+      return null;
+    const bounds = parts.map((part) => /^\^([1-9]\d*)\.(\d+)\.(\d+)$/.exec(part));
+    if (bounds.some((bound) => !bound))
+      return null;
+    const have2 = running.slice(1, 4).map(Number);
+    return bounds.some((bound) => {
+      const wanted2 = bound.slice(1, 4).map(Number);
+      return have2[0] === wanted2[0] && (have2[1] > wanted2[1] || have2[1] === wanted2[1] && have2[2] >= wanted2[2]);
+    });
+  }
   const wanted = [Number(min[1]), Number(min[2] ?? 0), Number(min[3] ?? 0)];
   const have = [Number(running[1]), Number(running[2]), Number(running[3])];
   for (let i = 0; i < 3; i++) {

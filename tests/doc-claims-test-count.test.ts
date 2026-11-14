@@ -112,6 +112,9 @@ describe('the READMEs-state-no-test-count rule', () => {
       expect(clone.status, clone.stderr).toBe(0);
       copyTrackedWorkingTree(root, fixture);
       fs.copyFileSync(path.join(root, 'scripts/check-doc-claims.mjs'), path.join(fixture, 'scripts/check-doc-claims.mjs'));
+      for (const file of ['package.json', 'scripts/lib/current-doc-contract.mjs', 'llms-install.md', 'benchmarks/longmemeval/REPRODUCE.md', 'README.md', 'README.zh-TW.md', 'README.vi.md', 'CONTRIBUTING.md']) {
+        fs.copyFileSync(path.join(root, file), path.join(fixture, file));
+      }
       const manifestPath = path.join(fixture, '.codex-plugin/plugin.json');
       const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
       manifest.hooks.hooks.PostToolUse.push({ matcher: 'Bash', hooks: [{ type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/doc-claim-fixture.js' }] });

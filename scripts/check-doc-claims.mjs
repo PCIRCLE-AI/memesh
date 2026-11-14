@@ -712,10 +712,21 @@ if (!hasBearerAuth) {
   // (e) the Node floor llms-install.md tells the agent to check against is
   // the one package.json enforces.
   if (agentDocs.includes('llms-install.md')) {
-    const nodeFloor = (pkg.engines?.node ?? '').match(/(\d+\.\d+\.\d+)/)?.[1];
-    if (!nodeFloor) fail('package.json engines.node no longer states a version floor');
-    else if (!read('llms-install.md').includes(nodeFloor)) fail(`llms-install.md does not state the Node floor ${nodeFloor} from package.json engines`);
-    else ok(`llms-install.md Node floor matches engines (${nodeFloor})`);
+    const range = pkg.engines?.node ?? '';
+    const parts = range.split('||').map((part) => part.trim());
+    const floors = parts.map((part) => /^(?:\^|>=\s*)(\d+\.\d+\.\d+)$/.exec(part)?.[1]);
+    if (floors.some((floor) => !floor) || !floors.length) fail('package.json engines.node no longer states recognizable version floors');
+    else {
+      const missing = floors.filter((floor) => !read('llms-install.md').includes(floor));
+      if (missing.length) fail(`llms-install.md does not state Node floors ${missing.join(', ')} from package.json engines`);
+      else ok(`llms-install.md Node floors match engines (${floors.join(', ')})`);
+      for (const doc of ['README.md', 'README.zh-TW.md', 'README.vi.md', 'CONTRIBUTING.md']) {
+        const nodeLines = read(doc).split('\n').filter((line) => line.includes('Node.js'));
+        if (!nodeLines.some((line) => floors.every((floor) => line.includes(floor)))) {
+          fail(`${doc} does not state every supported Node floor together`);
+        } else ok(`${doc} states every supported Node floor`);
+      }
+    }
   }
 }
 

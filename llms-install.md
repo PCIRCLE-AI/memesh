@@ -33,7 +33,8 @@ Claude Code wires the MCP server, the auto-capture hooks, and the `/memesh`
 skill automatically.
 
 **Verify**: restart Claude Code. A status line beginning `◉ MeMesh` appears at
-the top of the next session. MeMesh needs Node 22.16.0 or newer on the `PATH`
+the top of the next session. MeMesh supports Node 26.13.1 or later within 26.x (recommended),
+24.22.3 or later within 24.x, or 22.23.5 or later within 22.x on the `PATH`
 Claude Code uses (`node --version`); on a Node it cannot use, the top of the
 session shows `MeMesh: This Node (v…) …` instead, with the one repair that
 applies, and none of MeMesh's tools work until it is done (see the table).
@@ -42,9 +43,9 @@ applies, and none of MeMesh's tools work until it is done (see the table).
 |---|---|
 | `/plugin marketplace add` fails | The marketplace is fetched as a git clone. Check `git --version` succeeds and github.com is reachable. |
 | `/plugin install` says plugin not found | The argument is exactly `memesh@pcircle-memesh` — plugin name `memesh`, marketplace name `pcircle-memesh`. Re-run the marketplace add first. |
-| `MeMesh: This Node (v…) lacks the full-text search MeMesh needs; upgrade to Node 22.16 or newer …` | The Node on `PATH` is older than 22.16.0 (`node --version`). Upgrade it, then restart Claude Code. |
+| `MeMesh: This Node (v…) lacks the full-text search MeMesh needs; upgrade to Node 22.16 or newer …` | The Node on `PATH` lacks the required SQLite capability (`node --version`). Upgrade to one of the supported security releases above, then restart Claude Code. |
 | `MeMesh: This Node (v…) is new enough, but its built-in SQLite (node:sqlite) is switched off …` | Node was started with `--no-experimental-sqlite`, on its command line, in the `NODE_OPTIONS` environment variable or in a Node config file. Remove it (or install the official Node build from nodejs.org), then restart Claude Code. Upgrading Node does not help. |
-| `MeMesh: This Node build (v…) lacks the full-text search (FTS5) MeMesh needs …` | This Node build has no FTS5. Install the official Node 22.16.0 or newer from nodejs.org, then restart Claude Code. |
+| `MeMesh: This Node build (v…) lacks the full-text search (FTS5) MeMesh needs …` | This Node build has no FTS5. Install an official supported security release above from nodejs.org, then restart Claude Code. |
 | No `◉ MeMesh` line and no `MeMesh: …` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
 
 The plugin does **not** put a `memesh` command on the shell PATH. For terminal
@@ -54,7 +55,8 @@ the database.
 
 ## 2. Terminal / CLI (npm global)
 
-Check Node **first** — the floor is 22.16.0 (`node:sqlite` is part of Node
+Check Node **first** — supported security floors are 22.23.5, 24.22.3,
+or 26.13.1 within their respective major lines (`node:sqlite` is part of Node
 itself, and its full-text search first ships in 22.16; npm only warns on an engine mismatch, so an install onto an old Node
 "succeeds" and fails later at runtime):
 
@@ -62,8 +64,9 @@ itself, and its full-text search first ships in 22.16; npm only warns on an engi
 node --version
 ```
 
-Expected: `v22.16.0` or later. If lower, stop and upgrade Node before
-continuing.
+Expected: `v26.13.1` or later within 26.x (recommended), `v24.22.3` or
+later within 24.x, or `v22.23.5` or later within 22.x. Otherwise stop and
+upgrade Node before continuing.
 
 ```
 npm install -g @pcircle/memesh

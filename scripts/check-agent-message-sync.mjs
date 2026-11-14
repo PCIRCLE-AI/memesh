@@ -73,7 +73,7 @@ tokens('.codex-plugin/mcp.json', ['"mcpServers"', '"memesh"', '"command": "node"
 tokens('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
 if (fs.existsSync(path.join(root, '.mcp.json'))) missing.push('.mcp.json (must not exist: Claude discovers it as project-scoped)');
 tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'pre-compact.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'codex-session.js', 'startup|resume', 'SessionEnd']);
-tokens('package.json', ['">=22.16.0"', 'check-agent-message-sync.mjs', 'test:packaged']);
+tokens('package.json', ['"^22.23.5 || ^24.22.3 || ^26.13.1"', 'check-agent-message-sync.mjs', 'test:packaged']);
 if (missing.length) {
   process.stderr.write(`agent-message-sync: FAIL (${missing.length} drift item(s))\n`);
   for (const item of missing) process.stderr.write(`  - ${item}\n`);

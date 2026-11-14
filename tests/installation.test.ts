@@ -13,19 +13,23 @@ const { hookCommands, binTargets } = require('../scripts/lib/executable-targets.
 
 describe('Installation Verification', () => {
   describe('Prerequisites', () => {
-    it('runs on the published Node 22.16+ floor', () => {
+    it('runs on a supported Node security release', () => {
       const version = execFileSync('node', ['-v'], { encoding: 'utf8' }).trim();
-      const [major, minor] = version.slice(1).split('.').map(Number);
-      expect(major > 22 || (major === 22 && minor >= 16)).toBe(true);
+      const [major, minor, patch] = version.slice(1).split('.').map(Number);
+      const floors: Record<number, [number, number]> = { 22: [23, 5], 24: [22, 3], 26: [13, 1] };
+      const floor = floors[major];
+      expect(floor && (minor > floor[0] || (minor === floor[0] && patch >= floor[1]))).toBe(true);
       const pkg = JSON.parse(fs.readFileSync('package.json', 'utf8'));
-      expect(pkg.engines.node).toBe('>=22.16.0');
-      expect(fs.readFileSync('llms-install.md', 'utf8')).toContain('v22.16.0');
+      expect(pkg.engines.node).toBe('^22.23.5 || ^24.22.3 || ^26.13.1');
+      for (const floor of ['22.23.5', '24.22.3', '26.13.1']) {
+        expect(fs.readFileSync('llms-install.md', 'utf8')).toContain(floor);
+      }
     });
 
     it('llms-install.md states the floor at each place a reader acts on it, and no older one', () => {
       const guide = fs.readFileSync('llms-install.md', 'utf8');
       // section 1 (plugin): the banner on a Node that cannot be used; section 2: the check, and the failure table
-      for (const phrase of ['MeMesh needs Node 22.16.0 or newer', 'the floor is 22.16.0', '`v22.16.0` or later', 'older than 22.16.0']) {
+      for (const phrase of ['MeMesh supports Node 26.13.1', 'supported security floors are 22.23.5, 24.22.3', '`v22.23.5` or later within 22.x', 'Upgrade to one of the supported security releases above']) {
         expect(guide, phrase).toContain(phrase);
       }
       expect(guide).not.toMatch(/22\.1[0-5](\.|\b)/);
