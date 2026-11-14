@@ -154,6 +154,25 @@ export class ConversationMessages {
 
   close(): void { this.db.close(); }
 
+  /** A send may wake only its exact, local, currently live registered recipient. */
+  wakeTarget(messageId: string): ConversationRegistration | undefined {
+    const message = this.get(messageId);
+    if (message.recipient_machine !== this.machine || this.rejected(messageId)) return undefined;
+    const target = this.findRegistration(message.recipient);
+    if (!target || target.machine !== this.machine || target.host !== message.recipient_host
+      || !this.processAlive(target.pid)) return undefined;
+    return target;
+  }
+
+  /** Native acceptance is a push, never proof of delivery or a read. */
+  recordPush(sender: string, messageId: string, route: 'claude-socket' | 'codex-queue'): void {
+    const message = this.get(messageId);
+    if (message.sender !== identifier(sender) || message.sender_machine !== this.machine || this.rejected(messageId)) {
+      throw new Error('Wrong push actor');
+    }
+    this.eventOnce(messageId, 'pushed', { actor: sender, route });
+  }
+
   register(input: ConversationRegistration): void {
     const id = identifier(input.id);
     if (id.startsWith(LEGACY_CONVERSATION_PREFIX)) throw new Error('Legacy audit identities cannot register as conversations');

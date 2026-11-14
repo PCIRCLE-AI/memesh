@@ -121,6 +121,23 @@ export class ConversationMessages {
         }
     }
     close() { this.db.close(); }
+    wakeTarget(messageId) {
+        const message = this.get(messageId);
+        if (message.recipient_machine !== this.machine || this.rejected(messageId))
+            return undefined;
+        const target = this.findRegistration(message.recipient);
+        if (!target || target.machine !== this.machine || target.host !== message.recipient_host
+            || !this.processAlive(target.pid))
+            return undefined;
+        return target;
+    }
+    recordPush(sender, messageId, route) {
+        const message = this.get(messageId);
+        if (message.sender !== identifier(sender) || message.sender_machine !== this.machine || this.rejected(messageId)) {
+            throw new Error('Wrong push actor');
+        }
+        this.eventOnce(messageId, 'pushed', { actor: sender, route });
+    }
     register(input) {
         const id = identifier(input.id);
         if (id.startsWith(LEGACY_CONVERSATION_PREFIX))

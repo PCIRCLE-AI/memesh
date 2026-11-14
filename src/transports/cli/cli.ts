@@ -1292,9 +1292,9 @@ function conversationSession(action: "send" | "read"): string {
   return session;
 }
 
-function runConversationMessageAction(input: unknown, context: { session?: string; owner?: boolean } = {}, json = true): void {
+async function runConversationMessageAction(input: unknown, context: { session?: string; owner?: boolean } = {}, json = true): Promise<void> {
   try {
-    const result = executeConversationMessageAction(input, context);
+    const result = await executeConversationMessageAction(input, context);
     if (json) console.log(JSON.stringify(result));
     else console.dir(result, { depth: null, maxArrayLength: null, maxStringLength: null, colors: Boolean(process.stdout.isTTY) });
   } catch (error) {
@@ -1317,7 +1317,7 @@ conversationMessageCmd
   .option("--reply-to <message-id>", "Message ID this replies to")
   .action(async (opts) => {
     try {
-      runConversationMessageAction({
+      await runConversationMessageAction({
         action: "send", recipient: opts.recipient, kind: opts.kind,
         body: await readConversationMessageBodyFromStdin(), reply_to: opts.replyTo,
       }, { session: conversationSession("send") });
@@ -1331,9 +1331,9 @@ conversationMessageCmd
   .command("read")
   .description("Read one message addressed to this host conversation")
   .requiredOption("--message-id <id>", "Message ID")
-  .action((opts) => {
+  .action(async (opts) => {
     try {
-      runConversationMessageAction({ action: "read", message_id: opts.messageId }, { session: conversationSession("read") });
+      await runConversationMessageAction({ action: "read", message_id: opts.messageId }, { session: conversationSession("read") });
     } catch (error) {
       console.error(`Error: ${cliErrorText(error)}`);
       process.exitCode = 1;

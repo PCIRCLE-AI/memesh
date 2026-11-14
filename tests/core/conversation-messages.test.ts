@@ -31,6 +31,21 @@ afterEach(() => {
 });
 
 describe('conversation message store', () => {
+  it('resolves only the current live recipient and records pushes only for the original sender', () => {
+    const { store } = fixture();
+    const id = store.send('A', { recipient: 'B', kind: 'task', body: 'keep queued until read' }).message.id;
+    expect(store.wakeTarget(id)).toBeUndefined();
+    store.register({ id: 'B', host: 'codex', machine: 'mac', pid: 101, wake: { thread: 'B' } });
+    expect(store.wakeTarget(id)).toMatchObject({ id: 'B', pid: 101, wake: { thread: 'B' } });
+    expect(() => store.recordPush('C', id, 'codex-queue')).toThrow('Wrong push actor');
+    store.recordPush('A', id, 'codex-queue');
+    store.recordPush('A', id, 'codex-queue');
+    expect(store.status('A', id)[0].events.map(event => event.event)).toEqual(['queued', 'pushed']);
+    expect(JSON.parse(store.status('A', id)[0].events[1].detail)).toEqual({ actor: 'A', route: 'codex-queue' });
+    expect(store.hookBatch('B').ids).toEqual([id]);
+    store.register({ id: 'B', host: 'claude-code', machine: 'mac', pid: 101, wake: { socket: '/tmp/foreign.sock' } });
+    expect(store.wakeTarget(id)).toBeUndefined();
+  });
   it('excludes already surfaced IDs before the whole-envelope byte budget without changing queued state', () => {
     const { store } = fixture();
     const excluded: string[] = [];

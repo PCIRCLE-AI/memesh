@@ -52,6 +52,8 @@ export declare class ConversationMessages {
         busyTimeoutMs?: number;
     });
     close(): void;
+    wakeTarget(messageId: string): ConversationRegistration | undefined;
+    recordPush(sender: string, messageId: string, route: 'claude-socket' | 'codex-queue'): void;
     register(input: ConversationRegistration): void;
     discover(): Array<ConversationRegistration & {
         online: boolean;
