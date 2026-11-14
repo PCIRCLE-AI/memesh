@@ -268,12 +268,32 @@ describe('Feature: #497 /clear keeps one session one session', () => {
     }, { transport: 'mcp', sourceHost: 'claude-code', hostSession });
     const cleared = () => underOneClaude([{ source: 'startup', session_id: OLD }, { source: 'clear', session_id: NEW }]);
 
-    posixOnly('reminds the session under its new id of a message meant for its spawn-time id, and not another session', async () => {
+    posixOnly('captures ordinary prompts after clear without reviving legacy reminders or consuming the aliased inbox', async () => {
       cleared();
       await sendIntended(OLD, 'k-old');
 
-      expect(prompt(NEW).stdout).toContain('1 message waiting for \\"claude-implementer\\"');
-      expect(prompt(OTHER).stdout).not.toContain('message waiting');
+      const db = getDatabase();
+      const before = db.prepare('SELECT * FROM agent_message_deliveries ORDER BY delivery_id').all();
+      for (const session of [NEW, OTHER]) {
+        const result = prompt(session);
+        expect(result.status, result.stderr).toBe(0);
+        expect(result.stdout).not.toMatch(/message waiting|claude-implementer|\bpoll\b|\bfetch\b|\bintake\b/);
+        const captured = db.prepare(`SELECT e.id, o.content FROM entities e
+          JOIN observations o ON o.entity_id=e.id
+          WHERE e.type='conversation' AND EXISTS
+            (SELECT 1 FROM tags t WHERE t.entity_id=e.id AND t.tag=?)`).all(`session:${session}`) as Array<{ id: number; content: string }>;
+        expect(captured).toHaveLength(1);
+        expect(captured[0]!.content).toBe('hello there');
+        expect(Buffer.from(captured[0]!.content)).toEqual(Buffer.from('hello there'));
+        const tags = db.prepare('SELECT tag FROM tags WHERE entity_id=?').all(captured[0]!.id).map(row => row.tag);
+        expect(tags).toContain('role:user');
+        expect(tags).not.toContain(`session:${session === NEW ? OTHER : NEW}`);
+      }
+      // These are legacy alias guarantees, not new messages.js clear routing.
+      expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
+      expect(unreadDeliveryCount(db, 'team-room', 'claude-implementer', NEW)).toBe(1);
+      expect(unreadDeliveryCount(db, 'team-room', 'claude-implementer', OTHER)).toBe(0);
+      expect(db.prepare('SELECT * FROM agent_message_deliveries ORDER BY delivery_id').all()).toEqual(before);
     });
 
     posixOnly('counts it as waiting under either id in core too (briefing, CLI), and not for another session', async () => {
