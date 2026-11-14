@@ -1,13 +1,11 @@
 import { describe, expect, it } from 'vitest';
-import { spawnSync } from 'node:child_process';
 import { getDatabase } from '../../src/db.js';
 import { executeAgentMessageAction, type AgentMessageTransportDependencies } from '../../src/transports/agent-messaging.js';
-import { handleTool } from '../../src/transports/mcp/handlers.js';
 import { app } from '../../src/transports/http/server.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession } from '../helpers/agent-session-fixture.js';
 
-const fixture = useTestDatabase('memesh-delivery-note-');
+useTestDatabase('memesh-delivery-note-');
 const project = 'note-project';
 const session = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
 const base = { action: 'send', project, sender: 'alice', recipient: 'bob', idempotency_key: 'one', payload: 'hello' };
@@ -210,22 +208,19 @@ describe('delivery explanations', () => {
       else process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES = previous;
     }
   });
-  it('exposes the explanation in MCP, HTTP and source CLI', async () => {
-    const mcp = await handleTool('message', { ...base, idempotency_key: 'mcp' }, 'cli');
-    expect(mcp.content[0].text).toMatch(/delivery_note.*stored.*not.*read/i);
+  it('exposes the legacy explanation through the executor and HTTP', async () => {
+    const direct = await send({ idempotency_key: 'direct' });
+    expect(direct.delivery_note).toMatch(/stored.*not.*read/i);
     const server = app.listen(0, '127.0.0.1');
     try {
       await new Promise<void>(resolve => server.once('listening', resolve));
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('Missing HTTP port');
       const response = await fetch(`http://127.0.0.1:${address.port}/v1/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, idempotency_key: 'http' }) });
+      expect(response.status).toBe(200);
       expect(JSON.stringify(await response.json())).toMatch(/delivery_note.*stored.*not.*read/i);
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
-    const loader = `import { createServer } from 'vite'; const server = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } }); try { const { runCli } = await server.ssrLoadModule('/src/transports/cli/cli.ts'); await runCli([process.argv[0], 'memesh', ...process.argv.slice(1)]); } finally { await server.close(); }`;
-    const cli = spawnSync(process.execPath, ['--input-type=module', '--eval', loader, 'message', 'send', '--project', project, '--sender', 'alice', '--recipient', 'bob', '--idempotency-key', 'cli', '--payload-stdin'], { encoding: 'utf8', input: 'hello', env: { ...process.env, MEMESH_DB_PATH: fixture.dbPath, MEMESH_AUTO_CAPTURE: 'false' } });
-    expect(cli.status, cli.stderr).toBe(0);
-    expect(cli.stdout).toMatch(/delivery_note.*stored.*not.*read/i);
-    // Each successful entrypoint must have stored its own message, not just printed a note.
-    expect(getDatabase().prepare('SELECT message_id FROM agent_messages').all()).toHaveLength(3);
+    // Each retained entrypoint stores its own message, not just a note.
+    expect(getDatabase().prepare('SELECT message_id FROM agent_messages').all()).toHaveLength(2);
   });
 });

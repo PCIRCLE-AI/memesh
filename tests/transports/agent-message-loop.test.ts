@@ -4,11 +4,9 @@ import { sendAgentMessage } from '../../src/core/agent-messaging.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession } from '../helpers/agent-session-fixture.js';
-import { handleTool } from '../../src/transports/mcp/handlers.js';
 import { app } from '../../src/transports/http/server.js';
-import { spawnSync } from 'node:child_process';
 
-const database = useTestDatabase('memesh-loop-transport-');
+useTestDatabase('memesh-loop-transport-');
 const project = 'loop-transport';
 const a = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
 const a2 = 'cccccccc-cccc-4ccc-8ccc-cccccccccccc';
@@ -76,12 +74,13 @@ describe('loop guard transport identities', () => {
     expect(counts()).toEqual(before);
   });
 
-  it('shows the loop error through MCP, HTTP and the source CLI', async () => {
+  it('shows the legacy loop error through the executor and HTTP without writes', async () => {
     for (let i = 0; i < 30; i++) sendAgentMessage(getDatabase(), { project, sender: 'out-a', recipient: 'out-b', idempotency_key: `out-${i}`, payload: 'hello', content_type: 'text/plain' });
     const input = { action: 'send', project, sender: 'out-a', recipient: 'out-b', idempotency_key: 'out-31', payload: 'hello' };
-    const mcp = await handleTool('message', input, 'cli');
-    expect(mcp.isError).toBe(true);
-    expect(mcp.content[0].text).toContain('conversation_loop_suspected');
+    const before = counts();
+    await expect(executeAgentMessageAction(getDatabase(), input, { transport: 'http', sourceHost: 'http' }))
+      .rejects.toMatchObject({ code: 'conversation_loop_suspected' });
+    expect(counts()).toEqual(before);
     const server = app.listen(0, '127.0.0.1');
     try {
       await new Promise<void>(resolve => server.once('listening', resolve));
@@ -89,14 +88,12 @@ describe('loop guard transport identities', () => {
       if (!address || typeof address === 'string') throw new Error('Missing HTTP port');
       const response = await fetch(`http://127.0.0.1:${address.port}/v1/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(input) });
       const body = await response.json() as { error: string; errorCode: string };
+      expect(response.status).toBe(400);
       expect(body.error).toContain('conversation_loop_suspected');
       expect(body.errorCode).toBe('operation.failed');
     } finally {
       await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
     }
-    const loader = `import { createServer } from 'vite'; const server = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } }); try { const { runCli } = await server.ssrLoadModule('/src/transports/cli/cli.ts'); await runCli([process.argv[0], 'memesh', ...process.argv.slice(1)]); } finally { await server.close(); }`;
-    const cli = spawnSync(process.execPath, ['--input-type=module', '--eval', loader, 'message', 'send', '--project', project, '--sender', 'out-a', '--recipient', 'out-b', '--idempotency-key', 'out-31', '--payload-stdin'], { encoding: 'utf8', input: 'hello', env: { ...process.env, MEMESH_DB_PATH: database.dbPath, MEMESH_AUTO_CAPTURE: 'false' } });
-    expect(cli.status).toBe(1);
-    expect(cli.stderr).toContain('conversation_loop_suspected');
+    expect(counts()).toEqual(before);
   });
 });

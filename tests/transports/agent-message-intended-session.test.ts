@@ -7,7 +7,6 @@
  */
 import { afterEach, describe, expect, it } from 'vitest';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
-import { handleTool } from '../../src/transports/mcp/handlers.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
 import { app } from '../../src/transports/http/server.js';
 import { hostSessionFromEnv } from '../../src/core/host-session.js';
@@ -326,17 +325,20 @@ describe('Feature: #497 only the intended session can record intake or a disposi
     } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
   });
 
-  it('the MCP tool takes the caller\'s session from CLAUDE_CODE_SESSION_ID', async () => {
+  it('the legacy executor enforces the session resolved from CLAUDE_CODE_SESSION_ID', async () => {
     const sent = sendIntendedPrincipalMessage(PROJECT, PRINCIPAL, SESSION_A, 'k-mcp');
 
     process.env.CLAUDE_CODE_SESSION_ID = SESSION_B;
-    const asB = await handleTool('message', intake(sent.message_id), 'claude-code');
-    expect(asB.isError).toBe(true);
-    expect(asB.content[0].text).toContain('intended_for_other_session');
+    const before = unreadMessageRefsFor(getDatabase(), PRINCIPAL, SESSION_A);
+    await expect(executeAgentMessageAction(getDatabase(), intake(sent.message_id), {
+      transport: 'mcp', sourceHost: 'claude-code', hostSession: hostSessionFromEnv(),
+    })).rejects.toMatchObject({ code: 'intended_for_other_session' });
+    expect(unreadMessageRefsFor(getDatabase(), PRINCIPAL, SESSION_A)).toEqual(before);
 
     process.env.CLAUDE_CODE_SESSION_ID = SESSION_A;
-    const asA = await handleTool('message', intake(sent.message_id), 'claude-code');
-    expect(asA.isError).toBeUndefined();
+    await executeAgentMessageAction(getDatabase(), intake(sent.message_id), {
+      transport: 'mcp', sourceHost: 'claude-code', hostSession: hostSessionFromEnv(),
+    });
     expect(unreadMessageRefsFor(getDatabase(), PRINCIPAL, SESSION_A)).toEqual([]);
   });
 });

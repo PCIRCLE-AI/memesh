@@ -1,13 +1,13 @@
-import { spawnSync } from 'node:child_process';
 import { describe, expect, it } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
-import { handleTool } from '../../src/transports/mcp/handlers.js';
+import { app } from '../../src/transports/http/server.js';
+import { ConversationMessageActionSchema } from '../../src/transports/conversation-messaging.js';
 import { MessageSchema } from '../../src/transports/schemas.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession } from '../helpers/agent-session-fixture.js';
 
-const fixture = useTestDatabase('memesh-message-handles-');
+useTestDatabase('memesh-message-handles-');
 const project = 'my-project~abc';
 const session = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaa0d1';
 const handle = 'my-project-claude-a0d1';
@@ -74,19 +74,28 @@ describe('recipient handles', () => {
     expect(counts().agent_messages).toBe(1);
   });
 
-  it('resolves an offline handle through MCP', async () => {
-    registerAgentSession(project, 'claude-p', { sessionId: session, adapterKind: 'claude-channel', disconnected: true });
-    const result = await handleTool('message', { ...base, recipient_handle: handle, idempotency_key: 'mcp' }, 'cli');
-    expect(result.isError).toBeUndefined();
-    expect(JSON.parse(result.content[0].text)).toMatchObject({ recipient: 'claude-p', target_kind: 'principal', intended_session: session });
-    expect(counts().agent_messages).toBe(1);
+  it('rejects the retired handle field on the public conversation schema without writes', () => {
+    const valid = { action: 'send', recipient: session, kind: 'task', body: 'hello' };
+    expect(ConversationMessageActionSchema.safeParse(valid).success).toBe(true);
+    const result = ConversationMessageActionSchema.safeParse({ ...valid, recipient_handle: handle });
+    expect(result.success).toBe(false);
+    if (result.success) throw new Error('Expected strict schema rejection');
+    expect(result.error.issues).toEqual([expect.objectContaining({ code: 'unrecognized_keys', keys: ['recipient_handle'] })]);
+    expect(counts()).toEqual({ agent_messages: 0, agent_message_deliveries: 0, agent_message_events: 0, agent_message_idempotency: 0 });
   });
-  it('resolves the same offline handle through the source CLI', () => {
+
+  it('resolves an offline handle through retained legacy HTTP', async () => {
     registerAgentSession(project, 'claude-p', { sessionId: session, adapterKind: 'claude-channel', disconnected: true });
-    const loader = `import { createServer } from 'vite'; const server = await createServer({ appType: 'custom', logLevel: 'silent', server: { middlewareMode: true } }); try { const { runCli } = await server.ssrLoadModule('/src/transports/cli/cli.ts'); await runCli([process.argv[0], 'memesh', ...process.argv.slice(1)]); } finally { await server.close(); }`;
-    const cli = spawnSync(process.execPath, ['--input-type=module', '--eval', loader, 'message', 'send', '--project', project, '--sender', 'sender', '--recipient-handle', handle, '--idempotency-key', 'cli', '--payload-stdin'], { encoding: 'utf8', input: 'hello', env: { ...process.env, MEMESH_DB_PATH: fixture.dbPath, MEMESH_AUTO_CAPTURE: 'false' } });
-    expect(cli.status, cli.stderr).toBe(0);
-    expect(JSON.parse(cli.stdout)).toMatchObject({ recipient: 'claude-p', target_kind: 'principal', intended_session: session });
+    const server = app.listen(0, '127.0.0.1');
+    try {
+      await new Promise<void>(resolve => server.once('listening', resolve));
+      const address = server.address();
+      if (!address || typeof address === 'string') throw new Error('Missing HTTP port');
+      const response = await fetch(`http://127.0.0.1:${address.port}/v1/message`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ...base, recipient_handle: handle }) });
+      expect(response.status).toBe(200);
+      expect(JSON.stringify(await response.json())).toContain('claude-p');
+    } finally { await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve())); }
+    expect(row()).toEqual({ recipient: 'claude-p', target_kind: 'principal', intended_session: session });
     expect(counts()).toEqual({ agent_messages: 1, agent_message_deliveries: 1, agent_message_events: 1, agent_message_idempotency: 1 });
   });
 });
