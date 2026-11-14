@@ -331,7 +331,19 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
     // in-memory probe; agent-message-expiry.ts's is the cleanup pass's own second connection to the file the process
     // already opened through openDatabase (its guard ran at that open); sqlite.ts's is a comment.
+    // Backup and conversation stores guard their file families before opening.
+    // Repair/salvage inputs use immutable reads without pending pages, otherwise
+    // readonly sidecar refusal; repair's original write lock uses strict refusal.
+    // Rebuild/salvage outputs are private new files created with wx/0600 by their callers.
     const known = [
+      "core/auto-update.ts: const db = new MemeshDatabase(dbPath, { readOnly: true });",
+      "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });",
+      "core/conversation-messages.ts: this.db = new MemeshDatabase(file);",
+      "core/database-repair.ts: return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });",
+      "core/database-repair.ts: const db = new MemeshDatabase(file);",
+      "core/database-repair.ts: lock = new MemeshDatabase(source);",
+      "core/node-salvage.ts: const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });",
+      "core/node-salvage.ts: dst = new MemeshDatabase(outputPath);",
       "core/agent-message-expiry.ts: const pass = new MemeshDatabase(file);",
       "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
       "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
@@ -344,8 +356,8 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
   });
 });
 
-// The rule above holds only if no hook can open the database another way.
-describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () => {
+// Hook openers must also remain in the explicit guarded inventory.
+describe('#520: hooks construct MemeshDatabase only at known, guarded sites', () => {
   it('finds no other `new MemeshDatabase(` in scripts/hooks', () => {
     const dir = path.resolve('scripts/hooks');
     const sites: string[] = [];
@@ -353,11 +365,15 @@ describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () =>
       sites.push(...findConstructions(file, fs.readFileSync(path.join(dir, file), 'utf8')));
     }
     expect(sites.length).toBeGreaterThan(0); // the scan really read the hooks
+    // Quote lookup checks owner/private regular files, matching sidecar owner
+    // bits and no-follow inode identity without chmod or migration.
+    const quoteSite = '_shared.js: source = new MemeshDatabase(file, { readOnly: true });';
+    expect(sites.filter((s) => s === quoteSite)).toHaveLength(1);
     expect(sites.filter((s) => !(
       s.startsWith('_shared.js:') && s.endsWith('return new MemeshDatabase(readTarget(dbPath, options), options);')
     ) && !(
       // post-commit's own lock file, never the memesh database.
       s.startsWith('post-commit.js:') && s.includes('.lock.sqlite')
-    ))).toEqual([]);
+    ) && s !== quoteSite)).toEqual([]);
   });
 });
