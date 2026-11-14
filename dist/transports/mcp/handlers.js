@@ -725,7 +725,7 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             }));
         }
         if (name === 'message') {
-            return ok(executeConversationMessageAction(args, { session: requestContext.hostSession }));
+            return ok(await executeConversationMessageAction(args, { session: requestContext.hostSession }));
         }
         return fail(`Unknown tool: ${name}`);
     }

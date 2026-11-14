@@ -33,7 +33,7 @@ for (const file of ['src/transports/conversation-messaging.ts', 'dist/transports
 }
 for (const file of ['src/transports/mcp/handlers.ts', 'dist/transports/mcp/handlers.js']) {
   pattern(file, /name:\s*'message',\s*description:\s*CONVERSATION_MESSAGE_DESCRIPTION,\s*inputSchema:\s*CONVERSATION_MESSAGE_INPUT_SCHEMA/, 'MCP message schema wiring');
-  pattern(file, /executeConversationMessageAction\(args,\s*\{\s*session:\s*requestContext\.hostSession\s*\}\)/, 'MCP session-bound handler');
+  pattern(file, /await executeConversationMessageAction\(args,\s*\{\s*session:\s*requestContext\.hostSession\s*\}\)/, 'MCP awaited session-bound handler');
 }
 for (const file of ['src/core/schema-export.ts', 'dist/core/schema-export.js']) {
   pattern(file, /description:\s*CONVERSATION_MESSAGE_DESCRIPTION,\s*parameters:\s*CONVERSATION_MESSAGE_INPUT_SCHEMA/, 'exported message schema wiring');

@@ -54,8 +54,8 @@ describe('public MCP conversation text and null validation', () => {
     const read = await call({ action: 'read', message_id: id }, 'B');
     expect(read.isError, textOf(read)).not.toBe(true);
     expect(JSON.parse(textOf(read)).message.body).toBe(body);
-    const shared = executeConversationMessageAction({ action: 'send', recipient: 'B', kind: 'task', body }, { session: 'A' }) as { message_id: string };
-    expect(executeConversationMessageAction({ action: 'read', message_id: shared.message_id }, { session: 'B' })).toMatchObject({ message: { body } });
+    const shared = await executeConversationMessageAction({ action: 'send', recipient: 'B', kind: 'task', body }, { session: 'A' }) as { message_id: string };
+    expect(await executeConversationMessageAction({ action: 'read', message_id: shared.message_id }, { session: 'B' })).toMatchObject({ message: { body } });
   });
   it('refuses null or missing body, explicit null reply_to and unknown payload without writing', async () => {
     const base = { action: 'send', recipient: 'B', kind: 'task' };
@@ -69,7 +69,7 @@ describe('public MCP conversation text and null validation', () => {
       expect(result.isError).toBe(true);
       expect(textOf(result)).toContain(field);
     }
-    expect(executeConversationMessageAction({ action: 'status' }, { owner: true })).toEqual({ messages: [] });
+    expect(await executeConversationMessageAction({ action: 'status' }, { owner: true })).toEqual({ messages: [] });
     const valid = await call({ ...base, body: 'valid' }, 'A');
     expect(valid.isError, textOf(valid)).not.toBe(true);
     expect(JSON.parse(textOf(valid)).state).toBe('queued');

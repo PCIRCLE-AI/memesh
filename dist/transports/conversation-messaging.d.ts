@@ -106,5 +106,5 @@ export declare const CONVERSATION_MESSAGE_INPUT_SCHEMA: {
 export declare function executeConversationMessageAction(input: unknown, context: {
     session?: string;
     owner?: boolean;
-}): unknown;
+}): Promise<unknown>;
 //# sourceMappingURL=conversation-messaging.d.ts.map

@@ -52,7 +52,7 @@ function registeredToolNames(handlers) {
 function delegatedSchema(block, moduleSource) {
   const call = block.match(/\b([A-Za-z][A-Za-z0-9]*)\(args,\s*\{\s*session:/);
   if (!call) return null;
-  const functionStart = moduleSource.indexOf(`export function ${call[1]}(`);
+  const functionStart = moduleSource.search(new RegExp(`export (?:async )?function ${call[1]}\\(`));
   if (functionStart === -1) return null;
   const nextExport = moduleSource.indexOf('\nexport ', functionStart + 1);
   const functionSource = moduleSource.slice(functionStart, nextExport === -1 ? undefined : nextExport);
