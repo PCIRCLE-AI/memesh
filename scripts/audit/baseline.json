@@ -293,8 +293,18 @@
     },
     "C5 src/network/bridge-serve.ts#02b2f4f5": {
       "class": "SAFE-BY-CONSTRUCTION",
-      "reason": "`route?.addrs ?? []` — a member this bridge has not heard from yet has no known direct addresses; the empty list truthfully means reach it through the relay, if one is set. A failed connect is recorded as an `unreachable` attempt with backoff and expiry, never as delivered.",
+      "reason": "`route?.addrs ?? []` means no known direct addresses; the configured relay may still resolve the peer. A failed or timed-out connect throws before a copy ACK; the courier records an error and leaves the message queued, never delivered. Actual delivery still requires the recipient's hook/read/reply.",
       "triaged": "2026-11-08 (cross-machine messages); re-keyed 393→398 after the test frame log hook above grew; statement unchanged"
+    },
+    "C5 src/network/bridge-serve.ts#7db5a438": {
+      "class": "SAFE-OPTIONAL-ROUTE",
+      "reason": "Membership RPC's empty direct-address list is optional routing input, not a success fallback: endpoint.connect must resolve via the configured relay or reject within the deadline. The expected transport peer and network ACK are checked before confirmation; an unavailable owner leaves metadata intact and restores the previously stopped bridge state. Covered by membership CLI/wire and owner-offline failure checks.",
+      "triaged": "2026-11-15 S5 membership: source branch and independent private CLI/wire review checked; not a general RPC-success exemption"
+    },
+    "C1 tests/network/roster-exchange.test.ts": {
+      "class": "SAFE-NEGATIVE-ASSERTION",
+      "reason": "The zero write count follows an awaited rejection with the exact not_a_member reason, so deleting the exchange cannot pass. Positive paired streams separately converge to the exact nonempty owner-signed roster; rollback, forgery and stale-member cases require throws and unchanged signed state. C1's size-spelling heuristic does not recognize these positive-value and rejection pins; this is unit/protocol evidence, not native delivery.",
+      "triaged": "2026-11-15 S5 roster exchange: exact positive/negative assertions inspected; native roster-wire evidence remains separate"
     },
     "C5 src/network/operations.ts#c0fa3df5": {
       "class": "SAFE-BY-CONSTRUCTION",
