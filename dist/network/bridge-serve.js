@@ -643,7 +643,8 @@ export async function serve(dataDir, dbPath) {
             for (const row of outgoing) {
                 if (stopping)
                     return;
-                const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-message', row });
+                const { ack, path } = await sendFrame(target, { version: 2, kind: 'conversation-message', row });
+                appendLog(dataDir, 'frame_sent', { frame: 'conversation-message', message_id: row.message.id, result: ack.result, path });
                 if (ack.result !== 'accepted' && ack.result !== 'duplicate') {
                     appendLog(dataDir, 'message_not_accepted', { message_id: row.message.id, result: ack.result, code: ack.code ?? null });
                     return;
@@ -659,7 +660,8 @@ export async function serve(dataDir, dbPath) {
             for (const receipt of receipts) {
                 if (stopping)
                     return;
-                const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-receipt', receipt });
+                const { ack, path } = await sendFrame(target, { version: 2, kind: 'conversation-receipt', receipt });
+                appendLog(dataDir, 'frame_sent', { frame: 'conversation-receipt', message_id: receipt.message_id, result: ack.result, path });
                 if (ack.result !== 'accepted' && ack.result !== 'duplicate')
                     return;
                 const current = messages(authorize(target));
