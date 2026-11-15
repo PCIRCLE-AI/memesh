@@ -11,6 +11,7 @@ import { startBridge, stopBridge } from '../../src/network/bridge-control.js';
 import { logPath, readStatus, statusPath, type BridgeStatus } from '../../src/network/bridge-state.js';
 import { controlPath, probeBridge } from '../../src/network/control-socket.js';
 import { ensureIdentity, identityPath, loadIdentity } from '../../src/network/identity.js';
+import { exchangeRosterStream } from '../../src/network/frames.js';
 import type { Connection, Endpoint, IrohModule } from '../../src/network/iroh-types.js';
 import { encodeLink, hashToken, parseLink } from '../../src/network/invites.js';
 import { JOIN_REQUEST_MAX_BYTES } from '../../src/network/join-protocol.js';
@@ -20,7 +21,7 @@ import { checkRuntime, ensureRuntime, isPlatformSupported } from '../../src/netw
 import { BRIDGE_BUSY_TIMEOUT_MS } from '../../src/network/bridge-serve.js';
 import { openNetworkStore, readConfig, signedRosterOf } from '../../src/network/store.js';
 import {
-  EXIT_ALREADY_RUNNING, JOIN_ALPN, NET_ALPN, NetworkError, childEnv, runtimeDir, type NetworkContext,
+  EXIT_ALREADY_RUNNING, JOIN_ALPN, NET_ALPN, NetworkError, childEnv, networkMetadataPath, runtimeDir, type NetworkContext,
 } from '../../src/network/types.js';
 import {
   buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, writeTtyPreload, type Tree,
@@ -77,6 +78,20 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     return 'joined';
   };
   const ownerStatus = (): BridgeStatus => readStatus(owner.dataDir) as BridgeStatus;
+
+  // NET/2 admits a bounded owner-signed roster before any business stream. Use
+  // the caller's actual saved membership, not a fabricated successful handshake.
+  const exchangeMembership = async (ctx: NetworkContext, connection: Connection): Promise<void> => {
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+    let config;
+    try { config = readConfig(db); } finally { db.close(); }
+    if (!config) throw new Error('no caller network config');
+    const stream = await connection.openBi();
+    await exchangeRosterStream(stream, signedRosterOf(config), offered => {
+      verifyRoster(offered, config.owner_id, config.network_id);
+      return offered;
+    }, 5000);
+  };
 
   /** An outside endpoint, with any key, dialing the owner's bridge. */
   const dial = async (alpn: string, secret: Buffer = randomBytes(32)): Promise<Connection> => {
@@ -142,7 +157,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(memberView.members).toEqual(ownerView.members);
     expect(ownerView.bridge.running).toBe(true);
 
-    const db = openNetworkStore(member.dbPath);
+    const db = openNetworkStore(networkMetadataPath(member.dataDir), { metadataOnly: true });
     try {
       const config = readConfig(db);
       if (!config) throw new Error('no config');
@@ -172,7 +187,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(await refusal(joinWith(link, 'expired-local'))).toBe('invite_expired');
 
     const { link: fresh } = await inviteFrom(owner);
-    const db = openNetworkStore(owner.dbPath);
+    const db = openNetworkStore(networkMetadataPath(owner.dataDir), { metadataOnly: true });
     try {
       db.prepare('UPDATE agent_network_invites SET expires_at_ms = 1 WHERE used_at IS NULL').run();
     } finally {
@@ -249,6 +264,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const { link } = await inviteFrom(owner);
     await joinWith(link, 'frame-member', member);
     const connection = await dial(NET_ALPN, loadIdentity(member.dataDir).secret);
+    await exchangeMembership(member, connection);
     const stream = await connection.openBi();
     await stream.send.writeAll(bytes('hello'));
     await stream.send.finish();
@@ -369,7 +385,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const ctx = machine();
     await expect(joinNetwork(ctx, { link, name: 'typo', person: 'kt', relay: 'http://127.0.0.1:9/' })).rejects.toMatchObject({ code: 'relay_unreachable' });
     expect((await readNetworkStatus(ctx)).joined).toBe(false);
-    const db = openNetworkStore(owner.dbPath);
+    const db = openNetworkStore(networkMetadataPath(owner.dataDir), { metadataOnly: true });
     try {
       expect(db.prepare('SELECT used_at FROM agent_network_invites WHERE hash = ?').get(hashToken(parseLink(link).token))).toEqual({ used_at: null });
     } finally {
@@ -421,7 +437,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     await joinWith(first.link, 'real-member', member);
 
     const second = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     db.prepare('UPDATE agent_network_config SET roster_signature = ?').run(Buffer.alloc(64, 1).toString('base64url'));
     db.close();
 
@@ -441,6 +457,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     };
     const servedBefore = readStatus(ctx.dataDir)?.frames_received;
     const connection = await dialOwner();
+    await expect(exchangeMembership(member, connection)).rejects.toThrow();
     const reason = await Promise.race([connection.closed(), new Promise((resolve) => setTimeout(() => resolve('still open'), 5_000))]);
     expect(String(reason)).not.toBe('still open');
     expect(readStatus(ctx.dataDir)?.frames_received).toBe(servedBefore);
@@ -451,7 +468,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const ctx = machine();
     createNetwork(ctx, { name: 'locked-owner', person: 'kt', relay: 'off' });
     const { link } = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
-    const holder = openNetworkStore(ctx.dbPath);
+    const holder = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     holder.exec('BEGIN IMMEDIATE');
     const started = Date.now();
     const outcome = await refusal(joinWith(link, 'while-locked'));
@@ -724,7 +741,7 @@ http.createServer((req, res) => { console.log(req.url); res.statusCode = status;
 
     it('database', async () => {
       const ctx = machine();
-      fs.mkdirSync(ctx.dbPath, { recursive: true });
+      fs.mkdirSync(networkMetadataPath(ctx.dataDir), { recursive: true });
       await expectFailed(ctx, /Cannot open the database/);
     });
 
@@ -752,7 +769,7 @@ http.createServer((req, res) => { console.log(req.url); res.statusCode = status;
     it('bind', async () => {
       const ctx = machine();
       createNetwork(ctx, { name: 'bind-owner', person: 'kt', relay: 'off' });
-      const db = openNetworkStore(ctx.dbPath);
+      const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
       db.prepare('UPDATE agent_network_config SET relay_url = ?').run('not a url');
       db.close();
       await expectFailed(ctx, /Cannot open a network connection/);

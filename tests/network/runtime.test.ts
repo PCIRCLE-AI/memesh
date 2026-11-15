@@ -12,7 +12,7 @@ import { createNetwork, joinNetwork, runJoinChild } from '../../src/network/oper
 import { currentLibc, nativeFileName, platformPackage } from '../../src/network/runtime-platform.js';
 import { checkRuntime, ensureRuntime, explainInstallFailure, isPlatformSupported, npmInvocation } from '../../src/network/runtime.js';
 import { openNetworkStore, readConfig } from '../../src/network/store.js';
-import { NetworkError, childEnv, runtimeDir } from '../../src/network/types.js';
+import { NetworkError, childEnv, networkMetadataPath, runtimeDir } from '../../src/network/types.js';
 import { buildTree, contextFor, makeHome, removeTree, type Tree } from './helpers.js';
 import { startRegistry, type Registry } from './local-registry.js';
 
@@ -414,6 +414,7 @@ process.exit(7);`),
         db.close();
       }
       expect(fs.existsSync(ctx.dbPath)).toBe(true);
+      expect(fs.existsSync(networkMetadataPath(ctx.dataDir))).toBe(false);
     }, 120_000);
 
     it('pinned package missing, a planted copy in a parent node_modules: not loaded, no marker', async () => {
