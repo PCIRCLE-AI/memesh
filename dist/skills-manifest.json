@@ -147,6 +147,11 @@
       "bytes": 1443
     },
     {
+      "path": "scripts/hooks/_generated/memory-mutation.js",
+      "sha256": "c79235dc5c976657f46610558413e38b0c2fb89689b34402063e5f0b12044479",
+      "bytes": 3377
+    },
+    {
       "path": "scripts/hooks/_generated/network-identity.js",
       "sha256": "592ba62e41580619af3b1b1fe1540e7542cf12bdee5f64dc3371d4309bf82981",
       "bytes": 3588
@@ -313,8 +318,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "135313ec004ceb70ce2e0fdf1b97918131b02ae692d0fad0ecc966b16e895571",
-      "bytes": 100949
+      "sha256": "4c90885410293913d5492e20f6ecd809f4d7135522dcf0434f2c73fe90ae9d98",
+      "bytes": 101402
     },
     {
       "path": "scripts/hooks/session-summary.js",

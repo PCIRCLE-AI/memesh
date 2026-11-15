@@ -16,7 +16,7 @@ const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
 // hook's own mirror so the seeded tag and the hook's derived tag cannot
 // disagree (the rule itself is pinned in tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, getProjectIds: mirrorProjectIds, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
 const projTag = (name: string) => `project:${mirrorProjectName('/tmp/' + name)}`;
 
 // Pin the level explicitly when a test exercises standard.
@@ -961,6 +961,17 @@ describe('Feature: Session Start Hook', () => {
     expect(msg).toMatch(/1 no-project/);
     const session = readLatestSessionFile();
     expect(session?.entityNames).toContain('legacy-entity');
+  });
+
+  it('reads an untagged legacy task state without a status column', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(
+      `task-state:${mirrorProjectName('/tmp/anyproject')}`, 'task-state',
+      JSON.stringify({ task_state: { goal: 'LEGACY_READONLY_TASK', stated_at: { goal: new Date().toISOString() } } }),
+    );
+    db.close();
+    const output = runHook({ cwd: '/tmp/anyproject' }, STANDARD);
+    expect((output.hookSpecificOutput as { additionalContext: string }).additionalContext).toContain('LEGACY_READONLY_TASK');
   });
 
   it('Scenario: Always exits with valid JSON output on invalid input', () => {
@@ -2074,6 +2085,31 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     const out = JSON.parse(r.stdout.trim().split('\n').filter(Boolean).at(-1)!);
     return { context: String(out.hookSpecificOutput?.additionalContext ?? ''), banner: String(out.systemMessage ?? '') };
   }
+
+  it.each(['foreign', 'qualified', 'alias', 'priority', 'legacy'])('task-state scope: %s respects checkout ownership', (variant) => {
+    const alias = (mirrorProjectIds(cwd) as string[]).find(id => id !== project)!;
+    expect(alias).toBeTruthy();
+    const literal = `task-state:${project}`;
+    const addState = (db: Database, name: string, goal: string, tag?: string) => {
+      const id = db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(name, 'task-state', JSON.stringify({
+        task_state: { goal, stated_at: { goal: new Date().toISOString() } },
+      })).lastInsertRowid;
+      if (tag) db.prepare('INSERT INTO tags(entity_id,tag) VALUES (?,?)').run(id, `project:${tag}`);
+    };
+    seed(db => {
+      if (variant !== 'legacy') addState(db, literal, 'FOREIGN_TASK_MUST_NOT_INJECT', 'foreign-checkout');
+      if (variant === 'qualified' || variant === 'priority') addState(db, `${literal}@${project}~2`, 'LOCAL_QUALIFIED_TASK', project);
+      if (variant === 'alias' || variant === 'priority') addState(db, `task-state:${alias}@${alias}`, 'LOCAL_ALIAS_TASK', alias);
+      if (variant === 'legacy') addState(db, literal, 'UNTAGGED_LEGACY_TASK');
+    });
+    const { context } = start('standard');
+    expect(context).not.toContain('FOREIGN_TASK_MUST_NOT_INJECT');
+    if (variant === 'qualified' || variant === 'priority') expect(context).toContain('LOCAL_QUALIFIED_TASK');
+    if (variant === 'priority') expect(context).not.toContain('LOCAL_ALIAS_TASK');
+    if (variant === 'alias') expect(context).toContain('LOCAL_ALIAS_TASK');
+    if (variant === 'legacy') expect(context).toContain('UNTAGGED_LEGACY_TASK');
+    expect(Buffer.byteLength(context)).toBeLessThanOrEqual(8000);
+  });
 
   it('allocates the full opening to supported task fields and three tails before memories, matching compiled briefing', () => {
     const date = new Date().toISOString();

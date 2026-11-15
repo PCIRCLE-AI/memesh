@@ -58,6 +58,7 @@ const SOURCES = [
   // shared pools use these fragments (the hooks' briefing pools import them from here).
   { from: 'dist/core/project-scope.js', to: 'project-scope.js', src: 'src/core/project-scope.ts' },
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
+  { from: 'dist/storage/memory-mutation.js', to: 'memory-mutation.js', src: 'src/storage/memory-mutation.ts' },
   // The one-day message lifetime: the unread count the hooks print must not
   // count a message the expiry pass has not deleted yet.
   { from: 'dist/core/agent-message-ttl.js', to: 'agent-message-ttl.js', src: 'src/core/agent-message-ttl.ts' },

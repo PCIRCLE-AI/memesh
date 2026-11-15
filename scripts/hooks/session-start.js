@@ -78,6 +78,7 @@ import { handoffView } from './_generated/session-handoff.js';
 import { buildOpeningContext, MAX_OPENING_CONTEXT_BYTES } from './_generated/work-topology.js';
 import { readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
+import { resolveProjectMemoryName, projectTagsOf, filedUnder } from './_generated/memory-mutation.js';
 
 const require = createRequire(import.meta.url);
 const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1410,8 +1411,18 @@ process.stdin.on('end', async () => {
         const taskStatusFilter = db.prepare('PRAGMA table_info(entities)').all().some(column => column.name === 'status')
           ? "AND status = 'active'" : '';
         // The first of the checkout's ids that has a record (the current one first), as task_state reads it.
-        const taskRowStmt = db.prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`);
-        const taskRow = projectIds.map((id) => taskRowStmt.get(taskStateName(id))).find(Boolean);
+        const taskRowStmt = db.prepare(`SELECT id, metadata FROM entities WHERE name = ? ${taskStatusFilter}`);
+        let taskRow;
+        for (const id of projectIds) {
+          const name = resolveProjectMemoryName(db, taskStateName(id), projectName, projectIds);
+          const row = taskRowStmt.get(name);
+          if (!row) continue;
+          const tags = projectTagsOf(db, row.id);
+          if (tags.length === 0 || filedUnder(tags, projectName, projectIds) !== undefined) {
+            taskRow = row;
+            break;
+          }
+        }
         // Whole conversation messages are delivered by the separately declared messages.js hook.
         let taskMetadata = null;
         let taskCorrupted = false;
