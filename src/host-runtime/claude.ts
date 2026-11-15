@@ -31,6 +31,7 @@ import {
   requiredString,
 } from './config.js';
 import { runHostEntry } from './entry.js';
+import { startConversationChannel } from './conversation-channel.js';
 
 const CHANNEL_INSTRUCTIONS = [
   'Claude Channels must be enabled once for this session.',
@@ -307,6 +308,17 @@ const processLifecycleBindings: LifecycleBindings = {
 };
 
 async function main(): Promise<void> {
+  // Native Channel children use only their actual conversation identity. Keep
+  // the legacy explicit host entry until S6, without consulting it in Claude.
+  if (process.env.CLAUDE_CODE_SESSION_ID !== undefined) {
+    await startConversationChannel({
+      onError() {
+        process.stderr.write('memesh-host-claude: conversation Channel failed; messages remain pending.\n');
+        process.exitCode = 1;
+      },
+    });
+    return;
+  }
   const config = readHostConfig<Record<string, unknown>>();
   await startClaudeManagedSession({
     server_name: requiredString(config.server_name ?? 'memesh-channel', 'server_name'),

@@ -154,6 +154,40 @@ export class ConversationMessages {
 
   close(): void { this.db.close(); }
 
+  /** Reuse expiry/notice transaction without reopening or rescanning legacy sources. */
+  maintainMessages(): void { this.db.transaction(() => this.maintain()).immediate(); }
+
+  /** A Channel cannot replace another host's registration or discard its socket. */
+  registerChannel(caller: string, hostPid: number): void {
+    if (!Number.isSafeInteger(hostPid) || hostPid <= 1 || !this.processAlive(hostPid)) throw new Error('Channel host identity unavailable');
+    const existing = this.findRegistration(caller);
+    if (!existing) this.register({ id: caller, host: 'claude-code', machine: this.machine, pid: hostPid, wake: {} });
+    this.channelRegistration(caller, hostPid);
+  }
+
+  channelBatch(caller: string, hostPid: number): { text: string; ids: string[] } {
+    this.channelRegistration(caller, hostPid);
+    return this.messageBatch(caller, [], true);
+  }
+
+  recordChannelPush(caller: string, hostPid: number, ids: readonly string[]): void {
+    this.db.transaction(() => {
+      this.channelRegistration(caller, hostPid);
+      for (const id of ids) {
+        const message = this.get(id);
+        if (message.recipient !== caller || message.recipient_host !== 'claude-code'
+          || message.recipient_machine !== this.machine || this.rejected(id)) throw new Error('Wrong recipient');
+        this.eventOnce(id, 'pushed', { actor: caller, route: 'claude-channel' });
+      }
+    }).immediate();
+  }
+
+  private channelRegistration(caller: string, hostPid: number): void {
+    const registered = this.registration(caller);
+    if (registered.host !== 'claude-code' || registered.machine !== this.machine || registered.pid !== hostPid
+      || hostPid <= 1 || !this.processAlive(hostPid)) throw new Error('Channel host identity unavailable');
+  }
+
   /** A send may wake only its exact, local, currently live registered recipient. */
   wakeTarget(messageId: string): ConversationRegistration | undefined {
     const message = this.get(messageId);
@@ -270,10 +304,14 @@ export class ConversationMessages {
   hookBatch(caller: string, excludedIds: readonly string[] = []): { text: string; ids: string[] } {
     caller = identifier(caller);
     this.registration(caller);
+    return this.messageBatch(caller, excludedIds, false);
+  }
+
+  private messageBatch(caller: string, excludedIds: readonly string[], excludePushed: boolean): { text: string; ids: string[] } {
     let text = '';
     const ids: string[] = [];
     const excluded = new Set(excludedIds);
-    for (const message of this.pending(caller)) {
+    for (const message of this.pending(caller, excludePushed)) {
       if (excluded.has(message.id)) continue;
       const next = renderConversationMessage(message);
       if (Buffer.byteLength(next, 'utf8') > MESSAGE_MAX_BYTES) continue;
@@ -314,10 +352,12 @@ export class ConversationMessages {
   private rejected(id: string): boolean {
     return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = 'rejected'").get(id));
   }
-  private pending(caller: string): ConversationMessage[] {
+  private pending(caller: string, excludePushed = false): ConversationMessage[] {
     return this.db.prepare(`SELECT m.* FROM messages m WHERE recipient = ? AND recipient_machine = ?
       AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event IN ('rejected','delivered','read','replied','legacy_handled'))
-      ORDER BY sent_at, rowid`).all(caller, this.machine) as unknown as ConversationMessage[];
+      AND (? = 0 OR (m.recipient_host = 'claude-code'
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event = 'pushed')))
+      ORDER BY sent_at, rowid`).all(caller, this.machine, excludePushed ? 1 : 0) as unknown as ConversationMessage[];
   }
   private insert(message: ConversationMessage): void {
     this.db.prepare('INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)').run(

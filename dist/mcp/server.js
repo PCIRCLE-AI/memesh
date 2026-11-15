@@ -32785,6 +32785,37 @@ var ConversationMessages = class {
   close() {
     this.db.close();
   }
+  maintainMessages() {
+    this.db.transaction(() => this.maintain()).immediate();
+  }
+  registerChannel(caller, hostPid) {
+    if (!Number.isSafeInteger(hostPid) || hostPid <= 1 || !this.processAlive(hostPid))
+      throw new Error("Channel host identity unavailable");
+    const existing = this.findRegistration(caller);
+    if (!existing)
+      this.register({ id: caller, host: "claude-code", machine: this.machine, pid: hostPid, wake: {} });
+    this.channelRegistration(caller, hostPid);
+  }
+  channelBatch(caller, hostPid) {
+    this.channelRegistration(caller, hostPid);
+    return this.messageBatch(caller, [], true);
+  }
+  recordChannelPush(caller, hostPid, ids) {
+    this.db.transaction(() => {
+      this.channelRegistration(caller, hostPid);
+      for (const id of ids) {
+        const message = this.get(id);
+        if (message.recipient !== caller || message.recipient_host !== "claude-code" || message.recipient_machine !== this.machine || this.rejected(id))
+          throw new Error("Wrong recipient");
+        this.eventOnce(id, "pushed", { actor: caller, route: "claude-channel" });
+      }
+    }).immediate();
+  }
+  channelRegistration(caller, hostPid) {
+    const registered = this.registration(caller);
+    if (registered.host !== "claude-code" || registered.machine !== this.machine || registered.pid !== hostPid || hostPid <= 1 || !this.processAlive(hostPid))
+      throw new Error("Channel host identity unavailable");
+  }
   wakeTarget(messageId3) {
     const message = this.get(messageId3);
     if (message.recipient_machine !== this.machine || this.rejected(messageId3))
@@ -32905,10 +32936,13 @@ var ConversationMessages = class {
   hookBatch(caller, excludedIds = []) {
     caller = identifier(caller);
     this.registration(caller);
+    return this.messageBatch(caller, excludedIds, false);
+  }
+  messageBatch(caller, excludedIds, excludePushed) {
     let text2 = "";
     const ids = [];
     const excluded = new Set(excludedIds);
-    for (const message of this.pending(caller)) {
+    for (const message of this.pending(caller, excludePushed)) {
       if (excluded.has(message.id))
         continue;
       const next = renderConversationMessage(message);
@@ -32955,10 +32989,12 @@ var ConversationMessages = class {
   rejected(id) {
     return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = 'rejected'").get(id));
   }
-  pending(caller) {
+  pending(caller, excludePushed = false) {
     return this.db.prepare(`SELECT m.* FROM messages m WHERE recipient = ? AND recipient_machine = ?
       AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event IN ('rejected','delivered','read','replied','legacy_handled'))
-      ORDER BY sent_at, rowid`).all(caller, this.machine);
+      AND (? = 0 OR (m.recipient_host = 'claude-code'
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event = 'pushed')))
+      ORDER BY sent_at, rowid`).all(caller, this.machine, excludePushed ? 1 : 0);
   }
   insert(message) {
     this.db.prepare("INSERT INTO messages VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)").run(message.id, message.sender, message.sender_host, message.sender_machine, message.recipient, message.recipient_host, message.recipient_machine, message.kind, message.body, message.body_bytes, message.reply_to, message.sent_at);
