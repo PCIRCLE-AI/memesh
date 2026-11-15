@@ -3,6 +3,7 @@ import path from 'node:path';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from '../core/file-mode.js';
 import { AGENT_NETWORK_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
+import { acceptRoster, findMember, verifyRoster } from './roster.js';
 export function openNetworkStore(dbPath, options = {}) {
     const dir = path.dirname(dbPath);
     fs.mkdirSync(dir, { recursive: true });
@@ -43,5 +44,29 @@ export function saveRoster(db, signed) {
 }
 export function signedRosterOf(config) {
     return { roster_json: config.roster_json, signature: config.roster_signature };
+}
+export function exchangeRoster(db, incoming) {
+    return db.transaction(() => {
+        const config = readConfig(db);
+        if (!config)
+            throw new Error('Network configuration missing.');
+        const current = signedRosterOf(config);
+        const held = verifyRoster(current, config.owner_id, config.network_id);
+        const offered = verifyRoster(incoming, config.owner_id, config.network_id);
+        if (offered.version < held.version)
+            return current;
+        acceptRoster(current, incoming, config.owner_id, config.network_id);
+        if (offered.version > held.version)
+            saveRoster(db, incoming);
+        return incoming;
+    })();
+}
+export function authorizeNetworkPeer(db, remoteId) {
+    const config = readConfig(db);
+    if (!config)
+        throw new Error('Network configuration missing.');
+    const roster = verifyRoster(signedRosterOf(config), config.owner_id, config.network_id);
+    if (!findMember(roster, config.machine_id) || !findMember(roster, remoteId))
+        throw new Error('not_a_member');
 }
 //# sourceMappingURL=store.js.map

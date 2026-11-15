@@ -4094,14 +4094,14 @@ function isTransientDbError(err) {
   return /SQLITE_BUSY|SQLITE_LOCKED|SQLITE_PROTOCOL/.test(code) || /database is locked|database table is locked|locking protocol/i.test(msg);
 }
 function retryWhileLocked(step, deadlineMs, where2) {
-  const deadline = Date.now() + deadlineMs;
+  const deadline2 = Date.now() + deadlineMs;
   for (let attempt = 0; ; attempt++) {
     try {
       return step();
     } catch (err) {
       if (!isTransientDbError(err))
         throw err;
-      if (Date.now() >= deadline) {
+      if (Date.now() >= deadline2) {
         const detail = err instanceof Error ? err.message : String(err);
         throw Object.assign(new Error(`MeMesh: could not open ${where2}: it stayed locked by another process for ${deadlineMs} ms (${detail}). Close the other MeMesh processes using that folder and try again.`, { cause: err }), { code: "MEMESH_DB_LOCKED" });
       }
@@ -33737,7 +33737,7 @@ function pollAgentEvents(db2, input2) {
 async function waitForAgentEvents(db2, input2, signal) {
   const timeoutMs = normalizeTimeout(input2.wait_ms);
   const pollIntervalMs = normalizePollInterval(input2.poll_interval_ms);
-  const deadline = Date.now() + timeoutMs;
+  const deadline2 = Date.now() + timeoutMs;
   let currentCursor = input2.cursor ?? null;
   for (; ; ) {
     throwIfAborted(signal);
@@ -33751,7 +33751,7 @@ async function waitForAgentEvents(db2, input2, signal) {
     if (result.events.length > 0)
       return result;
     currentCursor = result.next_cursor;
-    const remaining = deadline - Date.now();
+    const remaining = deadline2 - Date.now();
     if (remaining <= 0)
       return result;
     await waitForDelay(Math.min(pollIntervalMs, remaining), signal);
@@ -38268,6 +38268,7 @@ var init_store = __esm({
     init_file_mode();
     init_agent_network_schema();
     init_sqlite();
+    init_roster();
   }
 });
 
@@ -40289,7 +40290,7 @@ async function startRouterAndWait(socketPath) {
   child.once("exit", (code) => {
     exited = { at: Date.now(), code };
   });
-  const deadline = Date.now() + ROUTER_START_TIMEOUT_MS;
+  const deadline2 = Date.now() + ROUTER_START_TIMEOUT_MS;
   for (; ; ) {
     if (await routerAcceptsConnections(socketPath)) {
       child.unref();
@@ -40300,7 +40301,7 @@ async function startRouterAndWait(socketPath) {
     if (exited && Date.now() - exited.at > ROUTER_START_EXIT_GRACE_MS) {
       throw new Error(`the router stopped right after starting (exit code ${exited.code ?? "none"})`);
     }
-    if (Date.now() > deadline) {
+    if (Date.now() > deadline2) {
       child.kill();
       throw new Error(`the router did not start within ${ROUTER_START_TIMEOUT_MS / 1e3} seconds`);
     }
@@ -76964,6 +76965,13 @@ import { createHash as createHash17 } from "node:crypto";
 
 // dist/network/frames.js
 init_agent_messaging();
+init_roster();
+
+// dist/network/endpoint.js
+init_types2();
+
+// dist/network/frames.js
+var ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
 
 // dist/network/courier.js

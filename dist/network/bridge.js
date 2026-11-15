@@ -63,7 +63,7 @@ var GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
 // dist/network/types.js
 import path2 from "node:path";
 var JOIN_ALPN = "memesh/join/1";
-var NET_ALPN = "memesh/net/1";
+var NET_ALPN = "memesh/net/2";
 var RELAY_OFF = "off";
 var EXIT_ALREADY_RUNNING = 3;
 var EXIT_HOLDER_UNRESPONSIVE = 4;
@@ -379,6 +379,19 @@ function verifyRoster(signed, expectedOwnerId, expectedNetworkId) {
     throw invalid("it belongs to a different network");
   return roster;
 }
+function acceptRoster(current, incoming, ownerId, networkId) {
+  const roster = verifyRoster(incoming, ownerId, networkId);
+  if (current) {
+    const held = verifyRoster(current, ownerId, networkId);
+    if (roster.version < held.version) {
+      throw new NetworkError("roster_downgrade", `Refused an older team list (version ${roster.version}, this machine has ${held.version}).`);
+    }
+    if (roster.version === held.version && incoming.roster_json !== current.roster_json) {
+      throw new NetworkError("roster_downgrade", `Refused a team list that differs from the one this machine has at version ${held.version}.`);
+    }
+  }
+  return roster;
+}
 function findMember(roster, machineId) {
   return roster.members.find((member) => member.machine_id === machineId);
 }
@@ -662,6 +675,30 @@ function saveRoster(db, signed) {
 }
 function signedRosterOf(config) {
   return { roster_json: config.roster_json, signature: config.roster_signature };
+}
+function exchangeRoster(db, incoming) {
+  return db.transaction(() => {
+    const config = readConfig(db);
+    if (!config)
+      throw new Error("Network configuration missing.");
+    const current = signedRosterOf(config);
+    const held = verifyRoster(current, config.owner_id, config.network_id);
+    const offered = verifyRoster(incoming, config.owner_id, config.network_id);
+    if (offered.version < held.version)
+      return current;
+    acceptRoster(current, incoming, config.owner_id, config.network_id);
+    if (offered.version > held.version)
+      saveRoster(db, incoming);
+    return incoming;
+  })();
+}
+function authorizeNetworkPeer(db, remoteId) {
+  const config = readConfig(db);
+  if (!config)
+    throw new Error("Network configuration missing.");
+  const roster = verifyRoster(signedRosterOf(config), config.owner_id, config.network_id);
+  if (!findMember(roster, config.machine_id) || !findMember(roster, remoteId))
+    throw new Error("not_a_member");
 }
 
 // dist/network/join-protocol.js
@@ -2091,6 +2128,30 @@ function isLocalSenderName(value) {
 }
 
 // dist/network/frames.js
+var ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+function parseRosterExchange(bytes) {
+  if (bytes.length > ROSTER_EXCHANGE_MAX_BYTES)
+    throw new FrameError("roster_invalid", "Roster exchange too large.");
+  const raw = JSON.parse(bytes.toString("utf8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || Object.keys(raw).sort().join(",") !== "roster_json,signature" || typeof raw.roster_json !== "string" || Buffer.byteLength(raw.roster_json) > SIGNED_ROSTER_MAX_BYTES || typeof raw.signature !== "string" || raw.signature.length > 256) {
+    throw new FrameError("roster_invalid", "Invalid roster exchange.");
+  }
+  return raw;
+}
+async function exchangeRosterStream(stream, local, accept, timeoutMs) {
+  const write = async (signed) => {
+    const bytes = Buffer.from(JSON.stringify(signed));
+    parseRosterExchange(bytes);
+    await deadline(stream.send.writeAll(toBytes(bytes)), timeoutMs, "sending roster");
+    await deadline(stream.send.finish(), timeoutMs, "finishing roster");
+  };
+  if (local)
+    await write(local);
+  const received = Buffer.from(await deadline(stream.recv.readToEnd(ROSTER_EXCHANGE_MAX_BYTES), timeoutMs, "receiving roster"));
+  const selected = accept(parseRosterExchange(received));
+  if (!local)
+    await write(selected);
+}
 var FRAME_VERSION = 1;
 var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
 var ACK_MAX_BYTES = 1024;
@@ -2738,6 +2799,21 @@ async function serve(dataDir2, dbPath) {
       throw new Error("The network settings are gone from the database.");
     return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
   };
+  const memberConnections = /* @__PURE__ */ new Map();
+  const authorize = (remoteId) => {
+    authorizeNetworkPeer(db, remoteId);
+    return joinedNow();
+  };
+  const revokeConnections = () => {
+    for (const [connection, remoteId] of memberConnections) {
+      try {
+        authorize(remoteId);
+      } catch {
+        connection.close(1n, toBytes("not_a_member"));
+        memberConnections.delete(connection);
+      }
+    }
+  };
   let notifier;
   try {
     notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
@@ -2764,40 +2840,45 @@ async function serve(dataDir2, dbPath) {
     return receiveMessage(db, joined, member, frame, notifier);
   };
   const answerMember = async (connection, remoteId) => {
-    const joined = joinedNow();
-    if (!findMember(joined.roster, remoteId)) {
-      connection.close(1n, toBytes("not_a_member"));
-      status.non_member_refused++;
-      appendLog(dataDir2, "non_member_refused", { machine_id: remoteId });
-      publish();
-      return;
-    }
-    const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, "waiting for a member stream");
-    const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, "reading a member stream"));
-    const frameLog = process.env.MEMESH_TEST_NETWORK_FRAME_LOG;
-    if (frameLog) {
-      const refused = appendTestFrameLog(frameLog, bytes);
-      if (refused)
-        recordError("test_frame_log_refused", refused);
-    }
-    let ack;
+    const handshake = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, "waiting for roster");
+    await exchangeRosterStream(handshake, null, (offered) => {
+      const selected = exchangeRoster(db, offered);
+      revokeConnections();
+      authorize(remoteId);
+      return selected;
+    }, STREAM_DEADLINE_MS);
+    authorize(remoteId);
+    memberConnections.set(connection, remoteId);
     try {
-      const frame = parseFrame(bytes);
-      ack = answer(frame, joined, remoteId);
-      appendLog(dataDir2, "frame_received", { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
-    } catch (err) {
-      if (err instanceof FrameError)
-        ack = { result: "rejected", code: err.code };
-      else {
-        recordError("frame_failed", errorMessage(err));
-        ack = { result: "retry", code: "internal" };
+      const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, "waiting for a member stream");
+      const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, "reading a member stream"));
+      const frameLog = process.env.MEMESH_TEST_NETWORK_FRAME_LOG;
+      if (frameLog) {
+        const refused = appendTestFrameLog(frameLog, bytes);
+        if (refused)
+          recordError("test_frame_log_refused", refused);
       }
+      let ack;
+      try {
+        const frame = parseFrame(bytes);
+        ack = answer(frame, authorize(remoteId), remoteId);
+        appendLog(dataDir2, "frame_received", { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+      } catch (err) {
+        if (err instanceof FrameError)
+          ack = { result: "rejected", code: err.code };
+        else {
+          recordError("frame_failed", errorMessage(err));
+          ack = { result: "retry", code: "internal" };
+        }
+      }
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), STREAM_DEADLINE_MS, "answering a member");
+      await stream.send.finish();
+      status.frames_received++;
+      publish();
+      await finishConnection(connection);
+    } finally {
+      memberConnections.delete(connection);
     }
-    await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), STREAM_DEADLINE_MS, "answering a member");
-    await stream.send.finish();
-    status.frames_received++;
-    publish();
-    await finishConnection(connection);
   };
   const sendFrame = async (target, frame) => {
     const route = peerRoute(db, target);
@@ -2805,10 +2886,21 @@ async function serve(dataDir2, dbPath) {
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
     const connection = await deadline(endpoint.connect(address, toBytes(NET_ALPN)), SEND_CONNECT_DEADLINE_MS, "connecting to a member");
     try {
+      const handshake = await deadline(connection.openBi(), STREAM_DEADLINE_MS, "opening roster exchange");
+      await exchangeRosterStream(handshake, signedRosterOf(joinedNow().config), (offered) => {
+        const selected = exchangeRoster(db, offered);
+        revokeConnections();
+        authorize(target);
+        return selected;
+      }, STREAM_DEADLINE_MS);
+      authorize(target);
+      memberConnections.set(connection, target);
       const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, "opening a stream");
+      authorize(target);
       await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, "sending a frame");
       await deadline(stream.send.finish(), STREAM_DEADLINE_MS, "sending a frame");
       const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, "waiting for the answer")));
+      authorize(target);
       let path11 = null;
       try {
         const selected = connection.paths().find((candidate) => candidate.isSelected);
@@ -2817,6 +2909,7 @@ async function serve(dataDir2, dbPath) {
       }
       return { ack, path: path11 };
     } finally {
+      memberConnections.delete(connection);
       connection.close(0n, toBytes("done"));
     }
   };
@@ -2892,6 +2985,7 @@ async function serve(dataDir2, dbPath) {
       return;
     courierBusy = true;
     try {
+      revokeConnections();
       if (!messagingAvailable(db))
         return;
       const joined = joinedNow();

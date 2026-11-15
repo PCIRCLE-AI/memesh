@@ -1,6 +1,6 @@
 // The long-running bridge. Holds the data dir's control socket, answers joins when
 // this machine owns the network, carries messages and presence between members on
-// memesh/net/1, and refuses everyone else before reading a byte. Every refusal and
+// memesh/net/2, with bounded signed-roster exchange before membership. Every refusal and
 // every early exit leaves a record: a background process that fails quietly looks
 // exactly like one that is working.
 
@@ -24,9 +24,10 @@ import {
 } from './courier.js';
 import {
   ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, type Ack, type Frame,
+  exchangeRosterStream,
 } from './frames.js';
 import type { AgentMessagePostCommitNotifier } from '../core/agent-messaging.js';
-import { openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
+import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
   EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
 } from './types.js';
@@ -329,6 +330,20 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
   };
 
+  const memberConnections = new Map<Connection, string>();
+  const authorize = (remoteId: string): Joined => {
+    authorizeNetworkPeer(db, remoteId);
+    return joinedNow();
+  };
+  const revokeConnections = (): void => {
+    for (const [connection, remoteId] of memberConnections) {
+      try { authorize(remoteId); } catch {
+        connection.close(1n, toBytes('not_a_member'));
+        memberConnections.delete(connection);
+      }
+    }
+  };
+
   let notifier: AgentMessagePostCommitNotifier | undefined;
   try {
     notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
@@ -355,15 +370,17 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   };
 
   const answerMember = async (connection: Connection, remoteId: string): Promise<void> => {
-    // Membership comes before anything is read: a non-member is closed with no data read.
-    const joined = joinedNow();
-    if (!findMember(joined.roster, remoteId)) {
-      connection.close(1n, toBytes('not_a_member'));
-      status.non_member_refused++;
-      appendLog(dataDir, 'non_member_refused', { machine_id: remoteId });
-      publish();
-      return;
-    }
+    // Unknown transport identities may supply only a bounded owner-signed roster.
+    const handshake = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for roster');
+    await exchangeRosterStream(handshake, null, (offered) => {
+      const selected = exchangeRoster(db, offered);
+      revokeConnections();
+      authorize(remoteId);
+      return selected;
+    }, STREAM_DEADLINE_MS);
+    authorize(remoteId);
+    memberConnections.set(connection, remoteId);
+    try {
     const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for a member stream');
     const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, 'reading a member stream'));
     // TEST HOOK, off unless this variable is set: every frame read, as read (see test-frame-log.ts).
@@ -375,7 +392,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     let ack: Ack;
     try {
       const frame = parseFrame(bytes);
-      ack = answer(frame, joined, remoteId);
+      ack = answer(frame, authorize(remoteId), remoteId);
       appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
     } catch (err) {
       if (err instanceof FrameError) ack = { result: 'rejected', code: err.code };
@@ -389,6 +406,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     status.frames_received++;
     publish();
     await finishConnection(connection);
+    } finally { memberConnections.delete(connection); }
   };
 
   /** One frame to one member on its own stream; the answer, and whether it went through the relay. */
@@ -398,10 +416,21 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
     const connection = await deadline(endpoint.connect(address, toBytes(NET_ALPN)), SEND_CONNECT_DEADLINE_MS, 'connecting to a member');
     try {
+      const handshake = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening roster exchange');
+      await exchangeRosterStream(handshake, signedRosterOf(joinedNow().config), (offered) => {
+        const selected = exchangeRoster(db, offered);
+        revokeConnections();
+        authorize(target);
+        return selected;
+      }, STREAM_DEADLINE_MS);
+      authorize(target);
+      memberConnections.set(connection, target);
       const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening a stream');
+      authorize(target);
       await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, 'sending a frame');
       await deadline(stream.send.finish(), STREAM_DEADLINE_MS, 'sending a frame');
       const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, 'waiting for the answer')));
+      authorize(target);
       let path: string | null = null;
       try {
         const selected = connection.paths().find((candidate) => candidate.isSelected);
@@ -409,6 +438,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       } catch { /* the path is informational */ }
       return { ack, path };
     } finally {
+      memberConnections.delete(connection);
       connection.close(0n, toBytes('done'));
     }
   };
@@ -484,6 +514,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     if (courierBusy || stopping) return;
     courierBusy = true;
     try {
+      revokeConnections();
       if (!messagingAvailable(db)) return;
       const joined = joinedNow();
       const now = Date.now();

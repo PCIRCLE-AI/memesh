@@ -1,4 +1,9 @@
 import { type AgentContentType, type AgentJsonValue } from '../core/agent-messaging.js';
+import type { SignedRoster } from './types.js';
+import type { BiStream } from './iroh-types.js';
+export declare const ROSTER_EXCHANGE_MAX_BYTES: number;
+export declare function parseRosterExchange(bytes: Buffer): SignedRoster;
+export declare function exchangeRosterStream(stream: BiStream, local: SignedRoster | null, accept: (incoming: SignedRoster) => SignedRoster, timeoutMs: number): Promise<void>;
 export declare const FRAME_VERSION = 1;
 export declare const FRAME_MAX_BYTES: number;
 export declare const ACK_MAX_BYTES = 1024;

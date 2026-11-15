@@ -18,4 +18,6 @@ export declare function readConfig(db: MemeshDatabase): NetworkConfig | null;
 export declare function insertConfig(db: MemeshDatabase, config: NetworkConfig, now: number): void;
 export declare function saveRoster(db: MemeshDatabase, signed: SignedRoster): void;
 export declare function signedRosterOf(config: NetworkConfig): SignedRoster;
+export declare function exchangeRoster(db: MemeshDatabase, incoming: SignedRoster): SignedRoster;
+export declare function authorizeNetworkPeer(db: MemeshDatabase, remoteId: string): void;
 //# sourceMappingURL=store.d.ts.map

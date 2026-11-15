@@ -11,8 +11,8 @@ import { appendTestFrameLog } from './test-frame-log.js';
 import { createAgentRouterNotifier } from '../core/agent-router.js';
 import { getAgentRouterSocketPath } from '../core/paths.js';
 import { buildMessageFrame, dueMachines, dueOutgoingFor, enqueueOutgoing, expireOverdue, frameLabel, localPresence, messagingAvailable, peerRoute, receiveMessage, receivePresence, recordAttempt, recordUnsendable, retryNowFor, } from './courier.js';
-import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, } from './frames.js';
-import { openNetworkStore, readConfig, signedRosterOf } from './store.js';
+import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, exchangeRosterStream, } from './frames.js';
+import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf } from './store.js';
 import { EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
 const HANDSHAKE_DEADLINE_MS = 20_000;
@@ -313,6 +313,22 @@ export async function serve(dataDir, dbPath) {
             throw new Error('The network settings are gone from the database.');
         return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
     };
+    const memberConnections = new Map();
+    const authorize = (remoteId) => {
+        authorizeNetworkPeer(db, remoteId);
+        return joinedNow();
+    };
+    const revokeConnections = () => {
+        for (const [connection, remoteId] of memberConnections) {
+            try {
+                authorize(remoteId);
+            }
+            catch {
+                connection.close(1n, toBytes('not_a_member'));
+                memberConnections.delete(connection);
+            }
+        }
+    };
     let notifier;
     try {
         notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
@@ -340,41 +356,47 @@ export async function serve(dataDir, dbPath) {
         return receiveMessage(db, joined, member, frame, notifier);
     };
     const answerMember = async (connection, remoteId) => {
-        const joined = joinedNow();
-        if (!findMember(joined.roster, remoteId)) {
-            connection.close(1n, toBytes('not_a_member'));
-            status.non_member_refused++;
-            appendLog(dataDir, 'non_member_refused', { machine_id: remoteId });
-            publish();
-            return;
-        }
-        const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for a member stream');
-        const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, 'reading a member stream'));
-        const frameLog = process.env.MEMESH_TEST_NETWORK_FRAME_LOG;
-        if (frameLog) {
-            const refused = appendTestFrameLog(frameLog, bytes);
-            if (refused)
-                recordError('test_frame_log_refused', refused);
-        }
-        let ack;
+        const handshake = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for roster');
+        await exchangeRosterStream(handshake, null, (offered) => {
+            const selected = exchangeRoster(db, offered);
+            revokeConnections();
+            authorize(remoteId);
+            return selected;
+        }, STREAM_DEADLINE_MS);
+        authorize(remoteId);
+        memberConnections.set(connection, remoteId);
         try {
-            const frame = parseFrame(bytes);
-            ack = answer(frame, joined, remoteId);
-            appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
-        }
-        catch (err) {
-            if (err instanceof FrameError)
-                ack = { result: 'rejected', code: err.code };
-            else {
-                recordError('frame_failed', errorMessage(err));
-                ack = { result: 'retry', code: 'internal' };
+            const stream = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for a member stream');
+            const bytes = Buffer.from(await deadline(stream.recv.readToEnd(FRAME_MAX_BYTES), STREAM_DEADLINE_MS, 'reading a member stream'));
+            const frameLog = process.env.MEMESH_TEST_NETWORK_FRAME_LOG;
+            if (frameLog) {
+                const refused = appendTestFrameLog(frameLog, bytes);
+                if (refused)
+                    recordError('test_frame_log_refused', refused);
             }
+            let ack;
+            try {
+                const frame = parseFrame(bytes);
+                ack = answer(frame, authorize(remoteId), remoteId);
+                appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+            }
+            catch (err) {
+                if (err instanceof FrameError)
+                    ack = { result: 'rejected', code: err.code };
+                else {
+                    recordError('frame_failed', errorMessage(err));
+                    ack = { result: 'retry', code: 'internal' };
+                }
+            }
+            await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), STREAM_DEADLINE_MS, 'answering a member');
+            await stream.send.finish();
+            status.frames_received++;
+            publish();
+            await finishConnection(connection);
         }
-        await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), STREAM_DEADLINE_MS, 'answering a member');
-        await stream.send.finish();
-        status.frames_received++;
-        publish();
-        await finishConnection(connection);
+        finally {
+            memberConnections.delete(connection);
+        }
     };
     const sendFrame = async (target, frame) => {
         const route = peerRoute(db, target);
@@ -382,10 +404,21 @@ export async function serve(dataDir, dbPath) {
         const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
         const connection = await deadline(endpoint.connect(address, toBytes(NET_ALPN)), SEND_CONNECT_DEADLINE_MS, 'connecting to a member');
         try {
+            const handshake = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening roster exchange');
+            await exchangeRosterStream(handshake, signedRosterOf(joinedNow().config), (offered) => {
+                const selected = exchangeRoster(db, offered);
+                revokeConnections();
+                authorize(target);
+                return selected;
+            }, STREAM_DEADLINE_MS);
+            authorize(target);
+            memberConnections.set(connection, target);
             const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening a stream');
+            authorize(target);
             await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, 'sending a frame');
             await deadline(stream.send.finish(), STREAM_DEADLINE_MS, 'sending a frame');
             const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, 'waiting for the answer')));
+            authorize(target);
             let path = null;
             try {
                 const selected = connection.paths().find((candidate) => candidate.isSelected);
@@ -395,6 +428,7 @@ export async function serve(dataDir, dbPath) {
             return { ack, path };
         }
         finally {
+            memberConnections.delete(connection);
             connection.close(0n, toBytes('done'));
         }
     };
@@ -471,6 +505,7 @@ export async function serve(dataDir, dbPath) {
             return;
         courierBusy = true;
         try {
+            revokeConnections();
             if (!messagingAvailable(db))
                 return;
             const joined = joinedNow();

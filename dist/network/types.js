@@ -1,6 +1,6 @@
 import path from 'node:path';
 export const JOIN_ALPN = 'memesh/join/1';
-export const NET_ALPN = 'memesh/net/1';
+export const NET_ALPN = 'memesh/net/2';
 export const DEFAULT_RELAY_URL = 'https://relay.memesh.ai/';
 export const RELAY_OFF = 'off';
 export const EXIT_ALREADY_RUNNING = 3;

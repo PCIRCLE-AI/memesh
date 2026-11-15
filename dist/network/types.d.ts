@@ -1,5 +1,5 @@
 export declare const JOIN_ALPN = "memesh/join/1";
-export declare const NET_ALPN = "memesh/net/1";
+export declare const NET_ALPN = "memesh/net/2";
 export declare const DEFAULT_RELAY_URL = "https://relay.memesh.ai/";
 export declare const RELAY_OFF = "off";
 export declare const EXIT_ALREADY_RUNNING = 3;
