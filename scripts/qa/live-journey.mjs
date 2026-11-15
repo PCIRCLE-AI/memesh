@@ -126,7 +126,7 @@ export function assertConversationEvents(row, actor, required, forbidden = []) {
 /** Only actual host output is accepted; these normalized rows stay in memory. */
 export function conversationNativeTurn(host, stdout, expectedSession) {
   const lines = stdout.trim().split('\n').filter(Boolean).map(line => JSON.parse(line));
-  const calls = [], results = new Map(), text = [];
+  const calls = [], results = new Map(), text = [], warnings = [];
   let session, complete = false;
   for (const event of lines) {
     if (host === 'codex') {
@@ -141,7 +141,16 @@ export function conversationNativeTurn(host, stdout, expectedSession) {
       else if (event.type === 'turn.started') continue;
       else if (['item.started', 'item.updated', 'item.completed'].includes(event.type)) {
         const item = event.item;
-        if (item?.type === 'mcp_tool_call') {
+        if (item?.type === 'error') {
+          if (event.type !== 'item.completed' || Object.keys(item).sort().join(',') !== 'id,message,type'
+            || typeof item.id !== 'string' || !/^[A-Za-z0-9_-]{1,128}$/.test(item.id)
+            || typeof item.message !== 'string' || !item.message || Buffer.byteLength(item.message) > 16384) {
+            throw new Error('Malformed nonfatal Codex warning item');
+          }
+          warnings.push({ kind: 'nonfatal_codex_error_item', messageBytes: Buffer.byteLength(item.message),
+            messageSha256: createHash('sha256').update(item.message).digest('hex') });
+          if (warnings.length > 128) throw new Error('Native warning count exceeded');
+        } else if (item?.type === 'mcp_tool_call') {
           if (item.server !== 'memesh' || item.tool !== 'message') throw new Error('Unexpected native tool');
           if (event.type === 'item.completed') {
             if (item.status !== 'completed' || item.error) throw new Error('Native message call failed');
@@ -155,6 +164,22 @@ export function conversationNativeTurn(host, stdout, expectedSession) {
       if (event.session_id) {
         if (session && session !== event.session_id) throw new Error('Foreign native session');
         session = event.session_id;
+      }
+      // Official SDK metadata only, not a tool/result or delivery event.
+      if ((event.type === 'system' && ['hook_started', 'hook_response'].includes(event.subtype))
+        || event.type === 'rate_limit_event') {
+        const uuid = /^[0-9a-f]{8}-(?:[0-9a-f]{4}-){3}[0-9a-f]{12}$/i;
+        if (!uuid.test(event.session_id ?? '') || !uuid.test(event.uuid ?? '')) throw new Error('Invalid native metadata identity');
+        if (event.type === 'rate_limit_event') {
+          if (!['allowed', 'allowed_warning'].includes(event.rate_limit_info?.status)) throw new Error('Native rate limit rejected/unknown');
+        } else {
+          for (const key of ['hook_id', 'hook_name', 'hook_event']) {
+            if (typeof event[key] !== 'string' || !event[key] || event[key].length > 4096) throw new Error('Invalid native hook metadata');
+          }
+          if (event.subtype === 'hook_response' && (event.outcome !== 'success'
+            || (event.exit_code !== undefined && event.exit_code !== 0))) throw new Error('Native hook failed');
+        }
+        continue;
       }
       if (event.type === 'system' && event.subtype === 'init') continue;
       if (event.type === 'result') {
@@ -185,7 +210,7 @@ export function conversationNativeTurn(host, stdout, expectedSession) {
     if (!allowed || keys.some(key => !allowed.includes(key))) throw new Error('Non-conversation message arguments');
   }
   if (results.size !== calls.length) throw new Error('Orphan native tool result');
-  return { session, calls, results, text: text.join('\n') };
+  return { session, calls, results, text: text.join('\n'), warnings };
 }
 
 export function assertConversationReadTurn(turn, expected, prompt) {
@@ -2810,7 +2835,7 @@ async function runConversationPair(journey) {
   const claude = await turn('claude', null, 'Reply READY. Do not call any tools.');
   const codex = await turn('codex', null, 'Reply READY. Do not call any tools.');
   if (claude.calls.length || codex.calls.length || claude.session === codex.session) throw new Error('Invalid native prime');
-  const identities = [registration(claude, 'claude'), registration(codex, 'codex')];
+  const identities = [registration(claude, 'claude-code'), registration(codex, 'codex')];
   journey.step('two real host SessionStart registrations match native SID and PID', { identities });
   const cards = journey.cliJson(['message', 'discover']).conversations;
   if (![claude.session, codex.session].every(id => cards.some(card => card.address === id))) throw new Error('Missing public discovery identity');

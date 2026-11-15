@@ -441,6 +441,37 @@ describe('four-action native conversation evidence (synthetic format fixtures)',
     expect(() => conversationNativeTurn('claude', encode(rows.filter(row => row.type !== 'user')), sid)).toThrow(/Unpaired/);
     expect(() => conversationNativeTurn('claude', encode([...rows, { type: 'wrapper', body }]), sid)).toThrow(/variant/);
   });
+  it('supports native metadata without treating it as a tool call or delivery', () => {
+    const warning = { type: 'item.completed', item: { id: 'item_0', type: 'error', message: 'private-canary' } };
+    const turn = conversationNativeTurn('codex', encode([warning, ...codex()]), sid);
+    expect(turn.calls).toHaveLength(1);
+    expect(turn.warnings).toHaveLength(1);
+    expect(JSON.stringify(turn.warnings)).not.toContain('private-canary');
+    const meta = { type: 'system', subtype: 'hook_started', session_id: sid, uuid: sid,
+      hook_id: 'hook-1', hook_name: 'SessionStart:fixture', hook_event: 'SessionStart' };
+    const terminal = { type: 'result', subtype: 'success', is_error: false, session_id: sid };
+    const claude = conversationNativeTurn('claude', encode([meta,
+      { ...meta, subtype: 'hook_response', outcome: 'success', exit_code: 0 },
+      { type: 'rate_limit_event', session_id: sid, uuid: sid, rate_limit_info: { status: 'allowed' } }, terminal]), sid);
+    expect(claude.calls).toHaveLength(0);
+    expect(claude.results.size).toBe(0);
+    expect(claude.text).toBe('');
+  });
+  it('keeps native metadata errors fatal', () => {
+    for (const event of [
+      { type: 'error', message: 'fatal' },
+      { type: 'turn.failed', error: { message: 'fatal' } },
+      { type: 'item.completed', item: { id: 'item_0', type: 'error', message: 'x', extra: true } },
+      { type: 'item.completed', item: { id: 'item_0', type: 'unknown', message: 'x' } },
+      { type: 'item.completed', item: { id: 'c2', type: 'mcp_tool_call', server: 'memesh', tool: 'message', status: 'failed' } },
+    ]) expect(() => conversationNativeTurn('codex', encode([event, ...codex()]), sid)).toThrow();
+    const meta = { type: 'system', subtype: 'hook_response', session_id: sid, uuid: sid,
+      hook_id: 'hook-1', hook_name: 'SessionStart:fixture', hook_event: 'SessionStart', outcome: 'error', exit_code: 1 };
+    const terminal = { type: 'result', subtype: 'success', is_error: false, session_id: sid };
+    expect(() => conversationNativeTurn('claude', encode([meta, terminal]), sid)).toThrow(/hook failed/);
+    expect(() => conversationNativeTurn('claude', encode([
+      { type: 'rate_limit_event', session_id: sid, uuid: sid, rate_limit_info: { status: 'rejected' } }, terminal]), sid)).toThrow(/rate limit/);
+  });
   it('rejects foreign sessions, unknown tools, legacy actions and duplicate terminals', () => {
     expect(() => conversationNativeTurn('codex', encode(codex()), 'foreign')).toThrow(/session/);
     const tool = codex();
