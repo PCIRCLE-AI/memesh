@@ -52,6 +52,14 @@ export declare class ConversationMessages {
         busyTimeoutMs?: number;
     });
     close(): void;
+    maintainMessages(): void;
+    registerChannel(caller: string, hostPid: number): void;
+    channelBatch(caller: string, hostPid: number): {
+        text: string;
+        ids: string[];
+    };
+    recordChannelPush(caller: string, hostPid: number, ids: readonly string[]): void;
+    private channelRegistration;
     wakeTarget(messageId: string): ConversationRegistration | undefined;
     recordPush(sender: string, messageId: string, route: 'claude-socket' | 'codex-queue'): void;
     register(input: ConversationRegistration): void;
@@ -76,6 +84,7 @@ export declare class ConversationMessages {
         text: string;
         ids: string[];
     };
+    private messageBatch;
     recordHookDelivery(caller: string, ids: string[], hook: string): void;
     private now;
     private findRegistration;

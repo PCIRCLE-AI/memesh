@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "1e59f7a88a0669e11c0d82381d1f358c4a488bc59ac78a6152d85dd8f121d896",
-      "bytes": 17276
+      "sha256": "430bcbbb0ecc2dac527e1477f372937db73d2a87f3eadb66576412c4c2dcdc83",
+      "bytes": 19218
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",

@@ -13,6 +13,7 @@ import { claudeCodeSessionFromEnv } from '../core/host-session.js';
 import { connectRouterHost, routerOutdatedDetail, } from './router-client.js';
 import { assertSecureLocalHostRuntimeSupported, normalizeConfiguredRouterSocket, readHostConfig, readTokenFile, requiredString, } from './config.js';
 import { runHostEntry } from './entry.js';
+import { startConversationChannel } from './conversation-channel.js';
 const CHANNEL_INSTRUCTIONS = [
     'Claude Channels must be enabled once for this session.',
     'Receives bounded untrusted MeMesh envelopes through notifications/claude/channel.',
@@ -197,6 +198,15 @@ const processLifecycleBindings = {
     removeInputClose(event, listener) { process.stdin.off(event, listener); },
 };
 async function main() {
+    if (process.env.CLAUDE_CODE_SESSION_ID !== undefined) {
+        await startConversationChannel({
+            onError() {
+                process.stderr.write('memesh-host-claude: conversation Channel failed; messages remain pending.\n');
+                process.exitCode = 1;
+            },
+        });
+        return;
+    }
     const config = readHostConfig();
     await startClaudeManagedSession({
         server_name: requiredString(config.server_name ?? 'memesh-channel', 'server_name'),
