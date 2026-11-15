@@ -171,7 +171,11 @@ describe.skipIf(process.platform === 'win32' || !PLATFORM_SUPPORTED)('child proc
   };
   const SEGFAULT = "process.kill(process.pid, 'SIGSEGV'); setTimeout(() => {}, 5000);";
   const seedInstalled = (ctx: ReturnType<typeof newContext>): void => {
-    fs.mkdirSync(runtimeDir(ctx.dataDir), { recursive: true });
+    // Match the real installer's private data/network parents. Readonly join
+    // preflight now checks their modes even when the graph does not exist yet.
+    fs.mkdirSync(runtimeDir(ctx.dataDir), { recursive: true, mode: 0o700 });
+    expect(fs.statSync(ctx.dataDir).mode & 0o077).toBe(0);
+    expect(fs.statSync(path.dirname(networkMetadataPath(ctx.dataDir))).mode & 0o077).toBe(0);
     fs.writeFileSync(path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256'), `${createHash('sha256').update(lockText).digest('hex')}\n`);
   };
   const signedLink = (token: string): string => {
@@ -183,6 +187,16 @@ describe.skipIf(process.platform === 'win32' || !PLATFORM_SUPPORTED)('child proc
     });
   };
   const TOKEN = Buffer.alloc(32, 9).toString('base64url');
+
+  it('an installed stamp does not make an unsafe data directory acceptable', async () => {
+    const ctx = { ...newContext(), bridgeEntry: crashingBridge("throw new Error('unsafe fixture must not execute');") };
+    seedInstalled(ctx);
+    fs.chmodSync(ctx.dataDir, 0o755);
+    await expect(joinNetwork(ctx, { link: signedLink(TOKEN), name: 'mac', person: 'kt' }))
+      .rejects.toThrow('Unsafe network metadata directory');
+    expect(fs.statSync(ctx.dataDir).mode & 0o777).toBe(0o755);
+    expect(fs.existsSync(path.join(runtimeDir(ctx.dataDir), '.installed-lock-sha256'))).toBe(true);
+  });
 
   it('a crash in the load check is an error naming the signal', async () => {
     const ctx = { ...newContext(), bridgeEntry: crashingBridge(SEGFAULT) };
