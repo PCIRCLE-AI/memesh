@@ -33,6 +33,7 @@
 // no-op, decided by the content hash.
 
 import fs from 'fs';
+import { projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import path from 'path';
 import { createHash } from 'crypto';
 import { noteDirId } from './note-dirs.js';
@@ -511,8 +512,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name', 'noFrontmatter'); continue; }
     // Same hygiene as every other field: the name is stored and shown too.
     const rawName = stringField(parsed.data, 'name');
-    const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
+    let name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
     if (!name) { contentSkip('frontmatter has no name'); continue; }
+    // An edited file keeps the qualified name this directory already owns,
+    // even when the caller's cwd now names another project.
+    const prior = known.get(rel);
+    if (prior && projectTagsOf(db, prior.id).some(tag => resolveProjectMemoryName(db, name, tag.slice(8)) === prior.name)) name = prior.name;
 
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
@@ -555,9 +560,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     else byName.set(c.name, [c]);
   }
   const touchedIds = new Set<number>();
-  for (const c of claims) declaredNameAt.set(c.rel, c.name);
-
-  for (const [name, claimants] of byName) {
+  for (const [requestedName, claimants] of byName) {
+    const original = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, requestedName) as ExistingRow | undefined;
+    // A previously ingested directory keeps its original project when the
+    // caller's cwd changes. Only a different directory needs collision resolution.
+    const name = original && parseProvenance(original.metadata).note_dir_id === dirId
+      ? requestedName : resolveProjectMemoryName(db, requestedName, opts.project, [], true);
+    for (const c of claimants) declaredNameAt.set(c.rel, name);
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
     const prov = existing ? parseProvenance(existing.metadata) : {};
     const skipAll = (reason: string) => {

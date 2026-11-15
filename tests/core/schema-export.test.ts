@@ -272,15 +272,18 @@ describe('exportOpenAITools', () => {
     expect(exported).toContain('namespace');
   });
 
-  it('memesh_briefing exposes the optional exact recipient scope', () => {
+  it('memesh_briefing retains the optional recipient without promising legacy inbox instructions', () => {
     const tool = tools.find((t: any) => t.function.name === 'memesh_briefing') as any;
     const exported = Object.keys(tool.function.parameters.properties);
     expect(exported).toEqual(Object.keys(BriefingSchema.shape));
-    expect(tool.function.parameters.properties.recipient.description).toMatch(/exact logical recipient/i);
+    expect(tool.function.parameters.properties.recipient.description).toContain('accepted for compatibility');
+    expect(tool.function.description).toContain('8000 UTF-8 bytes');
+    expect(tool.function.description).not.toContain('4000-character');
 
     const mcp = TOOL_DEFINITIONS.find((definition) => definition.name === 'briefing')!;
     expect(Object.keys(mcp.inputSchema.properties)).toEqual(Object.keys(BriefingSchema.shape));
-    expect(mcp.inputSchema.properties.recipient.description).toMatch(/exact logical recipient/i);
+    expect(mcp.inputSchema.properties.recipient.description).toContain('accepted for compatibility');
+    expect(mcp.inputSchema.properties.recipient.description).not.toContain('actionable unread');
   });
 
   it('the relations field is shaped as an array of {to, type} objects', () => {

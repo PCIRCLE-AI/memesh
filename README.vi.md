@@ -6,7 +6,7 @@
 
 MeMesh giúp các trợ lý lập trình AI chia sẻ ngữ cảnh, trao đổi công việc, góp ý cho nhau và bàn giao rõ ràng giữa các phiên. Bộ nhớ dùng chung giữ lại sở thích, quyết định của dự án và kinh nghiệm đã tích lũy, để bạn không phải giải thích lại từ đầu mỗi lần mở phiên mới.
 
-- **Phân công giữa các hội thoại đã đăng ký.** Trao đổi công việc, câu hỏi, yêu cầu rà soát và kết quả. Hook hội thoại hiện kết nối Claude; tích hợp Codex tương ứng vẫn đang phát triển.
+- **Phân công giữa các hội thoại đã đăng ký.** Trao đổi công việc, câu hỏi, yêu cầu rà soát và kết quả. Manifest plugin của cả Claude và Codex đều khai báo hook hội thoại; việc nhận tin và đánh thức phiên gốc cần bằng chứng riêng cho từng host.
 - **Dùng chung ngữ cảnh dự án.** Các trợ lý trên cùng một máy có thể tra lại quyết định và kinh nghiệm của dự án, thay vì tìm hiểu lại từ đầu.
 - **Bàn giao rõ ràng.** Ghi lại mục tiêu, bước tiếp theo và vướng mắc để phiên sau kiểm tra trước khi tiếp tục.
 - **Giữ lại những điều hữu ích.** Lưu sở thích, quyết định và bài học để tìm lại trong các phiên và công cụ khác nhau. Quyết định, bài học và sở thích được tìm thấy ở mọi dự án, kèm tên dự án gốc; commit và ghi chú phiên của mỗi dự án chỉ ở lại trong dự án đó.
@@ -81,7 +81,7 @@ Từ MeMesh 4.11.0, Claude Code có thêm `/memesh-memories` để xem và sửa
 
 | Công cụ | Chức năng |
 |---------|-----------|
-| `remember` | Lưu bộ nhớ (mặc định luôn lưu, không cần yêu cầu); quyết định cần có lý do. |
+| `remember` | Lưu bộ nhớ (mặc định luôn lưu, không cần yêu cầu); lý do cho quyết định là tùy chọn, nên ghi khi đã biết. |
 | `recall` | Tìm thông tin đã lưu bằng từ khóa hoặc ID. |
 | `forget` | Đưa bộ nhớ vào trạng thái lưu trữ hoặc xóa một ghi nhận trong đó. |
 | `learn` | Lưu sai sót, nguyên nhân và cách tránh lặp lại. |

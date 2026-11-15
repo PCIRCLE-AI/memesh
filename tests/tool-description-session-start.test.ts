@@ -20,6 +20,8 @@ describe('session-start guidance in MCP tool descriptions (#444)', () => {
     expect(text).toMatch(/Call at session start only when the host has not already injected the block/);
     expect(text).toContain('or when the user asks what is remembered');
     expect(text).toContain('use recall for specific questions');
+    expect(text).toContain('8000 UTF-8 bytes');
+    expect(text).not.toContain('4000-character');
   });
 
   it('user_patterns is not part of loading a session', () => {

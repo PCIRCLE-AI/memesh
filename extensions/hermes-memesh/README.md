@@ -87,5 +87,11 @@ require a bearer token when bound to `localhost`.
   so memories written after a switch aren't mistagged with the pre-switch
   session id.
 
-Automatic recall honors `promptRecall` and the effective `autoCapture` switch.
+Automatic recall is controlled by `promptRecall`. Turning `autoCapture` off
+stops automatic storage but leaves recall available; turn `promptRecall` off
+separately to disable automatic recall.
+After validating the session and input, `capture-turn` checks the effective
+auto-capture setting before opening the database. When off it returns
+`outcome: "skipped"` with reason `"auto-capture is turned off"`, which the provider
+logs. Manual `remember` calls are unchanged.
 The explicit `memesh_recall` tool retains the HTTP response envelope.

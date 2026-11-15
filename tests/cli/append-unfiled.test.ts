@@ -5,6 +5,7 @@ import path from 'node:path';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { runCliFromSource } from '../helpers/cli-source.js';
+import { getProjectName } from '../../src/core/paths.js';
 
 const fixture = useTestDatabase('memesh-ac57-cli-');
 
@@ -57,11 +58,11 @@ describe('AC57 CLI append to an unfiled memory', () => {
 
     run(b, ['remember', '--name', 'foreign-ac57', '--type', 'note', '--obs', 'foreign original']);
     const foreign = state('foreign-ac57');
+    const foreignRow = getDatabase().prepare('SELECT * FROM entities WHERE name = ?').get('foreign-ac57');
     for (const args of [
       ['remember', '--name', 'shared-ac57', '--obs', 'bad scope', '--project', 'explicit-p'],
       ['remember', '--name', 'shared-ac57', '--obs', 'bad tag', '--tags', 'project:explicit-p'],
       ['remember', '--name', 'shared-ac57', '--obs', 'bad replace', '--replace'],
-      ['remember', '--name', 'foreign-ac57', '--obs', 'bad foreign'],
       ['remember', '--name', 'shared-ac57', '--obs', 'bad relation', '--supersedes', 'foreign-ac57'],
       ['remember', '--name', 'new-without-type', '--obs', 'bad new'],
     ]) {
@@ -71,5 +72,21 @@ describe('AC57 CLI append to an unfiled memory', () => {
     expect(state('shared-ac57')).toEqual(after);
     expect(state('foreign-ac57')).toEqual(foreign);
     expect(state('new-without-type').rows).toHaveLength(0);
+
+    // A valid new memory with the same requested name is filed locally,
+    // rather than refusing it or changing the other project's memory.
+    const created = JSON.parse(run(a, ['remember', '--name', 'foreign-ac57', '--type', 'note', '--obs', 'local same-name', '--json']).stdout);
+    const localName = `foreign-ac57@${getProjectName(a)}`;
+    expect(created).toMatchObject({ stored: true, name: localName });
+    const local = state(localName);
+    expect(local.rows).toHaveLength(1);
+    expect(local.rows[0].id).not.toBe(foreign.rows[0].id);
+    expect(local.observations).toEqual(['local same-name']);
+    expect(local.tags).toEqual([`project:${getProjectName(a)}`]);
+    const recalled = JSON.parse(run(a, ['recall', 'foreign-ac57', '--tag', `project:${getProjectName(a)}`, '--json']).stdout).entities as Array<{ id: number; name: string }>;
+    expect(recalled.some(e => e.id === local.rows[0].id && e.name === localName)).toBe(true);
+    expect(recalled.some(e => e.id === foreign.rows[0].id)).toBe(false);
+    expect(state('foreign-ac57')).toEqual(foreign);
+    expect(getDatabase().prepare('SELECT * FROM entities WHERE name = ?').get('foreign-ac57')).toEqual(foreignRow);
   }, 90_000);
 });

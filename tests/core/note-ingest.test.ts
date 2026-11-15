@@ -52,6 +52,29 @@ describe('parseFrontmatter', () => {
 });
 
 describe('ingestNoteDirectory', () => {
+  it.each([false, true])('keeps same-name files separate through edits and forget (occupied qualified name: %s)', (occupied) => {
+    const a = makeDir({ 'same.md': note('build-cmd', 'Build', 'fact', 'Project A command') });
+    const b = path.join(fixture.tmpDir, 'notes-b'); fs.mkdirSync(b);
+    fs.writeFileSync(path.join(b, 'same.md'), note('build-cmd', 'Build', 'fact', 'Project B command'));
+    expect(ingestNoteDirectory({ dir: a, project: 'app~aaa', trusted: false }).created).toEqual(['build-cmd']);
+    if (occupied) remember({ name: 'build-cmd@app~bbb', type: 'fact', observations: ['foreign reservation'], project: 'app~aaa' });
+    const ownName = `build-cmd@app~bbb${occupied ? '~2' : ''}`;
+    const foreignBefore = kg().getEntity('build-cmd@app~bbb');
+    const second = ingestNoteDirectory({ dir: b, project: 'app~bbb', trusted: false });
+    expect(second.created).toEqual([ownName]);
+    fs.writeFileSync(path.join(b, 'same.md'), note('build-cmd', 'Build', 'fact', 'Project B revised command'));
+    expect(ingestNoteDirectory({ dir: b, project: 'app~bbb', trusted: false }).replaced).toEqual([ownName]);
+    expect(kg().getEntity('build-cmd')?.observations).toEqual(['Project A command']);
+    expect(kg().getEntity(ownName)?.observations).toEqual(['Project B revised command']);
+    fs.writeFileSync(path.join(b, 'same.md'), note('build-cmd', 'Build', 'fact', 'Project B from another cwd'));
+    expect(ingestNoteDirectory({ dir: b, project: 'app~ccc', trusted: false }).replaced).toEqual([ownName]);
+    expect(kg().getEntity(ownName)?.tags).toContain('project:app~bbb');
+    expect(kg().getEntity(ownName)?.observations).toEqual(['Project B from another cwd']);
+    expect(forget({ name: 'build-cmd', project: 'app~bbb' }).archived).toBe(true);
+    expect(ingestNoteDirectory({ dir: b, project: 'app~bbb', trusted: false }).skipped).toEqual(expect.arrayContaining([expect.objectContaining({ reason: expect.stringContaining('archived') })]));
+    expect(kg().getEntity('build-cmd')?.archived).not.toBe(true);
+    if (occupied) expect(kg().getEntity('build-cmd@app~bbb')).toEqual(foreignBefore);
+  });
   it('three frontmatter notes → three entities; a file without frontmatter is reported, not guessed at', () => {
     const dir = makeDir({
       'a.md': note('note_a', 'Alpha decision', 'decision', 'Alpha body one.\n\nAlpha body two.'),

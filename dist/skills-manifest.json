@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "98705ccab0823814cfaedf3eef70580df2ac4f93f32fa99d976457b680e0c689",
-      "bytes": 36506
+      "sha256": "be5136391e1aaf7b3619d9eeb9e785b1c7607ebee74f6ecee38df3750d9bbcc8",
+      "bytes": 36588
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -173,8 +173,8 @@
     },
     {
       "path": "scripts/hooks/_generated/prompt-recall.js",
-      "sha256": "9b14ca6b3abaadc1edd4425e03162288e7e6096bc2e9bec823d9796f6415723d",
-      "bytes": 15246
+      "sha256": "aa9a61ad52c20861333960cb469b3f7fb9f83c49d95725886dbf1a2db8fc2dd1",
+      "bytes": 15244
     },
     {
       "path": "scripts/hooks/_generated/public-network-context.js",
@@ -278,8 +278,8 @@
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "3370150aff296306a9e0c9e04417e5e810e54153ef40951b1b89848f0e3c9c30",
-      "bytes": 8979
+      "sha256": "c6199d04e3eda7653f86cf76b43630cbe1a3719e360d34c7bd8c688773a121e3",
+      "bytes": 9003
     },
     {
       "path": "scripts/hooks/guard-check.js",
@@ -308,8 +308,8 @@
     },
     {
       "path": "scripts/hooks/prompt-recall.js",
-      "sha256": "791ddb4454f03db28b44ccf17d26f4a92c03133116c1ff02243e128bea75eced",
-      "bytes": 9729
+      "sha256": "237cdb9ab1dcb892c97a202df82bf2eb2e39c14f99305b74cb38e7716d84066c",
+      "bytes": 9607
     },
     {
       "path": "scripts/hooks/session-start.js",
@@ -338,8 +338,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "322ff31fe8fce64220d3e84e60d35ecdb65e2de5ae6d758c8bbc661a15c8d8ae",
-      "bytes": 24044
+      "sha256": "e04065ea8c2348e70e06cbabf92473e7c993cf20cdcff522ff29c9021372610c",
+      "bytes": 24520
     }
   ]
 }

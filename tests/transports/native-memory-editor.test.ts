@@ -25,6 +25,21 @@ describe('Native memory editing through the existing remember tool', () => {
   const stored = () => new KnowledgeGraph(getDatabase()).getEntity('ui-note');
   const row = () => getDatabase().prepare('SELECT * FROM entities WHERE name = ?').get('ui-note');
 
+  it('edits the bound project same-name row and forgets it without touching the original', async () => {
+    const second = remember({ name: 'ui-note', type: 'note', observations: ['Other project paragraph'], project: 'other-project' });
+    const edited = await handleTool('remember', { name: 'ui-note', interactive: true }, 'codex', undefined, {
+      projectBinding: { project: 'other-project' },
+      elicit: async () => ({ action: 'accept', content: { body: 'Other project changed' } }),
+    });
+    expect(edited.isError).not.toBe(true);
+    expect(stored()?.observations).toEqual(['Original paragraph']);
+    expect(new KnowledgeGraph(getDatabase()).getEntity(second.name)?.observations).toEqual(['Other project changed']);
+    const forgotten = await handleTool('forget', { name: 'ui-note' }, 'codex', undefined, { projectBinding: { project: 'other-project' } });
+    expect(forgotten.isError).not.toBe(true);
+    expect(new KnowledgeGraph(getDatabase()).getEntity(second.name)?.archived).toBe(true);
+    expect(stored()?.archived).not.toBe(true);
+  });
+
   it.each(['cancel', 'decline'] as const)('%s shows the stored memory and writes nothing', async action => {
     const before = row();
     const elicit = vi.fn(async (params: ElicitRequestFormParams): Promise<ElicitResult> => {

@@ -140,7 +140,7 @@ process.stdin.on('end', () => {
  * and it is meant to be acted on directly.
  */
 function buildNudge(toolName) {
-  return `A decision was just made via ${toolName} — store it now with the memesh \`remember\` tool (type decision or lesson_learned, tagged project:<id>, where <id> is the \`project\` field of the \`briefing\` result, CLI \`memesh briefing --json\`). A decision needs \`why\`: the reason for it and what would make it stop holding; without it the call is refused. If it changes what you are working on, also record the goal and the next step with the \`task_state\` tool.`;
+  return `A decision was just made via ${toolName} — store it now with the memesh \`remember\` tool (type decision or lesson_learned, tagged project:<id>, where <id> is the \`project\` field of the \`briefing\` result, CLI \`memesh briefing --json\`). When known, include \`why\`: the reason for it and what would make it stop holding. It is optional; a decision can be stored without it. If it changes what you are working on, also record the goal and the next step with the \`task_state\` tool.`;
 }
 
 /**

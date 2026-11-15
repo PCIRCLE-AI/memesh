@@ -22,7 +22,7 @@
 //   - Content is injected at most once per session, tracked in a per-session
 //     list. Opening title indexes do not count as having read the content.
 //   - Skipped entirely, and recorded as such, when the feature
-//     (`promptRecall`) or auto-capture is off.
+//     (`promptRecall`) is off. Disabling capture does not disable recall.
 //   - The ids it injects are added to the session's injection record so a
 //     `[mem:id]` citation of one of them is credited like any other.
 
@@ -37,7 +37,6 @@ import {
   getProjectName,
   hookErrorReason,
   hookNodeProblem,
-  isAutoCaptureEnabled,
   NODE_TOO_OLD_REASON,
   openMemeshDb,
   readHookConfig,
@@ -146,10 +145,6 @@ export async function handlePrompt(data) {
     }
     if (readHookConfig(process.env).promptRecall === false) {
       record('skipped', SKIP_REASONS.promptRecallOff);
-      return null;
-    }
-    if (!isAutoCaptureEnabled(process.env)) {
-      record('skipped', SKIP_REASONS.autoCaptureOff);
       return null;
     }
     const sessionId = data.session_id;

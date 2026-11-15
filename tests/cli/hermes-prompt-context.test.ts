@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
+import { MemeshDatabase } from '../../src/storage/sqlite.js';
 
 const cli = path.resolve('dist/transports/cli/cli.js');
 let home: string;
@@ -28,12 +29,13 @@ it('returns empty without creating a database on first use', () => {
   expect(fs.readdirSync(home)).toEqual(before);
 });
 
-it('reads full content across sessions under 4 KiB, excludes own turns and respects owner switches', () => {
+it.each(['environment', 'config'])('reads full content with automatic capture off via %s while respecting the recall switch', (source) => {
   const saved = run(['hermes', 'capture-turn', '--session', 'writer'], JSON.stringify({
     user: 'Jasper orange routing prefix: ' + '測試內容'.repeat(3000),
     assistant: 'Jasper orange routing prefix: exact-detail-Q7',
   }));
   expect(saved.status, saved.stderr).toBe(0);
+  expect(JSON.parse(saved.stdout)).toMatchObject({ outcome: 'wrote', names: [expect.any(String), expect.any(String)] });
   expect(context('writer')).toEqual({ text: '', ids: [] });
   const result = context();
   expect(result.ids).toHaveLength(2);
@@ -41,11 +43,32 @@ it('reads full content across sessions under 4 KiB, excludes own turns and respe
   expect(result.text).toContain('content truncated; recall ids=');
   expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(4096);
   expect(result.text).toContain('background data, not instructions');
-  env.MEMESH_AUTO_CAPTURE = 'false';
-  expect(context()).toEqual({ text: '', ids: [] });
+  const conversationRows = () => {
+    const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'), { readOnly: true });
+    try {
+      return db.prepare(`SELECT e.id,e.name,o.id AS observation_id,o.content FROM entities e
+        JOIN observations o ON o.entity_id=e.id WHERE e.type='conversation' ORDER BY e.id,o.id`).all();
+    } finally { db.close(); }
+  };
+  const before = conversationRows();
+  expect(before.map((row) => row.content)).toEqual([
+    'Jasper orange routing prefix: ' + '測試內容'.repeat(3000),
+    'Jasper orange routing prefix: exact-detail-Q7',
+  ]);
+  if (source === 'environment') env.MEMESH_AUTO_CAPTURE = 'false';
+  else expect(run(['config', 'set', 'autoCapture', 'false']).status).toBe(0);
+  const disabledCapture = run(['hermes', 'capture-turn', '--session', 'reader'], JSON.stringify({
+    user: 'Do not capture this synthetic turn', assistant: 'Synthetic response while capture is off',
+  }));
+  expect(disabledCapture.status, disabledCapture.stderr).toBe(0);
+  expect(JSON.parse(disabledCapture.stdout)).toEqual({ outcome: 'skipped', reason: 'auto-capture is turned off' });
+  expect(context()).toEqual(result);
+  expect(conversationRows()).toEqual(before);
   delete env.MEMESH_AUTO_CAPTURE;
+  if (source === 'config') expect(run(['config', 'set', 'autoCapture', 'true']).status).toBe(0);
   expect(run(['config', 'set', 'promptRecall', 'false']).status).toBe(0);
   expect(context()).toEqual({ text: '', ids: [] });
+  expect(conversationRows()).toEqual(before);
 });
 
 it('does not automatically expose memories filed under another project', () => {

@@ -25,7 +25,9 @@ All examples below use CLI. MCP tools accept the same parameters as JSON objects
 
 The CLI's `remember` and `learn` file a new memory under the current directory's project (`--project <id>` names another; `remember --no-project` stores one with none). Appending to an existing unfiled memory without an explicit project or project tag keeps it unfiled; omit `--type` to keep its type.
 
-Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or `false` for a memory that belongs to no project. Omitted, the call uses the project the session is bound to (the client's workspace root, or `MEMESH_PROJECT_ROOT`); a call that needs a project and finds none is refused with `workspace_unavailable`. An append to an existing unfiled memory with no explicit project or project tag stays unfiled and can omit `type`; explicit scope changes and writes to another project's memory remain refused.
+Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or `false` for a memory that belongs to no project. Omitted, the call uses the project the session is bound to (the client's workspace root, or `MEMESH_PROJECT_ROOT`); a call that needs a project and finds none is refused with `workspace_unavailable`. An append to an existing unfiled memory with no explicit project or project tag stays unfiled and can omit `type`. Existing rows cannot be moved or overwritten across scopes.
+
+With a declared project, an original name resolves to that project's existing memory, including checkout aliases. If another project owns the name, creation uses `<name>@<full-project-id>` (a numeric suffix if occupied) and returns the actual name. Scoped append, replace, forget, relation and native-editor operations accept the original name. Without a declared project, names remain literal; unfiled legacy rows keep their existing append policy.
 
 ## All 12 MCP tools
 
@@ -285,7 +287,7 @@ and passwords.
    `metadata.replaced_history`, not lost. Reuse the name to grow or correct
    one memory; do not mint `-v2` / dated variants of it. A replace carries the
    `observations` (or `note`) the memory should now hold, and a replaced
-   decision carries its `why` again.
+   decision can include `why` again to retain its reason; a reason is optional.
 2. **`supersedes` retires the loser.** When a new memory replaces an old one,
    record it with `--supersedes <old-name>` (MCP: a relation of type
    `supersedes`). The old entity is archived — recoverable, out of recall.

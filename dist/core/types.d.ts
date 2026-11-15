@@ -92,6 +92,8 @@ export interface RecallInput {
 export interface ForgetInput {
     name: string;
     observation?: string;
+    project?: string | null;
+    projectIds?: readonly string[];
 }
 export interface RememberResult {
     stored: boolean;

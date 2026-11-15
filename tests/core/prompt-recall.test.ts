@@ -12,6 +12,31 @@ const kg = () => new KnowledgeGraph(getDatabase());
 const pick = (prompt: string, extra: Record<string, unknown> = {}) => selectPromptRecall(getDatabase(), prompt, { project: PROJECT, ...extra });
 
 describe('Feature: prompt recall scoring', () => {
+  it('brings back a stored memory for a single meaningful prompt word', () => {
+    const id = kg().createEntity('dependency-choice', 'reference', {
+      title: 'Dependency choice', observations: ['Use pnpm for this project.'], tags,
+    });
+    const hit = pick('pnpm?');
+    expect(hit.terms).toEqual(['pnpm']);
+    expect(hit.scored.map((memory) => memory.id)).toEqual([id]);
+    expect(hit.scored[0].coverage).toBe(1);
+    expect(hit.ids).toEqual([id]);
+    expect(hit.text).toContain('Use pnpm for this project.');
+    expect(pick('pnpm?', { exclude: new Set([id]) }).reason).toBe('already-shown');
+    expect(pick('absentword').ids).toEqual([]);
+    expect(pick('').reason).toBe('no-terms');
+  });
+
+  it('keeps the first two scored hits even when each covers less than half the prompt', () => {
+    for (const pair of ['narwhal puffin', 'marmot quokka', 'curlew godwit']) {
+      kg().createEntity(pair, 'reference', { title: pair, observations: [pair], tags });
+    }
+    const hit = pick('narwhal puffin marmot quokka curlew godwit');
+    expect(hit.scored).toHaveLength(3);
+    expect(hit.scored.every((memory) => memory.coverage < 0.5 && memory.matched.length === 2)).toBe(true);
+    expect(hit.ids).toEqual(hit.scored.slice(0, 2).map((memory) => memory.id));
+  });
+
   it('delivers details beyond a truncated conversation title', () => {
     kg().createEntity('shell-preference', 'conversation', {
       title: 'From now on, in this project write every shell script with set -euo pipefail and 2-space indentation, and name every s',
@@ -213,8 +238,8 @@ describe('Feature: prompt recall scoring', () => {
     expect(pick(prompt).scored.map((m) => m.name)).toEqual(['imported-status']);
   });
 
-  it('keeps the measured defaults', () => {
-    expect(PROMPT_RECALL_MIN_COVERAGE).toBe(0.5);
+  it('does not impose an extra coverage gate while keeping the other defaults', () => {
+    expect(PROMPT_RECALL_MIN_COVERAGE).toBe(0);
     expect([...PROMPT_RECALL_SKIP_TYPES]).toEqual([]);
     expect(PROMPT_RECALL_MAX_PROJECT_AGE_DAYS).toBe(30);
   });

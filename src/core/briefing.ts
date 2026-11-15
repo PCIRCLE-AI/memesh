@@ -30,9 +30,6 @@ import { readConfig } from './config.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
-import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
-import { hostSessionFromEnv } from './host-session.js';
-import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { taskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
 import { buildBriefingIndex, type BriefingIndex } from './briefing-index.js';
@@ -60,9 +57,7 @@ export interface BriefingResult {
   /** How many memories were rendered into the block (excluding the task state). */
   entityCount: number;
   /** Whether a task-state line leads the block: the fresh state, the one-line
-   *  stale flag, or the unreadable-record line. The unread-message reminder
-   *  that rides beside them is not a task state and does not count — a briefing
-   *  whose only state line is that reminder has `hasTaskState: false`. At
+   *  stale flag, or the unreadable-record line. At
    *  every level, a fresh stated task state can be rendered. */
   hasTaskState: boolean;
   /** Whether the block includes recent sessions' latest assistant replies.
@@ -81,9 +76,8 @@ export interface BriefingResult {
    *  empty fence. Callers that render for a human (the CLI) must check this
    *  and print a short line instead of `text`; callers that just forward
    *  the object (MCP) do not need to — `empty: true, text: ''` already says
-   *  the same thing machine-readably. Can only be true at `minimal`: at
-   *  `standard`/`full` the durable-memory index always contributes at
-   *  least its own empty-state line (#323). */
+   *  the same thing machine-readably. Possible at every level: the separate
+   *  durable-memory index does not create opening context on an empty graph. */
   empty: boolean;
 }
 
@@ -120,7 +114,7 @@ export function readBriefingIndex(
  * when the caller knows them (default: this process's own checkout's when
  * `project` is its project).
  */
-export function assembleBriefing(project?: string, recipient?: string, projectIds?: readonly string[]): BriefingResult {
+export function assembleBriefing(project?: string, _recipient?: string, projectIds?: readonly string[]): BriefingResult {
   const projectName = project ?? getProjectName();
   const ids = projectIds ?? projectIdsFor(projectName);
   const db = getDatabase();
@@ -180,37 +174,8 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
     if (!(err instanceof TaskStateUnreadableError)) throw err;
     taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
   }
-  const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
-  // The inbox line rides WITH the stated lines, not among the ranked
-  // memories: like goal / next / blocked it is a fact the agent must act
-  // on, not a memory that scored well. It is only actionable when the caller
-  // supplies the exact logical recipient; generic briefing has no identity
-  // and must not aggregate another recipient's activity.
-  // The inbox is keyed on (project, recipient) in the canonical form
-  // core/agent-scope-id.ts defines — that is how `send` stores it and how
-  // `poll` reads it back. Counting must ask in the same spelling, or a
-  // caller whose name differs only by Unicode composition is told its inbox
-  // is empty while `poll` returns messages: the split this change closes,
-  // reappearing on the surface an agent actually reads. The project tag
-  // lookups below deliberately keep `projectName` as given — those are
-  // entity tags, written by a different path, not this key.
-  // #497: a message meant for one session of a shared principal counts only
-  // in that session; this process's session is the one Claude Code started it in.
-  let unreadCount = 0;
-  let inboxUnreadable: string | undefined;
-  try {
-    unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
-  } catch (err) {
-    // An inbox that cannot be read must not read as an empty one, and the
-    // reason goes with it: "run memesh doctor" alone sends the reader nowhere.
-    inboxUnreadable = err instanceof Error ? err.message : 'unknown error';
-  }
-  // D8: only worth asking when it can change the answer — a nonzero count
-  // already proves the recipient is real, and with no recipient at all
-  // `unreadInboxLines` never looks at it.
-  const everSeen = inboxRecipient !== undefined && unreadCount === 0 && inboxUnreadable === undefined
-    ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
-    : undefined;
+  // Keep the optional recipient argument for caller compatibility. Conversation
+  // delivery belongs to the message hooks/read path, not the memory briefing.
   // Task state and recent session tails precede ranked memories. The tails
   // share the hook's exact-project, active and trust-filtered selection.
   // The same limit the SessionStart hook resolves (env, then config, then the
@@ -223,23 +188,12 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
   });
   const handoff = pools.handoffs.flatMap((row) => handoffLines(row));
 
-  const stateLines = [
-    ...(inboxUnreadable !== undefined && inboxRecipient
-      ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
-      : unreadInboxLines(
-        unreadCount,
-        canonicalAgentScopeId(projectName),
-        inboxRecipient,
-        everSeen,
-      )),
-  ];
-
   const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
   // One memory budget for the ranked sections; the recent index after them is not cut by it.
   const lines = assembleTopologyBlock(
-    stateLines,
+    [],
     [
       { entities: toEntities(pools.lessons), foreign: false },
       { entities: toEntities(pools.project), foreign: false },
@@ -302,11 +256,7 @@ export function assembleBriefing(project?: string, recipient?: string, projectId
     text: opening.text,
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
-    // The ranked lines only: the state lines lead the block, and the
-    // handoff's text there can itself contain lines that look like `- [`.
-    entityCount: lines.slice(stateLines.length, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
-    // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
-    // reminder, which is not a task state.
+    entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
     hasTaskState: opening.taskLines.length > 0,
     hasHandoff: opening.tailLines.length > 0,
     index,

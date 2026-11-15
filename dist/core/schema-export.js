@@ -165,12 +165,12 @@ export function exportOpenAITools() {
             type: 'function',
             function: {
                 name: 'memesh_briefing',
-                description: 'The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.',
+                description: 'The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The complete opening context, including task state, session tails, memories and index, is limited to 8000 UTF-8 bytes. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.',
                 parameters: {
                     type: 'object',
                     properties: {
                         project: { type: 'string', description: 'Project name. Omit for the current directory’s project.' },
-                        recipient: { type: 'string', description: 'Exact logical recipient. Required to surface actionable unread messages; omit for generic context.' },
+                        recipient: { type: 'string', description: 'Optional legacy recipient, accepted for compatibility; it does not add inbox instructions to project context.' },
                     },
                 },
             },

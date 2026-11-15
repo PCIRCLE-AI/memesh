@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { getDatabase } from '../db.js';
-import { filedUnder, projectOwnershipRefusal, projectTagsOf } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -209,6 +209,12 @@ function rememberInTransaction(
   db: ReturnType<typeof getDatabase>,
   kg: KnowledgeGraph,
 ): RememberResult {
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  const scopedTags = healed.tags ?? [];
+  const scopes = [...new Set(scopedTags.filter(tag => tag.startsWith('project:')).map(tag => tag.slice(8)))];
+  const scope = args.project !== undefined ? args.project : scopes.length === 1 ? scopes[0] : undefined;
+  args = { ...args, name: resolveProjectMemoryName(db, args.name, scope, args.projectIds, true),
+    relations: args.relations?.map(rel => ({ ...rel, to: resolveProjectMemoryName(db, rel.to, scope, args.projectIds) })) };
   // Only existence + namespace are consumed below — a full kg.getEntity()
   // here cost 4 queries (entity, observations, tags, relations) with the
   // observation text materialized and thrown away, on the write hot path
@@ -248,7 +254,6 @@ function rememberInTransaction(
     ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
   ];
   let retagged: RememberResult['retagged'];
-  const healed = withFullProjectTag(args.tags, args.currentProject);
   if (healed.retagged) {
     const plainTag = healed.retagged.from;
     const keepsPlain = touched.some((name) => db
@@ -738,6 +743,15 @@ export function learn(args: LearnInput): LearnResult {
 export function forget(args: ForgetInput): ForgetResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  args = { ...args, name: resolveProjectMemoryName(db, args.name, args.project, args.projectIds) };
+  if (args.project !== undefined) {
+    // Shared legacy memories remain forgettable; a project's tagged row must
+    // still be its own, after resolving a possible qualified name.
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.name) as { id: number } | undefined;
+    const scope = row && projectTagsOf(db, row.id).length === 0 ? null : args.project;
+    const refusal = projectOwnershipRefusal(db, args.name, scope, args.projectIds);
+    if (refusal) throw new Error(refusal);
+  }
 
   // Observation-level forget: remove specific observation, keep entity active.
   //

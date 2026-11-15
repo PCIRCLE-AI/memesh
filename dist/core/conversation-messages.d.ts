@@ -139,6 +139,7 @@ export declare class ConversationMessages {
     private findRegistration;
     private registration;
     private get;
+    private findMessage;
     private rejected;
     private pending;
     private insert;

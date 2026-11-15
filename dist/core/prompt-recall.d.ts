@@ -1,8 +1,8 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 export declare const PROMPT_RECALL_MAX_LINES = 2;
 export declare const PROMPT_RECALL_MAX_BYTES = 4096;
-export declare const PROMPT_RECALL_MIN_COVERAGE = 0.5;
-export declare const PROMPT_RECALL_MIN_TERMS = 2;
+export declare const PROMPT_RECALL_MIN_COVERAGE = 0;
+export declare const PROMPT_RECALL_MIN_TERMS = 1;
 export declare const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string>;
 export declare const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
 export interface ScoredMemory {

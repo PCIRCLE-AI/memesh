@@ -148,7 +148,7 @@ describe('Installation Verification', () => {
   });
 
   describe('Hook Scripts', () => {
-    // Derived from hooks/hooks.json, not written out here. The hand-written
+    // Derived from both host manifests, not written out here. The hand-written
     // version of this list said five while the project shipped seven, and
     // ci.yml documents that exact drift as a past incident that "went
     // unnoticed for a full release cycle". A list that has to be updated by
@@ -160,6 +160,12 @@ describe('Installation Verification', () => {
       // the parse silently yields nothing, every case below would vacuously
       // pass by iterating an empty list.
       expect(hookFiles.length).toBeGreaterThanOrEqual(6);
+    });
+
+    it('includes executable hooks declared only by the Codex plugin', () => {
+      expect(hookFiles).toContain('scripts/hooks/codex-busy-message-notice.js');
+      expect(hookFiles).toContain('scripts/hooks/codex-plan-activity.js');
+      expect(new Set(hookFiles).size).toBe(hookFiles.length);
     });
 
     it.each(hookFiles)('%s should exist and be executable', (hookPath) => {

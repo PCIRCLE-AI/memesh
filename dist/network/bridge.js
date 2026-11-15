@@ -1483,7 +1483,7 @@ var ConversationMessages = class {
     let machine = pieces[1] ? identifier(pieces[1]).toLowerCase() : this.machine;
     let remoteId = pieces[1] && machine !== this.machine ? this.network?.members.find((m) => m.name.toLowerCase() === machine)?.id : void 0;
     let local = !pieces[1] || machine === this.machine;
-    const original = input.reply_to ? this.get(input.reply_to) : void 0;
+    const original = input.reply_to ? this.findMessage(input.reply_to) : void 0;
     if (original) {
       if (!original.recipient_local || original.recipient !== from.id || original.sender !== recipient || this.rejected(original.id)) {
         throw new Error("Reply must address the sender of a message received by this conversation");
@@ -1538,9 +1538,9 @@ var ConversationMessages = class {
           reason,
           recipients: this.discover().map((row) => row.machine === this.machine ? row.id : `${row.id}@${row.machine}`)
         };
-      if (message.reply_to) {
-        this.eventOnce(message.reply_to, "delivered", { actor: from.id, via: "reply" });
-        this.eventOnce(message.reply_to, "replied", { actor: from.id, reply: message.id });
+      if (original) {
+        this.eventOnce(original.id, "delivered", { actor: from.id, via: "reply" });
+        this.eventOnce(original.id, "replied", { actor: from.id, reply: message.id });
       }
       const pending = local ? this.pending(recipient).length : this.db.prepare(`SELECT COUNT(*) AS count FROM messages m
         WHERE recipient=? AND recipient_local=0 AND network_id=? AND recipient_machine_id=?
@@ -1665,8 +1665,8 @@ var ConversationMessages = class {
       const from = this.remoteRegistration(peerId, m.sender), to = this.findRegistration(m.recipient);
       if (!from || from.host !== m.sender_host || !to || to.host !== m.recipient_host)
         throw new Error("Unregistered network conversation");
-      if (m.reply_to) {
-        const original = this.get(m.reply_to);
+      const original = m.reply_to ? this.findMessage(m.reply_to) : void 0;
+      if (original) {
         if (!original.sender_local || original.recipient_local || original.network_id !== wire.network_id || original.sender_machine_id !== this.network.self.id || original.recipient_machine_id !== peerId || original.sender !== m.recipient || original.recipient !== m.sender || this.rejected(original.id))
           throw new Error("Wrong network reply binding");
         this.eventOnce(original.id, "delivered", { actor: m.sender, peer: peerId, via: "reply" });
@@ -1765,10 +1765,13 @@ var ConversationMessages = class {
     return found;
   }
   get(id) {
-    const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
+    const row = this.findMessage(id);
     if (!row)
       throw new Error("Message not found");
     return row;
+  }
+  findMessage(id) {
+    return this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
   }
   rejected(id) {
     return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = 'rejected'").get(id));

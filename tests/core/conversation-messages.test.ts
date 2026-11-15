@@ -98,6 +98,26 @@ describe('conversation message store', () => {
     expect(status.events.every(event => /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(event.at))).toBe(true);
   });
 
+  it('accepts a reply after its original expired without recreating original events', () => {
+    const { store, root, advance } = fixture();
+    const original = store.send('A', { recipient: 'B', kind: 'question', body: 'old question' }).message.id;
+    advance(14);
+    store.maintainMessages();
+    expect(store.status(undefined, original)).toEqual([]);
+    const reply = store.send('B', { recipient: 'A', kind: 'result', body: 'late answer', reply_to: original });
+    expect(reply.accepted).toBe(true);
+    expect(store.read('A', reply.message.id)).toMatchObject({ body: 'late answer', reply_to: original });
+    const db = new DatabaseSync(path.join(root, 'messages.db'), { readOnly: true });
+    try {
+      expect(db.prepare('SELECT * FROM events WHERE message_id=?').all(original)).toEqual([]);
+      expect(db.prepare('SELECT * FROM messages WHERE id=?').all(original)).toEqual([]);
+    } finally { db.close(); }
+    expect(store.send('B', { recipient: 'missing', kind: 'result', body: 'still unknown', reply_to: original }))
+      .toMatchObject({ accepted: false, reason: 'unknown_recipient' });
+    expect(() => store.send('unknown', { recipient: 'A', kind: 'result', body: 'still unregistered', reply_to: original }))
+      .toThrow();
+  });
+
   it('rejects spoofed replies without acknowledging or creating a message', () => {
     const { store } = fixture();
     const { message } = store.send('A', { recipient: 'B', kind: 'task', body: 'task' });

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { remember } from '../../src/core/operations.js';
 
 const cliLoader = `
   import { createServer } from 'vite';
@@ -29,9 +30,8 @@ function runCli(home: string, ...args: string[]) {
   });
 }
 
-function send(home: string, recipient: string, key: string) {
-  // Briefing's still-supported --recipient reads the legacy inbox, not the
-  // conversation store populated by the four-action public message command.
+function send(home: string, recipient: string, key: string, includeMemory = true) {
+  // Legacy rows remain intact, but briefing no longer renders their notices.
   const directory = path.join(home, '.memesh');
   fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ updateCheck: false, autoUpdate: 'off' }), { mode: 0o600 });
@@ -39,15 +39,24 @@ function send(home: string, recipient: string, key: string) {
   try {
     sendAgentMessage(db, { project: 'briefing-cli-project', sender: 'sender', recipient,
       idempotency_key: key, content_type: 'application/json', payload: {} });
+    if (includeMemory) remember({ name: 'briefing-memory', type: 'note', title: 'CLI memory sentinel',
+      observations: ['Keep ordinary project context'], project: 'briefing-cli-project' });
   } finally { closeDatabase(); }
 }
 
+function legacyRows(home: string) {
+  const db = openDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+  try { return ['agent_messages', 'agent_message_deliveries', 'agent_message_events'].map(table => db.prepare(`SELECT * FROM ${table}`).all()); }
+  finally { closeDatabase(); }
+}
+
 describe('CLI briefing recipient scope', () => {
-  it('hides generic inbox activity and reports only the exact recipient', () => {
+  it('keeps project memory but no legacy inbox instructions with or without recipient', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-briefing-'));
     try {
       send(home, 'recipient-one', 'cli-briefing-one');
       send(home, 'recipient-two', 'cli-briefing-two');
+      const before = legacyRows(home);
 
       const generic = runCli(home, 'briefing', '--project', 'briefing-cli-project', '--json');
       expect(generic.status, generic.stderr).toBe(0);
@@ -59,28 +68,33 @@ describe('CLI briefing recipient scope', () => {
       );
       expect(scoped.status, scoped.stderr).toBe(0);
       const text = JSON.parse(scoped.stdout).text as string;
-      expect(text).toContain('1 message waiting for "recipient-one"');
-      expect(text).toContain('in project "briefing-cli-project"');
+      expect(text).toContain('CLI memory sentinel');
+      expect(text).toBe(JSON.parse(generic.stdout).text);
+      expect(text).not.toMatch(/message waiting|poll the message tool|fetch each message_id|intake/);
       expect(text).not.toContain('recipient-two');
-      // The reminder is the ONLY state line here, and it is not a task state:
-      // `hasTaskState` said `true` for it before it counted task-state lines only.
+      // Legacy inbox rows are not task state.
       expect(JSON.parse(scoped.stdout).hasTaskState).toBe(false);
+      expect(legacyRows(home)).toEqual(before);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }
   });
 
-  // `hasTaskState` gates `memesh briefing`'s "set the task state" hint. With the
-  // reminder counted as a task state the hint stayed silent on exactly the
-  // project that has none; now it says so, beside the reminder.
-  it('a briefing whose only state line is the reminder still points at `memesh task`', () => {
+  it('an empty briefing points at the first memory without a legacy reminder', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-briefing-hint-'));
     try {
-      send(home, 'recipient-one', 'cli-briefing-hint');
+      send(home, 'recipient-one', 'cli-briefing-hint', false);
+      fs.writeFileSync(path.join(home, '.memesh', 'config.json'), JSON.stringify({
+        updateCheck: false, autoUpdate: 'off', briefing: 'standard',
+      }), { mode: 0o600 });
+      const before = legacyRows(home);
       const text = runCli(home, 'briefing', '--project', 'briefing-cli-project', '--recipient', 'recipient-one');
       expect(text.status, text.stderr).toBe(0);
-      expect(text.stdout).toContain('1 message waiting for "recipient-one"');
-      expect(text.stdout).toContain('memesh task --goal');
+      expect(text.stdout).not.toContain('1 message waiting for "recipient-one"');
+      expect(text.stdout).toContain('Nothing to brief at level standard');
+      expect(text.stdout).toContain('memesh remember --name first-memory');
+      expect(text.stdout).not.toMatch(/poll the message tool|fetch each message_id|intake/);
+      expect(legacyRows(home)).toEqual(before);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

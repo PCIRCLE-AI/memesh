@@ -1,5 +1,5 @@
 import { getDatabase } from '../db.js';
-import { filedUnder, projectOwnershipRefusal, projectTagsOf } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -101,6 +101,12 @@ function resolveRememberInput(input) {
     };
 }
 function rememberInTransaction(args, derived, typeGiven, db, kg) {
+    const healed = withFullProjectTag(args.tags, args.currentProject);
+    const scopedTags = healed.tags ?? [];
+    const scopes = [...new Set(scopedTags.filter(tag => tag.startsWith('project:')).map(tag => tag.slice(8)))];
+    const scope = args.project !== undefined ? args.project : scopes.length === 1 ? scopes[0] : undefined;
+    args = { ...args, name: resolveProjectMemoryName(db, args.name, scope, args.projectIds, true),
+        relations: args.relations?.map(rel => ({ ...rel, to: resolveProjectMemoryName(db, rel.to, scope, args.projectIds) })) };
     const existing = db
         .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
         .get(args.name);
@@ -109,7 +115,6 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
     ];
     let retagged;
-    const healed = withFullProjectTag(args.tags, args.currentProject);
     if (healed.retagged) {
         const plainTag = healed.retagged.from;
         const keepsPlain = touched.some((name) => db
@@ -374,6 +379,14 @@ export function learn(args) {
 export function forget(args) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
+    args = { ...args, name: resolveProjectMemoryName(db, args.name, args.project, args.projectIds) };
+    if (args.project !== undefined) {
+        const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.name);
+        const scope = row && projectTagsOf(db, row.id).length === 0 ? null : args.project;
+        const refusal = projectOwnershipRefusal(db, args.name, scope, args.projectIds);
+        if (refusal)
+            throw new Error(refusal);
+    }
     if (args.observation !== undefined) {
         const result = kg.removeObservation(args.name, args.observation);
         const shown = redactSecrets(args.observation);

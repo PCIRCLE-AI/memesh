@@ -61,6 +61,23 @@ afterEach(() => {
 });
 
 describe('memesh remember files the memory under the current directory\'s project', () => {
+  it('resolves the original name for two directories through append, replace and forget', () => {
+    remember(dirA, '--name', 'build-cmd', '--type', 'note', '--obs', 'A original');
+    const b = JSON.parse(remember(dirB, '--name', 'build-cmd', '--type', 'note', '--obs', 'B original', '--json').stdout);
+    expect(b.name).toBe(`build-cmd@${idB}`);
+    remember(dirA, '--name', 'build-cmd', '--obs', 'A append');
+    remember(dirB, '--name', 'build-cmd', '--obs', 'B append');
+    remember(dirB, '--name', 'build-cmd', '--obs', 'B replacement', '--replace');
+    const observations = (name: string) => getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name=? ORDER BY o.id').all(name);
+    expect(observations('build-cmd')).toEqual([{ content: 'A original' }, { content: 'A append' }]);
+    expect(observations(b.name)).toEqual([{ content: 'B replacement' }]);
+    closeDatabase();
+    const forgotten = runCliFromSource(['forget', '--name', 'build-cmd', '--json'], { cwd: dirB, memeshDir: root, dbPath });
+    openDatabase(dbPath);
+    expect(forgotten.status, forgotten.stderr).toBe(0);
+    expect(JSON.parse(forgotten.stdout)).toMatchObject({ archived: true, name: b.name });
+    expect(getDatabase().prepare('SELECT status FROM entities WHERE name=?').get('build-cmd')).toEqual({ status: 'active' });
+  });
   it('a memory stored from a project directory carries that project, and only it', () => {
     remember(dirB, '--name', 'b-commit', '--type', 'commit', '--obs', 'stampword commit of B');
     remember(dirB, '--name', 'b-decision', '--type', 'decision', '--why', 'a fixed choice for this case; revisit if it changes', '--obs', 'stampword decision of B');

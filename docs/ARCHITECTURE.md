@@ -283,8 +283,8 @@ Tool call: remember({name, type, observations, why, tags, relations})
         -> title from the first line, one observation per paragraph
         -> name from a slug of the title + a digest of the text
   -> `why` becomes one more observation, `Why: <text>` (one leading `Why: ` label is not doubled)
-  -> a new or `replace`d decision, architecture_decision or design_decision with no `Why: ` observation is refused,
-     unless the writer is untrusted (note files from a directory pointed at, and a decision note with no reason; an `import` without `--trust`; the project's own memory folder is trusted); imports and dream accepts do not go through remember, so are not refused
+  -> a decision, architecture_decision or design_decision is stored even without `why`;
+     a supplied reason is retained as an observation, otherwise shown as "no reason recorded"
   -> replace: true only:
      -> refuse when the memory was archived with forget
      -> snapshot the previous title/observations/tags FIRST
@@ -330,8 +330,12 @@ Store-open maintenance handles 14-day expiry and the one-day undelivered
 notice. Queueing does not prove native wakeup, model-visible delivery or
 completion. Both manifests declare the conversation hook; its private Codex-shaped wire
 flow is checked. Actual native-host/model and cross-machine conversation
-delivery are not established by this or the legacy implementations below. Old graph
-pending messages are not yet migrated into this store.
+delivery are not established by this or the legacy implementations below.
+The default opener imports eligible legacy graph messages and fixed archive
+files beside the configured graph into this store. Only messages younger than
+14 days are imported, with their original IDs, timestamps, bodies and audit;
+reopening is idempotent and preserves the source. Explicit-file and borrowed
+source entry points do not discover archives implicitly.
 
 ### Wake an eligible local message recipient (optional)
 
@@ -607,11 +611,11 @@ The retained HTTP/native transport has separate principal configuration and iden
 ### Prompt Recall (`scripts/hooks/prompt-recall.js`)
 
 - **Trigger**: `UserPromptSubmit` event (every user prompt); registered in `hooks/hooks.json` and `.codex-plugin/plugin.json`
-- **Behavior**: runs a local full-text search for the prompt and selects up to two strong matches (`PROMPT_RECALL_MAX_LINES`), including at most one assistant conversation. It brings their titles and observations under the existing untrusted-data notice, within **4096 UTF-8 bytes for the entire rendered block** (`PROMPT_RECALL_MAX_BYTES`, including notice, fences, handles and truncation markers). Full fields are redacted together before neutralization and truncation. Long content is explicitly marked with the ID to retrieve through `recall`. Selected memories share the available space; one long reply cannot remove the second header. The selection is `selectPromptRecall()` in `src/core/prompt-recall.ts` (generated hook copy); the existing replay script uses the same function.
-- **What is strong**: the prompt's most informative words (at most twelve) are looked up in the same keyword index `recall` searches, candidates arriving in its BM25 order. Latin text splits into words; Chinese, Japanese and Korean runs are cut into words by the platform's word segmenter (the index holds overlapping character pairs, and most pairs straddle a word boundary and mean nothing), and neighbouring single characters the segmenter could not join are tried as one word. Only words absent from the index take no part; common terms are weighted rather than discarded. Each candidate is read back (its name, title and every observation) and scored by how much of those words' weight it covers; it must cover at least half of that weight and contain at least two of the words. Auto-captured conversations from other sessions are eligible; auto-captured work records (commits, session rollups) and task state, other projects' memories, untrusted or imported memories (note files from your own memory folder are trusted; any other note folder, and an import without `--trust`, stays untrusted and is never shown unasked) and host-scoped memories are never candidates; the project's own (under its id, the other id the same checkout is known by when the hook knows the session's folder — its remote id and its path id — and the hash-less id from before ids carried a hash: `memesh` and `memesh~<hash>` are one project; another folder with the same name is another project, `api~<hashA>` is not `api~<hashB>`, and case counts), and memories with no project and no host are; another project's memory is not, even a global one. Feedback notes (`feedback`, `engineering_feedback`) are candidates like any other type (measured: leaving them out lost more useful matches than it saved; `PROMPT_RECALL_SKIP_TYPES` is empty). A `project` memory (a stored status) not touched for 30 days is not brought along either, since the text does not say that it has gone out of date; a memory read from a note file is dated by the file's own modification time (`note_mtime_ms`), not by the day it was read, so importing an old note does not make it look new. That is `PROMPT_RECALL_MAX_PROJECT_AGE_DAYS` in `src/core/prompt-recall.ts`.
+- **Behavior**: runs a local full-text search for the prompt and selects up to two eligible results (`PROMPT_RECALL_MAX_LINES`), including at most one assistant conversation. It brings their titles and observations under the existing untrusted-data notice, within **4096 UTF-8 bytes for the entire rendered block** (`PROMPT_RECALL_MAX_BYTES`, including notice, fences, handles and truncation markers). Full fields are redacted together before neutralization and truncation. Long content is explicitly marked with the ID to retrieve through `recall`. Selected memories share the available space; one long reply cannot remove the second header. The selection is `selectPromptRecall()` in `src/core/prompt-recall.ts` (generated hook copy); the existing replay script uses the same function.
+- **Selection**: take up to two eligible results from the existing keyword search, including at most one assistant conversation. There is no additional half-weight coverage or two-matched-word admission threshold. Existing trust, project scope, archive status, own-session and stale-project exclusions remain in force; keyword results do not prove semantic relevance.
 - **Eligibility**: titles containing pending, blocked or waiting remain eligible; no title-word replacement filter is applied. Existing trust, project scope, archive status and own-session exclusions still apply.
 - **Once per session**: prompt-time content is tracked in `prompt-recall/<hash of session id>.json`. A title in the opening injection record is only an index, so it does not suppress this first content delivery. IDs are still added to the citation ledger; content already brought in by this hook is not repeated.
-- **Skipped, and recorded as skipped**: the `promptRecall` setting is `false` (`memesh config set promptRecall false`; default on), auto-capture is off, no usable session id, no database, nothing strong, or the selected content was already brought in by this hook.
+- **Skipped, and recorded as skipped**: the `promptRecall` setting is `false` (`memesh config set promptRecall false`; default on), no usable session id, no database, no eligible results, or the selected content was already brought in by this hook. Turning auto-capture off stops automatic writes, not prompt recall.
 - **Never blocks the prompt**: the database is opened read-only with a one-second lock wait; any failure is recorded as an `error` outcome and the hook exits 0 with nothing on stdout.
 
 ### Hook outcome records (capture liveness)

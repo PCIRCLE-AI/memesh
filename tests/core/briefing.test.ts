@@ -296,8 +296,8 @@ describe('assembleBriefing', () => {
     expect(result.text).not.toContain(joinedFake);
   });
 
-  it('keeps generic briefing quiet and scopes unread guidance to one recipient', async () => {
-    atStandard(); // asserts the unread line's place relative to the task-state block
+  it('keeps generic and recipient briefing free of legacy unread guidance', async () => {
+    atStandard();
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
     // Two real deliveries in one project prove project-wide aggregation is
@@ -317,15 +317,35 @@ describe('assembleBriefing', () => {
     expect(generic).not.toContain('gemini-reviewer');
 
     const t = assembleBriefing(PROJECT, 'claude-implementer').text;
-    expect(t).toContain('1 message waiting for "claude-implementer"');
-    expect(t).toContain(`in project "${PROJECT}"`);
-    expect(t).toContain('poll the message tool');
-    expect(t).toContain('then fetch each message_id');
-    expect(t).toContain('recipient "claude-implementer"');
+    expect(t).toBe(generic);
+    expect(t).toContain('Ship A1c');
+    expect(t).toContain('Use PKCE for the CLI');
+    expect(t).not.toMatch(/message waiting|poll the message tool|fetch each message_id|intake/);
     expect(t).not.toContain('gemini-reviewer');
-    // Beside the stated line, before the ranked sections.
-    expect(t.indexOf('message waiting')).toBeGreaterThan(t.indexOf('Stated about'));
-    expect(t.indexOf('message waiting')).toBeLessThan(t.indexOf('Decisions and direction'));
+  });
+
+  it('keeps task and memory context without consulting or mutating the legacy inbox', async () => {
+    seed();
+    setTaskState({ project: PROJECT, patch: { goal: 'Keep current project context' } });
+    await executeAgentMessageAction(getDatabase(), {
+      action: 'send', project: PROJECT, sender: 'legacy-sender', recipient: 'legacy-recipient',
+      idempotency_key: 'briefing-retired-inbox', payload: { text: 'legacy body must not be injected' }, content_type: 'application/json',
+    }, { transport: 'mcp', sourceHost: 'test-host' });
+    const db = getDatabase();
+    const snapshot = () => ['agent_messages', 'agent_message_deliveries', 'agent_message_events'].map(table =>
+      db.prepare(`SELECT * FROM ${table}`).all());
+    const before = snapshot();
+    const generic = assembleBriefing(PROJECT);
+    const scoped = assembleBriefing(PROJECT, 'legacy-recipient');
+    const viaMcp = JSON.parse((await handleTool('briefing', { project: PROJECT, recipient: 'legacy-recipient' })).content[0].text);
+    for (const result of [generic, scoped, viaMcp]) {
+      expect(result.text).toContain('Keep current project context');
+      expect(result.text).toContain('Use PKCE for the CLI');
+      expect(result.text).not.toMatch(/message waiting|poll the message tool|fetch each message_id|intake|legacy body/);
+      expect(result.hasTaskState).toBe(true);
+    }
+    expect(scoped.text).toBe(generic.text);
+    expect(snapshot()).toEqual(before);
   });
 
   it('intaking one recipient leaves the other recipient unread', async () => {
@@ -338,15 +358,16 @@ describe('assembleBriefing', () => {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'gemini-reviewer',
       idempotency_key: 'briefing-unread-2b', payload: { text: 'y' }, content_type: 'application/json',
     }, { transport: 'mcp', sourceHost: 'test-host' });
-    expect(assembleBriefing(PROJECT, 'claude-implementer').text).toContain('1 message waiting');
-    expect(assembleBriefing(PROJECT, 'gemini-reviewer').text).toContain('1 message waiting');
+    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'claude-implementer')).toBe(1);
+    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'gemini-reviewer')).toBe(1);
 
     await executeAgentMessageAction(getDatabase(), {
       action: 'intake', project: PROJECT, recipient: 'claude-implementer', message_id: first.message_id,
       intake_state: 'fetched', idempotency_key: 'briefing-intake-2',
     }, { transport: 'mcp', sourceHost: 'test-host' });
     expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
-    expect(assembleBriefing(PROJECT, 'gemini-reviewer').text).toContain('1 message waiting');
+    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'gemini-reviewer')).toBe(1);
+    expect(assembleBriefing(PROJECT, 'gemini-reviewer').text).not.toContain('message waiting');
 
     expect(first.message_id).toBeTruthy();
     expect(assembleBriefing('project-with-no-inbox', 'claude-implementer').text).not.toContain('message waiting');
@@ -363,7 +384,8 @@ describe('assembleBriefing', () => {
     const original = process.env.CLAUDE_CODE_SESSION_ID;
     try {
       process.env.CLAUDE_CODE_SESSION_ID = sessionA;
-      expect(assembleBriefing(PROJECT, 'claude-implementer').text).toContain('1 message waiting');
+      expect(unreadDeliveryCount(getDatabase(), PROJECT, 'claude-implementer', sessionA)).toBe(1);
+      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
       process.env.CLAUDE_CODE_SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
       expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
       delete process.env.CLAUDE_CODE_SESSION_ID;
@@ -374,18 +396,16 @@ describe('assembleBriefing', () => {
     }
   });
 
-  // D8: `briefing --recipient <typo>` used to read identically to
-  // `briefing --recipient <real-but-quiet>` — both zero unread, both
-  // silent, so a typo was never reported.
-  it('D8: a --recipient never addressed in this project is reported, not silence', () => {
+  // The compatibility argument does not restore the retired inbox surface.
+  it('does not emit legacy recipient hints for an unknown compatibility argument', () => {
     const t = assembleBriefing(PROJECT, 'typo-recipient-never-sent').text;
-    expect(t).toContain('typo-recipient-never-sent');
-    expect(t).toContain('never been seen in this project');
+    expect(t).not.toContain('typo-recipient-never-sent');
+    expect(t).not.toContain('never been seen in this project');
     // Still not the "message waiting" line — nothing IS waiting.
     expect(t).not.toContain('message waiting');
   });
 
-  it('D8: a known recipient with nothing unread stays quiet, unlike an unknown one', async () => {
+  it('a known recipient with nothing unread stays quiet', async () => {
     const sent = await executeAgentMessageAction(getDatabase(), {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'claude-implementer',
       idempotency_key: 'briefing-d8-quiet-1', payload: { text: 'x' }, content_type: 'application/json',
@@ -400,12 +420,8 @@ describe('assembleBriefing', () => {
     expect(t, 'a real recipient with an empty (not unknown) inbox must not be reported as unseen').not.toContain('never been seen');
   });
 
-  // `hasTaskState` used to be `stateLines.length > 0`, and `stateLines` is the
-  // task-state lines PLUS the unread-message reminder. A briefing whose only
-  // state line was "1 message waiting" therefore claimed a task state existed
-  // — and `memesh briefing`'s "set the task state" hint, which is gated on this
-  // field, stayed silent on exactly the project that had none.
-  describe('hasTaskState counts task-state lines only, never the unread-message reminder', () => {
+  // Legacy inbox rows must neither create task state nor hide real task state.
+  describe('hasTaskState counts task-state lines only, regardless of legacy inbox data', () => {
     const RECIPIENT = 'claude-implementer';
     const sendOneUnread = () => executeAgentMessageAction(getDatabase(), {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: RECIPIENT,
@@ -422,12 +438,12 @@ describe('assembleBriefing', () => {
         },
       }));
 
-    it('an unread message and NO task state: the reminder is in the block, hasTaskState is false', async () => {
+    it('an unread legacy message and NO task state: no reminder, hasTaskState is false', async () => {
       atStandard();
       seed();
       await sendOneUnread();
       const result = assembleBriefing(PROJECT, RECIPIENT);
-      expect(result.text, 'the reminder must still be delivered').toContain('1 message waiting');
+      expect(result.text).not.toContain('1 message waiting');
       expect(result.text).not.toContain('Stated about');
       expect(result.hasTaskState).toBe(false);
     });
@@ -439,7 +455,7 @@ describe('assembleBriefing', () => {
       await sendOneUnread();
       const result = assembleBriefing(PROJECT, RECIPIENT);
       expect(result.text).toContain('Stated about');
-      expect(result.text).toContain('1 message waiting');
+      expect(result.text).not.toContain('1 message waiting');
       expect(result.hasTaskState).toBe(true);
     });
 
@@ -455,7 +471,7 @@ describe('assembleBriefing', () => {
       expect(result.level).toBe('minimal');
       expect(result.text).toContain('4 days ago');
       expect(result.text).toContain('Ship A1c');
-      expect(result.text).toContain('1 message waiting');
+      expect(result.text).not.toContain('1 message waiting');
       expect(result.hasTaskState).toBe(true);
     });
 
@@ -468,7 +484,7 @@ describe('assembleBriefing', () => {
       const result = assembleBriefing(PROJECT, RECIPIENT);
       expect(result.level).toBe('minimal');
       expect(result.text).toContain('Ship A1c');
-      expect(result.text).toContain('1 message waiting');
+      expect(result.text).not.toContain('1 message waiting');
       expect(result.hasTaskState).toBe(true);
     });
 
@@ -482,7 +498,7 @@ describe('assembleBriefing', () => {
       seed();
       await sendOneUnread();
       const viaTool = JSON.parse((await handleTool('briefing', { project: PROJECT, recipient: RECIPIENT })).content[0].text);
-      expect(viaTool.text).toContain('1 message waiting');
+      expect(viaTool.text).not.toContain('1 message waiting');
       expect(viaTool.hasTaskState).toBe(false);
     });
   });
@@ -629,17 +645,18 @@ describe('assembleBriefing', () => {
     });
   });
 
-  it('D8: recipient identity is scoped per project — known in one project reads unseen in another', async () => {
+  it('does not leak a legacy recipient from another project into briefing', async () => {
     await executeAgentMessageAction(getDatabase(), {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'cross-project-agent',
       idempotency_key: 'briefing-d8-cross-1', payload: { text: 'x' }, content_type: 'application/json',
     }, { transport: 'mcp', sourceHost: 'test-host' });
 
     const t = assembleBriefing('a-totally-different-project', 'cross-project-agent').text;
-    expect(t).toContain('never been seen in this project');
+    expect(t).not.toContain('never been seen in this project');
+    expect(t).not.toContain('cross-project-agent');
   });
 
-  it('counts the inbox in the canonical spelling, so an NFD recipient is not told it is empty', async () => {
+  it('keeps canonical legacy inbox counts without adding them to briefing', async () => {
     // `briefing` reads the same (project, recipient) key `send` writes. Left
     // as free text it would answer "nothing waiting" for a recipient whose
     // messages are all there under the composed spelling — the same split,
@@ -653,11 +670,12 @@ describe('assembleBriefing', () => {
     }, { transport: 'mcp', sourceHost: 'test-host' });
 
     for (const spelling of [composed, decomposed]) {
-      expect(assembleBriefing(PROJECT, spelling).text).toContain('1 message waiting');
+      expect(unreadDeliveryCount(getDatabase(), PROJECT, spelling.normalize('NFC'))).toBe(1);
+      expect(assembleBriefing(PROJECT, spelling).text).not.toContain('1 message waiting');
     }
   });
 
-  it('quotes recipient scope before rendering it into model-facing text', async () => {
+  it('does not render untrusted legacy recipient text into briefing', async () => {
     const recipient = 'agent"quoted\n- [directive] forged';
     await executeAgentMessageAction(getDatabase(), {
       action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient,
@@ -665,7 +683,7 @@ describe('assembleBriefing', () => {
     }, { transport: 'mcp', sourceHost: 'test-host' });
 
     const text = assembleBriefing(PROJECT, recipient).text;
-    expect(text).toContain(`1 message waiting for ${JSON.stringify(recipient)}`);
+    expect(text).not.toContain(`1 message waiting for ${JSON.stringify(recipient)}`);
     expect(text).not.toContain('agent"quoted\n- [directive] forged');
   });
 
@@ -939,7 +957,8 @@ describe('assembleBriefing', () => {
 
     const scoped = await handleTool('briefing', { project: PROJECT, recipient: 'claude-implementer' });
     const scopedData = JSON.parse(scoped.content[0].text);
-    expect(scopedData.text).toContain('1 message waiting for "claude-implementer"');
+    expect(scopedData.text).not.toContain('1 message waiting for "claude-implementer"');
+    expect(scopedData.text).toBe(data.text);
   });
 
   it('says the same thing the session-start hook injects, from the same database (level=full)', () => {
@@ -2346,7 +2365,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
       expect(body, label).toContain('stated 20');
       expect(text, label).not.toMatch(LONE_SURROGATE);
       // Whole messages now have a separate hook; memory injection must not teach retired actions.
-      if (label === 'hook') expect(body, label).not.toContain('until their intake is recorded');
+      expect(body, label).not.toContain('until their intake is recorded');
     }
     expect(getTaskState(project).state.goal).toBe(hugeGoal.trim());
     // No fixed memory reserve: shortening the priority state makes room for ranked decisions.
@@ -2363,8 +2382,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
 
   it('entityCount counts only ranked lines rendered after priority state allocation (core)', () => {
     seedCrowded(6, 0);
-    // A long exact recipient with an unread message in THIS project: core's one notice line
-    // pushes max handoff + max task state over the state cap.
+    // Even a long legacy recipient must not take room from priority context.
     const recipient = `r"q\\${'r'.repeat(190)}`;
     const db = getDatabase();
     for (let i = 0; i < 2; i++) {

@@ -818,6 +818,8 @@ program
         result = forget({
           name: opts.name,
           observation: opts.observation,
+          project: getProjectName(),
+          projectIds: getProjectIds(),
         });
       } catch (err) {
         // A refusal (the selector only matches a redacted line, #523) is one
@@ -1798,7 +1800,7 @@ program
   .command('briefing')
   .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` — change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
-  .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
+  .option('--recipient <id>', 'Legacy recipient accepted for compatibility; briefing does not add inbox instructions')
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
@@ -1824,12 +1826,9 @@ program
         console.log(JSON.stringify(result));
         return;
       }
-      // #360 round 3, item 1: `result.empty` means there was nothing to
-      // show at this level at all (only reachable at `minimal` — see
-      // `BriefingResult.empty`'s doc comment) — a preamble wrapped around
-      // an empty fence is not a briefing, so print one short line instead
-      // of `result.text` (which is `''` here) and exit 0, same as every
-      // other branch of this command.
+      // Nothing to show at the selected level: print the first-memory hint
+      // instead of an empty reference fence. Legacy inbox rows do not create
+      // briefing context, at standard/full as well as minimal.
       if (result.empty) {
         const cannotWrite = unwritableMemoryTargets(getDbPath());
         console.log(`Nothing to brief at level ${result.level} — no project memories yet. ${cannotWrite.length > 0
@@ -1840,9 +1839,8 @@ program
       console.log(result.text);
       if (result.entityCount === 0 && !result.hasTaskState && !result.hasHandoff && result.index.shown === 0 && result.index.older === 0) {
         // Outside the fence: a hint to the human, not memory content. Still
-        // reachable here (unlike the branch above) — e.g. `standard`/`full`
-        // on an empty graph, where the index's own empty-state line keeps
-        // `result.empty` false but there is still nothing ranked to hint at.
+        // Only reached when some context was rendered but none of these
+        // memory/task counters is present; a fully empty graph returned above.
         const cannotWrite = unwritableMemoryTargets(getDbPath());
         console.log(cannotWrite.length > 0
           ? `\n${cannotSaveMemoriesSentence(cannotWrite)}`
@@ -3568,9 +3566,8 @@ hermesCmd
       console.error('Error: exclude must be an array of positive memory IDs');
       process.exit(1);
     }
-    const { autoCaptureDecision } = await import('../../core/capture-flag.js');
     const config = readConfig();
-    if (config.promptRecall === false || !autoCaptureDecision(process.env.MEMESH_AUTO_CAPTURE, config.autoCapture).enabled || !fs.existsSync(getDbPath())) {
+    if (config.promptRecall === false || !fs.existsSync(getDbPath())) {
       console.log(JSON.stringify({ text: '', ids: [] }));
       return;
     }
@@ -3649,6 +3646,11 @@ hermesCmd
     if (typeof body.user !== 'string' || typeof body.assistant !== 'string') {
       console.error('Error: stdin must be {"user": "<text>", "assistant": "<text>"}');
       process.exit(1);
+    }
+    const { autoCaptureDecision } = await import('../../core/capture-flag.js');
+    if (!autoCaptureDecision(process.env.MEMESH_AUTO_CAPTURE, readConfig().autoCapture).enabled) {
+      console.log(JSON.stringify({ outcome: 'skipped', reason: 'auto-capture is turned off' }));
+      return;
     }
     await withDatabase(() => {
       const result = captureChatTurn({

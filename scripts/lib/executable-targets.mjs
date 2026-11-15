@@ -28,8 +28,8 @@ import path from 'path';
  */
 
 /**
- * Hook script paths declared in `hooks/hooks.json`, relative to the package
- * root.
+ * Hook script paths declared in `hooks/hooks.json` and the Codex plugin's
+ * inline hooks, relative to the package root.
  *
  * A command looks like `${CLAUDE_PLUGIN_ROOT}/scripts/hooks/foo.js`, possibly
  * with arguments, so the prefix is stripped and the first token taken.
@@ -41,9 +41,20 @@ export function hookCommands(packageDir) {
   const manifest = JSON.parse(
     fs.readFileSync(path.join(packageDir, 'hooks', 'hooks.json'), 'utf8')
   );
+  let codexHooks = {};
+  try {
+    const codex = JSON.parse(
+      fs.readFileSync(path.join(packageDir, '.codex-plugin', 'plugin.json'), 'utf8')
+    );
+    codexHooks = codex.hooks?.hooks ?? {};
+  } catch (error) {
+    // Small package fixtures may only declare Claude hooks. Invalid existing
+    // manifests and read errors must still fail instead of hiding entry points.
+    if (error.code !== 'ENOENT') throw error;
+  }
 
   const commands = new Set(
-    Object.values(manifest.hooks ?? {})
+    [...Object.values(manifest.hooks ?? {}), ...Object.values(codexHooks)]
       .flat()
       .flatMap((matcher) => matcher.hooks ?? [])
       .map((hook) => hook.command)

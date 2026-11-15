@@ -1,3 +1,31 @@
+export function resolveProjectMemoryName(db, name, project, projectIds = [], create = false) {
+    if (typeof project !== 'string')
+        return name;
+    const ids = [...new Set([project, ...(projectIds.includes(project) ? projectIds : [])])];
+    const row = db.prepare('SELECT id FROM entities WHERE name = ?');
+    const original = row.get(name);
+    if (original && filedUnder(projectTagsOf(db, original.id), project, projectIds) !== undefined)
+        return name;
+    for (const id of ids) {
+        const qualified = `${name}@${id}`;
+        const candidates = db.prepare('SELECT id, name FROM entities WHERE name = ? OR substr(name, 1, length(?)) = ?')
+            .all(qualified, `${qualified}~`, `${qualified}~`)
+            .map(found => ({ ...found, suffix: found.name === qualified ? 1 : Number(found.name.slice(qualified.length + 1)) }))
+            .filter(found => found.name === qualified || (Number.isSafeInteger(found.suffix) && found.suffix >= 2 && found.name === `${qualified}~${found.suffix}`))
+            .sort((a, b) => a.suffix - b.suffix);
+        for (const found of candidates) {
+            if (filedUnder(projectTagsOf(db, found.id), project, projectIds) !== undefined)
+                return found.name;
+        }
+    }
+    if (!create || !original || projectTagsOf(db, original.id).length === 0)
+        return name;
+    const qualified = `${name}@${project}`;
+    let available = qualified;
+    for (let suffix = 2; row.get(available); suffix++)
+        available = `${qualified}~${suffix}`;
+    return available;
+}
 export function projectOwnershipRefusal(db, name, project, projectIds = []) {
     const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name);
     if (!row)

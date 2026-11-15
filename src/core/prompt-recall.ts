@@ -18,8 +18,8 @@
 // information it covers: the summed inverse document frequency of the prompt's
 // words the memory also contains, over the summed inverse document frequency
 // of the prompt's most informative words. Common words carry almost no
-// weight, so they cannot make a match strong; a memory has to share several
-// of the prompt's rare words.
+// weight. These scores order candidates; by default even a single matching
+// word may bring a memory along, without an additional admission threshold.
 //
 // The prompt's words are real words. Latin text splits on spaces. A run of
 // Chinese, Japanese or Korean is cut into words by the platform's word
@@ -46,10 +46,10 @@ import {
 export const PROMPT_RECALL_MAX_LINES = 2;
 /** Entire rendered context, including the data notice, fences and recall handles. */
 export const PROMPT_RECALL_MAX_BYTES = 4096;
-/** Share of the prompt's information a memory must cover to count as strong. */
-export const PROMPT_RECALL_MIN_COVERAGE = 0.5;
-/** Distinct prompt words a memory must contain. One shared word is a topic, not a match. */
-export const PROMPT_RECALL_MIN_TERMS = 2;
+/** No extra coverage threshold by default; retained for explicit replay studies. */
+export const PROMPT_RECALL_MIN_COVERAGE = 0;
+/** Every scored candidate already has at least one matching prompt term. */
+export const PROMPT_RECALL_MIN_TERMS = 1;
 /** Only the start of a prompt is read: a pasted log is not a question. */
 const PROMPT_CHARS = 1500;
 /** The most informative terms of a prompt that take part in scoring. */
@@ -114,7 +114,9 @@ export interface PromptRecallOptions {
   cwd?: string | null;
   /** Ids whose content was already brought into this session; title indexes do not count. */
   exclude?: ReadonlySet<number>;
+  /** Replay only: opt into a coverage threshold; normal recall accepts every scored hit. */
   minCoverage?: number;
+  /** Replay only: opt into a matching-term threshold above the existing one-term hit. */
   minTerms?: number;
   maxLines?: number;
   /**

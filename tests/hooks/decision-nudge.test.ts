@@ -101,8 +101,9 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     expect(ctx).toContain('remember');
     // The documented lesson type, lesson_learned, rather than the undocumented shorthand (#443).
     expect(ctx).toContain('type decision or lesson_learned');
-    // remember refuses a decision with no reason: the nudge must say so, or it sends the agent into a refused call.
-    expect(ctx).toContain('A decision needs `why`: the reason for it and what would make it stop holding');
+    // Rationale is useful, but omission must not be described as a refusal.
+    expect(ctx).toContain('When known, include `why`: the reason for it and what would make it stop holding');
+    expect(ctx).not.toContain('without it the call is refused');
     // The exact project id, not a plain name that hashed-identity sessions never see (#408).
     expect(ctx).toContain('memesh briefing --json');
     expect(ctx).toContain('`task_state` tool');

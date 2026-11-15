@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { projectOwnershipRefusal, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { remember, shownEntity } from './operations.js';
 import type { Entity } from './types.js';
 
@@ -27,6 +27,7 @@ export async function editMemoryInteractively(
 ) {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  name = resolveProjectMemoryName(db, name, project, projectIds);
   const snapshot = () => {
     const refusal = projectOwnershipRefusal(db, name, project, projectIds);
     if (refusal) throw new Error(refusal);

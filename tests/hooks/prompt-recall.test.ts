@@ -70,10 +70,10 @@ describe('Feature: prompt-time recall hook', () => {
   }
 
   /** The whole hook process, as Claude Code runs it. */
-  function runHook(prompt: string, extra: Record<string, unknown> = {}, session = 'sess-a') {
+  function runHook(prompt: string, extra: Record<string, unknown> = {}, session = 'sess-a', hookEnv: Record<string, string> = {}) {
     const result = spawnSync('node', [HOOK], {
       input: JSON.stringify({ prompt, session_id: session, cwd: project, hook_event_name: 'UserPromptSubmit', ...extra }),
-      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },
+      env: { ...process.env, ...hookEnv, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },
       encoding: 'utf8',
       timeout: 15000,
     });
@@ -196,7 +196,7 @@ describe('Feature: prompt-time recall hook', () => {
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptNoTerms });
   });
 
-  it('needs the prompt to be mostly about the memory: sharing a couple of its words is not enough', () => {
+  it('delivers single-word hits and up to two partial matches without an extra admission threshold', () => {
     openDatabase(dbPath);
     try {
       const kg = new KnowledgeGraph(getDatabase());
@@ -207,15 +207,20 @@ describe('Feature: prompt-time recall hook', () => {
     } finally {
       closeDatabase();
     }
-    // A third of this prompt is about each memory: none is what it is about.
-    expect(run('alpha beta epsilon zeta kappa lambda').stdout).toBe('');
-    expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptNoMatch });
-    // One shared word is a topic, not a match.
+    const single = JSON.parse(run('alpha').stdout).hookSpecificOutput.additionalContext as string;
+    expect(single).toContain('Alpha beta gamma delta rollout');
+    expect(single).toContain('alpha beta gamma delta');
     expect(run('alpha').stdout).toBe('');
-    // Three quarters of this one is about the first.
-    const strong = JSON.parse(run('alpha beta gamma epsilon').stdout).hookSpecificOutput.additionalContext as string;
+    expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
+    // Each covers a third: existing ranking still chooses only two.
+    const partial = JSON.parse(run('alpha beta epsilon zeta kappa lambda', {}, 'partial').stdout).hookSpecificOutput.additionalContext as string;
+    expect(partial.split('\n').filter((line) => /^- .* \[mem:\d+\]$/.test(line))).toHaveLength(2);
+    expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:2' });
+    const strong = JSON.parse(run('alpha beta gamma epsilon', {}, 'strong').stdout).hookSpecificOutput.additionalContext as string;
     expect(strong).toContain('Alpha beta gamma delta rollout');
-    expect(strong).not.toContain('Epsilon zeta');
+    expect(strong).toContain('Epsilon zeta theta iota rollout');
+    expect(strong.indexOf('Alpha beta')).toBeLessThan(strong.indexOf('Epsilon zeta'));
+    expect(strong).not.toContain('Kappa lambda');
   });
 
   it('never brings along more than two memories', () => {
@@ -291,8 +296,8 @@ describe('Feature: prompt-time recall hook', () => {
   describe('switches', () => {
     it('stays silent and records why when promptRecall is false in the config', () => {
       seed();
-      fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ promptRecall: false }));
-      expect(run(MATCHING).stdout).toBe('');
+      fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ promptRecall: false, autoCapture: false }));
+      expect(runHook(MATCHING).stdout).toBe('');
       expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptRecallOff });
     });
 
@@ -302,11 +307,28 @@ describe('Feature: prompt-time recall hook', () => {
       expect(run(MATCHING).stdout).not.toBe('');
     });
 
-    it('stays silent and records why when auto-capture is off', () => {
-      seed();
-      fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ autoCapture: false }));
-      expect(run(MATCHING).stdout).toBe('');
-      expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff });
+    it.each(['config', 'environment'] as const)('recalls existing memory without conversation writes when auto-capture is off via %s', (via) => {
+      const { decisionId } = seed();
+      fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ autoCapture: via !== 'config' }));
+      const snapshot = () => {
+        const db = new MemeshDatabase(dbPath, { readOnly: true });
+        try {
+          return {
+            entities: db.prepare('SELECT * FROM entities ORDER BY id').all(),
+            observations: db.prepare('SELECT * FROM observations ORDER BY id').all(),
+            conversations: db.prepare("SELECT count(*) n FROM entities WHERE type='conversation'").get(),
+          };
+        } finally { db.close(); }
+      };
+      const before = snapshot();
+      const { stdout } = runHook(MATCHING, {}, 'capture-off', { MEMESH_AUTO_CAPTURE: via === 'environment' ? 'false' : '' });
+      const context: string = JSON.parse(stdout).hookSpecificOutput.additionalContext;
+      expect(context).toContain(`[mem:${decisionId}]`);
+      expect(context).toContain('Storage uses the built-in node:sqlite driver');
+      expect(Buffer.byteLength(context, 'utf8')).toBeLessThanOrEqual(4096);
+      expect(lastOutcome()).toMatchObject({ outcome: 'notified', entity: 'injected:1' });
+      expect(before.conversations).toEqual({ n: 0 });
+      expect(snapshot()).toEqual(before);
     });
   });
 

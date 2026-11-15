@@ -115,8 +115,9 @@ Saving is on by default: store decisions, preferences, lessons and context witho
   memory under the current directory's project, `--project <id>` names another
   and `--no-project` stores one with none. An append to an existing unfiled
   memory with no explicit project or project tag stays unfiled on either
-  transport; it may omit `type` and retain the stored type. Explicit scope
-  changes and writes to another project's memory remain refused. `recall` searches the bound project (or `project`), memories
+  transport; it may omit `type` and retain the stored type. Existing rows cannot
+  be moved or overwritten across scopes; same-name project memories use the
+  scoped name resolution below. `recall` searches the bound project (or `project`), memories
   with no project, global ones that are not untrusted, and the decisions, lessons and preferences of any project that are not untrusted and not from its memory folder (each result's `projects` says where it came from; another project's commits, session summaries, handoffs and notes are never included, nor the notes of its memory folder other than preferences and feedback), and says which in `scope`. When you tag by hand (the CLI, or another
   project), use `project:<id>`, where `<id>` is the `project` field of the
   `briefing` result (CLI: `memesh briefing --json`). The first line of the
@@ -127,18 +128,21 @@ Saving is on by default: store decisions, preferences, lessons and context witho
   scope that this project's sessions never see.
 - **A mistake with a known cause and fix is a `learn` call** (it creates a
   `lesson_learned`, which later sessions show as a lesson). A choice between
-  options is a `remember` with type `decision` and a `why`: the reason for it
+  options is a `remember` with type `decision`. Add optional `why`: the reason for it
   AND what would make it stop holding ("too heavy to deploy for one user;
-  revisit if we add a hosted tier"). A new decision, or a `replace` of one,
-  without one is refused.
+  revisit if we add a hosted tier"). Decisions without it are still stored.
   Briefings, session start and `briefing --index` show each decision with
   its reason (or "no reason recorded"), and one nobody has read or added to for
   30 days as "unconfirmed N days: re-check before relying" — recall it to check
   it still holds before you follow it.
 - **Reuse a stable `name` to append.** Calling `remember` with an existing
   name appends observations and dedupes tags. A fresh name for every update
-  creates duplicates that recall must wade through. A name another project
-  already holds is refused over MCP rather than shared: pick a different one.
+  creates duplicates that recall must wade through. In a declared project, a
+  name held by another project creates a separate memory qualified with the
+  full project ID (and a numeric suffix if needed). Use the returned actual
+  name; scoped append, replace, forget and relation operations also resolve
+  the original name to this project's memory. Without a declared project,
+  names remain literal; existing unfiled memories keep their append policy.
 - **Correct a memory in one call**: `remember` it again with its `name`,
   `replace: true` and the `observations` it should now hold (a replace with
   neither `observations` nor `note` is refused, because it would empty the

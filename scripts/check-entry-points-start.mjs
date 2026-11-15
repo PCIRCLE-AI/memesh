@@ -512,6 +512,17 @@ async function main() {
         tool_response: { stdout: '[main abc1234] test' },
       })),
     },
+    'scripts/hooks/codex-busy-message-notice.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
+        hook_event_name: 'PostToolUse', tool_name: 'Bash', tool_input: { command: 'echo hi' },
+      })),
+    },
+    'scripts/hooks/codex-plan-activity.js': {
+      run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
+        hook_event_name: 'PostToolUse', tool_name: 'update_plan',
+        tool_input: { plan: [{ step: 'entry-point gate smoke', status: 'in_progress' }] },
+      })),
+    },
     'scripts/hooks/decision-nudge.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
         hook_event_name: 'PostToolUse', tool_name: 'ExitPlanMode', tool_input: { plan: 'entry-point gate smoke' },

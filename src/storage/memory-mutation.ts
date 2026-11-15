@@ -1,5 +1,36 @@
 import type { MemeshDatabase } from './sqlite.js';
 
+/** Resolve a caller's original name without changing another project's row.
+ * Names remain globally unique; qualified names use the full project id, not
+ * its readable prefix. Existing checkout aliases are searched but never added
+ * to a foreign row. Without a declared project, keep the literal name.
+ */
+export function resolveProjectMemoryName(db: MemeshDatabase, name: string, project: string | null | undefined, projectIds: readonly string[] = [], create = false): string {
+  if (typeof project !== 'string') return name;
+  const ids = [...new Set([project, ...(projectIds.includes(project) ? projectIds : [])])];
+  const row = db.prepare('SELECT id FROM entities WHERE name = ?');
+  const original = row.get(name) as { id: number } | undefined;
+  if (original && filedUnder(projectTagsOf(db, original.id), project, projectIds) !== undefined) return name;
+  for (const id of ids) {
+    const qualified = `${name}@${id}`;
+    const candidates = (db.prepare('SELECT id, name FROM entities WHERE name = ? OR substr(name, 1, length(?)) = ?')
+      .all(qualified, `${qualified}~`, `${qualified}~`) as { id: number; name: string }[])
+      .map(found => ({ ...found, suffix: found.name === qualified ? 1 : Number(found.name.slice(qualified.length + 1)) }))
+      .filter(found => found.name === qualified || (Number.isSafeInteger(found.suffix) && found.suffix >= 2 && found.name === `${qualified}~${found.suffix}`))
+      .sort((a, b) => a.suffix - b.suffix);
+    for (const found of candidates) {
+      if (filedUnder(projectTagsOf(db, found.id), project, projectIds) !== undefined) return found.name;
+    }
+  }
+  // A shared legacy row keeps its name and ownership; the caller's existing
+  // legacy-append policy decides whether that particular mutation is allowed.
+  if (!create || !original || projectTagsOf(db, original.id).length === 0) return name;
+  const qualified = `${name}@${project}`;
+  let available = qualified;
+  for (let suffix = 2; row.get(available); suffix++) available = `${qualified}~${suffix}`;
+  return available;
+}
+
 /**
  * Why a write that declares its project may not touch the memory named
  * `name`, or undefined when it may. `project` is the write's project, or

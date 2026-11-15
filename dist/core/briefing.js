@@ -4,9 +4,6 @@ import { readConfig } from './config.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
-import { inboxUnreadableLine, recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
-import { hostSessionFromEnv } from './host-session.js';
-import { canonicalAgentScopeId } from './agent-scope-id.js';
 import { taskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
 import { buildBriefingIndex } from './briefing-index.js';
@@ -21,7 +18,7 @@ export function readBriefingIndex(db, projectName, now = Date.now(), projectIds)
     const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds ?? projectIdsFor(projectName));
     return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
-export function assembleBriefing(project, recipient, projectIds) {
+export function assembleBriefing(project, _recipient, projectIds) {
     const projectName = project ?? getProjectName();
     const ids = projectIds ?? projectIdsFor(projectName);
     const db = getDatabase();
@@ -48,18 +45,6 @@ export function assembleBriefing(project, recipient, projectIds) {
             throw err;
         taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
     }
-    const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
-    let unreadCount = 0;
-    let inboxUnreadable;
-    try {
-        unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
-    }
-    catch (err) {
-        inboxUnreadable = err instanceof Error ? err.message : 'unknown error';
-    }
-    const everSeen = inboxRecipient !== undefined && unreadCount === 0 && inboxUnreadable === undefined
-        ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
-        : undefined;
     const pools = selectBriefingPools(db, projectName, {
         projectIds: ids,
         projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config.sessionLimit).value,
@@ -67,14 +52,9 @@ export function assembleBriefing(project, recipient, projectIds) {
         foreign: policy.foreign,
     });
     const handoff = pools.handoffs.flatMap((row) => handoffLines(row));
-    const stateLines = [
-        ...(inboxUnreadable !== undefined && inboxRecipient
-            ? [inboxUnreadableLine(canonicalAgentScopeId(projectName), inboxRecipient, inboxUnreadable)]
-            : unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName), inboxRecipient, everSeen)),
-    ];
     const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
     const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));
-    const lines = assembleTopologyBlock(stateLines, [
+    const lines = assembleTopologyBlock([], [
         { entities: toEntities(pools.lessons), foreign: false },
         { entities: toEntities(pools.project), foreign: false },
         { entities: toEntities(pools.noProject), foreign: false, noProject: true },
@@ -98,7 +78,7 @@ export function assembleBriefing(project, recipient, projectIds) {
     return {
         project: projectName,
         text: opening.text,
-        entityCount: lines.slice(stateLines.length, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
+        entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
         hasTaskState: opening.taskLines.length > 0,
         hasHandoff: opening.tailLines.length > 0,
         index,

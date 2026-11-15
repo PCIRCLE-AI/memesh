@@ -1,4 +1,5 @@
 import fs from 'fs';
+import { projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import path from 'path';
 import { createHash } from 'crypto';
 import { noteDirId } from './note-dirs.js';
@@ -290,11 +291,14 @@ export function ingestNoteDirectory(opts) {
             continue;
         }
         const rawName = stringField(parsed.data, 'name');
-        const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
+        let name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
         if (!name) {
             contentSkip('frontmatter has no name');
             continue;
         }
+        const prior = known.get(rel);
+        if (prior && projectTagsOf(db, prior.id).some(tag => resolveProjectMemoryName(db, name, tag.slice(8)) === prior.name))
+            name = prior.name;
         const metaBlock = parsed.data.metadata;
         const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
         const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : '') || NOTE_DEFAULT_TYPE;
@@ -331,9 +335,12 @@ export function ingestNoteDirectory(opts) {
             byName.set(c.name, [c]);
     }
     const touchedIds = new Set();
-    for (const c of claims)
-        declaredNameAt.set(c.rel, c.name);
-    for (const [name, claimants] of byName) {
+    for (const [requestedName, claimants] of byName) {
+        const original = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, requestedName);
+        const name = original && parseProvenance(original.metadata).note_dir_id === dirId
+            ? requestedName : resolveProjectMemoryName(db, requestedName, opts.project, [], true);
+        for (const c of claimants)
+            declaredNameAt.set(c.rel, name);
         const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
         const prov = existing ? parseProvenance(existing.metadata) : {};
         const skipAll = (reason) => {

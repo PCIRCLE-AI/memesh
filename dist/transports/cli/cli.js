@@ -11011,6 +11011,30 @@ ${r.stderr}` : ""}` : r.stderr ?? ""), ...startupError ? { startupError } : {}, 
 });
 
 // dist/storage/memory-mutation.js
+function resolveProjectMemoryName(db2, name, project, projectIds = [], create = false) {
+  if (typeof project !== "string")
+    return name;
+  const ids = [.../* @__PURE__ */ new Set([project, ...projectIds.includes(project) ? projectIds : []])];
+  const row = db2.prepare("SELECT id FROM entities WHERE name = ?");
+  const original = row.get(name);
+  if (original && filedUnder(projectTagsOf(db2, original.id), project, projectIds) !== void 0)
+    return name;
+  for (const id of ids) {
+    const qualified2 = `${name}@${id}`;
+    const candidates = db2.prepare("SELECT id, name FROM entities WHERE name = ? OR substr(name, 1, length(?)) = ?").all(qualified2, `${qualified2}~`, `${qualified2}~`).map((found) => ({ ...found, suffix: found.name === qualified2 ? 1 : Number(found.name.slice(qualified2.length + 1)) })).filter((found) => found.name === qualified2 || Number.isSafeInteger(found.suffix) && found.suffix >= 2 && found.name === `${qualified2}~${found.suffix}`).sort((a, b) => a.suffix - b.suffix);
+    for (const found of candidates) {
+      if (filedUnder(projectTagsOf(db2, found.id), project, projectIds) !== void 0)
+        return found.name;
+    }
+  }
+  if (!create || !original || projectTagsOf(db2, original.id).length === 0)
+    return name;
+  const qualified = `${name}@${project}`;
+  let available = qualified;
+  for (let suffix = 2; row.get(available); suffix++)
+    available = `${qualified}~${suffix}`;
+  return available;
+}
 function projectOwnershipRefusal(db2, name, project, projectIds = []) {
   const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(name);
   if (!row)
@@ -11911,13 +11935,21 @@ function resolveRememberInput(input2) {
   };
 }
 function rememberInTransaction(args, derived2, typeGiven, db2, kg) {
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  const scopedTags = healed.tags ?? [];
+  const scopes = [...new Set(scopedTags.filter((tag) => tag.startsWith("project:")).map((tag) => tag.slice(8)))];
+  const scope = args.project !== void 0 ? args.project : scopes.length === 1 ? scopes[0] : void 0;
+  args = {
+    ...args,
+    name: resolveProjectMemoryName(db2, args.name, scope, args.projectIds, true),
+    relations: args.relations?.map((rel) => ({ ...rel, to: resolveProjectMemoryName(db2, rel.to, scope, args.projectIds) }))
+  };
   const existing = db2.prepare("SELECT id, namespace, type, title, status FROM entities WHERE name = ?").get(args.name);
   const touched = [
     ...existing ? [args.name] : [],
     ...(args.relations ?? []).filter((rel) => rel.type === "supersedes").map((rel) => rel.to)
   ];
   let retagged;
-  const healed = withFullProjectTag(args.tags, args.currentProject);
   if (healed.retagged) {
     const plainTag = healed.retagged.from;
     const keepsPlain = touched.some((name) => db2.prepare("SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?").get(name, plainTag) !== void 0);
@@ -12159,6 +12191,14 @@ function learn(args) {
 function forget(args) {
   const db2 = getDatabase();
   const kg = new KnowledgeGraph(db2);
+  args = { ...args, name: resolveProjectMemoryName(db2, args.name, args.project, args.projectIds) };
+  if (args.project !== void 0) {
+    const row = db2.prepare("SELECT id FROM entities WHERE name = ?").get(args.name);
+    const scope = row && projectTagsOf(db2, row.id).length === 0 ? null : args.project;
+    const refusal = projectOwnershipRefusal(db2, args.name, scope, args.projectIds);
+    if (refusal)
+      throw new Error(refusal);
+  }
   if (args.observation !== void 0) {
     const result2 = kg.removeObservation(args.name, args.observation);
     const shown = redactSecrets(args.observation);
@@ -33460,54 +33500,11 @@ function unreadDeliveryCount(db2, project, recipient, session2) {
     throw err;
   }
 }
-function inboxUnreadableLine(project, recipient, reason) {
-  const shown = JSON.stringify(reason.replace(/\s+/g, " ").trim().slice(0, 200));
-  return `The inbox for ${JSON.stringify(recipient)} in project ${jsonStringLiteral(project)} could not be read: ${shown} \u2014 that is not the same as no messages waiting; run memesh doctor.`;
-}
-function recipientSeenQuery(db2, recipient, project, onError) {
-  try {
-    const scope = project !== void 0 ? "project = ? AND " : "";
-    const params = project !== void 0 ? [project, recipient, project, recipient, project, recipient] : [recipient, recipient, recipient];
-    const row = db2.prepare(`SELECT (
-         EXISTS(SELECT 1 FROM agent_principals WHERE ${scope}principal_id = ?)
-         OR EXISTS(SELECT 1 FROM agent_message_deliveries WHERE ${scope}recipient = ?)
-         OR EXISTS(SELECT 1 FROM agent_session_instances WHERE ${scope}session_instance_id = ?)
-       ) AS seen`).get(...params);
-    return row?.seen === void 0 ? void 0 : Boolean(row.seen);
-  } catch (err) {
-    if (!isMissingMessageTableError(err))
-      onError?.(err);
-    return void 0;
-  }
-}
-function isMissingMessageTableError(err) {
-  return /no such table: agent_(principals|message_deliveries|session_instances)\b/.test(errorMessage(err));
-}
 function isMissingDeliveriesTableError(err) {
   return /no such table: agent_message_deliveries\b/.test(errorMessage(err));
 }
 function errorMessage(err) {
   return err && typeof err === "object" && "message" in err ? String(err.message) : "";
-}
-function recipientEverSeen(db2, project, recipient) {
-  return recipientSeenQuery(db2, recipient, project);
-}
-function unreadInboxLines(count, project, recipient, everSeen, targetKind = "principal") {
-  if (!recipient)
-    return [];
-  const displayProject = jsonStringLiteral(project);
-  const displayRecipient = JSON.stringify(recipient);
-  if (count > 0) {
-    const noun = count === 1 ? "message" : "messages";
-    if (targetKind === "session") {
-      return [`${count} ${noun} waiting for the live session ${displayRecipient} in project ${displayProject} \u2014 that session is registered under your principal and connected right now. Poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id with target_kind "session" (fetch or intake using your own principal id instead of ${displayRecipient} will not match this session-targeted message), and record intake for each with recipient ${displayRecipient} (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
-    }
-    return [`${count} ${noun} waiting for ${displayRecipient} in project ${displayProject} \u2014 poll the message tool with project ${displayProject} and recipient ${displayRecipient}, then fetch each message_id and record intake for each (intake_state "ingested", with an idempotency_key such as "intake-<message_id>"): fetching alone does not acknowledge, and only intake ends this line.`];
-  }
-  if (everSeen === false) {
-    return [`No messages waiting for ${displayRecipient} in project ${displayProject} \u2014 and this recipient id has never been seen in this project (check for a typo).`];
-  }
-  return [];
 }
 var init_agent_message_inbox = __esm({
   "dist/core/agent-message-inbox.js"() {
@@ -35194,34 +35191,6 @@ var init_task_state_store = __esm({
   }
 });
 
-// dist/core/host-session.js
-function hostSessionFromEnv(env = process.env) {
-  return claudeCodeSessionFromEnv(env) ?? sessionFromVariable(env, "CODEX_THREAD_ID");
-}
-function claudeCodeSessionFromEnv(env = process.env) {
-  return sessionFromVariable(env, "CLAUDE_CODE_SESSION_ID");
-}
-function sessionFromVariable(env, name) {
-  const raw = env[name]?.trim();
-  if (!raw)
-    return void 0;
-  const session2 = canonicalAgentScopeId(raw);
-  if (sessionIdRejection(name, session2) === null)
-    return session2;
-  try {
-    process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
-`);
-  } catch {
-  }
-  return void 0;
-}
-var init_host_session = __esm({
-  "dist/core/host-session.js"() {
-    "use strict";
-    init_agent_scope_id();
-  }
-});
-
 // dist/core/host-transcript.js
 var init_host_transcript = __esm({
   "dist/core/host-transcript.js"() {
@@ -35916,7 +35885,7 @@ function readBriefingIndex(db2, projectName2, now = Date.now(), projectIds) {
   const { candidates, truncated } = readIndexCandidates(db2, projectName2, projectIds ?? projectIdsFor(projectName2));
   return buildBriefingIndex(candidates, projectName2, now, { truncated });
 }
-function assembleBriefing(project, recipient, projectIds) {
+function assembleBriefing(project, _recipient, projectIds) {
   const projectName2 = project ?? getProjectName();
   const ids = projectIds ?? projectIdsFor(projectName2);
   const db2 = getDatabase();
@@ -35941,15 +35910,6 @@ function assembleBriefing(project, recipient, projectIds) {
       throw err;
     taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName2))}: ${err.message}`];
   }
-  const inboxRecipient = recipient === void 0 ? void 0 : canonicalAgentScopeId(recipient);
-  let unreadCount = 0;
-  let inboxUnreadable;
-  try {
-    unreadCount = unreadDeliveryCount(db2, canonicalAgentScopeId(projectName2), inboxRecipient, hostSessionFromEnv());
-  } catch (err) {
-    inboxUnreadable = err instanceof Error ? err.message : "unknown error";
-  }
-  const everSeen = inboxRecipient !== void 0 && unreadCount === 0 && inboxUnreadable === void 0 ? recipientEverSeen(db2, canonicalAgentScopeId(projectName2), inboxRecipient) : void 0;
   const pools = selectBriefingPools(db2, projectName2, {
     projectIds: ids,
     projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config2.sessionLimit).value,
@@ -35957,12 +35917,9 @@ function assembleBriefing(project, recipient, projectIds) {
     foreign: policy.foreign
   });
   const handoff2 = pools.handoffs.flatMap((row) => handoffLines(row));
-  const stateLines = [
-    ...inboxUnreadable !== void 0 && inboxRecipient ? [inboxUnreadableLine(canonicalAgentScopeId(projectName2), inboxRecipient, inboxUnreadable)] : unreadInboxLines(unreadCount, canonicalAgentScopeId(projectName2), inboxRecipient, everSeen)
-  ];
   const snippets = readSnippets(db2, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool) => pool.map((row) => toTopologyEntity(row, snippets));
-  const lines = assembleTopologyBlock(stateLines, [
+  const lines = assembleTopologyBlock([], [
     { entities: toEntities(pools.lessons), foreign: false },
     { entities: toEntities(pools.project), foreign: false },
     { entities: toEntities(pools.noProject), foreign: false, noProject: true },
@@ -35982,7 +35939,7 @@ function assembleBriefing(project, recipient, projectIds) {
   return {
     project: projectName2,
     text: opening.text,
-    entityCount: lines.slice(stateLines.length, renderedRankedEnd).filter((l) => l.startsWith("- [")).length,
+    entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith("- [")).length,
     hasTaskState: opening.taskLines.length > 0,
     hasHandoff: opening.tailLines.length > 0,
     index,
@@ -35999,9 +35956,6 @@ var init_briefing = __esm({
     init_session_limit();
     init_repo_state();
     init_task_state_store();
-    init_agent_message_inbox();
-    init_host_session();
-    init_agent_scope_id();
     init_task_state();
     init_session_handoff();
     init_briefing_index();
@@ -37421,7 +37375,7 @@ var init_conversation_messages = __esm({
         let machine = pieces[1] ? identifier(pieces[1]).toLowerCase() : this.machine;
         let remoteId = pieces[1] && machine !== this.machine ? this.network?.members.find((m) => m.name.toLowerCase() === machine)?.id : void 0;
         let local = !pieces[1] || machine === this.machine;
-        const original = input2.reply_to ? this.get(input2.reply_to) : void 0;
+        const original = input2.reply_to ? this.findMessage(input2.reply_to) : void 0;
         if (original) {
           if (!original.recipient_local || original.recipient !== from.id || original.sender !== recipient || this.rejected(original.id)) {
             throw new Error("Reply must address the sender of a message received by this conversation");
@@ -37476,9 +37430,9 @@ var init_conversation_messages = __esm({
               reason,
               recipients: this.discover().map((row) => row.machine === this.machine ? row.id : `${row.id}@${row.machine}`)
             };
-          if (message.reply_to) {
-            this.eventOnce(message.reply_to, "delivered", { actor: from.id, via: "reply" });
-            this.eventOnce(message.reply_to, "replied", { actor: from.id, reply: message.id });
+          if (original) {
+            this.eventOnce(original.id, "delivered", { actor: from.id, via: "reply" });
+            this.eventOnce(original.id, "replied", { actor: from.id, reply: message.id });
           }
           const pending = local ? this.pending(recipient).length : this.db.prepare(`SELECT COUNT(*) AS count FROM messages m
         WHERE recipient=? AND recipient_local=0 AND network_id=? AND recipient_machine_id=?
@@ -37603,8 +37557,8 @@ var init_conversation_messages = __esm({
           const from = this.remoteRegistration(peerId, m.sender), to = this.findRegistration(m.recipient);
           if (!from || from.host !== m.sender_host || !to || to.host !== m.recipient_host)
             throw new Error("Unregistered network conversation");
-          if (m.reply_to) {
-            const original = this.get(m.reply_to);
+          const original = m.reply_to ? this.findMessage(m.reply_to) : void 0;
+          if (original) {
             if (!original.sender_local || original.recipient_local || original.network_id !== wire.network_id || original.sender_machine_id !== this.network.self.id || original.recipient_machine_id !== peerId || original.sender !== m.recipient || original.recipient !== m.sender || this.rejected(original.id))
               throw new Error("Wrong network reply binding");
             this.eventOnce(original.id, "delivered", { actor: m.sender, peer: peerId, via: "reply" });
@@ -37703,10 +37657,13 @@ var init_conversation_messages = __esm({
         return found;
       }
       get(id) {
-        const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
+        const row = this.findMessage(id);
         if (!row)
           throw new Error("Message not found");
         return row;
+      }
+      findMessage(id) {
+        return this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
       }
       rejected(id) {
         return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = 'rejected'").get(id));
@@ -40995,12 +40952,12 @@ function exportOpenAITools() {
       type: "function",
       function: {
         name: "memesh_briefing",
-        description: "The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The handoff, displayed task state, ranked and global memories, and injected index share a 4000-character memory-block limit. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.",
+        description: "The assembled work topology for a project: an eligible exact-project handoff precedes ranked memories at every level, after optional repository facts. Recent project decisions take priority over routine activity; up to five project lessons are selected separately. The complete opening context, including task state, session tails, memories and index, is limited to 8000 UTF-8 bytes. `standard` and `full` (not the default `minimal`) also include fresh task state. Handoffs older than 14 days, undatable, more than five minutes future-dated, archived, or imported without a fresh local replacement are not auto-injected. Call once at the start of a session to load project context.",
         parameters: {
           type: "object",
           properties: {
             project: { type: "string", description: "Project name. Omit for the current directory\u2019s project." },
-            recipient: { type: "string", description: "Exact logical recipient. Required to surface actionable unread messages; omit for generic context." }
+            recipient: { type: "string", description: "Optional legacy recipient, accepted for compatibility; it does not add inbox instructions to project context." }
           }
         }
       }
@@ -74958,8 +74915,8 @@ var init_prompt_recall = __esm({
     init_recent_index();
     PROMPT_RECALL_MAX_LINES = 2;
     PROMPT_RECALL_MAX_BYTES = 4096;
-    PROMPT_RECALL_MIN_COVERAGE = 0.5;
-    PROMPT_RECALL_MIN_TERMS = 2;
+    PROMPT_RECALL_MIN_COVERAGE = 0;
+    PROMPT_RECALL_MIN_TERMS = 1;
     PROMPT_CHARS = 1500;
     MAX_TERMS = 12;
     PROMPT_RECALL_SKIP_TYPES = /* @__PURE__ */ new Set();
@@ -75937,6 +75894,7 @@ init_note_derive();
 init_schemas3();
 
 // dist/core/note-ingest.js
+init_memory_mutation();
 import fs20 from "fs";
 import path17 from "path";
 import { createHash as createHash10 } from "crypto";
@@ -76186,9 +76144,9 @@ function ingestNoteDirectory(opts) {
         skip("symlink refused", "symlink");
         continue;
       }
-      const prior = known.get(rel);
-      if (prior && !prior.missing && prior.mtime === stat2.mtimeMs && prior.size === stat2.size && prior.ino === stat2.ino) {
-        claims.push({ rel, name: prior.name, stat: stat2, unchanged: true });
+      const prior2 = known.get(rel);
+      if (prior2 && !prior2.missing && prior2.mtime === stat2.mtimeMs && prior2.size === stat2.size && prior2.ino === stat2.ino) {
+        claims.push({ rel, name: prior2.name, stat: stat2, unchanged: true });
         continue;
       }
       const priorSkip = priorSkips[rel];
@@ -76225,11 +76183,14 @@ function ingestNoteDirectory(opts) {
       continue;
     }
     const rawName = stringField(parsed.data, "name");
-    const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, " ").trim().slice(0, 255) : "";
+    let name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, " ").trim().slice(0, 255) : "";
     if (!name) {
       contentSkip("frontmatter has no name");
       continue;
     }
+    const prior = known.get(rel);
+    if (prior && projectTagsOf(db2, prior.id).some((tag) => resolveProjectMemoryName(db2, name, tag.slice(8)) === prior.name))
+      name = prior.name;
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === "object" ? metaBlock.type : void 0) ?? stringField(parsed.data, "type");
     const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : "") || NOTE_DEFAULT_TYPE;
@@ -76266,9 +76227,11 @@ function ingestNoteDirectory(opts) {
       byName.set(c.name, [c]);
   }
   const touchedIds = /* @__PURE__ */ new Set();
-  for (const c of claims)
-    declaredNameAt.set(c.rel, c.name);
-  for (const [name, claimants] of byName) {
+  for (const [requestedName, claimants] of byName) {
+    const original = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, requestedName);
+    const name = original && parseProvenance(original.metadata).note_dir_id === dirId ? requestedName : resolveProjectMemoryName(db2, requestedName, opts.project, [], true);
+    for (const c of claimants)
+      declaredNameAt.set(c.rel, name);
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
     const prov = existing ? parseProvenance(existing.metadata) : {};
     const skipAll = (reason) => {
@@ -76876,7 +76839,31 @@ init_task_state();
 init_agent_messaging();
 init_agent_messaging2();
 init_conversation_messaging();
-init_host_session();
+
+// dist/core/host-session.js
+init_agent_scope_id();
+function hostSessionFromEnv(env = process.env) {
+  return claudeCodeSessionFromEnv(env) ?? sessionFromVariable(env, "CODEX_THREAD_ID");
+}
+function claudeCodeSessionFromEnv(env = process.env) {
+  return sessionFromVariable(env, "CLAUDE_CODE_SESSION_ID");
+}
+function sessionFromVariable(env, name) {
+  const raw = env[name]?.trim();
+  if (!raw)
+    return void 0;
+  const session2 = canonicalAgentScopeId(raw);
+  if (sessionIdRejection(name, session2) === null)
+    return session2;
+  try {
+    process.stderr.write(`[memesh] ignoring ${name}: set but not a valid session id
+`);
+  } catch {
+  }
+  return void 0;
+}
+
+// dist/transports/cli/cli.js
 init_agent_message_storage();
 init_agent_message_expiry();
 init_config2();
@@ -78718,7 +78705,9 @@ program2.command("forget").description("Archive an entity (reversible) or perman
     try {
       result = forget({
         name: opts.name,
-        observation: opts.observation
+        observation: opts.observation,
+        project: getProjectName(),
+        projectIds: getProjectIds()
       });
     } catch (err) {
       printRefusal(err, opts.json);
@@ -79366,7 +79355,7 @@ agentCmd.command("setup").description("Write this host's local config (a stable 
     ]
   ].join("\n"));
 });
-program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` \u2014 change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Exact recipient; enables recipient-scoped unread message guidance").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
+program2.command("briefing").description("The assembled work topology for a project \u2014 decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` \u2014 change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).").option("--project <name>", "Project name (default: the current directory\u2019s project)").option("--recipient <id>", "Legacy recipient accepted for compatibility; briefing does not add inbox instructions").option("--index", "Only the index of durable memories (decisions, lessons, patterns, references), newest first").option("--json", "Output as JSON").action(async (opts) => {
   const projectFlag = requireProjectFlag(opts.project);
   await withReadOnlyDatabase(() => {
     if (opts.index) {
@@ -80639,9 +80628,8 @@ hermesCmd.command("prompt-context").description("Read relevant memory for a Herm
     console.error("Error: exclude must be an array of positive memory IDs");
     process.exit(1);
   }
-  const { autoCaptureDecision: autoCaptureDecision2 } = await Promise.resolve().then(() => (init_capture_flag(), capture_flag_exports));
   const config2 = readConfig();
-  if (config2.promptRecall === false || !autoCaptureDecision2(process.env.MEMESH_AUTO_CAPTURE, config2.autoCapture).enabled || !fs49.existsSync(getDbPath())) {
+  if (config2.promptRecall === false || !fs49.existsSync(getDbPath())) {
     console.log(JSON.stringify({ text: "", ids: [] }));
     return;
   }
@@ -80713,6 +80701,11 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
   if (typeof body.user !== "string" || typeof body.assistant !== "string") {
     console.error('Error: stdin must be {"user": "<text>", "assistant": "<text>"}');
     process.exit(1);
+  }
+  const { autoCaptureDecision: autoCaptureDecision2 } = await Promise.resolve().then(() => (init_capture_flag(), capture_flag_exports));
+  if (!autoCaptureDecision2(process.env.MEMESH_AUTO_CAPTURE, readConfig().autoCapture).enabled) {
+    console.log(JSON.stringify({ outcome: "skipped", reason: "auto-capture is turned off" }));
+    return;
   }
   await withDatabase(() => {
     const result = captureChatTurn({

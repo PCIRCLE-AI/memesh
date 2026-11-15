@@ -38,6 +38,29 @@ function fixture() {
 }
 
 describe('messages.db authenticated cross-machine copy and receipts', () => {
+  it('accepts a late remote reply after original expiry and continues to the following queued message', () => {
+    const f = fixture(), original = f.wire();
+    f.b.receiveFrom(ids.a, original);
+    f.advance(13);
+    const reply = f.b.send('same-id', { recipient: 'same-id@mac', kind: 'result', body: 'late remote answer', reply_to: original.message.id });
+    const next = f.b.send('same-id', { recipient: 'same-id@mac', kind: 'task', body: 'following message' });
+    f.advance(1);
+    f.a.maintainMessages();
+    expect(f.a.status(undefined, original.message.id)).toEqual([]);
+    for (const wire of f.b.outgoingFor(ids.a)) {
+      expect(f.a.receiveFrom(ids.b, wire)).toBe('accepted');
+      f.b.recordCopyAccepted(ids.a, wire.message.id);
+    }
+    expect(f.a.read('same-id', reply.message.id)).toMatchObject({ body: 'late remote answer', reply_to: original.message.id });
+    expect(f.a.read('same-id', next.message.id).body).toBe('following message');
+    expect(f.b.outgoingFor(ids.a)).toEqual([]);
+    const db = new MemeshDatabase(path.join(f.root, 'a', 'messages.db'), { readOnly: true });
+    try { expect(db.prepare('SELECT * FROM events WHERE message_id=?').all(original.message.id)).toEqual([]); }
+    finally { db.close(); }
+    f.b.maintainMessages();
+    expect(f.b.send('same-id', { recipient: 'same-id@mac', kind: 'result', body: 'another late reply', reply_to: original.message.id }).accepted).toBe(true);
+  });
+
   it('warns on the 31st exact-recipient queued message despite copy ACKs, and counts down only on real receipts', () => {
     const f = fixture();
     const copied: string[] = [];
@@ -137,15 +160,20 @@ describe('messages.db authenticated cross-machine copy and receipts', () => {
 
   it('rejects wrong peer, network, receiver, oversize, malformed bytes/time and forged reply without writes', () => {
     const f = fixture(), w = f.wire();
+    // An existing local parent cannot authorize a reply arriving over the network.
+    const wrongParent = f.b.send('same-id', { recipient: 'offline', kind: 'task', body: 'local parent' }).message.id;
+    const before = f.b.status();
     const bad: NetworkConversationMessage[] = [
       { ...w, network_id: '2'.repeat(32) }, { ...w, sender_machine_id: ids.c }, { ...w, recipient_machine_id: ids.c },
       { ...w, message: { ...w.message, body: 'x'.repeat(8000), body_bytes: 8000 } },
       { ...w, message: { ...w.message, body_bytes: 1 } }, { ...w, message: { ...w.message, sent_at: 'yesterday' } },
-      { ...w, message: { ...w.message, recipient: 'absent' } }, { ...w, message: { ...w.message, reply_to: '00000000-0000-0000-0000-000000000001' } },
+      { ...w, message: { ...w.message, recipient: 'absent' } }, { ...w, message: { ...w.message, reply_to: wrongParent } },
+      { ...w, message: { ...w.message, reply_to: 'not-a-uuid' } },
     ];
     for (const invalid of bad) expect(() => f.b.receiveFrom(ids.a, invalid)).toThrow();
+    expect(() => f.b.receiveFrom(ids.a, { ...w, message: { ...w.message, reply_to: wrongParent } })).toThrow('Wrong network reply binding');
     expect(() => f.b.receiveFrom(ids.c, w)).toThrow();
-    expect(f.b.status()).toEqual([]);
+    expect(f.b.status()).toEqual(before);
     expect(f.a.send('same-id', { recipient: 'missing@dgx', kind: 'task', body: 'rejected audit' })).toMatchObject({ accepted: false, reason: 'unknown_recipient' });
     expect(f.a.send('same-id', { recipient: 'same-id@dgx', kind: 'task', body: 'x'.repeat(8000) })).toMatchObject({ accepted: false, message: { body: null } });
   });

@@ -258,6 +258,9 @@ export interface RecallInput {
 export interface ForgetInput {
   name: string;
   observation?: string;
+  /** Host-bound scope; omitted only by existing unbound administrative callers. */
+  project?: string | null;
+  projectIds?: readonly string[];
 }
 
 // --- Operation Result Types (what core returns to transports) ---

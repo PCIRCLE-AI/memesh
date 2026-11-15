@@ -87,6 +87,29 @@ describe('executable-targets derivation picks up new manifest entries', () => {
 });
 
 describe('gate fails when a declared entry point does not start', () => {
+  it.each(['codex-busy-message-notice.js', 'codex-plan-activity.js'])('starts the Codex-only %s PostToolUse entry and rejects a crash', (name) => {
+    const root = fixtureRoot();
+    write(root, 'package.json', JSON.stringify({ bin: { memesh: 'dist/transports/cli/cli.js' } }));
+    write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+    write(root, 'hooks/hooks.json', JSON.stringify({ hooks: {} }));
+    write(root, '.codex-plugin/plugin.json', JSON.stringify({ hooks: { hooks: {
+      PostToolUse: [{ hooks: [{ command: `\${CLAUDE_PLUGIN_ROOT}/scripts/hooks/${name}` }] }],
+    } } }));
+    write(root, `scripts/hooks/${name}`, `
+      const fs = require('node:fs');
+      const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (payload.hook_event_name !== 'PostToolUse') process.exit(7);
+    `);
+    const pass = run(root);
+    expect(pass.status, pass.stderr).toBe(0);
+    expect(pass.stdout).toContain(`ok    hook (scripts/hooks/${name})`);
+    write(root, `scripts/hooks/${name}`, 'process.exit(7);');
+    const fail = run(root);
+    expect(fail.status).toBe(1);
+    expect(fail.stderr).toContain(`hook (scripts/hooks/${name})`);
+    expect(fail.stderr).toContain('exited 7');
+  });
+
   it('starts the messages hook with its SessionStart payload in the isolated environment and rejects a crash', () => {
     const root = fixtureRoot();
     write(root, 'package.json', JSON.stringify({ bin: { memesh: 'dist/transports/cli/cli.js' } }));
