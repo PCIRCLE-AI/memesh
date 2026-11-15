@@ -336,6 +336,13 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // Repair/salvage inputs use immutable reads without pending pages, otherwise
     // readonly sidecar refusal; repair's original write lock uses strict refusal.
     // Rebuild/salvage outputs are private new files created with wx/0600 by their callers.
+    // Public network reads check private owner/type/link constraints for parent and
+    // main/sidecars, require existing SHM for pending WAL, and refuse readonly
+    // sidecar mode changes; otherwise they use immutable reads.
+    // Network migration creates its UUID temporary with wx/0600 in the checked
+    // private directory, then checkpoints/closes/fsyncs before no-replace link
+    // publication. message-metadata.test.ts covers source preservation, unsafe
+    // permissions, directory links, identity verification and repeated migration.
     const known = [
       "core/auto-update.ts: const db = new MemeshDatabase(dbPath, { readOnly: true });",
       "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });",
@@ -346,11 +353,13 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
       "core/database-repair.ts: lock = new MemeshDatabase(source);",
       "core/node-salvage.ts: const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });",
       "core/node-salvage.ts: dst = new MemeshDatabase(outputPath);",
+      "core/public-network-context.ts: const db = new MemeshDatabase(pending || consistentSnapshot ? file : immutableAddress(file), { readOnly: true });",
       "core/agent-message-expiry.ts: const pass = new MemeshDatabase(file);",
       "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
       "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
       "network/store.ts: const db = new MemeshDatabase(dbPath);",
+      "network/metadata.ts: const destination = new MemeshDatabase(temporary);",
       "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
       "storage/sqlite.ts: // so `new MemeshDatabase(p)` would throw if the parameter were passed",
     ];
