@@ -191,6 +191,11 @@ function sourceFiles(root: string = repoRoot): string[] {
  * under the same key name during that round's red/green fixture).
  */
 const SCRAPE_NOISE: ReadonlyArray<{ key: string; file: string; reason: string }> = [
+  { key: 'db', file: 'src/core/public-network-context.ts', reason: "The literal filename 'metadata.db' passed to path.join; not an entity-metadata property." },
+  { key: 'db', file: 'src/network/types.ts', reason: "The literal filename 'metadata.db' returned by networkMetadataPath; not an entity-metadata property." },
+  { key: 'close', file: 'src/network/auto-start.ts', reason: 'metadata is the SQLite handle returned by openPublicNetworkDatabase; metadata.close() releases that handle.' },
+  { key: 'close', file: 'src/network/operations.ts', reason: 'metadata is the SQLite handle returned by openPublicNetworkDatabase; metadata.close() releases that handle.' },
+  { key: 'js', file: 'src/network/operations.ts', reason: "The import specifier './metadata.js' names a module, not an entity-metadata property." },
   {
     key: 'type',
     file: 'src/core/note-ingest.ts',
