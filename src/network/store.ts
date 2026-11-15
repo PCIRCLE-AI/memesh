@@ -5,7 +5,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from '../core/file-mode.js';
-import { AGENT_NETWORK_SCHEMA_SQL } from '../storage/agent-network-schema.js';
+import { AGENT_NETWORK_SCHEMA_SQL, NETWORK_METADATA_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import type { SignedRoster } from './types.js';
 import { acceptRoster, findMember, verifyRoster } from './roster.js';
@@ -22,7 +22,7 @@ export interface NetworkConfig {
   roster_signature: string;
 }
 
-export function openNetworkStore(dbPath: string, options: { busyTimeoutMs?: number } = {}): MemeshDatabase {
+export function openNetworkStore(dbPath: string, options: { busyTimeoutMs?: number; metadataOnly?: boolean } = {}): MemeshDatabase {
   const dir = path.dirname(dbPath);
   fs.mkdirSync(dir, { recursive: true });
   try { process.umask(0o077); } catch { /* non-POSIX */ }
@@ -32,7 +32,7 @@ export function openNetworkStore(dbPath: string, options: { busyTimeoutMs?: numb
   try {
     if (options.busyTimeoutMs !== undefined) db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db.pragma('journal_mode = WAL');
-    db.exec(AGENT_NETWORK_SCHEMA_SQL);
+    db.exec(options.metadataOnly ? NETWORK_METADATA_SCHEMA_SQL : AGENT_NETWORK_SCHEMA_SQL);
   } catch (err) {
     db.close();
     throw err;

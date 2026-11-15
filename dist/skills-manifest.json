@@ -58,8 +58,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-network-schema.js",
-      "sha256": "e6184f517eccebcfc5125b7ce57fea37bdb43439e2a5f84e7a454acebdc1834e",
-      "bytes": 2588
+      "sha256": "0c6ce9064b2363bd9bb8df9d21a9b97e4611abafe506c6b4a2f1bf6759d89003",
+      "bytes": 2578
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
@@ -113,8 +113,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "8cdd71e02b3174a9899e99e1a783c5d084099beb265895feba3307963bb8414c",
-      "bytes": 35097
+      "sha256": "98705ccab0823814cfaedf3eef70580df2ac4f93f32fa99d976457b680e0c689",
+      "bytes": 36506
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -147,6 +147,21 @@
       "bytes": 1443
     },
     {
+      "path": "scripts/hooks/_generated/network-identity.js",
+      "sha256": "592ba62e41580619af3b1b1fe1540e7542cf12bdee5f64dc3371d4309bf82981",
+      "bytes": 3588
+    },
+    {
+      "path": "scripts/hooks/_generated/network-roster.js",
+      "sha256": "72a65952edeb45173d2468ea270979b58401d8861baf4bdecc9490ff986beb72",
+      "bytes": 6268
+    },
+    {
+      "path": "scripts/hooks/_generated/network-types.js",
+      "sha256": "a5efc5645fabbec5dd31ddbeb38faad32d1cb002c55e41d180841990db084206",
+      "bytes": 1810
+    },
+    {
       "path": "scripts/hooks/_generated/process-identity.js",
       "sha256": "d4101f310a3c3259cdd84aab5e5dd02c9d08765e2c5090274d2692c891956f1f",
       "bytes": 1910
@@ -160,6 +175,11 @@
       "path": "scripts/hooks/_generated/prompt-recall.js",
       "sha256": "9b14ca6b3abaadc1edd4425e03162288e7e6096bc2e9bec823d9796f6415723d",
       "bytes": 15246
+    },
+    {
+      "path": "scripts/hooks/_generated/public-network-context.js",
+      "sha256": "e445ec83b79365492607d9626462f29795f5ad2b4339d9f5fd84e9bb18565ae9",
+      "bytes": 3691
     },
     {
       "path": "scripts/hooks/_generated/recent-index.js",
@@ -268,8 +288,8 @@
     },
     {
       "path": "scripts/hooks/messages.js",
-      "sha256": "265416e31814e9722b7e01baff1cf7ca6ef3a20214d2cc5f96d1103f6a42e725",
-      "bytes": 2709
+      "sha256": "5a2bfbac07ff623eb1e426ebd98d4012d6cef04150f09bcffbef16218ac6db7b",
+      "bytes": 3648
     },
     {
       "path": "scripts/hooks/post-commit.js",

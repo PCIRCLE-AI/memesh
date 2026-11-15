@@ -6,7 +6,7 @@
 // always-on capture path survives a missing or stale dist/ while staying
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
-export const AGENT_NETWORK_SCHEMA_SQL = `
+export const NETWORK_METADATA_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS agent_network_config (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
   network_id       TEXT NOT NULL,
@@ -25,6 +25,15 @@ CREATE TABLE IF NOT EXISTS agent_network_invites (
   expires_at_ms INTEGER NOT NULL,
   used_at       INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS agent_network_peers (
+  machine_id TEXT PRIMARY KEY,
+  relay_url TEXT,
+  addrs_json TEXT NOT NULL,
+  seen_at_ms INTEGER NOT NULL
+);
+`;
+export const AGENT_NETWORK_SCHEMA_SQL = NETWORK_METADATA_SCHEMA_SQL + `
 
 -- One row per delivery addressed to another machine. state: pending, delivered,
 -- rejected, expired; or local when the address names no member and the delivery
@@ -55,11 +64,4 @@ CREATE TABLE IF NOT EXISTS agent_network_presence (
   PRIMARY KEY (machine_id, project_hash, handle)
 );
 
--- How to reach another member: learned from the invite link and from its presence.
-CREATE TABLE IF NOT EXISTS agent_network_peers (
-  machine_id  TEXT PRIMARY KEY,
-  relay_url   TEXT,
-  addrs_json  TEXT NOT NULL,
-  seen_at_ms  INTEGER NOT NULL
-);
 `;

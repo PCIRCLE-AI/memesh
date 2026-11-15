@@ -1,12 +1,11 @@
 import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);
 
 // dist/network/bridge.js
-import path10 from "node:path";
+import path14 from "node:path";
 
 // dist/core/paths.js
 import os from "os";
 import path from "path";
-var AGENT_ROUTER_SOCKET_FILENAME = "agent-router-v2.sock";
 function homeDir() {
   const home = process.env.HOME;
   if (home && home.length > 0)
@@ -25,9 +24,6 @@ function getDbPath() {
 }
 function getMemeshDirFromDbPath() {
   return process.env.MEMESH_DB_PATH ? path.dirname(process.env.MEMESH_DB_PATH) : memeshDir();
-}
-function getAgentRouterSocketPath() {
-  return path.join(getMemeshDirFromDbPath(), AGENT_ROUTER_SOCKET_FILENAME);
 }
 var PROJECT_HASH_HEX_LENGTH = 32;
 var PROJECT_ID_MAX_LENGTH = 200;
@@ -77,6 +73,9 @@ var NetworkError = class extends Error {
 };
 function networkDir(dataDir2) {
   return path2.join(dataDir2, "network");
+}
+function networkMetadataPath(dataDir2) {
+  return path2.join(networkDir(dataDir2), "metadata.db");
 }
 function runtimeDir(dataDir2) {
   return path2.join(networkDir(dataDir2), "runtime");
@@ -130,16 +129,17 @@ import path3 from "node:path";
 
 // dist/core/file-mode.js
 import fs from "fs";
+import { pathToFileURL } from "url";
 function shellQuote(value) {
   const word = value.startsWith("-") ? `./${value}` : value;
   return `'${word.replace(/'/g, `'\\''`)}'`;
 }
 var warned = /* @__PURE__ */ new Set();
 function removeGroupAndOtherAccess(target) {
-  let stat;
+  let stat2;
   try {
-    stat = fs.statSync(target);
-    const mode2 = stat.mode & 4095;
+    stat2 = fs.statSync(target);
+    const mode2 = stat2.mode & 4095;
     if ((mode2 & 63) !== 0)
       fs.chmodSync(target, mode2 & ~63);
   } catch (err) {
@@ -149,7 +149,7 @@ function removeGroupAndOtherAccess(target) {
     if (warned.has(target))
       return;
     warned.add(target);
-    const notYours = stat !== void 0 && belongsToAnotherUser(stat);
+    const notYours = stat2 !== void 0 && belongsToAnotherUser(stat2);
     try {
       process.stderr.write(notYours ? `MeMesh: ${target} belongs to another user, so MeMesh cannot remove other users' access to it (${code}). Point MEMESH_DB_PATH at a database you own, in a folder you own.
 ` : `MeMesh: could not remove other users' access to ${target} (${code ?? String(err)}); they may be able to read your memories. Fix it with: chmod go-rwx ${shellQuote(target)}
@@ -158,8 +158,8 @@ function removeGroupAndOtherAccess(target) {
     }
   }
 }
-function belongsToAnotherUser(stat) {
-  return typeof process.getuid === "function" && process.getuid() !== 0 && stat.uid !== process.getuid();
+function belongsToAnotherUser(stat2) {
+  return typeof process.getuid === "function" && process.getuid() !== 0 && stat2.uid !== process.getuid();
 }
 function databaseFiles(dbPath) {
   let real = dbPath;
@@ -170,10 +170,36 @@ function databaseFiles(dbPath) {
   }
   return [real, `${real}-wal`, `${real}-shm`];
 }
+function holdsBytes(file) {
+  try {
+    return fs.statSync(file).size > 0;
+  } catch {
+    return false;
+  }
+}
+function hasPagesWaiting(dbPath) {
+  const [real, wal] = databaseFiles(dbPath);
+  return holdsBytes(wal) || holdsBytes(`${real}-journal`);
+}
+function immutableAddress(file) {
+  return `${pathToFileURL(file).href}?immutable=1`;
+}
 function guardDatabaseFiles(dbPath) {
   for (const target of databaseFiles(dbPath))
     removeGroupAndOtherAccess(target);
   refuseMismatchedSidecars(dbPath);
+}
+function requirePrivateWritableDirectory(dir, purpose) {
+  removeGroupAndOtherAccess(dir);
+  const mode2 = fs.statSync(dir).mode & 511;
+  if ((mode2 & 63) !== 0) {
+    throw new Error(`${dir} is still open to other users (${mode2.toString(8)}), and ${purpose}. Run: chmod go-rwx ${shellQuote(dir)}`);
+  }
+  try {
+    fs.accessSync(dir, fs.constants.W_OK);
+  } catch {
+    throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
+  }
 }
 var SIDECAR_PERMISSIONS_CODE = "MEMESH_SIDECAR_PERMISSIONS";
 var OWNER_LETTERS = [[256, "r"], [128, "w"], [64, "x"]];
@@ -192,22 +218,22 @@ function refuseMismatchedSidecars(dbPath, options = {}) {
   let fewerBits = 0;
   let extraBits = 0;
   for (const sidecar of [wal, shm]) {
-    const stat = fs.statSync(sidecar, { throwIfNoEntry: false });
-    if (!stat)
+    const stat2 = fs.statSync(sidecar, { throwIfNoEntry: false });
+    if (!stat2)
       continue;
-    if (options.readOnly && stat.size > 0)
+    if (options.readOnly && stat2.size > 0)
       continue;
-    const missing = database.mode & ~stat.mode & (stat.size === 0 ? 448 : 384);
-    const added = stat.mode & ~database.mode & 448;
+    const missing = database.mode & ~stat2.mode & (stat2.size === 0 ? 448 : 384);
+    const added = stat2.mode & ~database.mode & 448;
     if (missing !== 0) {
       fewer.push(sidecar);
       fewerBits |= missing;
-    } else if (added !== 0 && stat.size === 0) {
+    } else if (added !== 0 && stat2.size === 0) {
       extra.push(sidecar);
       extraBits |= added;
     } else
       continue;
-    if (belongsToAnotherUser(stat))
+    if (belongsToAnotherUser(stat2))
       notYours.push(sidecar);
   }
   if (notYours.length === 0 && fewer.length + extra.length > 0 && belongsToAnotherUser(database))
@@ -428,7 +454,7 @@ import fs3 from "node:fs";
 import path4 from "node:path";
 
 // dist/storage/agent-network-schema.js
-var AGENT_NETWORK_SCHEMA_SQL = `
+var NETWORK_METADATA_SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS agent_network_config (
   id               INTEGER PRIMARY KEY CHECK (id = 1),
   network_id       TEXT NOT NULL,
@@ -447,6 +473,15 @@ CREATE TABLE IF NOT EXISTS agent_network_invites (
   expires_at_ms INTEGER NOT NULL,
   used_at       INTEGER
 );
+
+CREATE TABLE IF NOT EXISTS agent_network_peers (
+  machine_id TEXT PRIMARY KEY,
+  relay_url TEXT,
+  addrs_json TEXT NOT NULL,
+  seen_at_ms INTEGER NOT NULL
+);
+`;
+var AGENT_NETWORK_SCHEMA_SQL = NETWORK_METADATA_SCHEMA_SQL + `
 
 -- One row per delivery addressed to another machine. state: pending, delivered,
 -- rejected, expired; or local when the address names no member and the delivery
@@ -477,13 +512,6 @@ CREATE TABLE IF NOT EXISTS agent_network_presence (
   PRIMARY KEY (machine_id, project_hash, handle)
 );
 
--- How to reach another member: learned from the invite link and from its presence.
-CREATE TABLE IF NOT EXISTS agent_network_peers (
-  machine_id  TEXT PRIMARY KEY,
-  relay_url   TEXT,
-  addrs_json  TEXT NOT NULL,
-  seen_at_ms  INTEGER NOT NULL
-);
 `;
 
 // dist/storage/sqlite.js
@@ -492,8 +520,8 @@ function loadNodeSqlite() {
   const require2 = createRequire(import.meta.url);
   const original = process.emitWarning;
   process.emitWarning = function(warning, ...rest) {
-    const text = typeof warning === "string" ? warning : String(warning?.message ?? warning);
-    if (text.includes("SQLite is an experimental feature"))
+    const text2 = typeof warning === "string" ? warning : String(warning?.message ?? warning);
+    if (text2.includes("SQLite is an experimental feature"))
       return;
     return original.call(process, warning, ...rest);
   };
@@ -607,9 +635,9 @@ function assertNodeSupported() {
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path11, options = {}) {
+  constructor(path15, options = {}) {
     assertNodeSupported();
-    super(path11, options);
+    super(path15, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -658,7 +686,7 @@ function openNetworkStore(dbPath, options = {}) {
     if (options.busyTimeoutMs !== void 0)
       db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db.pragma("journal_mode = WAL");
-    db.exec(AGENT_NETWORK_SCHEMA_SQL);
+    db.exec(options.metadataOnly ? NETWORK_METADATA_SCHEMA_SQL : AGENT_NETWORK_SCHEMA_SQL);
   } catch (err) {
     db.close();
     throw err;
@@ -855,30 +883,1060 @@ async function runJoinClient(dataDir2, input) {
 }
 
 // dist/network/bridge-serve.js
-import fs10 from "node:fs";
+import fs13 from "node:fs";
+import path13 from "node:path";
 
-// dist/network/bridge-state.js
+// dist/core/conversation-messages.js
+import fs7 from "node:fs";
+import path8 from "node:path";
+import os2 from "node:os";
+import { randomUUID } from "node:crypto";
+
+// dist/core/public-network-context.js
 import fs5 from "node:fs";
 import path6 from "node:path";
+function stat(file) {
+  try {
+    return fs5.lstatSync(file);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return void 0;
+    throw error;
+  }
+}
+function openPublicNetworkDatabase(file, consistentSnapshot = false) {
+  const parent = stat(path6.dirname(file));
+  if (!parent)
+    return void 0;
+  let expectedParent = path6.resolve(path6.dirname(file));
+  if (process.platform === "darwin") {
+    for (const alias of ["/var", "/tmp"]) {
+      if ((expectedParent === alias || expectedParent.startsWith(`${alias}/`)) && fs5.realpathSync(alias) === `/private${alias}`) {
+        expectedParent = `/private${expectedParent}`;
+      }
+    }
+  }
+  if (!parent.isDirectory() || parent.isSymbolicLink() || fs5.realpathSync(path6.dirname(file)) !== expectedParent || process.platform !== "win32" && (parent.uid !== process.getuid?.() || (parent.mode & 63) !== 0))
+    throw new Error("Unsafe network metadata directory");
+  const main = stat(file);
+  if (!main)
+    return void 0;
+  for (const target of [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]) {
+    const value = stat(target);
+    if (value && (!value.isFile() || value.isSymbolicLink() || value.nlink !== 1 || process.platform !== "win32" && (value.uid !== process.getuid?.() || (value.mode & 63) !== 0)))
+      throw new Error("Unsafe network metadata file");
+  }
+  const pending = hasPagesWaiting(file);
+  if (pending) {
+    if (!stat(`${file}-shm`))
+      throw new Error("Network metadata WAL requires existing SHM for readonly access");
+  }
+  if (pending || consistentSnapshot) {
+    refuseMismatchedSidecars(file, { readOnly: true });
+  }
+  const db = new MemeshDatabase(pending || consistentSnapshot ? file : immutableAddress(file), { readOnly: true });
+  db.pragma("busy_timeout = 100");
+  return db;
+}
+function readPublicNetworkContext(dataDir2) {
+  const db = openPublicNetworkDatabase(path6.join(dataDir2, "network", "metadata.db"));
+  if (!db)
+    return void 0;
+  try {
+    const row = db.prepare("SELECT network_id,owner_id,machine_id,roster_json,roster_signature FROM agent_network_config WHERE id=1").get();
+    if (!row)
+      return void 0;
+    const roster = verifyRoster({ roster_json: row.roster_json, signature: row.roster_signature }, row.owner_id, row.network_id);
+    const self = roster.members.find((member) => member.machine_id === row.machine_id);
+    if (!self)
+      throw new Error("This machine is no longer a network member");
+    return {
+      network_id: row.network_id,
+      self: { id: self.machine_id, name: self.name },
+      members: roster.members.map((member) => ({ id: member.machine_id, name: member.name }))
+    };
+  } finally {
+    db.close();
+  }
+}
+
+// dist/core/conversation-message-migration.js
+import { createHash as createHash2 } from "node:crypto";
+import fs6 from "node:fs";
+import path7 from "node:path";
+
+// dist/core/time-utils.js
+function parseSqliteUtcMs(sqliteTimestamp) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(sqliteTimestamp ?? "");
+  if (!m)
+    return null;
+  const then = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
+  if (!Number.isFinite(then))
+    return null;
+  const d = new Date(then);
+  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
+    return null;
+  return then;
+}
+function sqliteUtcToIso(sqliteTimestamp) {
+  const ms = parseSqliteUtcMs(sqliteTimestamp);
+  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
+}
+
+// dist/core/conversation-message-migration.js
+function legacyConversationArchiveFiles(graph, target) {
+  const directory = path7.dirname(path7.resolve(graph));
+  if (directory !== path7.dirname(path7.resolve(target)))
+    throw new Error("Legacy archive and message store must share a data directory");
+  const backups = path7.join(directory, "backups");
+  const names = /* @__PURE__ */ new Set([path7.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path7.basename(graph)}`, "agent-messages-expired.db"]);
+  const privateEntry = (file, directoryEntry) => {
+    const stat2 = fs6.lstatSync(file);
+    if (stat2.isSymbolicLink() || !(directoryEntry ? stat2.isDirectory() : stat2.isFile()) || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
+      throw new Error(`Unsafe legacy archive path: ${file}`);
+    }
+  };
+  const candidates = [...names].map((name) => path7.join(backups, name)).filter((file) => {
+    try {
+      return fs6.lstatSync(file) !== void 0;
+    } catch (error) {
+      const code = error.code;
+      if (code === "ENOENT" || code === "ENOTDIR")
+        return false;
+      throw error;
+    }
+  });
+  if (candidates.length === 0)
+    return [];
+  privateEntry(directory, true);
+  privateEntry(backups, true);
+  const files = [];
+  for (const file of candidates) {
+    privateEntry(file, false);
+    assertLegacyPathsAreDifferent(file, graph);
+    assertLegacyPathsAreDifferent(file, target);
+    for (const suffix of ["-wal", "-shm", "-journal"]) {
+      if (fs6.lstatSync(file + suffix, { throwIfNoEntry: false }))
+        privateEntry(file + suffix, false);
+    }
+    refuseMismatchedSidecars(file, { readOnly: true });
+    files.push(file);
+  }
+  return files;
+}
+function assertLegacyConversationArchiveSchema(source) {
+  const tables = new Set(source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+  for (const name of [
+    "agent_messages",
+    "agent_message_deliveries",
+    "agent_network_outbox",
+    "agent_message_events",
+    "agent_message_idempotency",
+    "agent_message_receipts",
+    "agent_retention_facts",
+    "agent_dispatch_attempts",
+    "agent_host_accepts",
+    "agent_ack_facts",
+    "agent_workflow_facts",
+    "archive_log"
+  ]) {
+    if (!tables.has(name))
+      throw new Error(`Invalid legacy archive: missing ${name}`);
+  }
+}
+var LEGACY_CONVERSATION_PREFIX = "legacy:";
+function historicalHostMatches(adapter, host, origin) {
+  const family = adapter === "codex-cli-queue" ? "codex" : adapter === "claude-channel" || adapter === "claude-inbox" ? "claude" : void 0;
+  if (family === void 0)
+    return false;
+  const matches = (value) => value === "cli" ? origin.transport === "cli" : family === "codex" ? value === "codex" || value === "codex-mcp-client" : value === "claude-code";
+  return matches(host) && (origin.source_host === void 0 || matches(origin.source_host));
+}
+function provenance(message) {
+  const value = JSON.parse(text(message.provenance_json, "provenance_json"));
+  return value !== null && typeof value === "object" && !Array.isArray(value) ? value : {};
+}
+function text(value, field) {
+  if (typeof value !== "string")
+    throw new Error(`Legacy message has invalid ${field}`);
+  return value;
+}
+function utc(value) {
+  const raw = text(value, "timestamp");
+  const iso = sqliteUtcToIso(raw);
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/.test(iso) || !Number.isFinite(Date.parse(iso))) {
+    throw new Error("Legacy message has invalid timestamp");
+  }
+  const result = new Date(iso).toISOString();
+  if (result !== (iso.includes(".") ? iso : iso.replace("Z", ".000Z")))
+    throw new Error("Legacy timestamp is not a calendar instant");
+  return result;
+}
+function session(value) {
+  if (typeof value !== "string" || !value || value.length > 200 || value.startsWith(LEGACY_CONVERSATION_PREFIX) || /[\s/@\\]/u.test(value) || [...value].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127) || value !== value.normalize("NFC"))
+    return void 0;
+  return value;
+}
+function legacyIdentity(project, name) {
+  return LEGACY_CONVERSATION_PREFIX + createHash2("sha256").update(JSON.stringify([project, name])).digest("hex");
+}
+function canonical(value) {
+  if (Array.isArray(value))
+    return `[${value.map(canonical).join(",")}]`;
+  if (value !== null && typeof value === "object") {
+    return `{${Object.entries(value).sort(([a], [b]) => a.localeCompare(b)).map(([key, item]) => `${JSON.stringify(key)}:${canonical(item)}`).join(",")}}`;
+  }
+  const encoded = JSON.stringify(value);
+  if (encoded === void 0)
+    throw new Error("Legacy row contains an unsupported value");
+  return encoded;
+}
+var databaseFile = (db) => db.prepare("SELECT file FROM pragma_database_list WHERE name = 'main'").get()?.file;
+function assertLegacyDestinationIsDifferent(source, targetFile) {
+  const sourceFile = databaseFile(source);
+  if (!sourceFile || !targetFile)
+    return;
+  assertLegacyPathsAreDifferent(sourceFile, targetFile);
+}
+function assertLegacyPathsAreDifferent(sourceFile, targetFile) {
+  if (path7.resolve(sourceFile) === path7.resolve(targetFile))
+    throw new Error("Legacy source and target must be different files");
+  let a, b;
+  try {
+    a = fs6.statSync(sourceFile);
+    b = fs6.statSync(targetFile);
+  } catch (error) {
+    if (error.code === "ENOENT")
+      return;
+    throw error;
+  }
+  if (a.dev === b.dev && a.ino === b.ino)
+    throw new Error("Legacy source and target must be different files");
+}
+function importLegacyConversationMessages(source, target, options) {
+  if (source === target)
+    throw new Error("Legacy source and target must be different databases");
+  const targetFile = databaseFile(target);
+  if (targetFile)
+    assertLegacyDestinationIsDifferent(source, targetFile);
+  const at = new Date(options.nowMs).toISOString();
+  const snapshots = source.transaction(() => {
+    const tables = new Set(source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name));
+    if (!tables.has("agent_messages"))
+      return [];
+    const rows = (table, column, values) => tables.has(table) ? source.prepare(`SELECT * FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`).all(JSON.stringify(values)).sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
+    const messages = options.messageIds === void 0 ? source.prepare("SELECT * FROM agent_messages ORDER BY message_id").all() : source.prepare("SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id").all(JSON.stringify(options.messageIds));
+    return messages.flatMap((message) => {
+      const sentAt = utc(message.created_at);
+      if (Date.parse(sentAt) <= options.nowMs - 14 * 864e5)
+        return [];
+      const id = text(message.message_id, "message_id");
+      const facts = {};
+      for (const table of [
+        "agent_message_deliveries",
+        "agent_message_events",
+        "agent_message_receipts",
+        "agent_message_idempotency",
+        "agent_retention_facts",
+        "agent_network_outbox",
+        "agent_message_expiries"
+      ]) {
+        facts[table] = rows(table, "message_id", [id]);
+      }
+      const deliveries = facts.agent_message_deliveries.map((row) => row.delivery_id);
+      for (const table of ["agent_dispatch_attempts", "agent_host_accepts", "agent_ack_facts", "agent_workflow_facts"]) {
+        facts[table] = rows(table, "delivery_id", deliveries);
+      }
+      const connections = facts.agent_dispatch_attempts.map((row) => row.connection_id);
+      facts.agent_session_connections = rows("agent_session_connections", "connection_id", connections);
+      facts.agent_presence_facts = rows("agent_presence_facts", "connection_id", connections);
+      const project = text(message.project, "project");
+      const identities = /* @__PURE__ */ new Set([
+        message.sender,
+        message.recipient,
+        provenance(message).sender_session,
+        ...facts.agent_message_deliveries.flatMap((row) => [row.recipient, row.intended_session]),
+        ...facts.agent_session_connections.map((row) => row.session_instance_id)
+      ]);
+      facts.agent_session_instances = tables.has("agent_session_instances") ? source.prepare("SELECT * FROM agent_session_instances WHERE project = ?").all(project).filter((row) => identities.has(row.session_instance_id) || identities.has(row.principal_id)).sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
+      facts.agent_principals = rows("agent_principals", "project", [project]).filter((row) => identities.has(row.principal_id));
+      return [{ message, facts }];
+    });
+  })();
+  return target.transaction(() => {
+    let imported = 0, alreadyImported = 0;
+    for (const snapshot of snapshots) {
+      const { message: original, facts } = snapshot;
+      const project = text(original.project, "project");
+      const id = text(original.message_id, "message_id");
+      const senderName = text(original.sender, "sender");
+      const recipientName = text(original.recipient, "recipient");
+      const explicitTargets = [...new Set(facts.agent_message_deliveries.map((row) => row.target_kind === "session" ? session(row.recipient) : session(row.intended_session)).filter((value) => value !== void 0))];
+      if (explicitTargets.length > 1)
+        throw new Error("Legacy message has multiple conversation targets");
+      const recipient = explicitTargets[0] ?? legacyIdentity(project, recipientName);
+      const origin = provenance(original);
+      const senderSession = session(origin.sender_session);
+      const matchingSenders = facts.agent_session_instances.filter((row) => row.session_instance_id === senderSession && row.project === project && (row.principal_id === senderName || row.session_instance_id === senderName) && historicalHostMatches(row.adapter_kind, original.sender_host, origin));
+      const localSender = senderSession !== void 0 && matchingSenders.length === 1 && origin.via !== "network" && origin.from_machine === void 0 && origin.origin_message_id === void 0;
+      const sender = localSender ? senderSession : legacyIdentity(project, senderName);
+      const payload = text(original.payload_json, "payload_json");
+      const decoded = JSON.parse(payload);
+      const body = original.content_type === "text/plain" && original.payload_tombstoned_at == null ? text(decoded, "text payload") : payload;
+      const mapped = {
+        id,
+        sender,
+        sender_host: typeof original.sender_host === "string" && original.sender_host ? original.sender_host : "unknown",
+        sender_machine: localSender ? options.localMachine : "unknown",
+        recipient,
+        recipient_host: null,
+        recipient_machine: explicitTargets.length === 1 ? options.localMachine : "unknown",
+        kind: "legacy",
+        body,
+        body_bytes: Buffer.byteLength(body, "utf8"),
+        reply_to: original.reply_to_message_id == null ? null : text(original.reply_to_message_id, "reply_to"),
+        sent_at: utc(original.created_at)
+      };
+      const detail = canonical({ version: 1, source: snapshot, mapped });
+      const existing = target.prepare("SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at FROM messages WHERE id = ?").get(id);
+      if (existing) {
+        const receipts = target.prepare("SELECT detail FROM events WHERE message_id = ? AND event = 'legacy_imported'").all(id);
+        const initial = receipts.length === 1 ? JSON.parse(receipts[0].detail) : void 0;
+        const routing = (deliveries) => deliveries.map((row) => canonical({
+          delivery_id: row.delivery_id ?? null,
+          message_id: row.message_id ?? null,
+          project: row.project ?? null,
+          recipient: row.recipient ?? null,
+          target_kind: row.target_kind ?? "principal",
+          intended_session: row.intended_session ?? null
+        })).sort();
+        if (!initial?.source?.message || !initial.mapped || !initial.source.facts?.agent_message_deliveries || canonical(existing) !== canonical(initial.mapped) || canonical(initial.source.message) !== canonical(original) || canonical(routing(initial.source.facts.agent_message_deliveries)) !== canonical(routing(facts.agent_message_deliveries))) {
+          throw new Error(`Legacy migration conflict for message ${id}`);
+        }
+        alreadyImported++;
+      } else {
+        target.prepare("INSERT INTO messages (id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at,sender_local,recipient_local) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(mapped.id, mapped.sender, mapped.sender_host, mapped.sender_machine, mapped.recipient, mapped.recipient_host, mapped.recipient_machine, mapped.kind, mapped.body, mapped.body_bytes, mapped.reply_to, mapped.sent_at, localSender ? 1 : 0, explicitTargets.length === 1 ? 1 : 0);
+        target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at, "legacy_imported", detail);
+        imported++;
+      }
+      const priorRows = target.prepare("SELECT event,detail FROM events WHERE message_id = ? AND event IN ('legacy_fact','legacy_handled')").all(id);
+      const prior = new Set(priorRows.map((row) => `${row.event}:${row.detail}`));
+      for (const [table, records] of Object.entries(facts))
+        for (const row of records) {
+          const handled = table === "agent_message_receipts" && ["intake", "ack", "disposition"].includes(String(row.receipt_kind)) || table === "agent_ack_facts" || table === "agent_workflow_facts";
+          const event = handled ? "legacy_handled" : "legacy_fact";
+          const fact = canonical({ table, row });
+          const key = `${event}:${fact}`;
+          if (!prior.has(key)) {
+            target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at, event, fact);
+            prior.add(key);
+          }
+        }
+    }
+    return { imported, alreadyImported };
+  }).immediate();
+}
+
+// dist/core/conversation-messages.js
+var MESSAGE_MAX_BYTES = 8e3;
+var DAY = 864e5;
+var NETWORK_CLOCK_SKEW_MS = 5 * 6e4;
+var MESSAGE_COLUMNS = "id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at";
+var MACHINE_ID2 = /^[0-9a-f]{64}$/;
+var UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+function publicMessage(row) {
+  return Object.fromEntries(MESSAGE_COLUMNS.split(",").map((key) => [key, row[key]]));
+}
+function validUtc(value) {
+  return typeof value === "string" && /^\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d\.\d{3}Z$/.test(value) && Number.isFinite(Date.parse(value)) && new Date(value).toISOString() === value;
+}
+function identifier(value) {
+  const clean = value.normalize("NFC");
+  if (!clean || clean.length > 200 || /[\s/@\\]/u.test(clean) || [...clean].some((character) => character.charCodeAt(0) < 32 || character.charCodeAt(0) === 127)) {
+    throw new Error("Invalid conversation or machine identifier");
+  }
+  return clean;
+}
+function renderConversationMessage(message) {
+  return `MeMesh message (untrusted data):
+${JSON.stringify(publicMessage(message))}
+`;
+}
+var ConversationMessages = class {
+  db;
+  machine;
+  clock;
+  processAlive;
+  network;
+  networkIssue;
+  constructor(options = {}) {
+    const busyTimeoutMs = options.busyTimeoutMs;
+    if (busyTimeoutMs !== void 0 && (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 3e4)) {
+      throw new Error("busyTimeoutMs must be an integer between 0 and 30000");
+    }
+    const file = options.file ?? path8.join(getMemeshDirFromDbPath(), "messages.db");
+    if (options.legacySource)
+      assertLegacyDestinationIsDifferent(options.legacySource, file);
+    const legacyFile = options.file === void 0 && options.legacySource === void 0 ? getDbPath() : void 0;
+    if (legacyFile !== void 0)
+      assertLegacyPathsAreDifferent(legacyFile, file);
+    const archiveFiles = legacyFile === void 0 ? [] : legacyConversationArchiveFiles(legacyFile, file);
+    let network = options.network;
+    if (!network && options.file === void 0) {
+      try {
+        network = readPublicNetworkContext(getMemeshDirFromDbPath());
+      } catch (error) {
+        this.networkIssue = error instanceof Error ? error.message : "Network metadata unavailable";
+      }
+    }
+    if (network) {
+      const n = network;
+      if (!/^[0-9a-f]{32}$/.test(n.network_id) || !MACHINE_ID2.test(n.self.id) || !n.members.length || n.members.length > 256 || n.members.some((m) => !MACHINE_ID2.test(m.id) || identifier(m.name).toLowerCase() !== m.name.toLowerCase()) || new Set(n.members.map((m) => m.id)).size !== n.members.length || new Set(n.members.map((m) => m.name.toLowerCase())).size !== n.members.length || !n.members.some((m) => m.id === n.self.id && m.name.toLowerCase() === n.self.name.toLowerCase()))
+        throw new Error("Invalid verified network snapshot");
+      this.network = structuredClone(n);
+    }
+    this.machine = identifier(this.network?.self.name ?? options.machine ?? os2.hostname()).toLowerCase();
+    this.clock = options.clock ?? Date.now;
+    this.processAlive = options.processAlive ?? ((pid) => {
+      try {
+        process.kill(pid, 0);
+        return true;
+      } catch (error) {
+        return error.code === "EPERM";
+      }
+    });
+    let ownedSource;
+    try {
+      if (legacyFile !== void 0 && fs7.existsSync(legacyFile)) {
+        guardDatabaseFiles(legacyFile);
+        ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });
+        if (busyTimeoutMs !== void 0)
+          ownedSource.pragma(`busy_timeout = ${busyTimeoutMs}`);
+        assertLegacyDestinationIsDifferent(ownedSource, file);
+      }
+      fs7.mkdirSync(path8.dirname(file), { recursive: true, mode: 448 });
+      requirePrivateWritableDirectory(path8.dirname(file), "messages must remain owner-private");
+      guardDatabaseFiles(file);
+      const fd = fs7.openSync(file, "a", 384);
+      fs7.closeSync(fd);
+      this.db = new MemeshDatabase(file);
+      try {
+        if (busyTimeoutMs !== void 0)
+          this.db.pragma(`busy_timeout = ${busyTimeoutMs}`);
+        this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;
+          CREATE TABLE IF NOT EXISTS conversations (
+            id TEXT PRIMARY KEY, host TEXT NOT NULL, machine TEXT NOT NULL,
+            pid INTEGER NOT NULL, wake TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS messages (
+            id TEXT PRIMARY KEY, sender TEXT NOT NULL, sender_host TEXT NOT NULL,
+            sender_machine TEXT NOT NULL, recipient TEXT NOT NULL, recipient_host TEXT,
+            recipient_machine TEXT NOT NULL, kind TEXT NOT NULL, body TEXT,
+            body_bytes INTEGER NOT NULL, reply_to TEXT, sent_at TEXT NOT NULL
+          );
+          CREATE TABLE IF NOT EXISTS events (
+            message_id TEXT NOT NULL REFERENCES messages(id) ON DELETE CASCADE,
+            at TEXT NOT NULL, event TEXT NOT NULL, detail TEXT NOT NULL
+          );
+          CREATE INDEX IF NOT EXISTS message_recipient ON messages(recipient, sent_at);
+          CREATE INDEX IF NOT EXISTS message_expiry ON messages(sent_at);
+          CREATE INDEX IF NOT EXISTS message_events ON events(message_id);
+        `);
+        this.upgradeRoutingSchema();
+        for (const target of databaseFiles(file))
+          removeGroupAndOtherAccess(target);
+        const legacySource = options.legacySource ?? ownedSource;
+        if (legacySource)
+          importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
+        for (const archiveFile of archiveFiles) {
+          const archive = new MemeshDatabase(archiveFile, { readOnly: true });
+          try {
+            if (busyTimeoutMs !== void 0)
+              archive.pragma(`busy_timeout = ${busyTimeoutMs}`);
+            assertLegacyConversationArchiveSchema(archive);
+            importLegacyConversationMessages(archive, this.db, { nowMs: this.clock(), localMachine: this.machine });
+          } finally {
+            archive.close();
+          }
+        }
+        this.db.transaction(() => this.maintain()).immediate();
+      } catch (error) {
+        this.db.close();
+        throw error;
+      }
+    } finally {
+      ownedSource?.close();
+    }
+  }
+  close() {
+    this.db.close();
+  }
+  upgradeRoutingSchema() {
+    this.db.transaction(() => {
+      const columns = this.db.prepare("PRAGMA table_info(messages)").all();
+      if (columns.some((c) => c.name === "sender_local"))
+        return;
+      this.db.exec(`ALTER TABLE messages ADD COLUMN sender_local INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE messages ADD COLUMN recipient_local INTEGER NOT NULL DEFAULT 0;
+        ALTER TABLE messages ADD COLUMN network_id TEXT;
+        ALTER TABLE messages ADD COLUMN sender_machine_id TEXT;
+        ALTER TABLE messages ADD COLUMN recipient_machine_id TEXT;
+        UPDATE messages SET sender_local=1 WHERE kind != 'legacy';
+        UPDATE messages SET recipient_local=1 WHERE kind != 'legacy' AND recipient_host IS NOT NULL;
+        UPDATE messages SET sender_local=1 WHERE kind='legacy' AND sender_machine!='unknown' AND sender NOT LIKE 'legacy:%';
+        UPDATE messages SET recipient_local=1 WHERE kind='legacy' AND recipient_machine!='unknown' AND recipient NOT LIKE 'legacy:%';
+        ALTER TABLE conversations RENAME TO conversations_before_routing;
+        CREATE TABLE conversations (
+          id TEXT NOT NULL, host TEXT NOT NULL, machine TEXT NOT NULL, pid INTEGER NOT NULL, wake TEXT NOT NULL,
+          is_local INTEGER NOT NULL, machine_id TEXT NOT NULL, network_id TEXT NOT NULL, online INTEGER NOT NULL,
+          PRIMARY KEY(id,is_local,machine_id,network_id));
+        INSERT INTO conversations SELECT id,host,machine,pid,wake,1,'','',0 FROM conversations_before_routing;
+        DROP TABLE conversations_before_routing;`);
+    }).immediate();
+  }
+  maintainMessages() {
+    this.db.transaction(() => this.maintain()).immediate();
+  }
+  registerChannel(caller, hostPid) {
+    if (!Number.isSafeInteger(hostPid) || hostPid <= 1 || !this.processAlive(hostPid))
+      throw new Error("Channel host identity unavailable");
+    const existing = this.findRegistration(caller);
+    if (!existing)
+      this.register({ id: caller, host: "claude-code", machine: this.machine, pid: hostPid, wake: {} });
+    this.channelRegistration(caller, hostPid);
+  }
+  channelBatch(caller, hostPid) {
+    this.channelRegistration(caller, hostPid);
+    return this.messageBatch(caller, [], true);
+  }
+  recordChannelPush(caller, hostPid, ids) {
+    this.db.transaction(() => {
+      this.channelRegistration(caller, hostPid);
+      for (const id of ids) {
+        const message = this.get(id);
+        if (message.recipient !== caller || message.recipient_host !== "claude-code" || !message.recipient_local || this.rejected(id))
+          throw new Error("Wrong recipient");
+        this.eventOnce(id, "pushed", { actor: caller, route: "claude-channel" });
+      }
+    }).immediate();
+  }
+  channelRegistration(caller, hostPid) {
+    const registered = this.registration(caller);
+    if (registered.host !== "claude-code" || registered.pid !== hostPid || hostPid <= 1 || !this.processAlive(hostPid))
+      throw new Error("Channel host identity unavailable");
+  }
+  wakeTarget(messageId) {
+    const message = this.get(messageId);
+    if (!message.recipient_local || this.rejected(messageId))
+      return void 0;
+    const target = this.findRegistration(message.recipient);
+    if (!target || target.host !== message.recipient_host || !this.processAlive(target.pid))
+      return void 0;
+    return target;
+  }
+  recordPush(sender, messageId, route) {
+    const message = this.get(messageId);
+    if (message.sender !== identifier(sender) || !message.sender_local || this.rejected(messageId)) {
+      throw new Error("Wrong push actor");
+    }
+    this.eventOnce(messageId, "pushed", { actor: sender, route });
+  }
+  register(input) {
+    const id = identifier(input.id);
+    if (id.startsWith(LEGACY_CONVERSATION_PREFIX))
+      throw new Error("Legacy audit identities cannot register as conversations");
+    if (!["claude-code", "codex", "hermes"].includes(input.host))
+      throw new Error("Unknown host");
+    if (identifier(input.machine).toLowerCase() !== this.machine)
+      throw new Error("Local registration requires this machine");
+    if (!Number.isSafeInteger(input.pid) || input.pid <= 0)
+      throw new Error("Invalid process id");
+    this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?, ?, ?, ?, ?,1,'','',0)
+      ON CONFLICT(id,is_local,machine_id,network_id) DO UPDATE SET host=excluded.host, machine=excluded.machine,
+      pid=excluded.pid, wake=excluded.wake`).run(id, input.host, this.machine, input.pid, JSON.stringify(input.wake));
+  }
+  discover() {
+    const rows = this.db.prepare("SELECT * FROM conversations ORDER BY id").all();
+    return rows.filter((row) => row.is_local || row.network_id === this.network?.network_id && this.member(row.machine_id)).map((row) => ({
+      id: row.id,
+      host: row.host,
+      machine: row.is_local ? this.machine : this.member(row.machine_id).name.toLowerCase(),
+      pid: row.is_local ? row.pid : 0,
+      wake: row.is_local ? JSON.parse(row.wake) : {},
+      online: row.is_local ? this.processAlive(row.pid) : Boolean(row.online)
+    }));
+  }
+  send(sender, input) {
+    const from = this.registration(sender);
+    if (!["task", "question", "review_request", "result"].includes(input.kind))
+      throw new Error("Unknown message kind");
+    if (typeof input.body !== "string")
+      throw new Error("Message body must be text");
+    const pieces = input.recipient.split("@");
+    if (pieces.length > 2 || pieces.length === 2 && !pieces[1])
+      throw new Error("Invalid recipient address");
+    if (input.reply_to !== void 0 && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.reply_to)) {
+      throw new Error("Invalid reply_to message id");
+    }
+    const recipient = identifier(pieces[0]);
+    let machine = pieces[1] ? identifier(pieces[1]).toLowerCase() : this.machine;
+    let remoteId = pieces[1] && machine !== this.machine ? this.network?.members.find((m) => m.name.toLowerCase() === machine)?.id : void 0;
+    let local = !pieces[1] || machine === this.machine;
+    const original = input.reply_to ? this.get(input.reply_to) : void 0;
+    if (original) {
+      if (!original.recipient_local || original.recipient !== from.id || original.sender !== recipient || this.rejected(original.id)) {
+        throw new Error("Reply must address the sender of a message received by this conversation");
+      }
+      if (original.sender_local) {
+        if (pieces[1] && machine !== original.sender_machine && machine !== this.machine)
+          throw new Error("Wrong reply machine");
+        local = true;
+        remoteId = void 0;
+        machine = this.machine;
+      } else {
+        const member = original.network_id === this.network?.network_id ? this.member(original.sender_machine_id) : void 0;
+        if (!pieces[1] || machine !== original.sender_machine && machine !== member?.name.toLowerCase())
+          throw new Error("Wrong reply machine");
+        local = false;
+        remoteId = member?.id;
+        machine = member?.name.toLowerCase() ?? machine;
+      }
+    }
+    const to = local ? this.findRegistration(recipient) : remoteId ? this.remoteRegistration(remoteId, recipient) : void 0;
+    return this.db.transaction(() => {
+      const message = {
+        id: randomUUID(),
+        sender: from.id,
+        sender_host: from.host,
+        sender_machine: this.machine,
+        recipient,
+        recipient_host: to?.host ?? null,
+        recipient_machine: machine,
+        kind: input.kind,
+        body: input.body,
+        body_bytes: Buffer.byteLength(input.body, "utf8"),
+        reply_to: input.reply_to ?? null,
+        sent_at: this.now()
+      };
+      const tooLarge = Buffer.byteLength(renderConversationMessage(message), "utf8") > MESSAGE_MAX_BYTES;
+      const reason = tooLarge ? "message_too_large" : !to ? "unknown_recipient" : void 0;
+      if (tooLarge)
+        message.body = null;
+      this.insert(message, {
+        sender_local: 1,
+        recipient_local: local && Boolean(to) ? 1 : 0,
+        network_id: !local ? this.network?.network_id ?? null : null,
+        sender_machine_id: !local ? this.network?.self.id ?? null : null,
+        recipient_machine_id: remoteId ?? null
+      });
+      this.event(message.id, reason ? "rejected" : "queued", { actor: from.id, ...reason ? { reason } : {} });
+      if (reason)
+        return {
+          message,
+          accepted: false,
+          reason,
+          recipients: this.discover().map((row) => row.machine === this.machine ? row.id : `${row.id}@${row.machine}`)
+        };
+      if (message.reply_to) {
+        this.eventOnce(message.reply_to, "delivered", { actor: from.id, via: "reply" });
+        this.eventOnce(message.reply_to, "replied", { actor: from.id, reply: message.id });
+      }
+      const pending = local ? this.pending(recipient).length : this.db.prepare(`SELECT COUNT(*) AS count FROM messages m
+        WHERE recipient=? AND recipient_local=0 AND network_id=? AND recipient_machine_id=?
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id
+          AND e.event IN ('rejected','delivered','read','replied','legacy_handled'))`).get(recipient, this.network.network_id, remoteId).count;
+      return { message, accepted: true, ...pending > 30 ? { warning: `${pending} messages await delivery` } : {} };
+    }).immediate();
+  }
+  read(caller, id) {
+    caller = identifier(caller);
+    this.registration(caller);
+    return this.db.transaction(() => {
+      const message = this.get(id);
+      if (message.recipient !== caller || !message.recipient_local || this.rejected(id)) {
+        throw new Error("Message is not addressed to this conversation");
+      }
+      this.eventOnce(id, "delivered", { actor: caller, via: "read" });
+      this.eventOnce(id, "read", { actor: caller });
+      return publicMessage(message);
+    }).immediate();
+  }
+  status(caller, id) {
+    if (caller !== void 0)
+      caller = identifier(caller);
+    if (caller)
+      this.registration(caller);
+    const rows = this.db.prepare(`SELECT * FROM messages ${id ? "WHERE id = ?" : ""} ORDER BY sent_at, rowid`).all(...id ? [id] : []);
+    return rows.filter((row) => !caller || row.sender === caller && row.sender_local || row.recipient === caller && row.recipient_local).map((row) => {
+      const events = this.db.prepare("SELECT * FROM events WHERE message_id = ? ORDER BY rowid").all(row.id);
+      const priority = ["queued", "pushed", "delivered", "read", "replied"];
+      const state = this.rejected(row.id) ? "rejected" : [...priority].reverse().find((value) => events.some((event) => event.event === value)) ?? (events.some((event) => event.event === "legacy_handled") ? "legacy_handled" : events.some((event) => event.event === "legacy_imported") ? "legacy_imported" : "queued");
+      return { ...publicMessage(row), state, events };
+    });
+  }
+  hookBatch(caller, excludedIds = []) {
+    caller = identifier(caller);
+    this.registration(caller);
+    return this.messageBatch(caller, excludedIds, false);
+  }
+  messageBatch(caller, excludedIds, excludePushed) {
+    let text2 = "";
+    const ids = [];
+    const excluded = new Set(excludedIds);
+    for (const message of this.pending(caller, excludePushed)) {
+      if (excluded.has(message.id))
+        continue;
+      const next = renderConversationMessage(message);
+      if (Buffer.byteLength(next, "utf8") > MESSAGE_MAX_BYTES)
+        continue;
+      if (Buffer.byteLength(text2 + next, "utf8") > MESSAGE_MAX_BYTES)
+        break;
+      text2 += next;
+      ids.push(message.id);
+    }
+    return { text: text2, ids };
+  }
+  recordHookDelivery(caller, ids, hook) {
+    caller = identifier(caller);
+    this.registration(caller);
+    this.db.transaction(() => {
+      for (const id of ids) {
+        const message = this.get(id);
+        if (message.recipient !== caller || !message.recipient_local || this.rejected(id))
+          throw new Error("Wrong recipient");
+        this.eventOnce(id, "delivered", { actor: caller, via: "hook", hook });
+      }
+    }).immediate();
+  }
+  exportRegistrations() {
+    const rows = this.db.prepare("SELECT id,host,pid FROM conversations WHERE is_local=1 ORDER BY id").all();
+    return rows.map((row) => ({ id: row.id, host: row.host, online: this.processAlive(row.pid) }));
+  }
+  replaceRemoteRegistrations(peerId, registrations) {
+    this.writeRemoteRegistrations(peerId, registrations, true);
+  }
+  upsertRemoteRegistrations(peerId, registrations) {
+    this.writeRemoteRegistrations(peerId, registrations, false);
+  }
+  writeRemoteRegistrations(peerId, registrations, replace) {
+    const peer = this.requirePeer(peerId);
+    const ids = /* @__PURE__ */ new Set();
+    for (const row of registrations) {
+      if (Object.keys(row).sort().join(",") !== "host,id,online" || identifier(row.id).startsWith(LEGACY_CONVERSATION_PREFIX) || !["claude-code", "codex", "hermes"].includes(row.host) || typeof row.online !== "boolean" || ids.has(row.id))
+        throw new Error("Invalid remote registration snapshot");
+      ids.add(row.id);
+    }
+    this.db.transaction(() => {
+      if (replace)
+        this.db.prepare("DELETE FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=?").run(this.network.network_id, peerId);
+      const insert = this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?,?,?,0,'{}',0,?,?,?)
+        ON CONFLICT(id,is_local,machine_id,network_id) DO UPDATE SET host=excluded.host,machine=excluded.machine,online=excluded.online`);
+      for (const row of registrations)
+        insert.run(row.id, row.host, peer.name.toLowerCase(), peerId, this.network.network_id, row.online ? 1 : 0);
+    }).immediate();
+  }
+  outgoingFor(peerId) {
+    this.requirePeer(peerId);
+    const rows = this.db.prepare(`SELECT m.* FROM messages m WHERE sender_local=1 AND recipient_local=0
+      AND network_id=? AND sender_machine_id=? AND recipient_machine_id=? AND sent_at>?
+      AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event IN ('rejected','network_accepted'))
+      ORDER BY sent_at,rowid`).all(this.network.network_id, this.network.self.id, peerId, new Date(this.clock() - 14 * DAY).toISOString());
+    return rows.map((row) => ({ network_id: row.network_id, sender_machine_id: row.sender_machine_id, recipient_machine_id: row.recipient_machine_id, message: publicMessage(row) }));
+  }
+  receiveFrom(peerId, wire) {
+    const peer = this.requirePeer(peerId);
+    if (wire.network_id !== this.network.network_id || wire.sender_machine_id !== peerId || wire.recipient_machine_id !== this.network.self.id)
+      throw new Error("Wrong network message binding");
+    const m = wire.message;
+    if (!m || Object.keys(m).sort().join(",") !== MESSAGE_COLUMNS.split(",").sort().join(",") || !UUID.test(m.id) || identifier(m.sender).startsWith(LEGACY_CONVERSATION_PREFIX) || identifier(m.recipient).startsWith(LEGACY_CONVERSATION_PREFIX) || !["claude-code", "codex", "hermes"].includes(m.sender_host) || !["task", "question", "review_request", "result"].includes(m.kind) || typeof m.body !== "string" || m.body_bytes !== Buffer.byteLength(m.body, "utf8") || !validUtc(m.sent_at) || Date.parse(m.sent_at) <= this.clock() - 14 * DAY || Date.parse(m.sent_at) > this.clock() + NETWORK_CLOCK_SKEW_MS || m.reply_to !== null && !UUID.test(m.reply_to))
+      throw new Error("Invalid or expired network message");
+    const message = { ...publicMessage(m), sender_machine: peer.name.toLowerCase(), recipient_machine: this.machine };
+    if (Buffer.byteLength(renderConversationMessage(message), "utf8") > MESSAGE_MAX_BYTES)
+      throw new Error("Network message too large");
+    return this.db.transaction(() => {
+      const prior = this.db.prepare("SELECT * FROM messages WHERE id=?").get(m.id);
+      if (prior) {
+        const content = (row) => JSON.stringify(MESSAGE_COLUMNS.split(",").filter((k) => k !== "sender_machine" && k !== "recipient_machine").map((k) => row[k]));
+        if (prior.sender_local || !prior.recipient_local || prior.network_id !== wire.network_id || prior.sender_machine_id !== peerId || prior.recipient_machine_id !== wire.recipient_machine_id || this.rejected(prior.id) || content(prior) !== content(message))
+          throw new Error("Network message id collision");
+        return "duplicate";
+      }
+      const from = this.remoteRegistration(peerId, m.sender), to = this.findRegistration(m.recipient);
+      if (!from || from.host !== m.sender_host || !to || to.host !== m.recipient_host)
+        throw new Error("Unregistered network conversation");
+      if (m.reply_to) {
+        const original = this.get(m.reply_to);
+        if (!original.sender_local || original.recipient_local || original.network_id !== wire.network_id || original.sender_machine_id !== this.network.self.id || original.recipient_machine_id !== peerId || original.sender !== m.recipient || original.recipient !== m.sender || this.rejected(original.id))
+          throw new Error("Wrong network reply binding");
+        this.eventOnce(original.id, "delivered", { actor: m.sender, peer: peerId, via: "reply" });
+        this.eventOnce(original.id, "replied", { actor: m.sender, peer: peerId, reply: m.id });
+      }
+      this.insert(message, { sender_local: 0, recipient_local: 1, network_id: wire.network_id, sender_machine_id: peerId, recipient_machine_id: wire.recipient_machine_id });
+      this.event(message.id, "queued", { actor: m.sender, peer: peerId, via: "network" });
+      return "accepted";
+    }).immediate();
+  }
+  recordCopyAccepted(peerId, messageId) {
+    this.outboundMessage(peerId, messageId);
+    this.eventOnce(messageId, "network_accepted", { peer: peerId, network_id: this.network.network_id });
+  }
+  recordNetworkPush(peerId, messageId, route) {
+    this.requirePeer(peerId);
+    const message = this.get(messageId);
+    if (!message.recipient_local || message.sender_local || message.network_id !== this.network.network_id || message.sender_machine_id !== peerId || message.recipient_machine_id !== this.network.self.id || this.rejected(messageId))
+      throw new Error("Wrong network push binding");
+    this.eventOnce(messageId, "pushed", { actor: message.recipient, peer: peerId, route });
+  }
+  receiptsFor(peerId) {
+    this.requirePeer(peerId);
+    const rows = this.db.prepare(`SELECT e.message_id,e.event,e.at,e.detail FROM events e JOIN messages m ON m.id=e.message_id
+      WHERE m.sender_local=0 AND m.recipient_local=1 AND m.network_id=? AND m.sender_machine_id=? AND m.recipient_machine_id=?
+      AND m.sent_at>? AND e.event IN ('delivered','read') ORDER BY e.rowid`).all(this.network.network_id, peerId, this.network.self.id, new Date(this.clock() - 14 * DAY).toISOString());
+    return rows.map((row) => ({ message_id: row.message_id, event: row.event, at: row.at, actor: JSON.parse(row.detail).actor })).filter((receipt) => !this.receiptAcknowledged(receipt));
+  }
+  recordReceiptAccepted(peerId, receipt) {
+    this.requirePeer(peerId);
+    const message = this.get(receipt.message_id);
+    if (message.sender_local || !message.recipient_local || message.network_id !== this.network.network_id || message.sender_machine_id !== peerId || message.recipient_machine_id !== this.network.self.id || receipt.actor !== message.recipient)
+      throw new Error("Wrong receipt acknowledgement binding");
+    const actual = this.db.prepare("SELECT at,detail FROM events WHERE message_id=? AND event=?").get(receipt.message_id, receipt.event);
+    if (!["delivered", "read"].includes(receipt.event) || !actual || actual.at !== receipt.at || JSON.parse(actual.detail).actor !== receipt.actor)
+      throw new Error("Unknown receipt acknowledgement");
+    if (this.receiptAcknowledged(receipt))
+      return;
+    if (!this.receiptsFor(peerId).some((r) => this.receiptKey(r) === this.receiptKey(receipt)))
+      throw new Error("Unknown receipt acknowledgement");
+    this.event(receipt.message_id, "network_receipt_acked", { receipt: this.receiptKey(receipt), peer: peerId });
+  }
+  receiveReceipt(peerId, receipt) {
+    const message = this.outboundMessage(peerId, receipt.message_id);
+    if (Object.keys(receipt).sort().join(",") !== "actor,at,event,message_id" || !["delivered", "read"].includes(receipt.event) || receipt.actor !== message.recipient || !validUtc(receipt.at) || Date.parse(receipt.at) < Date.parse(message.sent_at) - NETWORK_CLOCK_SKEW_MS || Date.parse(receipt.at) > this.clock() + NETWORK_CLOCK_SKEW_MS)
+      throw new Error("Invalid network receipt");
+    return this.db.transaction(() => {
+      const previous = this.db.prepare("SELECT at,detail FROM events WHERE message_id=? AND event=?").get(message.id, receipt.event);
+      if (previous) {
+        const detail = JSON.parse(previous.detail);
+        if (detail.via === "network_receipt" && previous.at !== receipt.at)
+          throw new Error("Network receipt conflict");
+        return "duplicate";
+      }
+      this.db.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(message.id, receipt.at, receipt.event, JSON.stringify({ actor: receipt.actor, peer: peerId, via: "network_receipt" }));
+      return "accepted";
+    }).immediate();
+  }
+  member(id) {
+    return this.network?.members.find((m) => m.id === id && id !== this.network?.self.id);
+  }
+  requirePeer(id) {
+    const peer = this.member(id);
+    if (!peer)
+      throw new Error("Peer is not a current network member");
+    return peer;
+  }
+  remoteRegistration(peerId, id) {
+    this.requirePeer(peerId);
+    return this.db.prepare("SELECT id,host FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=? AND id=?").get(this.network.network_id, peerId, identifier(id));
+  }
+  outboundMessage(peerId, id) {
+    this.requirePeer(peerId);
+    const message = this.get(id);
+    if (!message.sender_local || message.recipient_local || message.network_id !== this.network.network_id || message.sender_machine_id !== this.network.self.id || message.recipient_machine_id !== peerId || Date.parse(message.sent_at) <= this.clock() - 14 * DAY || this.rejected(id))
+      throw new Error("Wrong outbound message binding");
+    return message;
+  }
+  receiptKey(receipt) {
+    return JSON.stringify([receipt.message_id, receipt.event, receipt.at, receipt.actor]);
+  }
+  receiptAcknowledged(receipt) {
+    return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id=? AND event='network_receipt_acked' AND json_extract(detail,'$.receipt')=?").get(receipt.message_id, this.receiptKey(receipt)));
+  }
+  now() {
+    return new Date(this.clock()).toISOString();
+  }
+  findRegistration(id) {
+    const row = this.db.prepare("SELECT id,host,machine,pid,wake FROM conversations WHERE id = ? AND is_local=1").get(identifier(id));
+    return row ? { ...row, machine: this.machine, wake: JSON.parse(row.wake) } : void 0;
+  }
+  registration(id) {
+    const found = this.findRegistration(id);
+    if (!found)
+      throw new Error("Caller conversation is not registered");
+    return found;
+  }
+  get(id) {
+    const row = this.db.prepare("SELECT * FROM messages WHERE id = ?").get(id);
+    if (!row)
+      throw new Error("Message not found");
+    return row;
+  }
+  rejected(id) {
+    return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = 'rejected'").get(id));
+  }
+  pending(caller, excludePushed = false) {
+    return this.db.prepare(`SELECT m.* FROM messages m WHERE recipient = ? AND recipient_local=1
+      AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event IN ('rejected','delivered','read','replied','legacy_handled'))
+      AND (? = 0 OR (m.recipient_host = 'claude-code'
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id = m.id AND e.event = 'pushed')))
+      ORDER BY sent_at, rowid`).all(caller, excludePushed ? 1 : 0);
+  }
+  insert(message, route = {
+    sender_local: 1,
+    recipient_local: 1,
+    network_id: null,
+    sender_machine_id: null,
+    recipient_machine_id: null
+  }) {
+    this.db.prepare(`INSERT INTO messages (${MESSAGE_COLUMNS},sender_local,recipient_local,network_id,sender_machine_id,recipient_machine_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,?,?,?,?,?)`).run(message.id, message.sender, message.sender_host, message.sender_machine, message.recipient, message.recipient_host, message.recipient_machine, message.kind, message.body, message.body_bytes, message.reply_to, message.sent_at, route.sender_local, route.recipient_local, route.network_id, route.sender_machine_id, route.recipient_machine_id);
+  }
+  event(id, event, detail) {
+    this.db.prepare("INSERT INTO events VALUES (?, ?, ?, ?)").run(id, this.now(), event, JSON.stringify(detail));
+  }
+  eventOnce(id, event, detail) {
+    if (!this.db.prepare("SELECT 1 FROM events WHERE message_id = ? AND event = ?").get(id, event))
+      this.event(id, event, detail);
+  }
+  maintain() {
+    const now = this.clock();
+    this.db.prepare("DELETE FROM messages WHERE sent_at <= ?").run(new Date(now - 14 * DAY).toISOString());
+    const overdue = this.db.prepare(`SELECT m.* FROM messages m WHERE sent_at <= ? AND sender_host != 'system' AND sender_local=1
+      AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id
+        AND e.event IN ('rejected','delivered','read','replied','legacy_handled','undelivered_notified'))`).all(new Date(now - DAY).toISOString());
+    for (const original of overdue) {
+      const notice = {
+        id: randomUUID(),
+        sender: "memesh",
+        sender_host: "system",
+        sender_machine: this.machine,
+        recipient: original.sender,
+        recipient_host: original.sender_host,
+        recipient_machine: original.sender_machine,
+        kind: "result",
+        body: `Message ${original.id} has not been delivered after one day.`,
+        body_bytes: 0,
+        reply_to: original.id,
+        sent_at: this.now()
+      };
+      notice.body_bytes = Buffer.byteLength(notice.body, "utf8");
+      this.insert(notice);
+      this.event(notice.id, "queued", { actor: "memesh", reason: "undelivered" });
+      this.event(original.id, "undelivered_notified", { actor: "memesh", notification: notice.id });
+    }
+  }
+};
+
+// dist/host-adapters/conversation-wake.js
+import fs8 from "node:fs";
+import net from "node:net";
+import os3 from "node:os";
+import path9 from "node:path";
+import { execFile } from "node:child_process";
+var TIMEOUT_MS = 2e3;
+var MAX_OUTPUT_BYTES = 16 * 1024;
+function alive(pid) {
+  if (!Number.isSafeInteger(pid) || pid <= 1)
+    return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch {
+    return false;
+  }
+}
+function privateSocket(socketPath) {
+  if (!path9.isAbsolute(socketPath) || process.platform === "win32")
+    throw new Error("Socket unavailable");
+  const stat2 = fs8.lstatSync(socketPath);
+  if (!stat2.isSocket() || (stat2.mode & 63) !== 0 || typeof process.getuid !== "function" || stat2.uid !== process.getuid())
+    throw new Error("Socket unavailable");
+  return stat2;
+}
+async function wakeConversationMessage(message, target, localMachine = os3.hostname().toLowerCase()) {
+  if (!target || target.id !== message.recipient || target.host !== message.recipient_host || target.machine !== message.recipient_machine || target.machine !== localMachine || !alive(target.pid) || message.body === null)
+    return { pushed: false, reason: "unavailable" };
+  const content = renderConversationMessage(message);
+  if (Buffer.byteLength(content, "utf8") > MESSAGE_MAX_BYTES)
+    return { pushed: false, reason: "unavailable" };
+  try {
+    if (target.host === "claude-code" && typeof target.wake.socket === "string") {
+      const socketPath = target.wake.socket;
+      const before = privateSocket(socketPath);
+      await new Promise((resolve, reject) => {
+        const socket = net.createConnection(socketPath);
+        let settled = false;
+        const finish = (error) => {
+          if (settled)
+            return;
+          settled = true;
+          clearTimeout(timer);
+          socket.destroy();
+          if (error)
+            reject(error);
+          else
+            resolve();
+        };
+        const timer = setTimeout(() => finish(new Error("Socket timeout")), TIMEOUT_MS);
+        socket.once("error", () => finish(new Error("Socket failed")));
+        socket.once("close", () => finish(new Error("Socket closed before write")));
+        socket.once("connect", () => {
+          try {
+            const after = privateSocket(socketPath);
+            if (before.dev !== after.dev || before.ino !== after.ino || !alive(target.pid))
+              throw new Error("Host changed");
+            socket.end(`${JSON.stringify({ type: "user", message: { role: "user", content } })}
+`, () => finish());
+          } catch {
+            finish(new Error("Socket identity changed"));
+          }
+        });
+      });
+      return { pushed: true, route: "claude-socket" };
+    }
+    if (target.host === "codex" && target.wake.thread === target.id) {
+      await new Promise((resolve, reject) => {
+        execFile("codex", ["queue", "--thread", target.id, "--message", content], {
+          shell: false,
+          windowsHide: true,
+          timeout: TIMEOUT_MS,
+          killSignal: "SIGKILL",
+          maxBuffer: MAX_OUTPUT_BYTES,
+          encoding: "utf8"
+        }, (error) => {
+          if (error)
+            reject(new Error("Queue failed"));
+          else
+            resolve();
+        });
+      });
+      return { pushed: true, route: "codex-queue" };
+    }
+    return { pushed: false, reason: "unavailable" };
+  } catch {
+    return { pushed: false, reason: "failed" };
+  }
+}
+
+// dist/network/bridge-state.js
+import fs9 from "node:fs";
+import path10 from "node:path";
 function statusPath(dataDir2) {
-  return path6.join(networkDir(dataDir2), "bridge-status.json");
+  return path10.join(networkDir(dataDir2), "bridge-status.json");
 }
 function logPath(dataDir2) {
-  return path6.join(networkDir(dataDir2), "bridge.log");
+  return path10.join(networkDir(dataDir2), "bridge.log");
 }
 function writeStatus(dataDir2, status) {
   const file = statusPath(dataDir2);
   const temporary = `${file}.tmp-${process.pid}`;
-  fs5.writeFileSync(temporary, `${JSON.stringify(status)}
+  fs9.writeFileSync(temporary, `${JSON.stringify(status)}
 `, { mode: 384 });
-  fs5.renameSync(temporary, file);
+  fs9.renameSync(temporary, file);
 }
 
 // dist/network/control-socket.js
-import { createHash as createHash2, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
-import fs6 from "node:fs";
-import net from "node:net";
-import path7 from "node:path";
+import { createHash as createHash3, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
+import fs10 from "node:fs";
+import net2 from "node:net";
+import path11 from "node:path";
 var SOCKET_PATH_MAX_BYTES = 103;
 var PROBE_DEADLINE_MS = 4e3;
 var REQUEST_DEADLINE_MS = 2e3;
@@ -889,9 +1947,9 @@ var STARTUP_LOCK_STALE_MS = 3e4;
 var STARTUP_LOCK_EMPTY_STALE_MS = 1500;
 function controlPath(dataDir2) {
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\memesh-bridge-${createHash2("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
+    return `\\\\.\\pipe\\memesh-bridge-${createHash3("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
   }
-  return path7.join(networkDir(dataDir2), "bridge.sock");
+  return path11.join(networkDir(dataDir2), "bridge.sock");
 }
 function controlPathFits(dataDir2) {
   return Buffer.byteLength(controlPath(dataDir2)) <= SOCKET_PATH_MAX_BYTES;
@@ -903,13 +1961,13 @@ function assertControlPathFits(dataDir2) {
 }
 function dataDirIdentity(dataDir2) {
   try {
-    return fs6.realpathSync.native(dataDir2);
+    return fs10.realpathSync.native(dataDir2);
   } catch {
     return dataDir2;
   }
 }
 function tokenPath(dataDir2) {
-  return path7.join(networkDir(dataDir2), "control.token");
+  return path11.join(networkDir(dataDir2), "control.token");
 }
 var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
 function ensureControlToken(dataDir2) {
@@ -918,23 +1976,23 @@ function ensureControlToken(dataDir2) {
   if (existing !== null)
     return existing;
   const temporary = `${file}.tmp-${process.pid}`;
-  fs6.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
+  fs10.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
   try {
-    fs6.chmodSync(temporary, 384);
-    if (fs6.existsSync(file) && readControlToken(dataDir2) === null)
-      fs6.rmSync(file, { force: true });
-    fs6.linkSync(temporary, file);
+    fs10.chmodSync(temporary, 384);
+    if (fs10.existsSync(file) && readControlToken(dataDir2) === null)
+      fs10.rmSync(file, { force: true });
+    fs10.linkSync(temporary, file);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs6.rmSync(temporary, { force: true });
+    fs10.rmSync(temporary, { force: true });
   }
   return readControlToken(dataDir2);
 }
 function readControlToken(dataDir2) {
   try {
-    const token = fs6.readFileSync(tokenPath(dataDir2), "utf8");
+    const token = fs10.readFileSync(tokenPath(dataDir2), "utf8");
     return TOKEN_FORMAT.test(token) ? token : null;
   } catch {
     return null;
@@ -943,8 +2001,8 @@ function readControlToken(dataDir2) {
 function tokensMatch(given, expected) {
   if (typeof given !== "string")
     return false;
-  const left = createHash2("sha256").update(given).digest();
-  return timingSafeEqual(left, createHash2("sha256").update(expected).digest());
+  const left = createHash3("sha256").update(given).digest();
+  return timingSafeEqual(left, createHash3("sha256").update(expected).digest());
 }
 function parseReply(line2, dataDir2) {
   try {
@@ -957,8 +2015,8 @@ function parseReply(line2, dataDir2) {
 }
 function request(dataDir2, op, deadlineMs) {
   return new Promise((resolve) => {
-    const socket = net.createConnection(controlPath(dataDir2));
-    let text = "";
+    const socket = net2.createConnection(controlPath(dataDir2));
+    let text2 = "";
     const finish = (result) => {
       clearTimeout(timer);
       socket.destroy();
@@ -968,13 +2026,13 @@ function request(dataDir2, op, deadlineMs) {
     socket.once("connect", () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir2) })}
 `));
     socket.on("data", (chunk) => {
-      text += chunk.toString("utf8");
-      if (text.length > REPLY_MAX_BYTES)
+      text2 += chunk.toString("utf8");
+      if (text2.length > REPLY_MAX_BYTES)
         finish(null);
-      const newline = text.indexOf("\n");
+      const newline = text2.indexOf("\n");
       if (newline === -1)
         return;
-      finish(parseReply(text.slice(0, newline), dataDir2));
+      finish(parseReply(text2.slice(0, newline), dataDir2));
     });
     socket.once("error", (err) => {
       finish(["ECONNREFUSED", "ENOENT", "ENOTDIR"].includes(String(err.code)) ? "not-running" : null);
@@ -992,7 +2050,7 @@ async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
 }
 function identityOf(file) {
   try {
-    const { dev, ino } = fs6.lstatSync(file);
+    const { dev, ino } = fs10.lstatSync(file);
     return { dev, ino };
   } catch {
     return null;
@@ -1002,7 +2060,7 @@ var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino ==
 function takeOverStaleLock(lock, judged) {
   const aside = `${lock}.stale-${process.pid}`;
   try {
-    fs6.renameSync(lock, aside);
+    fs10.renameSync(lock, aside);
   } catch (err) {
     if (err.code === "ENOENT")
       return;
@@ -1011,26 +2069,26 @@ function takeOverStaleLock(lock, judged) {
   try {
     if (sameFile(identityOf(aside), judged))
       return;
-    fs6.linkSync(aside, lock);
+    fs10.linkSync(aside, lock);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs6.rmSync(aside, { force: true });
+    fs10.rmSync(aside, { force: true });
   }
 }
 async function withStartupLock(dataDir2, use) {
-  const lock = path7.join(networkDir(dataDir2), "bridge.sock.startup.lock");
+  const lock = path11.join(networkDir(dataDir2), "bridge.sock.startup.lock");
   const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
   let mine;
   for (; ; ) {
     try {
-      const fd = fs6.openSync(lock, "wx", 384);
-      const { dev, ino } = fs6.fstatSync(fd);
+      const fd = fs10.openSync(lock, "wx", 384);
+      const { dev, ino } = fs10.fstatSync(fd);
       mine = { dev, ino };
-      fs6.writeSync(fd, `${process.pid}
+      fs10.writeSync(fd, `${process.pid}
 `);
-      fs6.closeSync(fd);
+      fs10.closeSync(fd);
       break;
     } catch (err) {
       if (err.code !== "EEXIST")
@@ -1049,15 +2107,15 @@ async function withStartupLock(dataDir2, use) {
     return await use(() => sameFile(identityOf(lock), mine));
   } finally {
     if (sameFile(identityOf(lock), mine))
-      fs6.rmSync(lock, { force: true });
+      fs10.rmSync(lock, { force: true });
   }
 }
 function startupLockIsStale(lock) {
   try {
-    const age = Date.now() - fs6.statSync(lock).mtimeMs;
+    const age = Date.now() - fs10.statSync(lock).mtimeMs;
     if (age >= STARTUP_LOCK_STALE_MS)
       return true;
-    const raw = fs6.readFileSync(lock, "utf8").trim();
+    const raw = fs10.readFileSync(lock, "utf8").trim();
     if (!/^[1-9][0-9]*$/.test(raw))
       return age >= STARTUP_LOCK_EMPTY_STALE_MS;
     process.kill(Number(raw), 0);
@@ -1089,10 +2147,10 @@ function removeStaleSocket(target, judged) {
     return;
   if (!sameFile(identityOf(target), judged))
     return;
-  if (!fs6.lstatSync(target).isSocket()) {
+  if (!fs10.lstatSync(target).isSocket()) {
     throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
   }
-  fs6.unlinkSync(target);
+  fs10.unlinkSync(target);
 }
 function parseOp(line2, token) {
   try {
@@ -1105,19 +2163,19 @@ function parseOp(line2, token) {
   }
 }
 function serveConnection(socket, identity, token, handlers) {
-  let text = "";
+  let text2 = "";
   socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
   socket.on("error", (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
   socket.on("data", (chunk) => {
-    text += chunk.toString("utf8");
-    if (text.length > REQUEST_MAX_BYTES) {
+    text2 += chunk.toString("utf8");
+    if (text2.length > REQUEST_MAX_BYTES) {
       socket.destroy();
       return;
     }
-    const newline = text.indexOf("\n");
+    const newline = text2.indexOf("\n");
     if (newline === -1)
       return;
-    const op = parseOp(text.slice(0, newline), token);
+    const op = parseOp(text2.slice(0, newline), token);
     if (op === null) {
       socket.destroy();
       return;
@@ -1137,7 +2195,7 @@ async function holdControlSocket(dataDir2, handlers) {
   for (let attempt = 0; attempt < 5; attempt++) {
     const held = await withStartupLock(dataDir2, async (holdsLock) => {
       const token = ensureControlToken(dataDir2);
-      const server = net.createServer((socket) => serveConnection(socket, identity, token, handlers));
+      const server = net2.createServer((socket) => serveConnection(socket, identity, token, handlers));
       server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
       for (let tries = 0; tries < 3; tries++) {
         if (await listen(server, target) === "listening")
@@ -1166,7 +2224,7 @@ function heldBy(server, target) {
       return "ours";
     let current;
     try {
-      const { dev, ino } = fs6.lstatSync(target);
+      const { dev, ino } = fs10.lstatSync(target);
       current = { dev, ino };
     } catch (err) {
       return err.code === "ENOENT" ? "lost" : "unreadable";
@@ -1222,13 +2280,13 @@ async function pingRelay(relayUrl, fetchImpl = fetch) {
 }
 
 // dist/network/test-frame-log.js
-import fs7 from "node:fs";
-import path8 from "node:path";
+import fs11 from "node:fs";
+import path12 from "node:path";
 function appendTestFrameLog(file, bytes) {
-  const folder = path8.dirname(path8.resolve(file));
+  const folder = path12.dirname(path12.resolve(file));
   let folderStat;
   try {
-    folderStat = fs7.lstatSync(folder);
+    folderStat = fs11.lstatSync(folder);
   } catch {
     return `the frame log folder ${folder} does not exist`;
   }
@@ -1240,86 +2298,34 @@ function appendTestFrameLog(file, bytes) {
     return `the frame log folder ${folder} belongs to another user`;
   let fd;
   try {
-    fd = fs7.openSync(file, fs7.constants.O_WRONLY | fs7.constants.O_APPEND | fs7.constants.O_CREAT | fs7.constants.O_NOFOLLOW, 384);
+    fd = fs11.openSync(file, fs11.constants.O_WRONLY | fs11.constants.O_APPEND | fs11.constants.O_CREAT | fs11.constants.O_NOFOLLOW, 384);
   } catch (err) {
     return `the frame log ${file} could not be opened safely (${err.code ?? "error"})`;
   }
   try {
-    const stat = fs7.fstatSync(fd);
-    if (!stat.isFile())
+    const stat2 = fs11.fstatSync(fd);
+    if (!stat2.isFile())
       return `the frame log ${file} is not a regular file`;
-    fs7.fchmodSync(fd, 384);
-    fs7.writeSync(fd, `${bytes.toString("utf8")}
+    fs11.fchmodSync(fd, 384);
+    fs11.writeSync(fd, `${bytes.toString("utf8")}
 `);
     return null;
   } finally {
-    fs7.closeSync(fd);
+    fs11.closeSync(fd);
   }
 }
 
-// dist/core/agent-router.js
-import { randomUUID as randomUUID2 } from "node:crypto";
-import fs9 from "node:fs";
-import net2 from "node:net";
-import path9 from "node:path";
+// dist/network/courier.js
+import { createHash as createHash6 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash3, randomBytes as randomBytes4, randomUUID } from "node:crypto";
+import { createHash as createHash4, randomBytes as randomBytes4, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import fs8 from "node:fs";
+import fs12 from "node:fs";
 
 // dist/core/agent-message-ttl.js
 var AGENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1e3;
-function agentMessageExpiryCutoff(nowMs = Date.now()) {
-  return new Date(nowMs - AGENT_MESSAGE_TTL_MS).toISOString().slice(0, 19).replace("T", " ");
-}
-
-// dist/core/agent-message-storage.js
-var AgentMessageStorageError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.name = "AgentMessageStorageError";
-    this.code = code;
-  }
-};
-var AgentMessageStorageQuotaExceededError = class extends AgentMessageStorageError {
-  quotaBytes;
-  usedBytes;
-  requestedBytes;
-  constructor(quotaBytes, usedBytes, requestedBytes) {
-    super("storage_quota_exceeded", "Agent message storage quota exceeded. Review stored messages and the owner-configured quota before retrying.");
-    this.name = "AgentMessageStorageQuotaExceededError";
-    this.quotaBytes = quotaBytes;
-    this.usedBytes = usedBytes;
-    this.requestedBytes = requestedBytes;
-  }
-};
-function enforceAgentMessageStorageQuota(db, input) {
-  const quotaBytes = normalizeNonNegativeInteger("quotaBytes", input.quotaBytes);
-  const additionalPayloadBytes = normalizeNonNegativeInteger("additionalPayloadBytes", input.additionalPayloadBytes);
-  const row = db.prepare(`
-    SELECT COALESCE(SUM(length(CAST(payload_json AS BLOB))), 0) AS payload_bytes
-    FROM agent_messages
-  `).get();
-  const usedBytes = row.payload_bytes;
-  if (usedBytes + additionalPayloadBytes > quotaBytes) {
-    throw new AgentMessageStorageQuotaExceededError(quotaBytes, usedBytes, additionalPayloadBytes);
-  }
-}
-function agentMessagePayloadStorageBytes(payloadJson) {
-  if (typeof payloadJson !== "string") {
-    throw new AgentMessageStorageError("invalid_payload_storage_input", "Agent message payload JSON must be a string.");
-  }
-  return Buffer.byteLength(payloadJson, "utf8");
-}
-function normalizeNonNegativeInteger(label, value) {
-  if (!Number.isSafeInteger(value) || value < 0) {
-    throw new AgentMessageStorageError("invalid_storage_quota", `${label} must be a non-negative safe integer.`);
-  }
-  return value;
-}
 
 // dist/core/work-topology.js
 var LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
@@ -1358,87 +2364,8 @@ var GLOBAL_TOPOLOGY_BUDGET = {
 };
 var SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
 
-// dist/core/agent-message-inbox.js
-function sessionAliasChain(db, session) {
-  const chain = /* @__PURE__ */ new Set([session]);
-  try {
-    const previous = db.prepare("SELECT previous_session_id AS id FROM agent_session_aliases WHERE lower(session_id) = lower(?)");
-    const next = db.prepare("SELECT session_id AS id FROM agent_session_aliases WHERE lower(previous_session_id) = lower(?)");
-    for (const step of [previous, next]) {
-      let current = session;
-      for (; ; ) {
-        const row = step.get(current);
-        if (typeof row?.id !== "string" || chain.has(row.id))
-          break;
-        chain.add(row.id);
-        current = row.id;
-      }
-    }
-  } catch (err) {
-    if (!/no such table: agent_session_aliases\b/.test(errorMessage2(err)))
-      throw err;
-  }
-  return chain;
-}
-function errorMessage2(err) {
-  return err && typeof err === "object" && "message" in err ? String(err.message) : "";
-}
-
-// dist/core/time-utils.js
-function parseSqliteUtcMs(sqliteTimestamp) {
-  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2}):(\d{2})$/.exec(sqliteTimestamp ?? "");
-  if (!m)
-    return null;
-  const then = Date.UTC(+m[1], +m[2] - 1, +m[3], +m[4], +m[5], +m[6]);
-  if (!Number.isFinite(then))
-    return null;
-  const d = new Date(then);
-  if (d.getUTCFullYear() !== +m[1] || d.getUTCMonth() !== +m[2] - 1 || d.getUTCDate() !== +m[3] || d.getUTCHours() !== +m[4] || d.getUTCMinutes() !== +m[5] || d.getUTCSeconds() !== +m[6])
-    return null;
-  return then;
-}
-function sqliteUtcToIso(sqliteTimestamp) {
-  const ms = parseSqliteUtcMs(sqliteTimestamp);
-  return ms === null ? sqliteTimestamp : new Date(ms).toISOString().replace(".000Z", "Z");
-}
-
 // dist/core/agent-scope-id.js
-var AGENT_SCOPE_ID_MAX_LENGTH = 200;
 var HOST_CONFIG_MAX_BYTES = 64 * 1024;
-function canonicalAgentScopeId(value) {
-  return value.normalize("NFC").trim();
-}
-function isFilesystemPathScopeId(value) {
-  const v = canonicalAgentScopeId(value);
-  if (v.startsWith("/") || v.startsWith("\\"))
-    return true;
-  return /^[A-Za-z]:[\\/]/.test(v);
-}
-function lastPathSegment(value) {
-  const segments = canonicalAgentScopeId(value).split(/[\\/]+/).filter((s) => s.length > 0);
-  const last = segments[segments.length - 1];
-  if (last === void 0)
-    return null;
-  if (/^[A-Za-z]:$/.test(last))
-    return null;
-  return last;
-}
-function agentScopeIdRejection(field, value) {
-  if (!isFilesystemPathScopeId(value))
-    return null;
-  const suggestion = lastPathSegment(value);
-  const example = suggestion === null ? "reviewer-agent" : suggestion;
-  return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
-}
-function sessionIdRejection(field, value) {
-  const path11 = agentScopeIdRejection(field, value);
-  if (path11)
-    return path11;
-  if (/[\u0080-\uffff]/.test(value)) {
-    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
-  }
-  return null;
-}
 var AGENT_MESSAGE_SCOPE_COLUMNS = [
   { table: "agent_messages", columns: ["project", "recipient"] },
   { table: "agent_message_deliveries", columns: ["project", "recipient"] },
@@ -1453,681 +2380,49 @@ var AGENT_MESSAGE_SCOPE_COLUMNS = [
 var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
 
 // dist/core/agent-messaging.js
-var MAX_SCOPE_FIELD = AGENT_SCOPE_ID_MAX_LENGTH;
-var MAX_IDEMPOTENCY_KEY = 200;
 var AGENT_MESSAGE_JSON_MAX_BYTES = 64 * 1024;
 var AGENT_NATIVE_MESSAGE_MAX_BYTES = 16 * 1024;
-var AgentMessagingError = class extends Error {
-};
-var AgentIdempotencyConflictError = class extends AgentMessagingError {
-};
-var AgentMessageAccessError = class extends AgentMessagingError {
-};
-var AgentMessageExpiredError = class extends AgentMessageAccessError {
-  code = "message_expired";
-  constructor(messageId, createdAtIso, use) {
-    const sentMs = Date.parse(createdAtIso);
-    const expiredAt = Number.isNaN(sentMs) ? "an unknown time (its creation time cannot be read)" : new Date(sentMs + AGENT_MESSAGE_TTL_MS).toISOString();
-    super(use === "reply" ? `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it, so it cannot be replied to. Send the reply without reply_to and say what it answers.` : `message_expired: message ${messageId} (sent ${createdAtIso}) expired at ${expiredAt}; MeMesh keeps a message for one day and then deletes it. Ask the sender to send it again.`);
-  }
-};
-var AgentConversationLoopError = class extends AgentMessagingError {
-  code = "conversation_loop_suspected";
-  constructor() {
-    super("conversation_loop_suspected: these two agents have exchanged 30 messages within 10 minutes; this may be a loop. Ask your user before continuing. No new message was stored.");
-  }
-};
-var INTENDED_SESSION_ADAPTERS = /* @__PURE__ */ new Set(["claude-channel", "claude-inbox", "codex-cli-queue"]);
-function agentHostKind(adapter) {
-  if (adapter === "codex-cli-queue" || adapter === "codex-app-server")
-    return "codex";
-  if (adapter === "claude-channel" || adapter === "claude-inbox")
-    return "claude";
-  if (adapter === "acp")
-    return "gemini";
-  return "other";
-}
-function agentSessionHandle(project, adapter, session) {
-  return `${project.split("~")[0]}-${agentHostKind(adapter)}-${session.slice(-4)}`;
-}
-function resolveAgentSessionHandle(db, project, handle) {
-  const rows = db.prepare("SELECT session_instance_id, principal_id, adapter_kind FROM agent_session_instances WHERE project = ?").all(project);
-  const matches = rows.filter((row) => agentSessionHandle(project, row.adapter_kind, row.session_instance_id) === handle);
-  const available = [...new Set(rows.map((row) => agentSessionHandle(project, row.adapter_kind, row.session_instance_id)))];
-  if (matches.length === 0)
-    throw new AgentHandleError("handle_not_found", `handle_not_found: No session matches this handle in this project. Discover live agents or use an available handle: ${available.join(", ") || "(none)"}.`);
-  if (matches.length > 1)
-    throw new AgentHandleError("handle_ambiguous", `handle_ambiguous: This handle matches multiple sessions in this project. Use an exact session id. Available handles: ${available.join(", ")}.`);
-  const match = matches[0];
-  return INTENDED_SESSION_ADAPTERS.has(match.adapter_kind) ? { recipient: match.principal_id, target_kind: "principal", intended_session: match.session_instance_id } : { recipient: match.session_instance_id, target_kind: "session", intended_session: void 0 };
-}
-var AgentHandleError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-};
-var AgentIntendedSessionUnsupportedError = class extends AgentMessagingError {
-  constructor(session, adapterKind) {
-    super(`intended_session ${JSON.stringify(session)} is registered by the ${JSON.stringify(adapterKind)} host, which cannot say which session it is when it records intake. Only Claude Code sessions and Codex CLI threads (claude-channel, claude-inbox, codex-cli-queue, or an id the router never registered) can be named as intended_session.`);
-  }
-};
-function enforceConversationLoopLimit(db, input) {
-  const sessions = /* @__PURE__ */ new Map();
-  const endpoint = (name, session) => {
-    if (typeof session !== "string" || session.length === 0)
-      return { principal: name, session: null };
-    let canonical = sessions.get(session);
-    if (canonical === void 0) {
-      const aliases = [...sessionAliasChain(db, session)];
-      canonical = aliases.sort()[0];
-      for (const alias of aliases)
-        sessions.set(alias, canonical);
-    }
-    return { principal: name, session: canonical };
-  };
-  const same = (left, right) => left.session !== null && right.session !== null ? left.session === right.session : left.principal === right.principal;
-  const from = endpoint(input.sender, input.provenance?.sender_session);
-  const to = endpoint(input.recipient, input.intended_session ?? (input.target_kind === "session" ? input.recipient : void 0));
-  const cutoff = new Date(Date.now() - 10 * 6e4).toISOString().slice(0, 19).replace("T", " ");
-  const recent = db.prepare(`
-    SELECT m.sender, m.recipient, m.provenance_json, d.target_kind, d.intended_session
-    FROM agent_messages m
-    JOIN agent_message_deliveries d ON d.message_id = m.message_id
-    WHERE m.project = ? AND m.created_at >= ?
-  `).all(input.project, cutoff);
-  let count = 0;
-  for (const row of recent) {
-    const provenance = parseJsonObject(row.provenance_json, "provenance_json");
-    if (typeof provenance.fallback_of_message_id === "string")
-      continue;
-    const rowFrom = endpoint(row.sender, provenance.sender_session);
-    const rowTo = endpoint(row.recipient, row.intended_session ?? (row.target_kind === "session" ? row.recipient : void 0));
-    if (same(rowFrom, from) && same(rowTo, to) || same(rowFrom, to) && same(rowTo, from)) {
-      count += 1;
-      if (count >= 30)
-        throw new AgentConversationLoopError();
-    }
-  }
-}
-function canonicalIntendedSession(db, project, session) {
-  const ids = [...sessionAliasChain(db, session)];
-  const exact = db.prepare(`SELECT 1 AS present FROM agent_session_instances WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")}) LIMIT 1`).get(project, ...ids);
-  if (exact !== void 0)
-    return session;
-  const folded = db.prepare("SELECT session_instance_id FROM agent_session_instances WHERE project = ? AND lower(session_instance_id) = ?").all(project, session.toLowerCase());
-  return folded.length === 1 ? folded[0].session_instance_id : session.toLowerCase();
-}
-function sendAgentMessage(db, input, options = {}) {
-  const normalized = normalizeSendInput(options.fallback_of_message_id === void 0 ? input : {
-    ...input,
-    provenance: { ...input.provenance, fallback_of_message_id: options.fallback_of_message_id }
-  });
-  const requestedIntendedSession = normalized.intended_session;
-  if (normalized.intended_session !== null) {
-    normalized.intended_session = canonicalIntendedSession(db, normalized.project, normalized.intended_session);
-    const ids = [...sessionAliasChain(db, normalized.intended_session)];
-    const registered = db.prepare(`
-      SELECT adapter_kind FROM agent_session_instances
-      WHERE project = ? AND session_instance_id IN (${ids.map(() => "?").join(", ")})
-    `).all(normalized.project, ...ids);
-    const unsupported = registered.find((row) => !INTENDED_SESSION_ADAPTERS.has(row.adapter_kind));
-    if (unsupported) {
-      throw new AgentIntendedSessionUnsupportedError(normalized.intended_session, unsupported.adapter_kind);
-    }
-  }
-  const requestProvenance = { ...normalized.provenance };
-  delete requestProvenance.sender_session;
-  delete requestProvenance.fallback_of_message_id;
-  const requestHash = hashCanonical({
-    project: normalized.project,
-    sender: normalized.sender,
-    recipient: normalized.recipient,
-    target_kind: normalized.target_kind,
-    ...requestedIntendedSession === null ? {} : { intended_session: requestedIntendedSession },
-    idempotency_key: normalized.idempotency_key,
-    content_type: normalized.content_type,
-    sender_host: normalized.sender_host,
-    correlation_id: normalized.correlation_id,
-    reply_to: normalized.reply_to,
-    privacy: normalized.privacy,
-    payload: normalized.payload,
-    provenance: requestProvenance
-  });
-  const messageId = randomUUID();
-  const deliveryId = randomUUID();
-  const eventId = randomUUID();
-  const payloadJson = stableStringify(normalized.payload);
-  let reused = false;
-  const tx = db.transaction(() => {
-    const existing = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
-    if (existing) {
-      if (existing.request_hash !== requestHash) {
-        throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
-      }
-      reused = true;
-      return existing;
-    }
-    db.prepare(`
-      DELETE FROM agent_message_idempotency
-      WHERE project = ? AND sender = ? AND idempotency_key = ?
-        AND message_id IN (SELECT message_id FROM agent_messages WHERE created_at < ?)
-    `).run(normalized.project, normalized.sender, normalized.idempotency_key, agentMessageExpiryCutoff());
-    if (normalized.reply_to !== null) {
-      const expired = expiredMessageErrorFor(db, normalized.project, normalized.sender, normalized.reply_to, "reply");
-      if (expired)
-        throw expired;
-    }
-    if (options.fallback_of_message_id === void 0 && options.skip_conversation_loop_limit !== true) {
-      enforceConversationLoopLimit(db, normalized);
-    }
-    if (options.storage_quota_bytes !== void 0) {
-      enforceAgentMessageStorageQuota(db, {
-        quotaBytes: options.storage_quota_bytes,
-        additionalPayloadBytes: agentMessagePayloadStorageBytes(payloadJson)
-      });
-    }
-    db.prepare(`
-      INSERT INTO agent_messages (
-        message_id, project, sender, sender_host, recipient, content_type,
-        correlation_id, reply_to_message_id, privacy, payload_json, provenance_json
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(messageId, normalized.project, normalized.sender, normalized.sender_host, normalized.recipient, normalized.content_type, normalized.correlation_id, normalized.reply_to, normalized.privacy, payloadJson, stableStringify(normalized.provenance));
-    db.prepare(`
-      INSERT INTO agent_message_deliveries (delivery_id, message_id, project, recipient, target_kind, intended_session)
-      VALUES (?, ?, ?, ?, ?, ?)
-    `).run(deliveryId, messageId, normalized.project, normalized.recipient, normalized.target_kind, normalized.intended_session);
-    db.prepare(`
-      INSERT INTO agent_message_events (event_id, message_id, delivery_id, project, recipient, event_kind)
-      VALUES (?, ?, ?, ?, ?, 'message_available')
-    `).run(eventId, messageId, deliveryId, normalized.project, normalized.recipient);
-    db.prepare(`
-      INSERT INTO agent_message_idempotency (project, sender, idempotency_key, request_hash, message_id)
-      VALUES (?, ?, ?, ?, ?)
-    `).run(normalized.project, normalized.sender, normalized.idempotency_key, requestHash, messageId);
-    const stored = loadSentMessage(db, normalized.project, normalized.recipient, messageId);
-    if (!stored)
-      throw new AgentMessagingError(`Sent agent message ${messageId} could not be read back.`);
-    return stored;
-  });
-  try {
-    const sent = finishSentMessage(tx.immediate(), options);
-    return reused ? { ...sent, reused: true } : sent;
-  } catch (error) {
-    if (!isUniqueConstraint(error))
-      throw error;
-    const raced = lookupExistingMessage(db, normalized.project, normalized.sender, normalized.idempotency_key);
-    if (raced && raced.request_hash === requestHash)
-      return { ...finishSentMessage(raced, options), reused: true };
-    if (raced) {
-      throw new AgentIdempotencyConflictError(`Agent message idempotency conflict for sender ${normalized.sender} in project ${normalized.project}.`);
-    }
-    throw error;
-  }
-}
-function normalizeSendInput(input) {
-  const project = requireScopeId("project", input.project);
-  const sender = requireText("sender", input.sender, MAX_SCOPE_FIELD);
-  const recipient = requireScopeId("recipient", input.recipient);
-  const target_kind = parseTargetKind(input.target_kind ?? "principal");
-  const intended_session = input.intended_session === void 0 || input.intended_session === null ? null : requireScopeId("intended_session", input.intended_session);
-  const sessionRejection = (intended_session !== null ? sessionIdRejection("intended_session", intended_session) : null) ?? (target_kind === "session" ? sessionIdRejection("recipient", recipient) : null);
-  if (sessionRejection)
-    throw new AgentMessagingError(sessionRejection);
-  if (intended_session !== null && target_kind !== "principal") {
-    throw new AgentMessagingError('intended_session is only valid with target_kind "principal".');
-  }
-  const idempotency_key = requireText("idempotency_key", input.idempotency_key, MAX_IDEMPOTENCY_KEY);
-  const content_type = parseContentType(input.content_type);
-  const sender_host = optionalText("sender_host", input.sender_host ?? null, MAX_SCOPE_FIELD);
-  const correlation_id = optionalText("correlation_id", input.correlation_id ?? null, MAX_SCOPE_FIELD);
-  const reply_to = optionalText("reply_to", input.reply_to ?? null, MAX_SCOPE_FIELD);
-  const privacy = parsePrivacy(input.privacy ?? "private");
-  if (content_type === "text/plain" && typeof input.payload !== "string") {
-    throw new AgentMessagingError("text/plain agent messages require a string payload.");
-  }
-  assertJsonValue(input.payload, "payload");
-  const payloadBytes = Buffer.byteLength(stableStringify(input.payload), "utf8");
-  if (payloadBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-    throw new AgentMessagingError(`Agent message payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} bytes.`);
-  }
-  const provenance = input.provenance === void 0 ? {} : normalizeObject(input.provenance);
-  const provenanceBytes = Buffer.byteLength(stableStringify(provenance), "utf8");
-  if (provenanceBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-    throw new AgentMessagingError(`Agent message provenance exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} bytes.`);
-  }
-  return {
-    project,
-    sender,
-    recipient,
-    target_kind,
-    intended_session,
-    idempotency_key,
-    content_type,
-    payload: input.payload,
-    sender_host,
-    correlation_id,
-    reply_to,
-    privacy,
-    provenance
-  };
-}
-function lookupExistingMessage(db, project, sender, idempotencyKey) {
-  return db.prepare(`
-    SELECT
-      i.request_hash,
-      m.message_id,
-      d.delivery_id,
-      e.event_id,
-      m.project,
-      m.sender,
-      m.sender_host,
-      d.recipient,
-      d.target_kind,
-      d.intended_session,
-      m.content_type,
-      m.correlation_id,
-      m.reply_to_message_id,
-      m.privacy,
-      m.provenance_json,
-      m.created_at
-    FROM agent_message_idempotency i
-    JOIN agent_messages m ON m.message_id = i.message_id
-    JOIN agent_message_deliveries d ON d.message_id = m.message_id
-    JOIN agent_message_events e ON e.message_id = m.message_id
-    WHERE i.project = ? AND i.sender = ? AND i.idempotency_key = ?
-      AND m.created_at >= ?
-    ORDER BY e.event_sequence ASC
-    LIMIT 1
-  `).get(project, sender, idempotencyKey, agentMessageExpiryCutoff());
-}
-function loadSentMessage(db, project, recipient, messageId) {
-  return db.prepare(`
-    SELECT
-      m.message_id,
-      d.delivery_id,
-      e.event_id,
-      m.project,
-      m.sender,
-      m.sender_host,
-      d.recipient,
-      d.target_kind,
-      d.intended_session,
-      m.content_type,
-      m.correlation_id,
-      m.reply_to_message_id,
-      m.privacy,
-      m.provenance_json,
-      m.created_at
-    FROM agent_messages m
-    JOIN agent_message_deliveries d ON d.message_id = m.message_id
-    JOIN agent_message_events e ON e.message_id = m.message_id
-    WHERE m.project = ? AND d.project = ? AND d.recipient = ? AND m.message_id = ?
-    ORDER BY e.event_sequence ASC
-    LIMIT 1
-  `).get(project, project, recipient, messageId);
-}
-function expiredMessageErrorFor(db, project, caller, messageId, use) {
-  const gone = db.prepare("SELECT created_at, sender, recipient FROM agent_message_expiries WHERE project = ? AND message_id = ?").get(project, messageId) ?? db.prepare("SELECT created_at, sender, recipient FROM agent_messages WHERE project = ? AND message_id = ? AND created_at < ?").get(project, messageId, agentMessageExpiryCutoff());
-  if (!gone)
-    return null;
-  const who = canonicalAgentScopeId(caller);
-  const isParty = [gone.sender, gone.recipient].some((party) => party !== null && canonicalAgentScopeId(party) === who);
-  return isParty ? new AgentMessageExpiredError(messageId, sqliteUtcToIso(gone.created_at), use) : null;
-}
-function finishSentMessage(row, options) {
-  const sent = rowToSentAgentMessage(row);
-  if (!options.notifier)
-    return sent;
-  try {
-    const result = options.notifier.notify({
-      delivery_id: sent.delivery_id,
-      event_id: sent.event_id,
-      project: sent.project,
-      target_kind: sent.target_kind,
-      target_id: sent.recipient
-    });
-    if (result && typeof result.then === "function")
-      void result.catch(() => void 0);
-  } catch {
-  }
-  return sent;
-}
-function rowToSentAgentMessage(row) {
-  return {
-    message_id: row.message_id,
-    delivery_id: row.delivery_id,
-    event_id: row.event_id,
-    project: row.project,
-    sender: row.sender,
-    sender_host: row.sender_host,
-    recipient: row.recipient,
-    target_kind: parseTargetKind(row.target_kind),
-    intended_session: row.intended_session,
-    content_type: parseContentType(row.content_type),
-    correlation_id: row.correlation_id,
-    reply_to: row.reply_to_message_id,
-    privacy: parsePrivacy(row.privacy),
-    created_at: sqliteUtcToIso(row.created_at),
-    provenance: parseJsonObject(row.provenance_json, "provenance_json")
-  };
-}
-function parsePrivacy(value) {
-  if (value === "private" || value === "team")
-    return value;
-  throw new AgentMessagingError(`Unsupported agent message privacy ${value}.`);
-}
-function parseContentType(value) {
-  if (value === "text/plain" || value === "application/json")
-    return value;
-  throw new AgentMessagingError(`Unsupported agent message content_type ${value}.`);
-}
-function parseTargetKind(value) {
-  if (value === "principal" || value === "session")
-    return value;
-  throw new AgentMessagingError(`Unsupported agent message target_kind ${value}.`);
-}
-function parseJsonObject(json, label) {
-  const parsed = parseJsonObjectOrValue(json);
-  if (!isPlainObject(parsed))
-    throw new AgentMessagingError(`${label} must contain a JSON object.`);
-  return parsed;
-}
-function parseJsonObjectOrValue(json) {
-  let parsed;
-  try {
-    parsed = JSON.parse(json);
-  } catch (error) {
-    throw new AgentMessagingError(`Stored agent message JSON is invalid: ${error instanceof Error ? error.message : String(error)}.`);
-  }
-  assertJsonValue(parsed, "stored_json");
-  return parsed;
-}
-function hashCanonical(value) {
-  return createHash3("sha256").update(stableStringify(value)).digest("hex");
-}
-function stableStringify(value) {
-  if (value === null)
-    return "null";
-  if (typeof value === "boolean")
-    return value ? "true" : "false";
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw new AgentMessagingError("Only finite numbers are allowed in agent message JSON.");
-    return JSON.stringify(value);
-  }
-  if (typeof value === "string")
-    return JSON.stringify(value);
-  if (Array.isArray(value))
-    return `[${value.map((entry) => stableStringify(entry)).join(",")}]`;
-  const entries = Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`);
-  return `{${entries.join(",")}}`;
-}
-function assertJsonValue(value, label) {
-  if (value === null)
-    return;
-  if (typeof value === "boolean")
-    return;
-  if (typeof value === "number") {
-    if (!Number.isFinite(value))
-      throw new AgentMessagingError(`${label} must contain only finite numbers.`);
-    return;
-  }
-  if (typeof value === "string")
-    return;
-  if (Array.isArray(value)) {
-    value.forEach((entry, index) => assertJsonValue(entry, `${label}[${index}]`));
-    return;
-  }
-  if (isPlainObject(value)) {
-    for (const [key, entry] of Object.entries(value)) {
-      assertJsonValue(entry, `${label}.${key}`);
-    }
-    return;
-  }
-  throw new AgentMessagingError(`${label} must be JSON-serializable.`);
-}
-function normalizeObject(value) {
-  assertJsonValue(value, "object");
-  return value;
-}
-function isPlainObject(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-function requireText(label, value, maxLength) {
-  if (typeof value !== "string")
-    throw new AgentMessagingError(`${label} must be a string.`);
-  const trimmed = value.trim();
-  if (trimmed.length === 0)
-    throw new AgentMessagingError(`${label} must not be blank.`);
-  if (trimmed.length > maxLength) {
-    throw new AgentMessagingError(`${label} must be at most ${maxLength} characters.`);
-  }
-  return trimmed;
-}
-function requireScopeId(label, value) {
-  const text = requireText(label, value, MAX_SCOPE_FIELD);
-  const rejection = agentScopeIdRejection(label, text);
-  if (rejection)
-    throw new AgentMessagingError(rejection);
-  return canonicalAgentScopeId(text);
-}
-function optionalText(label, value, maxLength) {
-  if (value === null)
-    return null;
-  return requireText(label, value, maxLength);
-}
-function isUniqueConstraint(error) {
-  const message = error instanceof Error ? error.message : String(error);
-  return /UNIQUE constraint failed|PRIMARY KEY/i.test(message);
-}
-
-// dist/core/agent-router.js
-var AGENT_ROUTER_PROTOCOL_VERSION = 2;
-var AGENT_ROUTER_MAX_FRAME_BYTES = 64 * 1024;
-var AGENT_ROUTER_SOCKET_PATH_MAX_BYTES = 103;
-var MAX_LEASE_MS = 5 * 6e4;
-var DEFAULT_CLIENT_TIMEOUT_MS = 2e3;
-var MAX_FIELD_LENGTH = 200;
-var MAX_ADAPTER_RECEIPT_BYTES = 16 * 1024;
-var SUPERSEDED_HOLD_MS = 10 * 6e4;
-function isLegacyAgentRouterVersionMismatchResponse(value) {
-  if (!isPlainObject2(value) || value.version !== 1 || value.request_id !== "" || value.ok !== false)
-    return false;
-  if (!isPlainObject2(value.error))
-    return false;
-  return value.error.code === "unsupported_type" || value.error.code === "unsupported_version";
-}
-var AgentRouterError = class extends Error {
-  code;
-  constructor(code, message) {
-    super(message);
-    this.code = code;
-  }
-};
-var AgentRouterProtocolError = class extends AgentRouterError {
-};
-function createAgentRouterNotifier(socketPath) {
-  const validatedPath = validateSocketPath(socketPath);
-  return {
-    async notify(hint) {
-      await sendAgentRouterRequest(validatedPath, {
-        version: AGENT_ROUTER_PROTOCOL_VERSION,
-        type: "notify",
-        request_id: randomUUID2(),
-        project: hint.project,
-        delivery_id: hint.delivery_id,
-        hops: 0
-      });
-    }
-  };
-}
-async function sendAgentRouterRequest(socketPath, request2, timeoutMs = DEFAULT_CLIENT_TIMEOUT_MS) {
-  const frame = Buffer.from(`${JSON.stringify(request2)}
-`, "utf8");
-  if (frame.length > AGENT_ROUTER_MAX_FRAME_BYTES) {
-    throw new AgentRouterProtocolError("frame_too_large", "Router request exceeds the byte limit.");
-  }
-  return new Promise((resolve, reject) => {
-    const socket = net2.createConnection(validateSocketPath(socketPath));
-    let pending = Buffer.alloc(0);
-    let settled = false;
-    const timer = setTimeout(() => finish(new AgentRouterProtocolError("timeout", "Router request timed out.")), timeoutMs);
-    const finish = (error, value) => {
-      if (settled)
-        return;
-      settled = true;
-      clearTimeout(timer);
-      socket.destroy();
-      if (error) {
-        reject(error);
-      } else if (value === void 0) {
-        reject(new AgentRouterProtocolError("invalid_response", "Router response omitted its result object."));
-      } else {
-        resolve(value);
-      }
-    };
-    socket.on("connect", () => socket.write(frame));
-    socket.on("data", (chunk) => {
-      pending = Buffer.concat([pending, chunk]);
-      if (pending.length > AGENT_ROUTER_MAX_FRAME_BYTES) {
-        finish(new AgentRouterProtocolError("frame_too_large", "Router response exceeds the byte limit."));
-        return;
-      }
-      const newline = pending.indexOf(10);
-      if (newline < 0)
-        return;
-      try {
-        const response = JSON.parse(pending.subarray(0, newline).toString("utf8"));
-        if (isLegacyAgentRouterVersionMismatchResponse(response)) {
-          throw new AgentRouterProtocolError("router_version_mismatch", "router_version_mismatch: the configured router endpoint uses a stale protocol; restart that router with the current MeMesh version.");
-        }
-        const uncorrelatedError = response.request_id === "" && response.ok === false && isPlainObject2(response.error) && typeof response.error.code === "string" && typeof response.error.message === "string";
-        if (response.version !== AGENT_ROUTER_PROTOCOL_VERSION || response.request_id !== request2.request_id && !uncorrelatedError) {
-          throw new AgentRouterProtocolError("invalid_response", "Router response identity does not match.");
-        }
-        if (!response.ok)
-          throw new AgentRouterProtocolError(response.error.code, response.error.message);
-        finish(void 0, validateRouterSuccessResult(request2, response.result));
-      } catch (error) {
-        finish(error instanceof Error ? error : new Error(String(error)));
-      }
-    });
-    socket.on("error", (error) => finish(error));
-    socket.on("end", () => {
-      if (!settled)
-        finish(new AgentRouterProtocolError("connection_closed", "Router closed without a response."));
-    });
-  });
-}
-function validateRouterSuccessResult(request2, value) {
-  if (!isPlainObject2(value)) {
-    throw new AgentRouterProtocolError("invalid_response", "Router response result must be an object.");
-  }
-  const requireResultString = (field) => {
-    const candidate = value[field];
-    if (typeof candidate !== "string" || candidate.length === 0 || candidate.length > MAX_FIELD_LENGTH) {
-      throw new AgentRouterProtocolError("invalid_response", `Router response omitted a valid ${field}.`);
-    }
-    return candidate;
-  };
-  const requireResultInteger = (field, minimum = 1) => {
-    const candidate = value[field];
-    if (!Number.isSafeInteger(candidate) || candidate < minimum) {
-      throw new AgentRouterProtocolError("invalid_response", `Router response omitted a valid ${field}.`);
-    }
-    return candidate;
-  };
-  const requireResultBoolean = (field) => {
-    const candidate = value[field];
-    if (typeof candidate !== "boolean") {
-      throw new AgentRouterProtocolError("invalid_response", `Router response omitted a valid ${field}.`);
-    }
-    return candidate;
-  };
-  switch (request2.type) {
-    case "register":
-      requireResultString("connection_id");
-      requireResultInteger("generation");
-      requireResultInteger("lease_ms");
-      requireResultBoolean("drain_scheduled");
-      break;
-    case "notify":
-      requireResultBoolean("delivered");
-      break;
-    case "discover":
-      if (!Array.isArray(value.cards) || value.cards.length > request2.limit || value.cards.some((card) => !isSelectionCard(card, request2.project))) {
-        throw new AgentRouterProtocolError("invalid_response", "Router response contained invalid discovery cards.");
-      }
-      for (const card of value.cards)
-        card.model = null;
-      break;
-    case "heartbeat":
-      requireResultInteger("generation");
-      requireResultInteger("lease_ms");
-      break;
-    case "disconnect":
-      if (value.disconnected !== true) {
-        throw new AgentRouterProtocolError("invalid_response", "Router response did not confirm disconnect.");
-      }
-      break;
-    case "host_accept":
-    case "host_reject":
-      if (value.correlated !== true && typeof value.duplicate !== "boolean") {
-        throw new AgentRouterProtocolError("invalid_response", "Router response omitted its host-outcome correlation.");
-      }
-      break;
-  }
-  return value;
-}
-function isSelectionCard(value, project) {
-  if (!isPlainObject2(value))
-    return false;
-  return typeof value.session_id === "string" && (value.handle === void 0 || typeof value.handle === "string") && typeof value.principal_id === "string" && ["codex", "claude", "gemini", "other"].includes(String(value.host_kind)) && value.project === project && (value.model === null || typeof value.model === "string") && (value.work_summary === null || typeof value.work_summary === "string") && value.active === true && Number.isSafeInteger(value.generation) && value.generation >= 1 && Number.isSafeInteger(value.lease_expires_at_ms) && value.lease_expires_at_ms >= 0;
-}
-function validateSocketPath(socketPath) {
-  if (typeof socketPath !== "string" || !path9.isAbsolute(socketPath) || Buffer.byteLength(socketPath) > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
-    throw new AgentRouterProtocolError("invalid_socket_path", `Router socket path must be absolute and at most ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES} bytes.`);
-  }
-  return socketPath;
-}
-function isPlainObject2(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value);
-}
-
-// dist/network/courier.js
-import { createHash as createHash5 } from "node:crypto";
 
 // dist/network/address.js
-import { createHash as createHash4 } from "node:crypto";
-var TARGET = /^[^/@\s]{1,200}$/;
-function parseNetworkAddress(value) {
-  const at = value.lastIndexOf("@");
-  if (at <= 0)
-    return null;
-  const machine = value.slice(at + 1);
-  const left = value.slice(0, at);
-  const slash = left.indexOf("/");
-  if (slash <= 0)
-    return null;
-  const person = left.slice(0, slash);
-  const target = left.slice(slash + 1);
-  if (!NAME.test(person) || !NAME.test(machine) || !TARGET.test(target))
-    return null;
-  return { person, target, machine };
-}
-function formatNetworkAddress(person, target, machine) {
-  return `${person}/${target}@${machine}`;
-}
-function projectHash(networkId, project) {
-  return createHash4("sha256").update(`${networkId}:${project}`).digest("hex");
-}
-function isLocalSenderName(value) {
-  return TARGET.test(value);
-}
+import { createHash as createHash5 } from "node:crypto";
 
 // dist/network/frames.js
+function parseConversationFrame(bytes) {
+  if (bytes.length > FRAME_MAX_BYTES)
+    throw new FrameError("frame_too_large", "Frame too large");
+  let raw;
+  try {
+    raw = JSON.parse(bytes.toString("utf8"));
+  } catch {
+    throw new FrameError("frame_invalid", "Invalid conversation JSON");
+  }
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 2)
+    throw new FrameError("frame_invalid", "Unsupported conversation frame");
+  if (raw.kind === "conversations" && exactKeys(raw, ["version", "kind", "relay", "addrs", "entries"]) && isOptionalText(raw.relay) && Array.isArray(raw.addrs) && raw.addrs.length <= 64 && raw.addrs.every((a) => isText(a, 64)) && Array.isArray(raw.entries) && raw.entries.every((r) => r && typeof r === "object" && !Array.isArray(r) && exactKeys(r, ["id", "host", "online"]) && isText(r.id) && ["claude-code", "codex", "hermes"].includes(String(r.host)) && typeof r.online === "boolean"))
+    return raw;
+  if (raw.kind === "conversation-message" && exactKeys(raw, ["version", "kind", "row"]) && raw.row && typeof raw.row === "object" && !Array.isArray(raw.row) && exactKeys(raw.row, ["network_id", "sender_machine_id", "recipient_machine_id", "message"]))
+    return raw;
+  if (raw.kind === "conversation-receipt" && exactKeys(raw, ["version", "kind", "receipt"]) && raw.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt) && exactKeys(raw.receipt, ["message_id", "event", "actor", "at"]))
+    return raw;
+  throw new FrameError("frame_invalid", "Invalid conversation frame");
+}
+function conversationPresenceFrames(relay, addrs, entries) {
+  const frames = [];
+  let frame = { version: 2, kind: "conversations", relay, addrs, entries: [] };
+  for (const entry of entries) {
+    const next = { ...frame, entries: [...frame.entries, entry] };
+    if (Buffer.byteLength(JSON.stringify(next)) > FRAME_MAX_BYTES) {
+      if (!frame.entries.length)
+        throw new FrameError("frame_too_large", "Presence entry too large");
+      frames.push(frame);
+      frame = { ...frame, entries: [entry] };
+      parseConversationFrame(Buffer.from(JSON.stringify(frame)));
+    } else
+      frame = next;
+  }
+  frames.push(frame);
+  return frames;
+}
 var ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 function parseRosterExchange(bytes) {
   if (bytes.length > ROSTER_EXCHANGE_MAX_BYTES)
@@ -2152,28 +2447,9 @@ async function exchangeRosterStream(stream, local, accept, timeoutMs) {
   if (!local)
     await write(selected);
 }
-var FRAME_VERSION = 1;
 var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
 var ACK_MAX_BYTES = 1024;
-var PRESENCE_MAX_ENTRIES = 256;
 var FIELD_MAX = 200;
-var MESSAGE_FRAME_KEYS = [
-  "version",
-  "kind",
-  "project_hash",
-  "sender",
-  "target",
-  "target_kind",
-  "idempotency_key",
-  "content_type",
-  "payload",
-  "correlation_id",
-  "reply_to_origin",
-  "origin_message_id",
-  "created_at"
-];
-var PRESENCE_FRAME_KEYS = ["version", "kind", "relay", "addrs", "entries"];
-var PRESENCE_ENTRY_KEYS = ["project_hash", "principal", "handle", "host_kind", "connected"];
 var FrameError = class extends Error {
   code;
   constructor(code, message) {
@@ -2181,47 +2457,11 @@ var FrameError = class extends Error {
     this.code = code;
   }
 };
-var HASH = /^[0-9a-f]{64}$/;
 var isText = (value, max = FIELD_MAX) => typeof value === "string" && value.length > 0 && value.length <= max;
 var isOptionalText = (value) => value === null || isText(value);
 function exactKeys(value, keys) {
   const own = Object.keys(value);
   return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
-}
-function parseFrame(bytes) {
-  if (bytes.length > FRAME_MAX_BYTES)
-    throw new FrameError("frame_too_large", "The frame is too large.");
-  let raw;
-  try {
-    raw = JSON.parse(bytes.toString("utf8"));
-  } catch {
-    throw new FrameError("frame_invalid", "The frame is not JSON.");
-  }
-  if (raw === null || typeof raw !== "object" || Array.isArray(raw) || raw.version !== FRAME_VERSION) {
-    throw new FrameError("frame_invalid", "The frame has no supported version.");
-  }
-  if (raw.kind === "message") {
-    if (!exactKeys(raw, MESSAGE_FRAME_KEYS))
-      throw new FrameError("frame_invalid", "The message frame has other keys than allowed.");
-    const ok = isText(raw.project_hash) && HASH.test(raw.project_hash) && isText(raw.sender) && !/[/@\s]/.test(raw.sender) && isText(raw.target) && raw.target_kind === "principal" && isText(raw.idempotency_key, 300) && (raw.content_type === "text/plain" || raw.content_type === "application/json") && isOptionalText(raw.correlation_id) && isOptionalText(raw.reply_to_origin) && isText(raw.origin_message_id) && isText(raw.created_at, 40) && Buffer.byteLength(JSON.stringify(raw.payload ?? null)) <= AGENT_MESSAGE_JSON_MAX_BYTES;
-    if (!ok)
-      throw new FrameError("frame_invalid", "The message frame has a field of the wrong shape.");
-    return raw;
-  }
-  if (raw.kind === "presence") {
-    if (!exactKeys(raw, PRESENCE_FRAME_KEYS))
-      throw new FrameError("frame_invalid", "The presence frame has other keys than allowed.");
-    const entries = raw.entries;
-    const addrs = raw.addrs;
-    const ok = isOptionalText(raw.relay) && Array.isArray(addrs) && addrs.length <= 64 && addrs.every((addr) => isText(addr, 64)) && Array.isArray(entries) && entries.length <= PRESENCE_MAX_ENTRIES && entries.every((entry) => entry !== null && typeof entry === "object" && !Array.isArray(entry) && exactKeys(entry, PRESENCE_ENTRY_KEYS) && HASH.test(String(entry.project_hash)) && isText(entry.principal) && isText(entry.handle) && isText(entry.host_kind, 20) && typeof entry.connected === "boolean");
-    if (!ok)
-      throw new FrameError("frame_invalid", "The presence frame has a field of the wrong shape.");
-    return raw;
-  }
-  throw new FrameError("frame_invalid", "The frame kind is unknown.");
-}
-function encodeFrame(frame) {
-  return Buffer.from(JSON.stringify(frame));
 }
 function parseAck(bytes) {
   try {
@@ -2238,252 +2478,7 @@ function parseAck(bytes) {
 var PRESENCE_TTL_MS = 3 * 6e4;
 
 // dist/network/courier.js
-var DELIVERY_WINDOW_MS = AGENT_MESSAGE_TTL_MS;
-var BACKOFF_FIRST_MS = 5e3;
 var BACKOFF_MAX_MS = 5 * 6e4;
-var NOTICE_SENDER = "memesh-network";
-function hasTable(db, name) {
-  return db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?").get(name) !== void 0;
-}
-function messagingAvailable(db) {
-  return hasTable(db, "agent_messages") && hasTable(db, "agent_message_deliveries");
-}
-function enqueueOutgoing(db, joined, now) {
-  const rows = db.prepare(`
-    SELECT d.delivery_id, d.message_id, d.recipient, m.created_at
-    FROM agent_message_deliveries d
-    JOIN agent_messages m ON m.message_id = d.message_id
-    LEFT JOIN agent_network_outbox o ON o.delivery_id = d.delivery_id
-    WHERE o.delivery_id IS NULL AND d.target_kind = 'principal' AND d.recipient LIKE '%/%@%'
-  `).all();
-  const insert = db.prepare(`
-    INSERT OR IGNORE INTO agent_network_outbox (delivery_id, message_id, machine_id, state, next_attempt_at_ms, expires_at_ms)
-    VALUES (?, ?, ?, ?, ?, ?)
-  `);
-  let taken = 0;
-  for (const row of rows) {
-    const address = parseNetworkAddress(row.recipient);
-    const member = address && joined.roster.members.find((candidate) => candidate.name === address.machine);
-    const createdAt = parseSqliteUtcMs(row.created_at) ?? now;
-    const self = joined.roster.members.find((candidate) => candidate.machine_id === joined.config.machine_id);
-    const since = Math.max(Date.parse(self?.joined_at ?? ""), Date.parse(member?.joined_at ?? "")) || 0;
-    const olderThanMembership = createdAt + 1e3 <= since;
-    if (!member || member.machine_id === joined.config.machine_id || member.person !== address?.person || olderThanMembership) {
-      insert.run(row.delivery_id, row.message_id, null, "local", 0, createdAt + DELIVERY_WINDOW_MS);
-      continue;
-    }
-    insert.run(row.delivery_id, row.message_id, member.machine_id, "pending", now, createdAt + DELIVERY_WINDOW_MS);
-    taken++;
-  }
-  return taken;
-}
-function dueMachines(db, now) {
-  return db.prepare(`
-    SELECT DISTINCT machine_id FROM agent_network_outbox
-    WHERE state = 'pending' AND next_attempt_at_ms <= ? AND expires_at_ms > ? AND machine_id IS NOT NULL
-  `).all(now, now).map((row) => row.machine_id);
-}
-function dueOutgoingFor(db, machineId, now, limit = 20) {
-  return db.prepare(`
-    SELECT delivery_id, message_id, machine_id, attempts, expires_at_ms FROM agent_network_outbox
-    WHERE state = 'pending' AND machine_id = ? AND next_attempt_at_ms <= ? AND expires_at_ms > ?
-    ORDER BY next_attempt_at_ms, rowid LIMIT ?
-  `).all(machineId, now, now, limit);
-}
-function retryNowFor(db, machineId, now) {
-  db.prepare(`UPDATE agent_network_outbox SET next_attempt_at_ms = ? WHERE state = 'pending' AND machine_id = ?`).run(now, machineId);
-}
-function buildMessageFrame(db, joined, entry) {
-  const row = db.prepare(`
-    SELECT m.message_id, m.project, m.sender, d.recipient, m.content_type, m.correlation_id, m.reply_to_message_id,
-           m.payload_json, m.payload_tombstoned_at, m.created_at,
-           (SELECT i.idempotency_key FROM agent_message_idempotency i WHERE i.message_id = m.message_id LIMIT 1) AS idempotency_key
-    FROM agent_message_deliveries d JOIN agent_messages m ON m.message_id = d.message_id
-    WHERE d.delivery_id = ?
-  `).get(entry.delivery_id);
-  if (!row)
-    return "message_gone";
-  if (row.payload_tombstoned_at !== null)
-    return "payload_removed";
-  if (!isLocalSenderName(row.sender))
-    return "sender_not_local";
-  const address = parseNetworkAddress(row.recipient);
-  if (!address || row.idempotency_key === null)
-    return "message_invalid";
-  return {
-    version: FRAME_VERSION,
-    kind: "message",
-    project_hash: projectHash(joined.config.network_id, row.project),
-    sender: row.sender,
-    target: address.target,
-    target_kind: "principal",
-    idempotency_key: row.idempotency_key,
-    content_type: row.content_type,
-    payload: JSON.parse(row.payload_json),
-    correlation_id: row.correlation_id,
-    reply_to_origin: replyToOrigin(db, row.reply_to_message_id),
-    origin_message_id: row.message_id,
-    created_at: sqliteUtcToIso(row.created_at)
-  };
-}
-function replyToOrigin(db, replyTo) {
-  if (replyTo === null)
-    return null;
-  const row = db.prepare("SELECT provenance_json FROM agent_messages WHERE message_id = ?").get(replyTo);
-  if (!row)
-    return null;
-  try {
-    const provenance = JSON.parse(row.provenance_json);
-    return provenance.via === "network" && typeof provenance.origin_message_id === "string" ? provenance.origin_message_id : null;
-  } catch {
-    return null;
-  }
-}
-function backoffMs(attempts) {
-  return Math.min(BACKOFF_FIRST_MS * 2 ** Math.max(0, attempts - 1), BACKOFF_MAX_MS);
-}
-function recordAttempt(db, entry, result, now, notifier) {
-  const attempts = entry.attempts + 1;
-  const ack = result.ack;
-  if (ack && (ack.result === "accepted" || ack.result === "duplicate")) {
-    db.prepare(`
-      UPDATE agent_network_outbox SET state = 'delivered', attempts = ?, delivered_at_ms = ?, path = ?, last_error_code = NULL
-      WHERE delivery_id = ?
-    `).run(attempts, now, result.path ?? null, entry.delivery_id);
-    return "delivered";
-  }
-  if (ack?.result === "rejected") {
-    db.prepare(`UPDATE agent_network_outbox SET state = 'rejected', attempts = ?, last_error_code = ? WHERE delivery_id = ?`).run(attempts, ack.code ?? "rejected", entry.delivery_id);
-    notifySender(db, entry.delivery_id, "rejected", ack.code ?? "rejected", notifier);
-    return "rejected";
-  }
-  const code = ack?.code ?? result.failure ?? "unreachable";
-  if (now + backoffMs(attempts) >= entry.expires_at_ms) {
-    db.prepare(`UPDATE agent_network_outbox SET state = 'expired', attempts = ?, last_error_code = ? WHERE delivery_id = ?`).run(attempts, code, entry.delivery_id);
-    notifySender(db, entry.delivery_id, "expired", code, notifier);
-    return "expired";
-  }
-  db.prepare(`UPDATE agent_network_outbox SET attempts = ?, last_error_code = ?, next_attempt_at_ms = ? WHERE delivery_id = ?`).run(attempts, code, now + backoffMs(attempts), entry.delivery_id);
-  return "pending";
-}
-function recordUnsendable(db, entry, code, notifier) {
-  db.prepare(`UPDATE agent_network_outbox SET state = 'rejected', last_error_code = ? WHERE delivery_id = ?`).run(code, entry.delivery_id);
-  notifySender(db, entry.delivery_id, "rejected", code, notifier);
-}
-function expireOverdue(db, now, notifier) {
-  const overdue = db.prepare(`SELECT delivery_id, last_error_code FROM agent_network_outbox WHERE state = 'pending' AND expires_at_ms <= ?`).all(now);
-  for (const row of overdue) {
-    db.prepare(`UPDATE agent_network_outbox SET state = 'expired' WHERE delivery_id = ?`).run(row.delivery_id);
-    notifySender(db, row.delivery_id, "expired", row.last_error_code ?? "unreachable", notifier);
-  }
-  return overdue.length;
-}
-function notifySender(db, deliveryId, state, code, notifier) {
-  const row = db.prepare(`
-    SELECT m.message_id, m.project, m.sender, d.recipient FROM agent_message_deliveries d
-    JOIN agent_messages m ON m.message_id = d.message_id WHERE d.delivery_id = ?
-  `).get(deliveryId);
-  if (!row)
-    return;
-  const what = state === "expired" ? `was not delivered: ${row.recipient.split("@").pop()} did not take it within one day` : `was refused by ${row.recipient.split("@").pop()}`;
-  sendAgentMessage(db, {
-    project: row.project,
-    sender: NOTICE_SENDER,
-    recipient: row.sender,
-    target_kind: "principal",
-    idempotency_key: `memesh-network:${state}:${deliveryId}`,
-    content_type: "text/plain",
-    payload: `Your message ${row.message_id} to ${row.recipient} ${what}. Codes: state=${state}, code=${code}.`,
-    reply_to: row.message_id,
-    provenance: { via: "network-notice", delivery_id: deliveryId, state, code }
-  }, { ...notifier ? { notifier } : {} });
-}
-function localProjects(db) {
-  const projects = /* @__PURE__ */ new Set();
-  const add = (rows) => {
-    for (const row of rows)
-      projects.add(row.project);
-  };
-  if (hasTable(db, "agent_session_instances"))
-    add(db.prepare("SELECT DISTINCT project FROM agent_session_instances").all());
-  if (hasTable(db, "agent_session_connections"))
-    add(db.prepare("SELECT DISTINCT project FROM agent_session_connections").all());
-  if (hasTable(db, "agent_principals"))
-    add(db.prepare("SELECT DISTINCT project FROM agent_principals").all());
-  if (hasTable(db, "agent_messages"))
-    add(db.prepare("SELECT DISTINCT project FROM agent_messages").all());
-  return [...projects];
-}
-function receiveMessage(db, joined, member, frame, notifier) {
-  if (!messagingAvailable(db))
-    return { result: "retry", code: "messaging_unavailable" };
-  const project = localProjects(db).find((candidate) => projectHash(joined.config.network_id, candidate) === frame.project_hash);
-  if (project === void 0)
-    return { result: "rejected", code: "project_unknown" };
-  let target;
-  try {
-    target = resolveAgentSessionHandle(db, project, frame.target);
-  } catch {
-    target = { recipient: frame.target, target_kind: "principal" };
-  }
-  const replyTo = frame.reply_to_origin !== null && db.prepare("SELECT 1 FROM agent_messages WHERE message_id = ?").get(frame.reply_to_origin) !== void 0 ? frame.reply_to_origin : null;
-  try {
-    const sent = sendAgentMessage(db, {
-      project,
-      sender: formatNetworkAddress(member.person, frame.sender, member.name),
-      ...target,
-      idempotency_key: frame.idempotency_key,
-      payload: frame.payload,
-      content_type: frame.content_type,
-      correlation_id: frame.correlation_id,
-      reply_to: replyTo,
-      provenance: { via: "network", from_machine: member.name, origin_message_id: frame.origin_message_id }
-    }, { ...notifier ? { notifier } : {} });
-    return { result: sent.reused ? "duplicate" : "accepted" };
-  } catch (err) {
-    if (err instanceof AgentIdempotencyConflictError)
-      return { result: "rejected", code: "idempotency_conflict" };
-    if (err instanceof AgentConversationLoopError)
-      return { result: "rejected", code: "loop_limit" };
-    if (err instanceof AgentMessagingError)
-      return { result: "rejected", code: "message_invalid" };
-    throw err;
-  }
-}
-function localPresence(db, joined, now) {
-  if (!hasTable(db, "agent_session_connections"))
-    return [];
-  const rows = db.prepare(`
-    SELECT project, principal_id, session_instance_id, adapter_kind FROM agent_session_connections
-    WHERE disconnected_at IS NULL AND lease_expires_at_ms > ?
-  `).all(now);
-  const entries = /* @__PURE__ */ new Map();
-  for (const row of rows) {
-    const handle = agentSessionHandle(row.project, row.adapter_kind, row.session_instance_id);
-    const entry = {
-      project_hash: projectHash(joined.config.network_id, row.project),
-      principal: row.principal_id,
-      handle,
-      host_kind: agentHostKind(row.adapter_kind),
-      connected: true
-    };
-    entries.set(`${entry.project_hash}:${handle}`, entry);
-  }
-  return [...entries.values()].slice(0, 256);
-}
-function receivePresence(db, member, frame, now) {
-  db.transaction(() => {
-    db.prepare("DELETE FROM agent_network_presence WHERE machine_id = ?").run(member.machine_id);
-    const insert = db.prepare(`
-      INSERT OR REPLACE INTO agent_network_presence (machine_id, project_hash, principal, handle, host_kind, connected, expires_at_ms)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `);
-    for (const entry of frame.entries) {
-      insert.run(member.machine_id, entry.project_hash, entry.principal, entry.handle, entry.host_kind, entry.connected ? 1 : 0, now + PRESENCE_TTL_MS);
-    }
-    rememberPeer(db, member.machine_id, frame.relay, frame.addrs, now);
-  }).immediate();
-}
 function rememberPeer(db, machineId, relay, addrs, now) {
   db.prepare(`
     INSERT INTO agent_network_peers (machine_id, relay_url, addrs_json, seen_at_ms) VALUES (?, ?, ?, ?)
@@ -2499,9 +2494,6 @@ function peerRoute(db, machineId) {
   } catch {
     return { relay: row.relay_url, addrs: [] };
   }
-}
-function frameLabel(frame) {
-  return frame.kind === "message" ? `message ${createHash5("sha256").update(String(frame.origin_message_id)).digest("hex").slice(0, 12)}` : frame.kind;
 }
 
 // dist/network/bridge-serve.js
@@ -2521,9 +2513,9 @@ var SEND_CONNECT_DEADLINE_MS = 2e4;
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs10.existsSync(file) && fs10.statSync(file).size > LOG_MAX_BYTES)
-      fs10.renameSync(file, `${file}.1`);
-    fs10.appendFileSync(file, line(event, detail), { mode: 384 });
+    if (fs13.existsSync(file) && fs13.statSync(file).size > LOG_MAX_BYTES)
+      fs13.renameSync(file, `${file}.1`);
+    fs13.appendFileSync(file, line(event, detail), { mode: 384 });
   } catch {
     try {
       process.stderr.write(line(event, detail));
@@ -2536,6 +2528,8 @@ function line(event, detail) {
 `;
 }
 async function serve(dataDir2, dbPath) {
+  assertLegacyPathsAreDifferent(getDbPath(), path13.join(dataDir2, "messages.db"));
+  assertLegacyPathsAreDifferent(getDbPath(), dbPath);
   try {
     process.umask(63);
   } catch {
@@ -2600,7 +2594,7 @@ async function serve(dataDir2, dbPath) {
   let db;
   let config;
   try {
-    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
+    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
     config = readConfig(db);
   } catch (err) {
     return fail("exit_database", `Cannot open the database: ${errorMessage(err)}`);
@@ -2814,30 +2808,50 @@ async function serve(dataDir2, dbPath) {
       }
     }
   };
-  let notifier;
-  try {
-    notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
-  } catch {
-    notifier = void 0;
-  }
+  const messages = (joined) => {
+    const self = findMember(joined.roster, machineId);
+    if (!self)
+      throw new Error("This machine is no longer a network member");
+    return new ConversationMessages({
+      file: path13.join(dataDir2, "messages.db"),
+      busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
+      network: {
+        network_id: joined.config.network_id,
+        self: { id: machineId, name: self.name },
+        members: joined.roster.members.map((m) => ({ id: m.machine_id, name: m.name }))
+      }
+    });
+  };
   let lastPresenceAt = 0;
-  const answer = (frame, joined, remoteId) => {
+  const answer = async (frame, joined, remoteId) => {
     const member = findMember(joined.roster, remoteId);
     if (!member)
       return { result: "rejected", code: "not_a_member" };
-    if (frame.kind === "presence") {
-      const firstContact = !peerRoute(db, remoteId);
-      receivePresence(db, member, frame, Date.now());
-      retryNowFor(db, remoteId, Date.now());
-      if (firstContact)
-        lastPresenceAt = 0;
-      return { result: "accepted" };
+    const store = messages(joined);
+    try {
+      if (frame.kind === "conversations") {
+        const firstContact = !peerRoute(db, remoteId);
+        store.upsertRemoteRegistrations(remoteId, frame.entries);
+        rememberPeer(db, remoteId, frame.relay, frame.addrs, Date.now());
+        if (firstContact)
+          lastPresenceAt = 0;
+        return { result: "accepted" };
+      }
+      if (frame.kind === "conversation-receipt")
+        return { result: store.receiveReceipt(remoteId, frame.receipt) };
+      const result = store.receiveFrom(remoteId, frame.row);
+      if (result === "accepted") {
+        const message = store.status(frame.row.message.recipient, frame.row.message.id)[0];
+        const wake = await wakeConversationMessage(message, store.wakeTarget(message.id), store.machine);
+        if (wake.pushed) {
+          authorize(remoteId);
+          store.recordNetworkPush(remoteId, message.id, wake.route);
+        }
+      }
+      return { result };
+    } finally {
+      store.close();
     }
-    if (!messagingAvailable(db)) {
-      recordError("messaging_unavailable", "A message arrived, but the message tables do not exist here yet; it will be retried.");
-      return { result: "retry", code: "messaging_unavailable" };
-    }
-    return receiveMessage(db, joined, member, frame, notifier);
   };
   const answerMember = async (connection, remoteId) => {
     const handshake = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, "waiting for roster");
@@ -2860,9 +2874,10 @@ async function serve(dataDir2, dbPath) {
       }
       let ack;
       try {
-        const frame = parseFrame(bytes);
-        ack = answer(frame, authorize(remoteId), remoteId);
-        appendLog(dataDir2, "frame_received", { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+        const frame = parseConversationFrame(bytes);
+        ack = await answer(frame, authorize(remoteId), remoteId);
+        authorize(remoteId);
+        appendLog(dataDir2, "frame_received", { machine_id: remoteId, frame: frame.kind, result: ack.result, code: ack.code ?? null });
       } catch (err) {
         if (err instanceof FrameError)
           ack = { result: "rejected", code: err.code };
@@ -2881,6 +2896,7 @@ async function serve(dataDir2, dbPath) {
     }
   };
   const sendFrame = async (target, frame) => {
+    parseConversationFrame(Buffer.from(JSON.stringify(frame)));
     const route = peerRoute(db, target);
     const relay = route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl);
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
@@ -2896,54 +2912,73 @@ async function serve(dataDir2, dbPath) {
       authorize(target);
       memberConnections.set(connection, target);
       const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, "opening a stream");
-      authorize(target);
-      await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, "sending a frame");
+      const fresh = messages(authorize(target));
+      try {
+        if (frame.kind === "conversation-message" && !fresh.outgoingFor(target).some((row) => JSON.stringify(row) === JSON.stringify(frame.row)))
+          throw new Error("Outgoing network binding changed");
+        if (frame.kind === "conversation-receipt" && !fresh.receiptsFor(target).some((receipt) => JSON.stringify(receipt) === JSON.stringify(frame.receipt)))
+          throw new Error("Receipt network binding changed");
+      } finally {
+        fresh.close();
+      }
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), STREAM_DEADLINE_MS, "sending a frame");
       await deadline(stream.send.finish(), STREAM_DEADLINE_MS, "sending a frame");
       const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, "waiting for the answer")));
       authorize(target);
-      let path11 = null;
+      let path15 = null;
       try {
         const selected = connection.paths().find((candidate) => candidate.isSelected);
-        path11 = selected ? selected.isRelay ? "relay" : "direct" : null;
+        path15 = selected ? selected.isRelay ? "relay" : "direct" : null;
       } catch {
       }
-      return { ack, path: path11 };
+      return { ack, path: path15 };
     } finally {
       memberConnections.delete(connection);
       connection.close(0n, toBytes("done"));
     }
   };
   let courierBusy = false;
-  const deliver = async (joined, entry) => {
-    const frame = buildMessageFrame(db, joined, entry);
-    if (typeof frame === "string") {
-      recordUnsendable(db, entry, frame, notifier);
-      appendLog(dataDir2, "message_unsendable", { delivery_id: entry.delivery_id, code: frame });
-      return true;
-    }
-    try {
-      const { ack, path: path11 } = await sendFrame(entry.machine_id, frame);
-      const outcome = recordAttempt(db, entry, { ack, path: path11 }, Date.now(), notifier);
-      appendLog(dataDir2, "message_attempt", { delivery_id: entry.delivery_id, outcome, code: ack.code ?? null, path: path11 });
-      return true;
-    } catch (err) {
-      if (stopping)
-        return false;
-      const outcome = recordAttempt(db, entry, { failure: "unreachable" }, Date.now(), notifier);
-      appendLog(dataDir2, "message_attempt", { delivery_id: entry.delivery_id, outcome, code: "unreachable", error: errorMessage(err) });
-      return false;
-    }
-  };
   const sendingTo = /* @__PURE__ */ new Set();
   const announcingTo = /* @__PURE__ */ new Set();
-  const deliverTo = async (joined, target) => {
+  const deliverTo = async (target) => {
     sendingTo.add(target);
     try {
-      for (const entry of dueOutgoingFor(db, target, Date.now())) {
+      const before = messages(authorize(target));
+      let outgoing;
+      let receipts;
+      try {
+        outgoing = before.outgoingFor(target);
+        receipts = before.receiptsFor(target);
+      } finally {
+        before.close();
+      }
+      for (const row of outgoing) {
         if (stopping)
           return;
-        if (!await deliver(joined, entry))
+        const { ack } = await sendFrame(target, { version: 2, kind: "conversation-message", row });
+        if (ack.result !== "accepted" && ack.result !== "duplicate") {
+          appendLog(dataDir2, "message_not_accepted", { message_id: row.message.id, result: ack.result, code: ack.code ?? null });
           return;
+        }
+        const current = messages(authorize(target));
+        try {
+          current.recordCopyAccepted(target, row.message.id);
+        } finally {
+          current.close();
+        }
+      }
+      for (const receipt of receipts) {
+        if (stopping)
+          return;
+        const { ack } = await sendFrame(target, { version: 2, kind: "conversation-receipt", receipt });
+        if (ack.result !== "accepted" && ack.result !== "duplicate")
+          return;
+        const current = messages(authorize(target));
+        try {
+          current.recordReceiptAccepted(target, receipt);
+        } finally {
+          current.close();
+        }
       }
     } catch (err) {
       if (!stopping)
@@ -2954,14 +2989,14 @@ async function serve(dataDir2, dbPath) {
   };
   const sentTo = /* @__PURE__ */ new Map();
   const announce = (joined, heartbeat2) => {
-    const frame = {
-      version: FRAME_VERSION,
-      kind: "presence",
-      relay: relayUrl === RELAY_OFF ? null : relayUrl,
-      addrs: advertisedAddresses(endpoint),
-      entries: localPresence(db, joined, Date.now())
-    };
-    const content = JSON.stringify(frame);
+    const store = messages(joined);
+    let frames;
+    try {
+      frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
+    } finally {
+      store.close();
+    }
+    const content = JSON.stringify(frames);
     for (const member of joined.roster.members) {
       const target = member.machine_id;
       if (target === machineId || announcingTo.has(target))
@@ -2970,9 +3005,17 @@ async function serve(dataDir2, dbPath) {
         continue;
       if (!peerRoute(db, target) && relayUrl === RELAY_OFF)
         continue;
-      sentTo.set(target, content);
       announcingTo.add(target);
-      void sendFrame(target, frame).catch((err) => {
+      void (async () => {
+        for (const frame of frames) {
+          if (stopping)
+            return;
+          const { ack } = await sendFrame(target, frame);
+          if (ack.result !== "accepted")
+            throw new Error("Presence not accepted");
+        }
+        sentTo.set(target, content);
+      })().catch((err) => {
         if (!stopping)
           appendLog(dataDir2, "presence_unreachable", { machine_id: target, error: errorMessage(err) });
       }).finally(() => {
@@ -2986,15 +3029,18 @@ async function serve(dataDir2, dbPath) {
     courierBusy = true;
     try {
       revokeConnections();
-      if (!messagingAvailable(db))
-        return;
       const joined = joinedNow();
       const now = Date.now();
-      enqueueOutgoing(db, joined, now);
-      expireOverdue(db, now, notifier);
-      for (const target of dueMachines(db, now)) {
-        if (!sendingTo.has(target))
-          void deliverTo(joined, target);
+      const store = messages(joined);
+      try {
+        store.maintainMessages();
+      } finally {
+        store.close();
+      }
+      for (const member of joined.roster.members) {
+        const target = member.machine_id;
+        if (target !== machineId && !sendingTo.has(target))
+          void deliverTo(target);
       }
       const heartbeat2 = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
       if (heartbeat2)
@@ -3084,7 +3130,7 @@ async function readBoundedStdin(limit) {
   return Buffer.concat(chunks).toString("utf8");
 }
 var mode = process.argv[2];
-var dataDir = path10.resolve(getMemeshDirFromDbPath());
+var dataDir = path14.resolve(getMemeshDirFromDbPath());
 if (mode === "check") {
   const result = check(dataDir);
   await reply(result);
@@ -3100,7 +3146,7 @@ if (mode === "check") {
   }
 } else if (mode === "serve") {
   try {
-    process.exit(await serve(dataDir, getDbPath()));
+    process.exit(await serve(dataDir, networkMetadataPath(dataDir)));
   } catch (err) {
     process.stderr.write(`The network bridge failed before it could start: ${errorMessage(err)}
 `);

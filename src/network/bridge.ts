@@ -5,11 +5,11 @@
 //   bridge.js serve   the long-running bridge
 
 import path from 'node:path';
-import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
+import { getMemeshDirFromDbPath } from '../core/paths.js';
 import { JOIN_CHILD_INPUT_MAX_BYTES, runJoinClient, type JoinChildInput } from './bridge-join.js';
 import { serve } from './bridge-serve.js';
 import { explainLoadFailure, loadNative } from './native-loader.js';
-import { errorMessage, runtimeDir } from './types.js';
+import { errorMessage, runtimeDir, networkMetadataPath } from './types.js';
 
 function reply(result: unknown): Promise<void> {
   return new Promise((resolve) => { process.stdout.write(`${JSON.stringify(result)}\n`, () => resolve()); });
@@ -56,7 +56,7 @@ if (mode === 'check') {
   }
 } else if (mode === 'serve') {
   try {
-    process.exit(await serve(dataDir, getDbPath()));
+    process.exit(await serve(dataDir, networkMetadataPath(dataDir)));
   } catch (err) {
     // It never held the control socket, so the status file is not its to write. Stderr is bridge.log.
     process.stderr.write(`The network bridge failed before it could start: ${errorMessage(err)}\n`);

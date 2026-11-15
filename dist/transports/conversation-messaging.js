@@ -19,7 +19,7 @@ export async function executeConversationMessageAction(input, context) {
     const store = new ConversationMessages();
     try {
         switch (action.action) {
-            case 'discover': return { conversations: store.discover().map(({ id, host, machine, online }) => ({ address: id, host, machine, online })) };
+            case 'discover': return { conversations: store.discover().map(({ id, host, machine, online }) => ({ address: machine === store.machine ? id : `${id}@${machine}`, host, machine, online })) };
             case 'status': return { messages: store.status(context.owner ? undefined : context.session, action.message_id) };
             case 'read': return { message: store.read(context.session, action.message_id) };
             case 'send': {
@@ -30,7 +30,7 @@ export async function executeConversationMessageAction(input, context) {
                 if (!result.accepted)
                     throw new Error(JSON.stringify(receipt));
                 try {
-                    const wake = await wakeConversationMessage(result.message, store.wakeTarget(result.message.id));
+                    const wake = await wakeConversationMessage(result.message, store.wakeTarget(result.message.id), store.machine);
                     if (wake.pushed)
                         store.recordPush(context.session, result.message.id, wake.route);
                     return { ...receipt, state: wake.pushed ? 'pushed' : 'queued', wake };

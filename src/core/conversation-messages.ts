@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, requirePrivateWritableDirectory, removeGroupAndOtherAccess } from './file-mode.js';
 import { getDbPath, getMemeshDirFromDbPath } from './paths.js';
+import { readPublicNetworkContext } from './public-network-context.js';
 import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
 
 export const MESSAGE_MAX_BYTES = 8_000;
@@ -99,6 +100,7 @@ export class ConversationMessages {
   private readonly clock: () => number;
   private readonly processAlive: (pid: number) => boolean;
   private readonly network?: ConversationNetworkSnapshot;
+  readonly networkIssue?: string;
 
   constructor(options: {
     file?: string;
@@ -123,8 +125,13 @@ export class ConversationMessages {
     const legacyFile = options.file === undefined && options.legacySource === undefined ? getDbPath() : undefined;
     if (legacyFile !== undefined) assertLegacyPathsAreDifferent(legacyFile, file);
     const archiveFiles = legacyFile === undefined ? [] : legacyConversationArchiveFiles(legacyFile, file);
-    if (options.network) {
-      const n = options.network;
+    let network = options.network;
+    if (!network && options.file === undefined) {
+      try { network = readPublicNetworkContext(getMemeshDirFromDbPath()); }
+      catch (error) { this.networkIssue = error instanceof Error ? error.message : 'Network metadata unavailable'; }
+    }
+    if (network) {
+      const n = network;
       if (!/^[0-9a-f]{32}$/.test(n.network_id) || !MACHINE_ID.test(n.self.id)
         || !n.members.length || n.members.length > 256
         || n.members.some(m => !MACHINE_ID.test(m.id) || identifier(m.name).toLowerCase() !== m.name.toLowerCase())
@@ -425,6 +432,15 @@ export class ConversationMessages {
   }
 
   replaceRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[]): void {
+    this.writeRemoteRegistrations(peerId, registrations, true);
+  }
+
+  /** Bounded presence batches never delete conversations omitted from another batch. */
+  upsertRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[]): void {
+    this.writeRemoteRegistrations(peerId, registrations, false);
+  }
+
+  private writeRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[], replace: boolean): void {
     const peer = this.requirePeer(peerId);
     const ids = new Set<string>();
     for (const row of registrations) {
@@ -433,8 +449,9 @@ export class ConversationMessages {
       ids.add(row.id);
     }
     this.db.transaction(() => {
-      this.db.prepare('DELETE FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=?').run(this.network!.network_id, peerId);
-      const insert = this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?,?,?,0,'{}',0,?,?,?)`);
+      if (replace) this.db.prepare('DELETE FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=?').run(this.network!.network_id, peerId);
+      const insert = this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?,?,?,0,'{}',0,?,?,?)
+        ON CONFLICT(id,is_local,machine_id,network_id) DO UPDATE SET host=excluded.host,machine=excluded.machine,online=excluded.online`);
       for (const row of registrations) insert.run(row.id, row.host, peer.name.toLowerCase(), peerId, this.network!.network_id, row.online ? 1 : 0);
     }).immediate();
   }
@@ -489,6 +506,14 @@ export class ConversationMessages {
   recordCopyAccepted(peerId: string, messageId: string): void {
     this.outboundMessage(peerId, messageId);
     this.eventOnce(messageId, 'network_accepted', { peer: peerId, network_id: this.network!.network_id });
+  }
+
+  recordNetworkPush(peerId: string, messageId: string, route: 'claude-socket' | 'codex-queue'): void {
+    this.requirePeer(peerId);
+    const message = this.get(messageId);
+    if (!message.recipient_local || message.sender_local || message.network_id !== this.network!.network_id
+      || message.sender_machine_id !== peerId || message.recipient_machine_id !== this.network!.self.id || this.rejected(messageId)) throw new Error('Wrong network push binding');
+    this.eventOnce(messageId, 'pushed', { actor: message.recipient, peer: peerId, route });
   }
 
   receiptsFor(peerId: string): ConversationDeliveryReceipt[] {

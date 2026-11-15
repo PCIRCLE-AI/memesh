@@ -17,6 +17,9 @@ export class NetworkError extends Error {
 export function networkDir(dataDir) {
     return path.join(dataDir, 'network');
 }
+export function networkMetadataPath(dataDir) {
+    return path.join(networkDir(dataDir), 'metadata.db');
+}
 export function runtimeDir(dataDir) {
     return path.join(networkDir(dataDir), 'runtime');
 }

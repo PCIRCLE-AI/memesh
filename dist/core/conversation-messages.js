@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, requirePrivateWritableDirectory, removeGroupAndOtherAccess } from './file-mode.js';
 import { getDbPath, getMemeshDirFromDbPath } from './paths.js';
+import { readPublicNetworkContext } from './public-network-context.js';
 import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
 export const MESSAGE_MAX_BYTES = 8_000;
 const DAY = 86_400_000;
@@ -36,6 +37,7 @@ export class ConversationMessages {
     clock;
     processAlive;
     network;
+    networkIssue;
     constructor(options = {}) {
         const busyTimeoutMs = options.busyTimeoutMs;
         if (busyTimeoutMs !== undefined && (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 30_000)) {
@@ -48,8 +50,17 @@ export class ConversationMessages {
         if (legacyFile !== undefined)
             assertLegacyPathsAreDifferent(legacyFile, file);
         const archiveFiles = legacyFile === undefined ? [] : legacyConversationArchiveFiles(legacyFile, file);
-        if (options.network) {
-            const n = options.network;
+        let network = options.network;
+        if (!network && options.file === undefined) {
+            try {
+                network = readPublicNetworkContext(getMemeshDirFromDbPath());
+            }
+            catch (error) {
+                this.networkIssue = error instanceof Error ? error.message : 'Network metadata unavailable';
+            }
+        }
+        if (network) {
+            const n = network;
             if (!/^[0-9a-f]{32}$/.test(n.network_id) || !MACHINE_ID.test(n.self.id)
                 || !n.members.length || n.members.length > 256
                 || n.members.some(m => !MACHINE_ID.test(m.id) || identifier(m.name).toLowerCase() !== m.name.toLowerCase())
@@ -365,6 +376,12 @@ export class ConversationMessages {
         return rows.map(row => ({ id: row.id, host: row.host, online: this.processAlive(row.pid) }));
     }
     replaceRemoteRegistrations(peerId, registrations) {
+        this.writeRemoteRegistrations(peerId, registrations, true);
+    }
+    upsertRemoteRegistrations(peerId, registrations) {
+        this.writeRemoteRegistrations(peerId, registrations, false);
+    }
+    writeRemoteRegistrations(peerId, registrations, replace) {
         const peer = this.requirePeer(peerId);
         const ids = new Set();
         for (const row of registrations) {
@@ -374,8 +391,10 @@ export class ConversationMessages {
             ids.add(row.id);
         }
         this.db.transaction(() => {
-            this.db.prepare('DELETE FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=?').run(this.network.network_id, peerId);
-            const insert = this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?,?,?,0,'{}',0,?,?,?)`);
+            if (replace)
+                this.db.prepare('DELETE FROM conversations WHERE is_local=0 AND network_id=? AND machine_id=?').run(this.network.network_id, peerId);
+            const insert = this.db.prepare(`INSERT INTO conversations (id,host,machine,pid,wake,is_local,machine_id,network_id,online) VALUES (?,?,?,0,'{}',0,?,?,?)
+        ON CONFLICT(id,is_local,machine_id,network_id) DO UPDATE SET host=excluded.host,machine=excluded.machine,online=excluded.online`);
             for (const row of registrations)
                 insert.run(row.id, row.host, peer.name.toLowerCase(), peerId, this.network.network_id, row.online ? 1 : 0);
         }).immediate();
@@ -434,6 +453,14 @@ export class ConversationMessages {
     recordCopyAccepted(peerId, messageId) {
         this.outboundMessage(peerId, messageId);
         this.eventOnce(messageId, 'network_accepted', { peer: peerId, network_id: this.network.network_id });
+    }
+    recordNetworkPush(peerId, messageId, route) {
+        this.requirePeer(peerId);
+        const message = this.get(messageId);
+        if (!message.recipient_local || message.sender_local || message.network_id !== this.network.network_id
+            || message.sender_machine_id !== peerId || message.recipient_machine_id !== this.network.self.id || this.rejected(messageId))
+            throw new Error('Wrong network push binding');
+        this.eventOnce(messageId, 'pushed', { actor: message.recipient, peer: peerId, route });
     }
     receiptsFor(peerId) {
         this.requirePeer(peerId);

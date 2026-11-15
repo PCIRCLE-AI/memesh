@@ -7,5 +7,5 @@ export type ConversationWakeResult = {
     pushed: false;
     reason: 'unavailable' | 'failed';
 };
-export declare function wakeConversationMessage(message: ConversationMessage, target: ConversationRegistration | undefined): Promise<ConversationWakeResult>;
+export declare function wakeConversationMessage(message: ConversationMessage, target: ConversationRegistration | undefined, localMachine?: string): Promise<ConversationWakeResult>;
 //# sourceMappingURL=conversation-wake.d.ts.map

@@ -26,9 +26,9 @@ function privateSocket(socketPath) {
         throw new Error('Socket unavailable');
     return stat;
 }
-export async function wakeConversationMessage(message, target) {
+export async function wakeConversationMessage(message, target, localMachine = os.hostname().toLowerCase()) {
     if (!target || target.id !== message.recipient || target.host !== message.recipient_host
-        || target.machine !== message.recipient_machine || target.machine !== os.hostname().toLowerCase()
+        || target.machine !== message.recipient_machine || target.machine !== localMachine
         || !alive(target.pid) || message.body === null)
         return { pushed: false, reason: 'unavailable' };
     const content = renderConversationMessage(message);

@@ -9,7 +9,7 @@ import { ACK_MAX_BYTES, exchangeRosterStream, parseAck } from '../../src/network
 import { ensureIdentity } from '../../src/network/identity.js';
 import { addMember, createRoster, findMember, signRoster, verifyRoster } from '../../src/network/roster.js';
 import { insertConfig, openNetworkStore, readConfig, saveRoster } from '../../src/network/store.js';
-import { NET_ALPN } from '../../src/network/types.js';
+import { NET_ALPN, networkMetadataPath } from '../../src/network/types.js';
 import { isPlatformSupported } from '../../src/network/runtime.js';
 import { buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree } from './helpers.js';
 
@@ -33,7 +33,7 @@ it.skipIf(!supported || process.platform === 'win32')('native NET/2 accepts late
   const latest = signRoster(owner, roster);
   const runtime = installRuntimeOnce(tree);
   linkRuntime(beta, runtime);
-  const db = openNetworkStore(beta.dbPath);
+  const db = openNetworkStore(networkMetadataPath(beta.dataDir), { metadataOnly: true });
   insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: b.machineId,
     machine_name: 'beta', person: 'b', relay_url: 'off', roster_json: old.roster_json, roster_signature: old.signature }, Date.now());
   const iroh = loadIrohForTest(runtime);
@@ -60,7 +60,7 @@ it.skipIf(!supported || process.platform === 'win32')('native NET/2 accepts late
     const positive = await connect('late-member-positive');
     expect(JSON.parse(readConfig(db)!.roster_json).version).toBe(3);
     const business = await deadline(positive.openBi(), 5000, 'native business stream');
-    await business.send.writeAll(toBytes(JSON.stringify({ version: 1, kind: 'presence', relay: null, addrs: [], entries: [] })));
+    await business.send.writeAll(toBytes(JSON.stringify({ version: 2, kind: 'conversations', relay: null, addrs: [], entries: [] })));
     await business.send.finish();
     expect(parseAck(Buffer.from(await deadline(business.recv.readToEnd(ACK_MAX_BYTES), 5000, 'native ACK'))).result).toBe('accepted');
     positive.close(0n, toBytes('positive complete'));
@@ -68,7 +68,7 @@ it.skipIf(!supported || process.platform === 'win32')('native NET/2 accepts late
 
     const held = await connect('held-before-revocation');
     const unfinished = await deadline(held.openBi(), 5000, 'held business stream');
-    await unfinished.send.writeAll(toBytes('{"version":1'));
+    await unfinished.send.writeAll(toBytes('{"version":2'));
     // A newly signed list arrives while readToEnd is waiting for the rest of the frame.
     const removed = signRoster(owner, { ...roster, version: 4, members: roster.members.filter(member => member.machine_id !== c.machineId) });
     saveRoster(db, removed);
