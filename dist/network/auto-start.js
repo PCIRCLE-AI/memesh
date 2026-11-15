@@ -3,9 +3,10 @@ import path from 'node:path';
 import { spawn } from 'node:child_process';
 import { probeBridge } from './control-socket.js';
 import { logPath } from './bridge-state.js';
+import { openPublicNetworkDatabase } from '../core/public-network-context.js';
 import { startBridge } from './bridge-control.js';
 import { readConfig } from './store.js';
-import { networkDir, childEnv } from './types.js';
+import { networkDir, networkMetadataPath, childEnv } from './types.js';
 export async function bootstrapNetworkBridge(ctx, cliEntry) {
     let directory;
     try {
@@ -19,6 +20,16 @@ export async function bootstrapNetworkBridge(ctx, cliEntry) {
     if (!directory.isDirectory() || directory.isSymbolicLink()
         || (process.platform !== 'win32' && (directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0)))
         throw new Error('Unsafe network directory');
+    const metadata = openPublicNetworkDatabase(networkMetadataPath(ctx.dataDir));
+    if (metadata) {
+        try {
+            if (!readConfig(metadata))
+                return 'not-joined';
+        }
+        finally {
+            metadata.close();
+        }
+    }
     const probe = await probeBridge(ctx.dataDir, 200);
     if (probe.kind === 'running')
         return 'running';

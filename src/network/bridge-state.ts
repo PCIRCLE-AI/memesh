@@ -20,6 +20,8 @@ export interface BridgeStatus {
   joins_refused: number;
   non_member_refused: number;
   frames_received: number;
+  /** Written only after this holder atomically clears confirmed membership. */
+  membership_departure?: { network_id: string; owner_id: string; machine_id: string };
 }
 
 export function statusPath(dataDir: string): string {

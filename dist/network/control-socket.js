@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import net from 'node:net';
 import path from 'node:path';
 import { NetworkError, networkDir } from './types.js';
+import { parseMembershipAction } from './membership.js';
 const SOCKET_PATH_MAX_BYTES = 103;
 const PROBE_DEADLINE_MS = 4_000;
 const REQUEST_DEADLINE_MS = 2_000;
@@ -84,7 +85,7 @@ function parseReply(line, dataDir) {
         return null;
     }
 }
-function request(dataDir, op, deadlineMs) {
+function request(dataDir, op, deadlineMs, expectedPid) {
     return new Promise((resolve) => {
         const socket = net.createConnection(controlPath(dataDir));
         let text = '';
@@ -94,11 +95,13 @@ function request(dataDir, op, deadlineMs) {
             resolve(result);
         };
         const timer = setTimeout(() => finish(null), deadlineMs);
-        socket.once('connect', () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir) })}\n`));
+        socket.once('connect', () => socket.write(`${JSON.stringify({ op: typeof op === 'string' ? op : 'membership', ...(typeof op === 'string' ? {} : { action: op }), ...(expectedPid === undefined ? {} : { expected_pid: expectedPid }), token: readControlToken(dataDir) })}\n`));
         socket.on('data', (chunk) => {
             text += chunk.toString('utf8');
-            if (text.length > REPLY_MAX_BYTES)
+            if (text.length > (typeof op === 'string' ? REPLY_MAX_BYTES : 32 * 1024)) {
                 finish(null);
+                return;
+            }
             const newline = text.indexOf('\n');
             if (newline === -1)
                 return;
@@ -118,9 +121,20 @@ export async function probeBridge(dataDir, deadlineMs = PROBE_DEADLINE_MS) {
         return { kind: 'not-running' };
     return reply === null ? { kind: 'unresponsive' } : { kind: 'running', pid: reply.pid, ready: reply.ready };
 }
-export async function askBridgeToStop(dataDir) {
-    const reply = await request(dataDir, 'stop', PROBE_DEADLINE_MS);
+export async function askBridgeToStop(dataDir, expectedPid) {
+    const reply = await request(dataDir, 'stop', PROBE_DEADLINE_MS, expectedPid);
     return reply !== null && reply !== 'not-running';
+}
+export async function askBridgeMembership(dataDir, action, expectedPid) {
+    parseMembershipAction(action);
+    const reply = await request(dataDir, action, 25_000);
+    if (!reply || reply === 'not-running' || reply.pid !== expectedPid)
+        throw new Error('Membership confirmation unavailable; do not assume it completed.');
+    if (reply.error)
+        throw new Error(reply.error);
+    if (!reply.membership || reply.membership.action !== action.action || reply.membership.network_id !== action.network_id)
+        throw new Error('Invalid membership confirmation.');
+    return reply.membership;
 }
 export function identityOf(file) {
     try {
@@ -237,6 +251,10 @@ function parseOp(line, token) {
         const request = JSON.parse(line);
         if (!tokensMatch(request.token, token))
             return null;
+        if (request.expected_pid !== undefined && request.expected_pid !== process.pid)
+            return null;
+        if (request.op === 'membership' && Object.keys(request).sort().join(',') === 'action,op,token')
+            return parseMembershipAction(request.action);
         return request.op === 'hello' || request.op === 'stop' ? request.op : null;
     }
     catch {
@@ -245,9 +263,12 @@ function parseOp(line, token) {
 }
 function serveConnection(socket, identity, token, handlers) {
     let text = '';
+    let handled = false;
     socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
     socket.on('error', (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
     socket.on('data', (chunk) => {
+        if (handled)
+            return;
         text += chunk.toString('utf8');
         if (text.length > REQUEST_MAX_BYTES) {
             socket.destroy();
@@ -256,12 +277,28 @@ function serveConnection(socket, identity, token, handlers) {
         const newline = text.indexOf('\n');
         if (newline === -1)
             return;
+        handled = true;
         const op = parseOp(text.slice(0, newline), token);
         if (op === null) {
             socket.destroy();
             return;
         }
         const reply = { data_dir: identity, pid: process.pid, ready: handlers.isReady() };
+        if (typeof op === 'object') {
+            socket.setTimeout(25_000);
+            if (!handlers.membership || !handlers.isReady()) {
+                socket.destroy();
+                return;
+            }
+            void handlers.membership(op).then(({ result, afterReply }) => {
+                socket.end(`${JSON.stringify({ ...reply, membership: result })}\n`, () => afterReply?.());
+                if (socket.destroyed)
+                    afterReply?.();
+            }).catch((error) => {
+                socket.end(`${JSON.stringify({ ...reply, error: error instanceof Error ? error.message : 'Membership failed' })}\n`);
+            });
+            return;
+        }
         socket.end(`${JSON.stringify(reply)}\n`, () => {
             if (op === 'stop')
                 handlers.stop();

@@ -89,7 +89,9 @@ export async function startBridge(ctx: NetworkContext): Promise<{ pid: number; s
       if (exit.error) throw new NetworkError('bridge_failed', `The network bridge could not start: ${exit.error.message}. ${SINGLE_MACHINE_NOTE}`);
       if (exit.code === EXIT_HOLDER_UNRESPONSIVE) throw unresponsive(ctx);
       if (exit.code !== EXIT_ALREADY_RUNNING) {
-        throw new NetworkError('bridge_failed', describeFailedStart(ctx, exit, mine.child.pid));
+        const error = new NetworkError('bridge_failed', describeFailedStart(ctx, exit, mine.child.pid));
+        error.cause = { bridgePid: mine.child.pid };
+        throw error;
       }
       mine = null; // Lost to another starter: follow that one.
     }

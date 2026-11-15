@@ -7,13 +7,13 @@ import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migr
 import path from 'node:path';
 import { describeChildDeath, startBridge } from './bridge-control.js';
 import { readStatus, reportedPid } from './bridge-state.js';
-import { assertControlPathFits, probeBridge } from './control-socket.js';
+import { assertControlPathFits, probeBridge, askBridgeMembership, askBridgeToStop } from './control-socket.js';
 import { rememberPeer } from './courier.js';
 import { ensureIdentity, loadIdentity } from './identity.js';
 import { DEFAULT_INVITE_TTL_HOURS, MAX_INVITE_TTL_HOURS, createInvite, encodeLink, parseLink } from './invites.js';
 import { parseJoinReply, refusalMessage } from './join-protocol.js';
 import { parseRelayUrl } from './relay-url.js';
-import { acceptRoster, assertValidName, createRoster, findMember, parseRoster, signRoster } from './roster.js';
+import { acceptRoster, assertValidName, createRoster, findMember, parseRoster, signRoster, verifyRoster } from './roster.js';
 import { ensureRuntime } from './runtime.js';
 import { databaseExists, insertConfig, openNetworkStore, readConfig } from './store.js';
 import { DEFAULT_RELAY_URL, NetworkError, RELAY_OFF, SINGLE_MACHINE_NOTE, childEnv, errorMessage, networkDir, networkMetadataPath, safeForTerminal, } from './types.js';
@@ -48,7 +48,8 @@ function withConfig(ctx, use) {
     }
 }
 function refuseIfAlreadyJoined(ctx) {
-    for (const file of [networkMetadataPath(ctx.dataDir), ctx.dbPath]) {
+    const metadata = networkMetadataPath(ctx.dataDir);
+    for (const file of databaseExists(metadata) ? [metadata] : [ctx.dbPath]) {
         const db = openPublicNetworkDatabase(file);
         if (!db)
             continue;
@@ -57,7 +58,7 @@ function refuseIfAlreadyJoined(ctx) {
                 continue;
             const config = readConfig(db);
             if (config) {
-                throw new NetworkError('already_joined', `This machine is already in a network as "${config.machine_name}". Leaving a network is not available yet.`);
+                throw new NetworkError('already_joined', `This machine is already in a network as "${config.machine_name}". Leave it before joining another network.`);
             }
         }
         finally {
@@ -283,10 +284,80 @@ export async function bridgeUp(ctx, options = {}) {
         }
     }
     await migrateNetworkMetadata(ctx);
-    withConfig(ctx, () => undefined);
+    const expected = withConfig(ctx, (_db, config) => config);
     if (options.force)
         ensureRuntime(ctx, options);
-    return startBridge(ctx);
+    const attemptedAt = Date.now();
+    try {
+        return await startBridge(ctx);
+    }
+    catch (error) {
+        const metadata = openPublicNetworkDatabase(networkMetadataPath(ctx.dataDir));
+        if (metadata) {
+            try {
+                const status = readStatus(ctx.dataDir);
+                const departure = status?.membership_departure;
+                const failedPid = error instanceof NetworkError && error.code === 'bridge_failed' ? error.cause?.bridgePid : undefined;
+                if (!readConfig(metadata) && status?.state === 'stopped' && typeof failedPid === 'number' && failedPid > 0 && failedPid === status.pid && Date.parse(status.started_at) >= attemptedAt
+                    && departure?.network_id === expected.network_id && departure.owner_id === expected.owner_id && departure.machine_id === expected.machine_id) {
+                    throw new NetworkError('not_joined', 'This machine is no longer in a network. Local history is preserved.');
+                }
+            }
+            finally {
+                metadata.close();
+            }
+        }
+        throw error;
+    }
+}
+export async function changeMembership(ctx, action, target) {
+    await migrateNetworkMetadata(ctx);
+    const expected = withConfig(ctx, (_db, config) => {
+        verifyRoster({ roster_json: config.roster_json, signature: config.roster_signature }, config.owner_id, config.network_id);
+        if (action === 'remove' && config.machine_id !== config.owner_id)
+            throw new NetworkError('not_owner', 'Only the owner can remove another member.');
+        if (action === 'leave' && config.machine_id === config.owner_id)
+            throw new NetworkError('invalid_option', 'Owner departure is not supported; no membership was changed.');
+        return config;
+    });
+    const running = await startBridge(ctx);
+    let outcome;
+    try {
+        outcome = { result: await askBridgeMembership(ctx.dataDir, { action, network_id: expected.network_id, machine_id: expected.machine_id,
+                ...(action === 'remove' ? { target } : {}) }, running.pid) };
+    }
+    catch (error) {
+        outcome = { error };
+    }
+    try {
+        if (running.started) {
+            const current = await probeBridge(ctx.dataDir);
+            if (current.kind === 'running' && current.pid === running.pid) {
+                if (!await askBridgeToStop(ctx.dataDir, running.pid))
+                    throw new Error('Membership bridge cleanup unconfirmed');
+                const until = Date.now() + 10_000;
+                let stopped = false;
+                while (Date.now() < until) {
+                    const probe = await probeBridge(ctx.dataDir, 200);
+                    if (probe.kind === 'not-running' || (probe.kind === 'running' && probe.pid !== running.pid)) {
+                        stopped = true;
+                        break;
+                    }
+                    await new Promise(resolve => setTimeout(resolve, 50));
+                }
+                if (!stopped)
+                    throw new Error('Membership bridge cleanup unconfirmed');
+            }
+        }
+    }
+    catch (error) {
+        if ('error' in outcome)
+            throw new Error(`Membership failed (${errorMessage(outcome.error)}); bridge cleanup unconfirmed.`, { cause: error });
+        throw error;
+    }
+    if ('error' in outcome)
+        throw outcome.error;
+    return outcome.result;
 }
 export async function getNetworkStatus(ctx) {
     if (!fs.existsSync(networkDir(ctx.dataDir)))

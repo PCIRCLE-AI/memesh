@@ -6,6 +6,8 @@ import path from 'node:path';
 export const JOIN_ALPN = 'memesh/join/1';
 // Version 2 requires a signed-roster exchange before any application frame.
 export const NET_ALPN = 'memesh/net/2';
+/** Roster-only management. Never carries messages or presence. */
+export const MEMBERSHIP_ALPN = 'memesh/membership/1';
 export const DEFAULT_RELAY_URL = 'https://relay.memesh.ai/';
 export const RELAY_OFF = 'off';
 

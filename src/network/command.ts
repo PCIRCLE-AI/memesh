@@ -9,7 +9,7 @@ import { fileURLToPath } from 'node:url';
 import { getDbPath, getMemeshDirFromDbPath } from '../core/paths.js';
 import { stopBridge } from './bridge-control.js';
 import { DEFAULT_INVITE_TTL_HOURS } from './invites.js';
-import { bridgeUp, createLink, createNetwork, getNetworkStatus, joinNetwork, type NetworkStatus } from './operations.js';
+import { bridgeUp, createLink, createNetwork, getNetworkStatus, joinNetwork, changeMembership, type NetworkStatus } from './operations.js';
 import { NetworkError, errorMessage, safeForTerminal, type NetworkContext } from './types.js';
 
 function contextFrom(networkDistDir: URL): NetworkContext {
@@ -195,6 +195,26 @@ export function registerNetworkCommand(program: Command, networkDistDir: URL): v
     .action(action(async (opts: { reinstall?: boolean }) => {
       const { pid, started } = await bridgeUp(context(), { force: opts.reinstall === true, onProgress: progress });
       console.log(started ? `Started the network bridge (pid ${pid}).` : `The network bridge is already running (pid ${pid}).`);
+    }));
+
+  network
+    .command('remove <machine>')
+    .description('Owner: revoke another machine; report peers not yet synchronized')
+    .option('--json', 'Print JSON')
+    .action(action(async (machine: string, opts: { json?: boolean }) => {
+      const result = await changeMembership(context(), 'remove', machine);
+      if (opts.json) console.log(JSON.stringify(result));
+      else console.log(`Removed ${result.removed}; roster version ${result.roster_version}. Not yet synchronized: ${result.unsynchronized?.length ?? 'unknown'}.`);
+    }));
+
+  network
+    .command('leave')
+    .description('Leave after the owner confirms revocation; keep local messages and memory')
+    .option('--json', 'Print JSON')
+    .action(action(async (opts: { json?: boolean }) => {
+      const result = await changeMembership(context(), 'leave');
+      if (opts.json) console.log(JSON.stringify(result));
+      else console.log(`Owner confirmed departure at roster version ${result.roster_version}. Local history is preserved; propagation to other peers is not confirmed here.`);
     }));
 
   network
