@@ -101,6 +101,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     builder.relayMode(iroh.RelayMode.disabled());
     const endpoint = await builder.bind();
     endpoints.push(endpoint);
+    await expect.poll(() => ownerStatus().direct_addresses.length, { timeout: 5000 }).toBeGreaterThan(0);
     const addresses = ownerStatus().direct_addresses;
     const target = new iroh.EndpointAddr(iroh.EndpointId.fromString(loadIdentity(owner.dataDir).machineId), null, addresses);
     return endpoint.connect(target, bytes(alpn));
@@ -227,17 +228,30 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     assertNoIssuedTokenLeaked(owner);
   });
 
-  it('a non-member is closed with no data read', async () => {
+  it('a non-member can offer only bounded roster metadata, never a business frame', async () => {
+    await startBridge(owner);
     const before = ownerStatus().non_member_refused;
-    // It opens no stream at all. A bridge that waited to read from it first would
-    // leave this connection open until its 15 s stream deadline, so the close has to
-    // arrive well before that.
+    const framesBefore = ownerStatus().frames_received;
+    // NET/2 permits a late member to present a newer signed roster. A silent
+    // unknown peer therefore has the existing bounded 15 s roster-stream deadline;
+    // it is not an authorized business peer while waiting.
     const connection = await dial(NET_ALPN);
     const silent = await Promise.race([
       connection.closed(),
+      new Promise((resolve) => setTimeout(() => resolve('still open'), 20_000)),
+    ]);
+    expect(String(silent)).not.toBe('still open');
+    expect(ownerStatus().frames_received).toBe(framesBefore);
+
+    // A real owner-signed roster does not authorize a transport identity absent
+    // from that roster. This must fail membership, not just the frame parser.
+    const unlisted = await dial(NET_ALPN);
+    await expect(exchangeMembership(owner, unlisted)).rejects.toThrow();
+    const refused = await Promise.race([
+      unlisted.closed(),
       new Promise((resolve) => setTimeout(() => resolve('still open'), 5_000)),
     ]);
-    expect(String(silent)).toMatch(/not_a_member/);
+    expect(String(refused)).toMatch(/not_a_member/);
     await expect.poll(() => ownerStatus().non_member_refused).toBe(before + 1);
 
     // Data sent regardless goes nowhere and comes back as nothing.
@@ -255,9 +269,9 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     }
     expect(reply).toBeNull();
     expect(streamError).not.toBeNull();
-    expect(ownerStatus().frames_received).toBe(0);
+    expect(ownerStatus().frames_received).toBe(framesBefore);
     expect(fs.readFileSync(logPath(owner.dataDir), 'utf8')).not.toContain(marker);
-  });
+  }, 45_000);
 
   it('a member gets through, and bytes that are not a frame are refused with a code', async () => {
     const member = machine();
