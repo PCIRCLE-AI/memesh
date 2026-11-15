@@ -13,6 +13,11 @@ import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { logPath, writeStatus, type BridgeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
+import {
+  MEMBERSHIP_MAX_BYTES, MEMBERSHIP_ACK_MAX_BYTES, MEMBERSHIP_DEADLINE_MS,
+  parseMembershipFrame, parseMembershipAck, membershipConfig, removeMember, clearMembership, receiveMembershipRoster,
+  type MembershipAction, type MembershipResult, type MembershipFrame, type MembershipAck,
+} from './membership.js';
 import { advertisedAddresses, bindEndpoint, deadline, toBytes } from './endpoint.js';
 import { ensureNetworkDir, loadIdentity, type Identity } from './identity.js';
 import type { Connection, Endpoint, Incoming, IrohModule } from './iroh-types.js';
@@ -30,7 +35,7 @@ import {
 } from './frames.js';
 import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
-  EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
+  EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN, RELAY_OFF, errorMessage, runtimeDir, type SignedRoster,
 } from './types.js';
 
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
@@ -82,6 +87,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   const control = await holdControlSocket(dataDir, {
     isReady: () => ready,
     stop: () => requestStop(),
+    membership: action => membershipAction(action),
     onProblem: (message) => appendLog(dataDir, 'control_problem', { error: message }),
   });
   if (control.kind === 'already-running') {
@@ -145,7 +151,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     return fail('exit_not_joined', 'This machine has not joined a network.');
   }
 
-  const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl } = config;
+  const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl, network_id: networkId } = config;
   const isOwner = ownerId === machineId;
   let identity: Identity;
   try {
@@ -169,7 +175,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
 
   let endpoint: Endpoint;
   try {
-    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
+    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN]);
   } catch (err) {
     db.close();
     return fail('exit_bind', `Cannot open a network connection: ${errorMessage(err)}`);
@@ -331,6 +337,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   const joinedNow = (): Joined => {
     const current = readConfig(db);
     if (!current) throw new Error('The network settings are gone from the database.');
+    if (current.network_id !== networkId || current.owner_id !== ownerId || current.machine_id !== machineId) throw new Error('Bridge network identity changed');
     return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
   };
 
@@ -347,6 +354,131 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       }
     }
   };
+
+  // All management uses this process's one endpoint. A late connect is closed
+  // even if its bounded caller has already timed out.
+  const requestMembership = async (target: string, frame: MembershipFrame, expected: NetworkConfig): Promise<MembershipAck> => {
+    const until = Date.now() + MEMBERSHIP_DEADLINE_MS;
+    const remaining = (): number => Math.max(1, until - Date.now());
+    parseMembershipFrame(Buffer.from(JSON.stringify(frame)));
+    membershipConfig(db, expected);
+    const route = peerRoute(db, target);
+    const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl), route?.addrs ?? []);
+    let expired = false;
+    let connection: Connection | undefined;
+    const pending = endpoint.connect(address, toBytes(MEMBERSHIP_ALPN));
+    void pending.then(c => { if (expired) c.close(1n, toBytes('management_timeout')); }, () => undefined);
+    try {
+      connection = await deadline(pending, remaining(), 'connecting for membership');
+      if (connection.remoteId().toString() !== target) throw new Error('Wrong membership peer');
+      membershipConfig(db, expected);
+      const stream = await deadline(connection.openBi(), remaining(), 'opening membership request');
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), remaining(), 'sending membership request');
+      await deadline(stream.send.finish(), remaining(), 'finishing membership request');
+      return parseMembershipAck(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_ACK_MAX_BYTES), remaining(), 'receiving membership confirmation')), expected.network_id);
+    } finally { expired = true; connection?.close(0n, toBytes('membership_done')); }
+  };
+
+  const finishDeparture = (): void => {
+    // A concurrent create/join must not have its new bridge stopped by an old ACK.
+    if (!stopping && control.stillOurs() && readConfig(db) === null) {
+      status.membership_departure = { network_id: networkId, owner_id: ownerId, machine_id: machineId };
+      void stop('membership revoked', 0);
+    }
+  };
+  const broadcastRoster = async (expected: NetworkConfig, signed: SignedRoster, targets: string[], skip?: string): Promise<string[]> => {
+    const todo = [...new Set(targets)].filter(id => id !== machineId && id !== skip);
+    const unsynchronized: string[] = [];
+    const until = Date.now() + 15_000;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, todo.length) }, async () => {
+      for (;;) {
+        const target = todo[next++]; if (!target) return;
+        if (Date.now() >= until || stopping) { unsynchronized.push(target); continue; }
+        try {
+          const ack = await requestMembership(target, { version: 1, op: 'roster', network_id: expected.network_id, roster: signed }, expected);
+          if (ack.roster_version < verifyRoster(signed, expected.owner_id, expected.network_id).version) throw new Error('Roster not acknowledged');
+        } catch { unsynchronized.push(target); }
+      }
+    }));
+    return unsynchronized.sort();
+  };
+
+  let membershipBusy = false;
+  const membershipAction = async (action: MembershipAction): Promise<{ result: MembershipResult; afterReply?: () => void }> => {
+    if (membershipBusy || stopping || !control.stillOurs()) throw new Error('Membership action unavailable');
+    membershipBusy = true;
+    try {
+      const expected = joinedNow().config;
+      if (action.network_id !== expected.network_id || action.machine_id !== expected.machine_id) throw new Error('Membership control binding changed');
+      if (action.action === 'remove') {
+        const changed = removeMember(db, identity, expected, action.target!);
+        revokeConnections();
+        const unsynchronized = await broadcastRoster(expected, changed.signed, [...changed.priorMembers, changed.removed]);
+        return { result: { action: 'remove', network_id: expected.network_id, roster_version: verifyRoster(changed.signed, ownerId, expected.network_id).version,
+          removed: changed.removed, already_removed: changed.alreadyRemoved, unsynchronized } };
+      }
+      if (isOwner) throw new Error('Owner departure is not supported; no membership was changed.');
+      const ack = await requestMembership(ownerId, { version: 1, op: 'leave-self', network_id: expected.network_id }, expected);
+      if (ack.member || ack.roster_version < verifyRoster(signedRosterOf(expected), ownerId, expected.network_id).version) throw new Error('Owner has not confirmed departure');
+      if (stopping || !control.stillOurs()) throw new Error('Bridge changed before departure confirmation');
+      clearMembership(db, expected, ack.roster_version); revokeConnections();
+      return { result: { action: 'leave', network_id: expected.network_id, roster_version: ack.roster_version,
+        removed: machineId, already_removed: false, unsynchronized: null }, afterReply: finishDeparture };
+    } finally { membershipBusy = false; }
+  };
+
+  const answerMembership = async (connection: Connection, remoteId: string): Promise<void> => {
+    const stream = await deadline(connection.acceptBi(), MEMBERSHIP_DEADLINE_MS, 'waiting for membership request');
+    const frame = parseMembershipFrame(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_MAX_BYTES), MEMBERSHIP_DEADLINE_MS, 'reading membership request')));
+    const expected = joinedNow().config;
+    if (frame.network_id !== expected.network_id) throw new Error('Wrong membership network');
+    let ack: MembershipAck;
+    let departed = false;
+    if (frame.op === 'roster') {
+      // Delivery is owner-authenticated as well as owner-signed, including self removal.
+      if (remoteId !== expected.owner_id) throw new Error('Only the owner may push membership');
+      const accepted = receiveMembershipRoster(db, expected, frame.roster);
+      revokeConnections(); departed = !accepted.member;
+      ack = { version: 1, network_id: expected.network_id, roster_version: accepted.version, member: accepted.member };
+    } else {
+      if (!isOwner || identity.machineId !== expected.owner_id) throw new Error('Membership request requires the owner');
+      // No requested victim, no roster returned, even for previously removed identities.
+      if (frame.op === 'leave-self') {
+        const changed = removeMember(db, identity, expected, remoteId);
+        revokeConnections();
+        void broadcastRoster(expected, changed.signed, changed.priorMembers, remoteId).then(unsynchronized => {
+          appendLog(dataDir, 'membership_propagation', { version: verifyRoster(changed.signed, ownerId, expected.network_id).version, unsynchronized });
+        }).catch(error => recordError('membership_propagation_failed', errorMessage(error)));
+      }
+      const current = joinedNow();
+      ack = { version: 1, network_id: expected.network_id, roster_version: current.roster.version, member: Boolean(findMember(current.roster, remoteId)) };
+    }
+    try {
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), MEMBERSHIP_DEADLINE_MS, 'answering membership');
+      await deadline(stream.send.finish(), MEMBERSHIP_DEADLINE_MS, 'finishing membership answer');
+      await finishConnection(connection);
+    } finally { if (departed) finishDeparture(); }
+  };
+
+  let selfStatusBusy = false;
+  const checkSelfMembership = async (): Promise<void> => {
+    if (isOwner || selfStatusBusy || stopping) return;
+    selfStatusBusy = true;
+    try {
+      const expected = joinedNow().config;
+      const ack = await requestMembership(ownerId, { version: 1, op: 'self-status', network_id: expected.network_id }, expected);
+      if (!ack.member && ack.roster_version >= verifyRoster(signedRosterOf(expected), ownerId, expected.network_id).version) {
+        if (stopping || !control.stillOurs()) return;
+        clearMembership(db, expected, ack.roster_version); revokeConnections(); finishDeparture();
+      }
+    } catch (error) { if (!stopping) appendLog(dataDir, 'membership_status_unconfirmed', { error: errorMessage(error) }); }
+    finally { selfStatusBusy = false; }
+  };
+  // Existing lifecycle timers, not a second service: returning offline peers can
+  // learn their own revocation without gaining access to a current member list.
+  relayTimers.push(setInterval(() => { void checkSelfMembership(); }, STATUS_REFRESH_MS));
+  void checkSelfMembership();
 
   const messages = (joined: Joined): ConversationMessages => {
     const self = findMember(joined.roster, machineId);
@@ -536,6 +668,12 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     try {
       revokeConnections();
       const joined = joinedNow();
+      // NET/2 can also persist a verified owner-signed removal before denying
+      // business access. Honor that removal even while the owner is offline.
+      if (!findMember(joined.roster, machineId)) {
+        clearMembership(db, joined.config, joined.roster.version);
+        revokeConnections(); finishDeparture(); return;
+      }
       const now = Date.now();
       const store = messages(joined);
       try { store.maintainMessages(); } finally { store.close(); }
@@ -565,13 +703,16 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       const alpn = Buffer.from(connection.alpn()).toString();
       if (alpn === JOIN_ALPN && isOwner) await answerJoin(connection, remoteId);
       else if (alpn === NET_ALPN) await answerMember(connection, remoteId);
+      else if (alpn === MEMBERSHIP_ALPN) await answerMembership(connection, remoteId);
       else {
         connection.close(2n, toBytes('unknown_protocol'));
         appendLog(dataDir, 'unknown_protocol_refused', { machine_id: remoteId });
       }
     } catch (err) {
       recordError('connection_failed', errorMessage(err));
-      try { connection?.close(3n, toBytes('error')); } catch { /* already closed */ }
+      const notMember = errorMessage(err) === 'not_a_member';
+      if (notMember) { status.non_member_refused++; publish(); }
+      try { connection?.close(3n, toBytes(notMember ? 'not_a_member' : 'error')); } catch { /* already closed */ }
     }
   };
 

@@ -158,8 +158,8 @@
     },
     {
       "path": "scripts/hooks/_generated/network-types.js",
-      "sha256": "a5efc5645fabbec5dd31ddbeb38faad32d1cb002c55e41d180841990db084206",
-      "bytes": 1810
+      "sha256": "57e525a6ab76827f86f8ce8600e23bff8771ceceef333503983805443ff796d8",
+      "bytes": 1864
     },
     {
       "path": "scripts/hooks/_generated/process-identity.js",

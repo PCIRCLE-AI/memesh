@@ -67,7 +67,9 @@ export async function startBridge(ctx) {
             if (exit.code === EXIT_HOLDER_UNRESPONSIVE)
                 throw unresponsive(ctx);
             if (exit.code !== EXIT_ALREADY_RUNNING) {
-                throw new NetworkError('bridge_failed', describeFailedStart(ctx, exit, mine.child.pid));
+                const error = new NetworkError('bridge_failed', describeFailedStart(ctx, exit, mine.child.pid));
+                error.cause = { bridgePid: mine.child.pid };
+                throw error;
             }
             mine = null;
         }

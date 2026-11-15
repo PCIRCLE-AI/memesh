@@ -60,6 +60,7 @@ var GLUED = [SK_KEY, NAMED_VALUE].map((s) => new RegExp(s, "iy"));
 import path2 from "node:path";
 var JOIN_ALPN = "memesh/join/1";
 var NET_ALPN = "memesh/net/2";
+var MEMBERSHIP_ALPN = "memesh/membership/1";
 var RELAY_OFF = "off";
 var EXIT_ALREADY_RUNNING = 3;
 var EXIT_HOLDER_UNRESPONSIVE = 4;
@@ -1933,396 +1934,16 @@ function writeStatus(dataDir2, status) {
 }
 
 // dist/network/control-socket.js
-import { createHash as createHash3, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
-import fs10 from "node:fs";
+import { createHash as createHash4, randomBytes as randomBytes4, timingSafeEqual } from "node:crypto";
+import fs11 from "node:fs";
 import net2 from "node:net";
 import path11 from "node:path";
-var SOCKET_PATH_MAX_BYTES = 103;
-var PROBE_DEADLINE_MS = 4e3;
-var REQUEST_DEADLINE_MS = 2e3;
-var REQUEST_MAX_BYTES = 512;
-var REPLY_MAX_BYTES = 8 * 1024;
-var STARTUP_LOCK_WAIT_MS = 5e3;
-var STARTUP_LOCK_STALE_MS = 3e4;
-var STARTUP_LOCK_EMPTY_STALE_MS = 1500;
-function controlPath(dataDir2) {
-  if (process.platform === "win32") {
-    return `\\\\.\\pipe\\memesh-bridge-${createHash3("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
-  }
-  return path11.join(networkDir(dataDir2), "bridge.sock");
-}
-function controlPathFits(dataDir2) {
-  return Buffer.byteLength(controlPath(dataDir2)) <= SOCKET_PATH_MAX_BYTES;
-}
-function assertControlPathFits(dataDir2) {
-  if (controlPathFits(dataDir2))
-    return;
-  throw new NetworkError("invalid_option", `The MeMesh data folder's path is too long for this computer's local sockets (${dataDir2}). Use a shorter one with MEMESH_DIR or MEMESH_DB_PATH.`);
-}
-function dataDirIdentity(dataDir2) {
-  try {
-    return fs10.realpathSync.native(dataDir2);
-  } catch {
-    return dataDir2;
-  }
-}
-function tokenPath(dataDir2) {
-  return path11.join(networkDir(dataDir2), "control.token");
-}
-var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
-function ensureControlToken(dataDir2) {
-  const file = tokenPath(dataDir2);
-  const existing = readControlToken(dataDir2);
-  if (existing !== null)
-    return existing;
-  const temporary = `${file}.tmp-${process.pid}`;
-  fs10.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
-  try {
-    fs10.chmodSync(temporary, 384);
-    if (fs10.existsSync(file) && readControlToken(dataDir2) === null)
-      fs10.rmSync(file, { force: true });
-    fs10.linkSync(temporary, file);
-  } catch (err) {
-    if (err.code !== "EEXIST")
-      throw err;
-  } finally {
-    fs10.rmSync(temporary, { force: true });
-  }
-  return readControlToken(dataDir2);
-}
-function readControlToken(dataDir2) {
-  try {
-    const token = fs10.readFileSync(tokenPath(dataDir2), "utf8");
-    return TOKEN_FORMAT.test(token) ? token : null;
-  } catch {
-    return null;
-  }
-}
-function tokensMatch(given, expected) {
-  if (typeof given !== "string")
-    return false;
-  const left = createHash3("sha256").update(given).digest();
-  return timingSafeEqual(left, createHash3("sha256").update(expected).digest());
-}
-function parseReply(line2, dataDir2) {
-  try {
-    const reply2 = JSON.parse(line2);
-    const valid = Number.isSafeInteger(reply2?.pid) && reply2?.pid > 0 && typeof reply2?.ready === "boolean";
-    return valid && reply2?.data_dir === dataDirIdentity(dataDir2) ? reply2 : null;
-  } catch {
-    return null;
-  }
-}
-function request(dataDir2, op, deadlineMs) {
-  return new Promise((resolve) => {
-    const socket = net2.createConnection(controlPath(dataDir2));
-    let text2 = "";
-    const finish = (result) => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(result);
-    };
-    const timer = setTimeout(() => finish(null), deadlineMs);
-    socket.once("connect", () => socket.write(`${JSON.stringify({ op, token: readControlToken(dataDir2) })}
-`));
-    socket.on("data", (chunk) => {
-      text2 += chunk.toString("utf8");
-      if (text2.length > REPLY_MAX_BYTES)
-        finish(null);
-      const newline = text2.indexOf("\n");
-      if (newline === -1)
-        return;
-      finish(parseReply(text2.slice(0, newline), dataDir2));
-    });
-    socket.once("error", (err) => {
-      finish(["ECONNREFUSED", "ENOENT", "ENOTDIR"].includes(String(err.code)) ? "not-running" : null);
-    });
-    socket.once("close", () => finish(null));
-  });
-}
-async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
-  if (!controlPathFits(dataDir2))
-    return { kind: "not-running" };
-  const reply2 = await request(dataDir2, "hello", deadlineMs);
-  if (reply2 === "not-running")
-    return { kind: "not-running" };
-  return reply2 === null ? { kind: "unresponsive" } : { kind: "running", pid: reply2.pid, ready: reply2.ready };
-}
-function identityOf(file) {
-  try {
-    const { dev, ino } = fs10.lstatSync(file);
-    return { dev, ino };
-  } catch {
-    return null;
-  }
-}
-var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
-function takeOverStaleLock(lock, judged) {
-  const aside = `${lock}.stale-${process.pid}`;
-  try {
-    fs10.renameSync(lock, aside);
-  } catch (err) {
-    if (err.code === "ENOENT")
-      return;
-    throw err;
-  }
-  try {
-    if (sameFile(identityOf(aside), judged))
-      return;
-    fs10.linkSync(aside, lock);
-  } catch (err) {
-    if (err.code !== "EEXIST")
-      throw err;
-  } finally {
-    fs10.rmSync(aside, { force: true });
-  }
-}
-async function withStartupLock(dataDir2, use) {
-  const lock = path11.join(networkDir(dataDir2), "bridge.sock.startup.lock");
-  const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
-  let mine;
-  for (; ; ) {
-    try {
-      const fd = fs10.openSync(lock, "wx", 384);
-      const { dev, ino } = fs10.fstatSync(fd);
-      mine = { dev, ino };
-      fs10.writeSync(fd, `${process.pid}
-`);
-      fs10.closeSync(fd);
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST")
-        throw err;
-      const judged = identityOf(lock);
-      if (judged !== null && startupLockIsStale(lock)) {
-        takeOverStaleLock(lock, judged);
-        continue;
-      }
-      if (Date.now() >= giveUpAt)
-        throw new Error("Another network bridge is starting and did not finish.", { cause: err });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
-  try {
-    return await use(() => sameFile(identityOf(lock), mine));
-  } finally {
-    if (sameFile(identityOf(lock), mine))
-      fs10.rmSync(lock, { force: true });
-  }
-}
-function startupLockIsStale(lock) {
-  try {
-    const age = Date.now() - fs10.statSync(lock).mtimeMs;
-    if (age >= STARTUP_LOCK_STALE_MS)
-      return true;
-    const raw = fs10.readFileSync(lock, "utf8").trim();
-    if (!/^[1-9][0-9]*$/.test(raw))
-      return age >= STARTUP_LOCK_EMPTY_STALE_MS;
-    process.kill(Number(raw), 0);
-    return false;
-  } catch (err) {
-    return err.code === "ESRCH";
-  }
-}
-function listen(server, target) {
-  return new Promise((resolve, reject) => {
-    const onError = (err) => {
-      server.off("listening", onListening);
-      if (err.code === "EADDRINUSE")
-        resolve("in-use");
-      else
-        reject(err);
-    };
-    const onListening = () => {
-      server.off("error", onError);
-      resolve("listening");
-    };
-    server.once("error", onError);
-    server.once("listening", onListening);
-    server.listen(target);
-  });
-}
-function removeStaleSocket(target, judged) {
-  if (process.platform === "win32")
-    return;
-  if (!sameFile(identityOf(target), judged))
-    return;
-  if (!fs10.lstatSync(target).isSocket()) {
-    throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
-  }
-  fs10.unlinkSync(target);
-}
-function parseOp(line2, token) {
-  try {
-    const request2 = JSON.parse(line2);
-    if (!tokensMatch(request2.token, token))
-      return null;
-    return request2.op === "hello" || request2.op === "stop" ? request2.op : null;
-  } catch {
-    return null;
-  }
-}
-function serveConnection(socket, identity, token, handlers) {
-  let text2 = "";
-  socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
-  socket.on("error", (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
-  socket.on("data", (chunk) => {
-    text2 += chunk.toString("utf8");
-    if (text2.length > REQUEST_MAX_BYTES) {
-      socket.destroy();
-      return;
-    }
-    const newline = text2.indexOf("\n");
-    if (newline === -1)
-      return;
-    const op = parseOp(text2.slice(0, newline), token);
-    if (op === null) {
-      socket.destroy();
-      return;
-    }
-    const reply2 = { data_dir: identity, pid: process.pid, ready: handlers.isReady() };
-    socket.end(`${JSON.stringify(reply2)}
-`, () => {
-      if (op === "stop")
-        handlers.stop();
-    });
-  });
-}
-async function holdControlSocket(dataDir2, handlers) {
-  assertControlPathFits(dataDir2);
-  const identity = dataDirIdentity(dataDir2);
-  const target = controlPath(dataDir2);
-  for (let attempt = 0; attempt < 5; attempt++) {
-    const held = await withStartupLock(dataDir2, async (holdsLock) => {
-      const token = ensureControlToken(dataDir2);
-      const server = net2.createServer((socket) => serveConnection(socket, identity, token, handlers));
-      server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
-      for (let tries = 0; tries < 3; tries++) {
-        if (await listen(server, target) === "listening")
-          return heldBy(server, target);
-        const judged = identityOf(target);
-        const probe = await probeBridge(dataDir2);
-        if (probe.kind === "running")
-          return { kind: "already-running" };
-        if (probe.kind === "unresponsive")
-          return { kind: "holder-unresponsive" };
-        if (!holdsLock())
-          return "lost-the-lock";
-        removeStaleSocket(target, judged);
-      }
-      throw new Error("The network bridge control socket stayed in use.");
-    });
-    if (held !== "lost-the-lock")
-      return held;
-  }
-  throw new Error("Another network bridge kept taking over the start.");
-}
-function heldBy(server, target) {
-  let bound = identityOf(target);
-  const ownership = () => {
-    if (process.platform === "win32")
-      return "ours";
-    let current;
-    try {
-      const { dev, ino } = fs10.lstatSync(target);
-      current = { dev, ino };
-    } catch (err) {
-      return err.code === "ENOENT" ? "lost" : "unreadable";
-    }
-    bound ??= current;
-    return sameFile(current, bound) ? "ours" : "lost";
-  };
-  const stillOurs = () => ownership() !== "lost";
-  return {
-    kind: "held",
-    ownership,
-    stillOurs,
-    close: () => {
-      if (stillOurs())
-        server.close();
-      else
-        server.unref();
-    }
-  };
-}
-
-// dist/network/relay-monitor.js
-var RELAY_PING_INTERVAL_MS = 15e3;
-var RELAY_PING_TIMEOUT_MS = 5e3;
-function relayStateOf(signals) {
-  if (signals.reachable === false)
-    return "unreachable";
-  if (signals.online)
-    return "online";
-  return signals.deadlinePassed ? "unreachable" : "connecting";
-}
-function relayComplaint(relayUrl) {
-  return `The relay ${relayUrl} is not answering.`;
-}
-function applyRelayState(status, signals, relayUrl) {
-  const next = relayStateOf(signals);
-  if (next === status.relay_state)
-    return false;
-  status.relay_state = next;
-  if (next === "online" && status.last_error === relayComplaint(relayUrl)) {
-    status.last_error = null;
-    status.last_error_at = null;
-  }
-  return true;
-}
-async function pingRelay(relayUrl, fetchImpl = fetch) {
-  try {
-    const response = await fetchImpl(new URL("ping", relayUrl), { redirect: "manual", signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS) });
-    return response.status >= 200 && response.status < 300;
-  } catch {
-    return false;
-  }
-}
-
-// dist/network/test-frame-log.js
-import fs11 from "node:fs";
-import path12 from "node:path";
-function appendTestFrameLog(file, bytes) {
-  const folder = path12.dirname(path12.resolve(file));
-  let folderStat;
-  try {
-    folderStat = fs11.lstatSync(folder);
-  } catch {
-    return `the frame log folder ${folder} does not exist`;
-  }
-  if (folderStat.isSymbolicLink() || !folderStat.isDirectory())
-    return `the frame log folder ${folder} is not a plain folder`;
-  if ((folderStat.mode & 63) !== 0)
-    return `the frame log folder ${folder} is readable by others`;
-  if (typeof process.getuid === "function" && folderStat.uid !== process.getuid())
-    return `the frame log folder ${folder} belongs to another user`;
-  let fd;
-  try {
-    fd = fs11.openSync(file, fs11.constants.O_WRONLY | fs11.constants.O_APPEND | fs11.constants.O_CREAT | fs11.constants.O_NOFOLLOW, 384);
-  } catch (err) {
-    return `the frame log ${file} could not be opened safely (${err.code ?? "error"})`;
-  }
-  try {
-    const stat2 = fs11.fstatSync(fd);
-    if (!stat2.isFile())
-      return `the frame log ${file} is not a regular file`;
-    fs11.fchmodSync(fd, 384);
-    fs11.writeSync(fd, `${bytes.toString("utf8")}
-`);
-    return null;
-  } finally {
-    fs11.closeSync(fd);
-  }
-}
-
-// dist/network/courier.js
-import { createHash as createHash6 } from "node:crypto";
 
 // dist/core/agent-messaging.js
-import { createHash as createHash4, randomBytes as randomBytes4, randomUUID as randomUUID2 } from "node:crypto";
+import { createHash as createHash3, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
 
 // dist/core/agent-message-storage.js
-import fs12 from "node:fs";
+import fs10 from "node:fs";
 
 // dist/core/agent-message-ttl.js
 var AGENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1e3;
@@ -2382,9 +2003,6 @@ var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.c
 // dist/core/agent-messaging.js
 var AGENT_MESSAGE_JSON_MAX_BYTES = 64 * 1024;
 var AGENT_NATIVE_MESSAGE_MAX_BYTES = 16 * 1024;
-
-// dist/network/address.js
-import { createHash as createHash5 } from "node:crypto";
 
 // dist/network/frames.js
 function parseConversationFrame(bytes) {
@@ -2459,9 +2077,9 @@ var FrameError = class extends Error {
 };
 var isText = (value, max = FIELD_MAX) => typeof value === "string" && value.length > 0 && value.length <= max;
 var isOptionalText = (value) => value === null || isText(value);
-function exactKeys(value, keys) {
+function exactKeys(value, keys2) {
   const own = Object.keys(value);
-  return own.length === keys.length && keys.every((key) => Object.hasOwn(value, key));
+  return own.length === keys2.length && keys2.every((key) => Object.hasOwn(value, key));
 }
 function parseAck(bytes) {
   try {
@@ -2473,6 +2091,509 @@ function parseAck(bytes) {
   }
   return { result: "retry", code: "ack_invalid" };
 }
+
+// dist/network/membership.js
+var MEMBERSHIP_MAX_BYTES = ROSTER_EXCHANGE_MAX_BYTES + 256;
+var MEMBERSHIP_ACK_MAX_BYTES = 512;
+var MEMBERSHIP_DEADLINE_MS = 5e3;
+var NETWORK = /^[0-9a-f]{32}$/;
+var MACHINE = /^[0-9a-f]{64}$/;
+function keys(value, expected) {
+  return Object.keys(value).sort().join(",") === expected.sort().join(",");
+}
+function invalid2() {
+  throw new NetworkError("bad_request", "Invalid membership request.");
+}
+function parseMembershipFrame(bytes) {
+  if (bytes.length > MEMBERSHIP_MAX_BYTES)
+    invalid2();
+  const raw = JSON.parse(bytes.toString("utf8"));
+  if (!raw || typeof raw !== "object" || Array.isArray(raw) || raw.version !== 1 || typeof raw.network_id !== "string" || !NETWORK.test(raw.network_id))
+    invalid2();
+  if ((raw.op === "leave-self" || raw.op === "self-status") && keys(raw, ["version", "op", "network_id"]))
+    return raw;
+  if (raw.op === "roster" && keys(raw, ["version", "op", "network_id", "roster"])) {
+    return { ...raw, roster: parseRosterExchange(Buffer.from(JSON.stringify(raw.roster))) };
+  }
+  invalid2();
+}
+function parseMembershipAck(bytes, networkId) {
+  if (bytes.length > MEMBERSHIP_ACK_MAX_BYTES)
+    invalid2();
+  const raw = JSON.parse(bytes.toString("utf8"));
+  if (!raw || typeof raw !== "object" || !keys(raw, ["version", "network_id", "roster_version", "member"]) || raw.version !== 1 || raw.network_id !== networkId || !Number.isSafeInteger(raw.roster_version) || raw.roster_version < 1 || typeof raw.member !== "boolean")
+    invalid2();
+  return raw;
+}
+function parseMembershipAction(raw) {
+  if (!raw || typeof raw !== "object" || Array.isArray(raw))
+    invalid2();
+  const value = raw;
+  if (typeof value.network_id !== "string" || typeof value.machine_id !== "string" || !NETWORK.test(value.network_id) || !MACHINE.test(value.machine_id))
+    invalid2();
+  if (value.action === "leave" && keys(value, ["action", "network_id", "machine_id"]))
+    return value;
+  if (value.action === "remove" && keys(value, ["action", "network_id", "machine_id", "target"]) && typeof value.target === "string" && value.target.length > 0 && value.target.length <= 64)
+    return value;
+  invalid2();
+}
+function membershipConfig(db, expected) {
+  const current = readConfig(db);
+  if (!current || current.network_id !== expected.network_id || current.machine_id !== expected.machine_id || current.owner_id !== expected.owner_id) {
+    throw new NetworkError("wrong_network", "Network changed during the membership operation.");
+  }
+  verifyRoster(signedRosterOf(current), current.owner_id, current.network_id);
+  return current;
+}
+function removeMember(db, identity, expected, target) {
+  return db.transaction(() => {
+    const current = membershipConfig(db, expected);
+    if (current.owner_id !== identity.machineId || current.machine_id !== identity.machineId)
+      throw new NetworkError("not_owner", "Only the network owner can remove a member.");
+    const held = verifyRoster(signedRosterOf(current), current.owner_id, current.network_id);
+    const member = held.members.find((m) => m.machine_id === target || m.name.toLowerCase() === target.toLowerCase());
+    const removed = member?.machine_id ?? (MACHINE.test(target) ? target : invalid2());
+    if (removed === current.owner_id)
+      throw new NetworkError("invalid_option", "Owner departure is not supported; no membership was changed.");
+    const signed = member ? signRoster(identity, { ...held, version: held.version + 1, members: held.members.filter((m) => m.machine_id !== removed) }) : signedRosterOf(current);
+    if (member)
+      saveRoster(db, signed);
+    return { signed, removed, alreadyRemoved: !member, priorMembers: held.members.map((m) => m.machine_id) };
+  }).immediate();
+}
+function clearMembership(db, expected, confirmedVersion) {
+  db.transaction(() => {
+    const current = membershipConfig(db, expected);
+    if (confirmedVersion !== void 0 && verifyRoster(signedRosterOf(current), current.owner_id, current.network_id).version > confirmedVersion) {
+      throw new Error("Membership changed after the owner confirmation");
+    }
+    db.exec("DELETE FROM agent_network_invites; DELETE FROM agent_network_peers; DELETE FROM agent_network_config;");
+  }).immediate();
+}
+function receiveMembershipRoster(db, expected, incoming) {
+  return db.transaction(() => {
+    const current = membershipConfig(db, expected);
+    const roster = acceptRoster(signedRosterOf(current), incoming, current.owner_id, current.network_id);
+    const member = Boolean(findMember(roster, current.machine_id));
+    if (member)
+      saveRoster(db, incoming);
+    else
+      clearMembership(db, current);
+    return { version: roster.version, member };
+  }).immediate();
+}
+
+// dist/network/control-socket.js
+var SOCKET_PATH_MAX_BYTES = 103;
+var PROBE_DEADLINE_MS = 4e3;
+var REQUEST_DEADLINE_MS = 2e3;
+var REQUEST_MAX_BYTES = 512;
+var REPLY_MAX_BYTES = 8 * 1024;
+var STARTUP_LOCK_WAIT_MS = 5e3;
+var STARTUP_LOCK_STALE_MS = 3e4;
+var STARTUP_LOCK_EMPTY_STALE_MS = 1500;
+function controlPath(dataDir2) {
+  if (process.platform === "win32") {
+    return `\\\\.\\pipe\\memesh-bridge-${createHash4("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
+  }
+  return path11.join(networkDir(dataDir2), "bridge.sock");
+}
+function controlPathFits(dataDir2) {
+  return Buffer.byteLength(controlPath(dataDir2)) <= SOCKET_PATH_MAX_BYTES;
+}
+function assertControlPathFits(dataDir2) {
+  if (controlPathFits(dataDir2))
+    return;
+  throw new NetworkError("invalid_option", `The MeMesh data folder's path is too long for this computer's local sockets (${dataDir2}). Use a shorter one with MEMESH_DIR or MEMESH_DB_PATH.`);
+}
+function dataDirIdentity(dataDir2) {
+  try {
+    return fs11.realpathSync.native(dataDir2);
+  } catch {
+    return dataDir2;
+  }
+}
+function tokenPath(dataDir2) {
+  return path11.join(networkDir(dataDir2), "control.token");
+}
+var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
+function ensureControlToken(dataDir2) {
+  const file = tokenPath(dataDir2);
+  const existing = readControlToken(dataDir2);
+  if (existing !== null)
+    return existing;
+  const temporary = `${file}.tmp-${process.pid}`;
+  fs11.writeFileSync(temporary, randomBytes4(32).toString("hex"), { mode: 384 });
+  try {
+    fs11.chmodSync(temporary, 384);
+    if (fs11.existsSync(file) && readControlToken(dataDir2) === null)
+      fs11.rmSync(file, { force: true });
+    fs11.linkSync(temporary, file);
+  } catch (err) {
+    if (err.code !== "EEXIST")
+      throw err;
+  } finally {
+    fs11.rmSync(temporary, { force: true });
+  }
+  return readControlToken(dataDir2);
+}
+function readControlToken(dataDir2) {
+  try {
+    const token = fs11.readFileSync(tokenPath(dataDir2), "utf8");
+    return TOKEN_FORMAT.test(token) ? token : null;
+  } catch {
+    return null;
+  }
+}
+function tokensMatch(given, expected) {
+  if (typeof given !== "string")
+    return false;
+  const left = createHash4("sha256").update(given).digest();
+  return timingSafeEqual(left, createHash4("sha256").update(expected).digest());
+}
+function parseReply(line2, dataDir2) {
+  try {
+    const reply2 = JSON.parse(line2);
+    const valid = Number.isSafeInteger(reply2?.pid) && reply2?.pid > 0 && typeof reply2?.ready === "boolean";
+    return valid && reply2?.data_dir === dataDirIdentity(dataDir2) ? reply2 : null;
+  } catch {
+    return null;
+  }
+}
+function request(dataDir2, op, deadlineMs, expectedPid) {
+  return new Promise((resolve) => {
+    const socket = net2.createConnection(controlPath(dataDir2));
+    let text2 = "";
+    const finish = (result) => {
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(result);
+    };
+    const timer = setTimeout(() => finish(null), deadlineMs);
+    socket.once("connect", () => socket.write(`${JSON.stringify({ op: typeof op === "string" ? op : "membership", ...typeof op === "string" ? {} : { action: op }, ...expectedPid === void 0 ? {} : { expected_pid: expectedPid }, token: readControlToken(dataDir2) })}
+`));
+    socket.on("data", (chunk) => {
+      text2 += chunk.toString("utf8");
+      if (text2.length > (typeof op === "string" ? REPLY_MAX_BYTES : 32 * 1024)) {
+        finish(null);
+        return;
+      }
+      const newline = text2.indexOf("\n");
+      if (newline === -1)
+        return;
+      finish(parseReply(text2.slice(0, newline), dataDir2));
+    });
+    socket.once("error", (err) => {
+      finish(["ECONNREFUSED", "ENOENT", "ENOTDIR"].includes(String(err.code)) ? "not-running" : null);
+    });
+    socket.once("close", () => finish(null));
+  });
+}
+async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
+  if (!controlPathFits(dataDir2))
+    return { kind: "not-running" };
+  const reply2 = await request(dataDir2, "hello", deadlineMs);
+  if (reply2 === "not-running")
+    return { kind: "not-running" };
+  return reply2 === null ? { kind: "unresponsive" } : { kind: "running", pid: reply2.pid, ready: reply2.ready };
+}
+function identityOf(file) {
+  try {
+    const { dev, ino } = fs11.lstatSync(file);
+    return { dev, ino };
+  } catch {
+    return null;
+  }
+}
+var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+function takeOverStaleLock(lock, judged) {
+  const aside = `${lock}.stale-${process.pid}`;
+  try {
+    fs11.renameSync(lock, aside);
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return;
+    throw err;
+  }
+  try {
+    if (sameFile(identityOf(aside), judged))
+      return;
+    fs11.linkSync(aside, lock);
+  } catch (err) {
+    if (err.code !== "EEXIST")
+      throw err;
+  } finally {
+    fs11.rmSync(aside, { force: true });
+  }
+}
+async function withStartupLock(dataDir2, use) {
+  const lock = path11.join(networkDir(dataDir2), "bridge.sock.startup.lock");
+  const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+  let mine;
+  for (; ; ) {
+    try {
+      const fd = fs11.openSync(lock, "wx", 384);
+      const { dev, ino } = fs11.fstatSync(fd);
+      mine = { dev, ino };
+      fs11.writeSync(fd, `${process.pid}
+`);
+      fs11.closeSync(fd);
+      break;
+    } catch (err) {
+      if (err.code !== "EEXIST")
+        throw err;
+      const judged = identityOf(lock);
+      if (judged !== null && startupLockIsStale(lock)) {
+        takeOverStaleLock(lock, judged);
+        continue;
+      }
+      if (Date.now() >= giveUpAt)
+        throw new Error("Another network bridge is starting and did not finish.", { cause: err });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  }
+  try {
+    return await use(() => sameFile(identityOf(lock), mine));
+  } finally {
+    if (sameFile(identityOf(lock), mine))
+      fs11.rmSync(lock, { force: true });
+  }
+}
+function startupLockIsStale(lock) {
+  try {
+    const age = Date.now() - fs11.statSync(lock).mtimeMs;
+    if (age >= STARTUP_LOCK_STALE_MS)
+      return true;
+    const raw = fs11.readFileSync(lock, "utf8").trim();
+    if (!/^[1-9][0-9]*$/.test(raw))
+      return age >= STARTUP_LOCK_EMPTY_STALE_MS;
+    process.kill(Number(raw), 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
+  }
+}
+function listen(server, target) {
+  return new Promise((resolve, reject) => {
+    const onError = (err) => {
+      server.off("listening", onListening);
+      if (err.code === "EADDRINUSE")
+        resolve("in-use");
+      else
+        reject(err);
+    };
+    const onListening = () => {
+      server.off("error", onError);
+      resolve("listening");
+    };
+    server.once("error", onError);
+    server.once("listening", onListening);
+    server.listen(target);
+  });
+}
+function removeStaleSocket(target, judged) {
+  if (process.platform === "win32")
+    return;
+  if (!sameFile(identityOf(target), judged))
+    return;
+  if (!fs11.lstatSync(target).isSocket()) {
+    throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
+  }
+  fs11.unlinkSync(target);
+}
+function parseOp(line2, token) {
+  try {
+    const request2 = JSON.parse(line2);
+    if (!tokensMatch(request2.token, token))
+      return null;
+    if (request2.expected_pid !== void 0 && request2.expected_pid !== process.pid)
+      return null;
+    if (request2.op === "membership" && Object.keys(request2).sort().join(",") === "action,op,token")
+      return parseMembershipAction(request2.action);
+    return request2.op === "hello" || request2.op === "stop" ? request2.op : null;
+  } catch {
+    return null;
+  }
+}
+function serveConnection(socket, identity, token, handlers) {
+  let text2 = "";
+  let handled = false;
+  socket.setTimeout(REQUEST_DEADLINE_MS, () => socket.destroy());
+  socket.on("error", (err) => handlers.onProblem(`Control connection failed: ${err.message}`));
+  socket.on("data", (chunk) => {
+    if (handled)
+      return;
+    text2 += chunk.toString("utf8");
+    if (text2.length > REQUEST_MAX_BYTES) {
+      socket.destroy();
+      return;
+    }
+    const newline = text2.indexOf("\n");
+    if (newline === -1)
+      return;
+    handled = true;
+    const op = parseOp(text2.slice(0, newline), token);
+    if (op === null) {
+      socket.destroy();
+      return;
+    }
+    const reply2 = { data_dir: identity, pid: process.pid, ready: handlers.isReady() };
+    if (typeof op === "object") {
+      socket.setTimeout(25e3);
+      if (!handlers.membership || !handlers.isReady()) {
+        socket.destroy();
+        return;
+      }
+      void handlers.membership(op).then(({ result, afterReply }) => {
+        socket.end(`${JSON.stringify({ ...reply2, membership: result })}
+`, () => afterReply?.());
+        if (socket.destroyed)
+          afterReply?.();
+      }).catch((error) => {
+        socket.end(`${JSON.stringify({ ...reply2, error: error instanceof Error ? error.message : "Membership failed" })}
+`);
+      });
+      return;
+    }
+    socket.end(`${JSON.stringify(reply2)}
+`, () => {
+      if (op === "stop")
+        handlers.stop();
+    });
+  });
+}
+async function holdControlSocket(dataDir2, handlers) {
+  assertControlPathFits(dataDir2);
+  const identity = dataDirIdentity(dataDir2);
+  const target = controlPath(dataDir2);
+  for (let attempt = 0; attempt < 5; attempt++) {
+    const held = await withStartupLock(dataDir2, async (holdsLock) => {
+      const token = ensureControlToken(dataDir2);
+      const server = net2.createServer((socket) => serveConnection(socket, identity, token, handlers));
+      server.on("error", (err) => handlers.onProblem(`Control socket failed: ${err.message}`));
+      for (let tries = 0; tries < 3; tries++) {
+        if (await listen(server, target) === "listening")
+          return heldBy(server, target);
+        const judged = identityOf(target);
+        const probe = await probeBridge(dataDir2);
+        if (probe.kind === "running")
+          return { kind: "already-running" };
+        if (probe.kind === "unresponsive")
+          return { kind: "holder-unresponsive" };
+        if (!holdsLock())
+          return "lost-the-lock";
+        removeStaleSocket(target, judged);
+      }
+      throw new Error("The network bridge control socket stayed in use.");
+    });
+    if (held !== "lost-the-lock")
+      return held;
+  }
+  throw new Error("Another network bridge kept taking over the start.");
+}
+function heldBy(server, target) {
+  let bound = identityOf(target);
+  const ownership = () => {
+    if (process.platform === "win32")
+      return "ours";
+    let current;
+    try {
+      const { dev, ino } = fs11.lstatSync(target);
+      current = { dev, ino };
+    } catch (err) {
+      return err.code === "ENOENT" ? "lost" : "unreadable";
+    }
+    bound ??= current;
+    return sameFile(current, bound) ? "ours" : "lost";
+  };
+  const stillOurs = () => ownership() !== "lost";
+  return {
+    kind: "held",
+    ownership,
+    stillOurs,
+    close: () => {
+      if (stillOurs())
+        server.close();
+      else
+        server.unref();
+    }
+  };
+}
+
+// dist/network/relay-monitor.js
+var RELAY_PING_INTERVAL_MS = 15e3;
+var RELAY_PING_TIMEOUT_MS = 5e3;
+function relayStateOf(signals) {
+  if (signals.reachable === false)
+    return "unreachable";
+  if (signals.online)
+    return "online";
+  return signals.deadlinePassed ? "unreachable" : "connecting";
+}
+function relayComplaint(relayUrl) {
+  return `The relay ${relayUrl} is not answering.`;
+}
+function applyRelayState(status, signals, relayUrl) {
+  const next = relayStateOf(signals);
+  if (next === status.relay_state)
+    return false;
+  status.relay_state = next;
+  if (next === "online" && status.last_error === relayComplaint(relayUrl)) {
+    status.last_error = null;
+    status.last_error_at = null;
+  }
+  return true;
+}
+async function pingRelay(relayUrl, fetchImpl = fetch) {
+  try {
+    const response = await fetchImpl(new URL("ping", relayUrl), { redirect: "manual", signal: AbortSignal.timeout(RELAY_PING_TIMEOUT_MS) });
+    return response.status >= 200 && response.status < 300;
+  } catch {
+    return false;
+  }
+}
+
+// dist/network/test-frame-log.js
+import fs12 from "node:fs";
+import path12 from "node:path";
+function appendTestFrameLog(file, bytes) {
+  const folder = path12.dirname(path12.resolve(file));
+  let folderStat;
+  try {
+    folderStat = fs12.lstatSync(folder);
+  } catch {
+    return `the frame log folder ${folder} does not exist`;
+  }
+  if (folderStat.isSymbolicLink() || !folderStat.isDirectory())
+    return `the frame log folder ${folder} is not a plain folder`;
+  if ((folderStat.mode & 63) !== 0)
+    return `the frame log folder ${folder} is readable by others`;
+  if (typeof process.getuid === "function" && folderStat.uid !== process.getuid())
+    return `the frame log folder ${folder} belongs to another user`;
+  let fd;
+  try {
+    fd = fs12.openSync(file, fs12.constants.O_WRONLY | fs12.constants.O_APPEND | fs12.constants.O_CREAT | fs12.constants.O_NOFOLLOW, 384);
+  } catch (err) {
+    return `the frame log ${file} could not be opened safely (${err.code ?? "error"})`;
+  }
+  try {
+    const stat2 = fs12.fstatSync(fd);
+    if (!stat2.isFile())
+      return `the frame log ${file} is not a regular file`;
+    fs12.fchmodSync(fd, 384);
+    fs12.writeSync(fd, `${bytes.toString("utf8")}
+`);
+    return null;
+  } finally {
+    fs12.closeSync(fd);
+  }
+}
+
+// dist/network/courier.js
+import { createHash as createHash6 } from "node:crypto";
+
+// dist/network/address.js
+import { createHash as createHash5 } from "node:crypto";
 
 // dist/network/outbound.js
 var PRESENCE_TTL_MS = 3 * 6e4;
@@ -2543,6 +2664,7 @@ async function serve(dataDir2, dbPath) {
   const control = await holdControlSocket(dataDir2, {
     isReady: () => ready,
     stop: () => requestStop(),
+    membership: (action) => membershipAction(action),
     onProblem: (message) => appendLog(dataDir2, "control_problem", { error: message })
   });
   if (control.kind === "already-running") {
@@ -2603,7 +2725,7 @@ async function serve(dataDir2, dbPath) {
     db.close();
     return fail("exit_not_joined", "This machine has not joined a network.");
   }
-  const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl } = config;
+  const { machine_id: machineId, owner_id: ownerId, relay_url: relayUrl, network_id: networkId } = config;
   const isOwner = ownerId === machineId;
   let identity;
   try {
@@ -2625,7 +2747,7 @@ async function serve(dataDir2, dbPath) {
   }
   let endpoint;
   try {
-    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN] : [NET_ALPN]);
+    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN]);
   } catch (err) {
     db.close();
     return fail("exit_bind", `Cannot open a network connection: ${errorMessage(err)}`);
@@ -2791,6 +2913,8 @@ async function serve(dataDir2, dbPath) {
     const current = readConfig(db);
     if (!current)
       throw new Error("The network settings are gone from the database.");
+    if (current.network_id !== networkId || current.owner_id !== ownerId || current.machine_id !== machineId)
+      throw new Error("Bridge network identity changed");
     return { config: current, roster: verifyRoster(signedRosterOf(current), ownerId, current.network_id) };
   };
   const memberConnections = /* @__PURE__ */ new Map();
@@ -2808,6 +2932,171 @@ async function serve(dataDir2, dbPath) {
       }
     }
   };
+  const requestMembership = async (target, frame, expected) => {
+    const until = Date.now() + MEMBERSHIP_DEADLINE_MS;
+    const remaining = () => Math.max(1, until - Date.now());
+    parseMembershipFrame(Buffer.from(JSON.stringify(frame)));
+    membershipConfig(db, expected);
+    const route = peerRoute(db, target);
+    const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl), route?.addrs ?? []);
+    let expired = false;
+    let connection;
+    const pending = endpoint.connect(address, toBytes(MEMBERSHIP_ALPN));
+    void pending.then((c) => {
+      if (expired)
+        c.close(1n, toBytes("management_timeout"));
+    }, () => void 0);
+    try {
+      connection = await deadline(pending, remaining(), "connecting for membership");
+      if (connection.remoteId().toString() !== target)
+        throw new Error("Wrong membership peer");
+      membershipConfig(db, expected);
+      const stream = await deadline(connection.openBi(), remaining(), "opening membership request");
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), remaining(), "sending membership request");
+      await deadline(stream.send.finish(), remaining(), "finishing membership request");
+      return parseMembershipAck(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_ACK_MAX_BYTES), remaining(), "receiving membership confirmation")), expected.network_id);
+    } finally {
+      expired = true;
+      connection?.close(0n, toBytes("membership_done"));
+    }
+  };
+  const finishDeparture = () => {
+    if (!stopping && control.stillOurs() && readConfig(db) === null) {
+      status.membership_departure = { network_id: networkId, owner_id: ownerId, machine_id: machineId };
+      void stop("membership revoked", 0);
+    }
+  };
+  const broadcastRoster = async (expected, signed, targets, skip) => {
+    const todo = [...new Set(targets)].filter((id) => id !== machineId && id !== skip);
+    const unsynchronized = [];
+    const until = Date.now() + 15e3;
+    let next = 0;
+    await Promise.all(Array.from({ length: Math.min(8, todo.length) }, async () => {
+      for (; ; ) {
+        const target = todo[next++];
+        if (!target)
+          return;
+        if (Date.now() >= until || stopping) {
+          unsynchronized.push(target);
+          continue;
+        }
+        try {
+          const ack = await requestMembership(target, { version: 1, op: "roster", network_id: expected.network_id, roster: signed }, expected);
+          if (ack.roster_version < verifyRoster(signed, expected.owner_id, expected.network_id).version)
+            throw new Error("Roster not acknowledged");
+        } catch {
+          unsynchronized.push(target);
+        }
+      }
+    }));
+    return unsynchronized.sort();
+  };
+  let membershipBusy = false;
+  const membershipAction = async (action) => {
+    if (membershipBusy || stopping || !control.stillOurs())
+      throw new Error("Membership action unavailable");
+    membershipBusy = true;
+    try {
+      const expected = joinedNow().config;
+      if (action.network_id !== expected.network_id || action.machine_id !== expected.machine_id)
+        throw new Error("Membership control binding changed");
+      if (action.action === "remove") {
+        const changed = removeMember(db, identity, expected, action.target);
+        revokeConnections();
+        const unsynchronized = await broadcastRoster(expected, changed.signed, [...changed.priorMembers, changed.removed]);
+        return { result: {
+          action: "remove",
+          network_id: expected.network_id,
+          roster_version: verifyRoster(changed.signed, ownerId, expected.network_id).version,
+          removed: changed.removed,
+          already_removed: changed.alreadyRemoved,
+          unsynchronized
+        } };
+      }
+      if (isOwner)
+        throw new Error("Owner departure is not supported; no membership was changed.");
+      const ack = await requestMembership(ownerId, { version: 1, op: "leave-self", network_id: expected.network_id }, expected);
+      if (ack.member || ack.roster_version < verifyRoster(signedRosterOf(expected), ownerId, expected.network_id).version)
+        throw new Error("Owner has not confirmed departure");
+      if (stopping || !control.stillOurs())
+        throw new Error("Bridge changed before departure confirmation");
+      clearMembership(db, expected, ack.roster_version);
+      revokeConnections();
+      return { result: {
+        action: "leave",
+        network_id: expected.network_id,
+        roster_version: ack.roster_version,
+        removed: machineId,
+        already_removed: false,
+        unsynchronized: null
+      }, afterReply: finishDeparture };
+    } finally {
+      membershipBusy = false;
+    }
+  };
+  const answerMembership = async (connection, remoteId) => {
+    const stream = await deadline(connection.acceptBi(), MEMBERSHIP_DEADLINE_MS, "waiting for membership request");
+    const frame = parseMembershipFrame(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_MAX_BYTES), MEMBERSHIP_DEADLINE_MS, "reading membership request")));
+    const expected = joinedNow().config;
+    if (frame.network_id !== expected.network_id)
+      throw new Error("Wrong membership network");
+    let ack;
+    let departed = false;
+    if (frame.op === "roster") {
+      if (remoteId !== expected.owner_id)
+        throw new Error("Only the owner may push membership");
+      const accepted = receiveMembershipRoster(db, expected, frame.roster);
+      revokeConnections();
+      departed = !accepted.member;
+      ack = { version: 1, network_id: expected.network_id, roster_version: accepted.version, member: accepted.member };
+    } else {
+      if (!isOwner || identity.machineId !== expected.owner_id)
+        throw new Error("Membership request requires the owner");
+      if (frame.op === "leave-self") {
+        const changed = removeMember(db, identity, expected, remoteId);
+        revokeConnections();
+        void broadcastRoster(expected, changed.signed, changed.priorMembers, remoteId).then((unsynchronized) => {
+          appendLog(dataDir2, "membership_propagation", { version: verifyRoster(changed.signed, ownerId, expected.network_id).version, unsynchronized });
+        }).catch((error) => recordError("membership_propagation_failed", errorMessage(error)));
+      }
+      const current = joinedNow();
+      ack = { version: 1, network_id: expected.network_id, roster_version: current.roster.version, member: Boolean(findMember(current.roster, remoteId)) };
+    }
+    try {
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), MEMBERSHIP_DEADLINE_MS, "answering membership");
+      await deadline(stream.send.finish(), MEMBERSHIP_DEADLINE_MS, "finishing membership answer");
+      await finishConnection(connection);
+    } finally {
+      if (departed)
+        finishDeparture();
+    }
+  };
+  let selfStatusBusy = false;
+  const checkSelfMembership = async () => {
+    if (isOwner || selfStatusBusy || stopping)
+      return;
+    selfStatusBusy = true;
+    try {
+      const expected = joinedNow().config;
+      const ack = await requestMembership(ownerId, { version: 1, op: "self-status", network_id: expected.network_id }, expected);
+      if (!ack.member && ack.roster_version >= verifyRoster(signedRosterOf(expected), ownerId, expected.network_id).version) {
+        if (stopping || !control.stillOurs())
+          return;
+        clearMembership(db, expected, ack.roster_version);
+        revokeConnections();
+        finishDeparture();
+      }
+    } catch (error) {
+      if (!stopping)
+        appendLog(dataDir2, "membership_status_unconfirmed", { error: errorMessage(error) });
+    } finally {
+      selfStatusBusy = false;
+    }
+  };
+  relayTimers.push(setInterval(() => {
+    void checkSelfMembership();
+  }, STATUS_REFRESH_MS));
+  void checkSelfMembership();
   const messages = (joined) => {
     const self = findMember(joined.roster, machineId);
     if (!self)
@@ -3030,6 +3319,12 @@ async function serve(dataDir2, dbPath) {
     try {
       revokeConnections();
       const joined = joinedNow();
+      if (!findMember(joined.roster, machineId)) {
+        clearMembership(db, joined.config, joined.roster.version);
+        revokeConnections();
+        finishDeparture();
+        return;
+      }
       const now = Date.now();
       const store = messages(joined);
       try {
@@ -3067,14 +3362,21 @@ async function serve(dataDir2, dbPath) {
         await answerJoin(connection, remoteId);
       else if (alpn === NET_ALPN)
         await answerMember(connection, remoteId);
+      else if (alpn === MEMBERSHIP_ALPN)
+        await answerMembership(connection, remoteId);
       else {
         connection.close(2n, toBytes("unknown_protocol"));
         appendLog(dataDir2, "unknown_protocol_refused", { machine_id: remoteId });
       }
     } catch (err) {
       recordError("connection_failed", errorMessage(err));
+      const notMember = errorMessage(err) === "not_a_member";
+      if (notMember) {
+        status.non_member_refused++;
+        publish();
+      }
       try {
-        connection?.close(3n, toBytes("error"));
+        connection?.close(3n, toBytes(notMember ? "not_a_member" : "error"));
       } catch {
       }
     }

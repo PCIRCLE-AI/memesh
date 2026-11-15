@@ -1,3 +1,4 @@
+import { type MembershipAction, type MembershipResult } from './membership.js';
 export declare function controlPath(dataDir: string): string;
 export declare function controlPathFits(dataDir: string): boolean;
 export declare function assertControlPathFits(dataDir: string): void;
@@ -11,7 +12,8 @@ export type BridgeProbe = {
     kind: 'unresponsive';
 };
 export declare function probeBridge(dataDir: string, deadlineMs?: number): Promise<BridgeProbe>;
-export declare function askBridgeToStop(dataDir: string): Promise<boolean>;
+export declare function askBridgeToStop(dataDir: string, expectedPid?: number): Promise<boolean>;
+export declare function askBridgeMembership(dataDir: string, action: MembershipAction, expectedPid: number): Promise<MembershipResult>;
 interface FileIdentity {
     dev: number;
     ino: number;
@@ -23,6 +25,10 @@ export interface ControlHandlers {
     isReady(): boolean;
     stop(): void;
     onProblem(message: string): void;
+    membership?(action: MembershipAction): Promise<{
+        result: MembershipResult;
+        afterReply?: () => void;
+    }>;
 }
 export type Ownership = 'ours' | 'lost' | 'unreadable';
 export type ControlHold = {

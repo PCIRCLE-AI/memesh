@@ -1,5 +1,6 @@
 import type { JoinChildInput, JoinChildResult } from './bridge-join.js';
 import { type BridgeStatus } from './bridge-state.js';
+import type { MembershipResult } from './membership.js';
 import { type InstallOptions } from './runtime.js';
 import { type NetworkConfig } from './store.js';
 import { type NetworkContext, type Roster, type RosterMember } from './types.js';
@@ -42,6 +43,7 @@ export declare function bridgeUp(ctx: NetworkContext, options?: InstallOptions):
     pid: number;
     started: boolean;
 }>;
+export declare function changeMembership(ctx: NetworkContext, action: 'leave' | 'remove', target?: string): Promise<MembershipResult>;
 export type NetworkStatus = {
     joined: false;
 } | JoinedStatus;
