@@ -700,6 +700,21 @@
       "class": "SOURCE-CONTRACT-PIN",
       "reason": "The workflow is the configuration under test: the test extracts Node pins and checks each against the declared engine floors, including the macOS matrix leg.",
       "triaged": "Node security floor and CI matrix contract"
+    },
+    "C1 tests/core/memory-mutation.test.ts": {
+      "class": "SAFE",
+      "reason": "Empty project tags and absent rows are paired with exact nonempty observation/tag arrays and actual stored/qualified names in the same cases. Examples: legacy append asserts observations old/new after empty tags; cross-project writes assert both independent nonempty rows. Exact toEqual arrays supply anti-vacuity although the size-pin heuristic does not count them.",
+      "triaged": "2026-11-15"
+    },
+    "C5 src/core/operations.ts#f173753a": {
+      "class": "SAFE",
+      "reason": "relations is an optional write field. No relations means there are no supersedes targets to inspect; the requested name is still always in touchedNames. The subsequent plain-tag and ownership checks still run. This does not turn a failed query or missing memory into success.",
+      "triaged": "2026-11-15"
+    },
+    "C5 src/core/operations.ts#34fd436b": {
+      "class": "SAFE",
+      "reason": "tags is an optional write field. An absent list supplies no tag-derived scope; explicit args.project still takes priority and later ownership/unfiled-write checks remain. This defaults input shape only, not database reads or write success.",
+      "triaged": "2026-11-15"
     }
   }
 }
