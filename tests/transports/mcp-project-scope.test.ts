@@ -2,8 +2,9 @@
  * MCP `project` on remember, learn and recall: a string names the project,
  * `false` means a memory that belongs to no project. A default recall searches
  * the bound project (if any), memories with no project and global ones, and
- * says which; a write never reaches a memory another project, or no project,
- * owns.
+ * says which; a same-name project write gets its own qualified name rather
+ * than changing another project's row. An explicit project write cannot
+ * adopt an untagged shared memory.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -21,9 +22,10 @@ const tagsOf = (name: string) => (getDatabase().prepare(
   'SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? ORDER BY t.tag',
 ).all(name) as Array<{ tag: string }>).map(t => t.tag);
 const rowOf = (name: string) => JSON.stringify({
-  row: getDatabase().prepare('SELECT type, status, namespace, metadata FROM entities WHERE name = ?').get(name),
-  observations: getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all(name),
-  tags: tagsOf(name),
+  row: getDatabase().prepare('SELECT * FROM entities WHERE name = ?').get(name),
+  observations: getDatabase().prepare('SELECT o.* FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all(name),
+  tags: getDatabase().prepare('SELECT t.* FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? ORDER BY t.id').all(name),
+  relations: getDatabase().prepare('SELECT * FROM relations WHERE from_entity_id = (SELECT id FROM entities WHERE name = ?) OR to_entity_id = (SELECT id FROM entities WHERE name = ?) ORDER BY id').all(name, name),
 });
 const recall = async (args: Record<string, unknown>, context?: ReturnType<typeof bound>) => {
   const result = await handleTool('recall', args, undefined, undefined, context);
@@ -186,12 +188,32 @@ describe('recall selectors', () => {
 });
 
 describe('ownership: a write never reaches a memory it does not own', () => {
-  it('refuses another project\'s name or supersedes target, by argument or tag, and changes nothing', async () => {
+  it.each([{ project: 'B' }, { tags: ['project:B'] }])('separates a same-name memory with scope %j and preserves the original', async (scope) => {
+    const original = await handleTool('remember', { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['aardvark of A'] }, undefined, undefined, bound('A'));
+    expect(original.isError, original.content[0].text).toBeUndefined();
+    const before = rowOf('a-decision');
+    const created = await handleTool('remember', { name: 'a-decision', type: 'decision', why: 'B makes its own choice; revisit if it changes', observations: ['bandicoot of B'], ...scope }, undefined, undefined, bound('B'));
+    expect(created.isError, created.content[0].text).toBeUndefined();
+    const actualName = JSON.parse(created.content[0].text).name as string;
+    expect(actualName).toBe('a-decision@B');
+    expect(tagsOf(actualName)).toEqual(['project:B']);
+    expect(getDatabase().prepare('SELECT type, status FROM entities WHERE name = ?').get(actualName)).toEqual({ type: 'decision', status: 'active' });
+    expect(getDatabase().prepare('SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = ? ORDER BY o.id').all(actualName)).toEqual([
+      { content: 'bandicoot of B' },
+      { content: 'Why: B makes its own choice; revisit if it changes' },
+    ]);
+    expect(rowOf('a-decision')).toBe(before);
+    // Ordinary forget resolves the requested name to B's row, not A's.
+    const forgotten = await handleTool('forget', { name: 'a-decision' }, undefined, undefined, bound('B'));
+    expect(forgotten.isError, forgotten.content[0].text).toBeUndefined();
+    expect(getDatabase().prepare('SELECT status FROM entities WHERE name = ?').get(actualName)).toEqual({ status: 'archived' });
+    expect(rowOf('a-decision')).toBe(before);
+  });
+
+  it('refuses unscoped overwrite and foreign supersedes targets without a local namesake', async () => {
     await handleTool('remember', { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['aardvark of A'] }, undefined, undefined, bound('A'));
     const before = rowOf('a-decision');
     const attempts: Array<Record<string, unknown>> = [
-      { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], project: 'B' },
-      { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], tags: ['project:B'] },
       { name: 'a-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], project: false },
       { name: 'b-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], project: 'B' },
       { name: 'b-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['bandicoot'], relations: [{ to: 'a-decision', type: 'supersedes' }], tags: ['project:B'] },
@@ -201,6 +223,7 @@ describe('ownership: a write never reaches a memory it does not own', () => {
       const r = await handleTool('remember', args, undefined, undefined, bound('B'));
       expect(r.isError, JSON.stringify(args)).toBe(true);
       expect(r.content[0].text).toMatch(/"a-decision"/);
+      expect(rowOf('a-decision')).toBe(before);
     }
     expect(rowOf('a-decision')).toBe(before);
     expect(getDatabase().prepare("SELECT name FROM entities WHERE name IN ('b-decision','n-decision')").all()).toEqual([]);

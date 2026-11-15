@@ -13,6 +13,7 @@ import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { sendAgentMessage, recordAgentReceipt } from '../../src/core/agent-messaging.js';
 import { unreadDeliveryCount, unreadMessageRefsFor, unreadInboxLines, unreadInboxLinesFor, inboxUnreadableLine } from '../../src/core/agent-message-inbox.js';
+import { remember } from '../../src/core/operations.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 import { registerAgentSession, sendSessionTargetedMessage } from '../helpers/agent-session-fixture.js';
@@ -365,15 +366,17 @@ describe('an inbox that cannot be read is not an empty inbox', () => {
     expect(unreadDeliveryCount(getDatabase(), 'proj-u', 'reader')).toBe(0);
   });
 
-  it('makes briefing say the inbox could not be read, never that nothing is waiting', () => {
+  it('keeps project memory in briefing without consuming an unreadable legacy inbox', () => {
     send();
+    remember({ name: 'inbox-independent-memory', type: 'note', title: 'Keep project memory',
+      observations: ['Keep project memory'], tags: ['project:proj-u'] });
+    const before = assembleBriefing('proj-u', 'reader').text;
+    expect(before).toContain('Keep project memory');
     getDatabase().exec('DROP TABLE agent_message_receipts');
+    expect(() => unreadDeliveryCount(getDatabase(), 'proj-u', 'reader')).toThrow(/agent_message_receipts/);
     const text = assembleBriefing('proj-u', 'reader').text;
-    // Says what failed, not just that something did.
-    expect(text).toContain('could not be read: "no such table: agent_message_receipts"');
-    // The old silence printed nothing at all; the quiet-inbox and typo lines
-    // must not appear either, since neither is true.
-    expect(text).not.toMatch(/No messages waiting|never been seen/);
+    expect(text).toBe(before);
+    expect(text).not.toMatch(/message waiting|messages waiting|could not be read|never been seen/i);
   });
 });
 

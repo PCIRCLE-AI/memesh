@@ -2757,7 +2757,7 @@ async function runConversationPair(journey) {
     delete env.CLAUDE_CODE_SESSION_ID;
     delete env.CODEX_THREAD_ID;
     const args = host === 'codex'
-      ? ['exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-C', workspace,
+      ? ['--no-daemon', 'exec', '--json', '--skip-git-repo-check', '-s', 'read-only', '-C', workspace,
         ...(session ? ['resume', session] : []), prompt]
       : ['-p', '--verbose', '--output-format', 'stream-json', '--restricted', '--setting-sources', '',
         '--strict-mcp-config', '--mcp-config', mcpConfig, '--plugin-dir', repoRoot,

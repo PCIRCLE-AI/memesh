@@ -1,8 +1,8 @@
 /**
  * A database whose file opens fine but whose message-table pages are damaged.
- * Briefing used to say nothing, then said "run memesh doctor" while doctor
- * called the database healthy. Both are checked here against a real damaged
- * file, not a stub.
+ * The direct legacy inbox reader and doctor must expose the damage.
+ * Briefing reads project memory independently of the retired inbox integration.
+ * These checks use a real damaged file, not a stub.
  */
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,6 +11,7 @@ import { remember } from '../../src/core/operations.js';
 import { describe, expect, it } from 'vitest';
 import { runDoctor } from '../../src/core/doctor.js';
 import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
@@ -61,6 +62,11 @@ function runDoctorOnce() {
   });
 }
 
+function seedProjectMemory() {
+  remember({ name: 'corruption-independent-memory', type: 'note', title: 'Keep project memory',
+    observations: ['Keep project memory'], tags: ['project:proj-c'] });
+}
+
 const send = () => sendAgentMessage(getDatabase(), {
   project: 'proj-c', sender: 'sender', recipient: 'reader', idempotency_key: 'c-1',
   content_type: 'application/json', payload: { text: 'hello' },
@@ -68,11 +74,15 @@ const send = () => sendAgentMessage(getDatabase(), {
 
 describe('a database with damaged pages', () => {
 
-  it('is a healthy file to start with: doctor passes and briefing counts the message', async () => {
+  it('is healthy: doctor passes, the direct inbox counts, and briefing retains project memory', async () => {
     send();
     const report = await doctor();
     expect(report.checks.find((c) => c.id === 'database')?.status).toBe('pass');
-    expect(assembleBriefing('proj-c', 'reader').text).toContain('1 message waiting');
+    expect(unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toBe(1);
+    seedProjectMemory();
+    const text = assembleBriefing('proj-c', 'reader').text;
+    expect(text).toContain('Keep project memory');
+    expect(text).not.toMatch(/message waiting|messages waiting/i);
   });
 
   it('makes doctor fail the database row, naming the damage and how to restore', async () => {
@@ -92,21 +102,26 @@ describe('a database with damaged pages', () => {
     expect(report.status).toBe('FAIL');
   });
 
-  it('makes briefing carry SQLite\'s own error, so "run memesh doctor" leads somewhere', () => {
+  it('raises SQLite damage from the direct inbox while briefing retains project memory', () => {
     send();
+    seedProjectMemory();
+    const before = assembleBriefing('proj-c', 'reader').text;
+    expect(before).toContain('Keep project memory');
     damageDeliveriesTable();
-    const text = assembleBriefing('proj-c', 'reader').text;
-    expect(text).toContain('could not be read: "');
-    expect(text).toMatch(/malformed/i);
-    expect(text).toContain('run memesh doctor');
+    expect(() => unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toThrow(/malformed/i);
+    expect(assembleBriefing('proj-c', 'reader').text).toBe(before);
   });
 });
 
 describe('a database whose message table lacks a column this version reads', () => {
-  it('fails the doctor database row too, so the briefing\'s "run memesh doctor" leads somewhere', async () => {
+  it('fails the direct inbox and doctor database row without consuming it in briefing', async () => {
     send();
+    seedProjectMemory();
+    const before = assembleBriefing('proj-c', 'reader').text;
+    expect(before).toContain('Keep project memory');
     getDatabase().exec('ALTER TABLE agent_message_receipts RENAME COLUMN receipt_kind TO renamed_kind');
-    expect(assembleBriefing('proj-c', 'reader').text).toContain('could not be read: "no such column');
+    expect(() => unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toThrow(/no such column/);
+    expect(assembleBriefing('proj-c', 'reader').text).toBe(before);
     const rows = (await doctor()).checks.filter((c) => c.id === 'database');
     expect(rows).toHaveLength(1);
     expect(rows[0].status).toBe('fail');
