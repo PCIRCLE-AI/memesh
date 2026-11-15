@@ -166,6 +166,11 @@
       "reason": "empty tokens yield null match expression and hasSearchableTerms false",
       "triaged": "2026-08-04"
     },
+    "C6 tests/network/test-frame-log.test.ts": {
+      "class": "DATA-EXTRACTION",
+      "reason": "Compiles and executes the actual deliverTo source closure with controlled transport/store results, then asserts emitted message/receipt route records and acceptance calls. The toContain assertion checks synthetic payload absence in executed log output; toMatch assertions check frame-log refusal errors, not source text. Restoring the original source produces three actual AssertionErrors. This is caller behavior evidence, not native relay proof.",
+      "triaged": "2026-11-15"
+    },
     "C6 tests/network/isolation.test.ts": {
       "class": "DATA-EXTRACTION",
       "reason": "Reads source to extract data the assertions run over: table names from CREATE TABLE statements and what each file loads, through the TypeScript parser. The text is the input to a boundary check, not the behaviour under test.",
