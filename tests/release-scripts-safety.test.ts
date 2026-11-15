@@ -468,8 +468,13 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {
         mutate(file, "requirePrivateWritableDirectory(path.dirname(file), 'messages must remain owner-private');", '', 'owner-private directory guard call');
         mutate(file, 'const tooLarge = Buffer.byteLength', 'const tooLarge = false && Buffer.byteLength', 'rendered-byte limit and rejection branch');
-        mutate(file, 'this.insert(message);', '', 'send insert and rejected audit event');
+        mutate(file, 'this.insert(message, {', 'this.removedInsert(message, {', 'send insert and rejected audit event');
         mutate(file, "this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });", '', 'send insert and rejected audit event');
+        const audit = "this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });";
+        mutate(file, audit, `this.db.prepare("UPDATE messages SET body = ?").run('changed');\n${audit}`, 'message/event mutation outside expiry');
+        // Even the exact permitted backfill is forbidden on the normal send path.
+        mutate(file, audit, `this.db.exec("UPDATE messages SET sender_local=1 WHERE kind != 'legacy';");\n${audit}`, 'message/event mutation outside expiry');
+        mutate(file, "columns.some(c => c.name === 'sender_local')", 'false', 'message/event mutation outside expiry');
       }
       mutate('src/transports/mcp/handlers.ts', 'session: requestContext.hostSession', 'session: args.sender', 'MCP awaited session-bound handler');
       mutate('docs/api/API_REFERENCE.md', '| `status` | optional `message_id`', '| `other` | optional `message_id`', 'message action rows');

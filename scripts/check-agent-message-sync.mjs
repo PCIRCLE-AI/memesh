@@ -21,6 +21,27 @@ function tokens(file, list) {
   for (const value of list) if (!source.includes(value)) missing.push(`${file} (missing ${JSON.stringify(value)})`);
 }
 
+// The routing upgrade backfills only newly added internal columns, once. Do not
+// exempt the same SQL in send/read/maintenance, or any change to public contents.
+function withoutRoutingBackfill(source) {
+  const upgrades = [...source.matchAll(/^([ \t]+)(?:private )?upgradeRoutingSchema\(\)(?:: void)? \{[\s\S]*?^\1\}/gm)];
+  if (upgrades.length !== 1) return source;
+  const [upgrade] = upgrades;
+  const method = upgrade[0];
+  if (!method.includes("this.db.prepare('PRAGMA table_info(messages)')")
+    || !/if\s*\(columns\.some\(c\s*=>\s*c\.name\s*===\s*'sender_local'\)\)\s*return;/.test(method)
+    || !method.includes('this.db.transaction(() => {') || !method.includes('}).immediate();')) return source;
+  const statements = [
+    "UPDATE messages SET sender_local=1 WHERE kind != 'legacy';",
+    "UPDATE messages SET recipient_local=1 WHERE kind != 'legacy' AND recipient_host IS NOT NULL;",
+    "UPDATE messages SET sender_local=1 WHERE kind='legacy' AND sender_machine!='unknown' AND sender NOT LIKE 'legacy:%';",
+    "UPDATE messages SET recipient_local=1 WHERE kind='legacy' AND recipient_machine!='unknown' AND recipient NOT LIKE 'legacy:%';",
+  ];
+  if (statements.some(statement => method.split(statement).length !== 2)) return source;
+  const checked = statements.reduce((text, statement) => text.replace(statement, ''), method);
+  return source.replace(method, checked);
+}
+
 // The public MCP and CLI share the conversation schema. Legacy HTTP is separate.
 for (const file of ['src/transports/conversation-messaging.ts', 'dist/transports/conversation-messaging.js']) {
   const source = read(file);
@@ -56,8 +77,8 @@ for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation
   tokens(file, ['MESSAGE_MAX_BYTES = 8_000', "Buffer.byteLength(renderConversationMessage(message), 'utf8') > MESSAGE_MAX_BYTES", "'message_too_large'", "'unknown_recipient'", 'message.body = null', "reason ? 'rejected' : 'queued'", '14 * DAY', 'requirePrivateWritableDirectory', '0o700', '0o600']);
   pattern(file, /requirePrivateWritableDirectory\(path\.dirname\(file\),\s*'messages must remain owner-private'\)/, 'owner-private directory guard call');
   pattern(file, /const tooLarge = Buffer\.byteLength\(renderConversationMessage\(message\), 'utf8'\) > MESSAGE_MAX_BYTES;\s*const reason = tooLarge \? 'message_too_large' : !to \? 'unknown_recipient' : undefined;\s*if \(tooLarge\)\s*message\.body = null;/, 'rendered-byte limit and rejection branch');
-  pattern(file, /this\.insert\(message\);\s*this\.event\(message\.id, reason \? 'rejected' : 'queued', \{ actor: from\.id, \.\.\.\(reason \? \{ reason \} : \{\}\) \}\);\s*if \(reason\)\s*return \{ message, accepted: false, reason,/, 'send insert and rejected audit event');
-  if (/\b(?:UPDATE|DELETE FROM)\s+(?:messages|events)\b/i.test(read(file).replace(/DELETE FROM messages WHERE sent_at <= \?/g, ''))) missing.push(`${file} (message/event mutation outside expiry)`);
+  pattern(file, /this\.insert\(message(?:,\s*\{[^;{}]*\})?\);\s*this\.event\(message\.id, reason \? 'rejected' : 'queued', \{ actor: from\.id, \.\.\.\(reason \? \{ reason \} : \{\}\) \}\);\s*if \(reason\)\s*return \{ message, accepted: false, reason,/, 'send insert and rejected audit event');
+  if (/\b(?:UPDATE|DELETE FROM)\s+(?:messages|events)\b/i.test(withoutRoutingBackfill(read(file)).replace(/DELETE FROM messages WHERE sent_at <= \?/g, ''))) missing.push(`${file} (message/event mutation outside expiry)`);
 }
 const section = markdownSection(read('docs/api/API_REFERENCE.md'), 'message');
 const rows = section === null ? [] : [...section.matchAll(/^\| `([^`]+)` \|/gm)].map(m => m[1]);
