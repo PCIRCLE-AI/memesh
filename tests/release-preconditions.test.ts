@@ -537,7 +537,7 @@ describe('findUsableLiveJourneyReceipt', () => {
     const report = {
       ...liveReport('claude'),
       registration_evidence: {
-        source: 'interactive_development_channel',
+        source: 'claude_plugin_session_start',
         operator_attestation_recorded: false,
       },
     };
@@ -602,7 +602,7 @@ describe('findUsableLiveJourneyReceipt', () => {
   it('refuses a report missing the model-visible success path', () => {
     const report = {
       ...pass,
-      steps: pass.steps.filter(step => step.name !== 'the Codex model fetched the message body and quoted its sentinel (model-visible proof)'),
+      steps: pass.steps.filter(step => step.name !== 'Codex model-visible full body read and reply in the original native thread'),
     };
     const r = findUsableLiveJourneyReceipt(
       [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
@@ -610,13 +610,13 @@ describe('findUsableLiveJourneyReceipt', () => {
       'codex',
     );
     expect(r.ok).toBe(false);
-    expect(r.reasons.join('\n')).toContain('model-visible proof');
+    expect(r.reasons.join('\n')).toContain('model-visible full body');
   });
 
   it('refuses a report missing the stopped-session failure path', () => {
     const report = {
       ...pass,
-      steps: pass.steps.filter(step => step.name !== 'a send to the stopped session fails closed and the durable row survives'),
+      steps: pass.steps.filter(step => step.name !== 'offline known recipient queued without delivery and received after resume'),
     };
     const r = findUsableLiveJourneyReceipt(
       [{ host: 'codex', path: '.qa/codex-report.json', report, readError: null }],
@@ -624,7 +624,16 @@ describe('findUsableLiveJourneyReceipt', () => {
       'codex',
     );
     expect(r.ok).toBe(false);
-    expect(r.reasons.join('\n')).toContain('stopped session');
+    expect(r.reasons.join('\n')).toContain('offline known recipient');
+  });
+
+  it('does not promote a prompt-driven question/reply pair into full native release acceptance', () => {
+    const report = { ...pass, mode: 'conversation-pair' };
+    const r = findUsableLiveJourneyReceipt(
+      [{ host: 'codex', path: '.qa/pair-report.json', report, readError: null }], HEAD, 'codex',
+    );
+    expect(r.ok).toBe(false);
+    expect(r.reasons.join('\n')).toContain('not a real-host journey');
   });
 
   it('requires the requested host instead of accepting the other host', () => {

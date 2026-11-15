@@ -29,6 +29,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 import {
   DEFAULT_WAIT_MS,
+  assertConversationEnvelope,
+  assertConversationEvents,
+  conversationNativeTurn,
+  assertConversationReadTurn,
   MAX_SOCKET_PATH_BYTES,
   REQUIRED_BUILD_ARTIFACTS,
   REQUIRED_DIST,
@@ -394,9 +398,78 @@ describe('Claude trusted intake arming', () => {
   });
 });
 
+describe('four-action native conversation evidence (synthetic format fixtures)', () => {
+  const sid = '11111111-1111-4111-8111-111111111111';
+  const markers = ['HEAD-α', 'MID-中', 'TAIL-ω'];
+  const body = markers.join('\n');
+  const message = { id: 'm1', sender: 'other', recipient: sid, kind: 'question', body,
+    reply_to: null, sent_at: '2026-11-15T00:00:00.000Z', body_bytes: Buffer.byteLength(body) };
+  const expected = { ...message, markers };
+  const codex = () => [
+    { type: 'thread.started', thread_id: sid },
+    { type: 'turn.started' },
+    { type: 'item.completed', item: { type: 'mcp_tool_call', id: 'c1', server: 'memesh', tool: 'message',
+      arguments: { action: 'read', message_id: 'm1' }, status: 'completed', result: { structuredContent: { message } } } },
+    { type: 'item.completed', item: { type: 'agent_message', text: body } },
+    { type: 'turn.completed' },
+  ];
+  const encode = (rows: unknown[]) => rows.map(row => JSON.stringify(row)).join('\n');
+  it('requires actual paired read result, exact full body, session and three assistant markers', () => {
+    const turn = conversationNativeTurn('codex', encode(codex()), sid);
+    expect(assertConversationReadTurn(turn, expected, 'Read message m1')).toBe(true);
+    expect(() => assertConversationReadTurn(turn, expected, body)).toThrow(/leaked/);
+    expect(() => assertConversationReadTurn({ ...turn, text: markers[0] }, expected, 'Read m1')).toThrow(/marker/);
+    expect(() => assertConversationReadTurn({ ...turn, session: 'foreign' }, expected, 'Read m1')).toThrow(/recipient/);
+    expect(() => assertConversationEnvelope({ ...message, body: markers[0] }, message)).toThrow(/body/);
+    expect(() => assertConversationEnvelope({ ...message, sent_at: '2026-11-16T00:00:00.000Z' }, message)).toThrow(/sent_at/);
+    expect(() => assertConversationEnvelope({ ...message, kind: 'result' }, message)).toThrow(/kind/);
+    expect(() => assertConversationEnvelope({ ...message, reply_to: 'foreign-parent' }, message)).toThrow(/reply_to/);
+    const reply = { ...message, kind: 'result', reply_to: 'question-id' };
+    expect(assertConversationEnvelope(reply, { ...reply, id: 'm1' })).toBe(reply);
+    expect(() => assertConversationEnvelope(reply, { ...reply, id: 'different-tool-receipt-id' })).toThrow(/id/);
+  });
+  it('accepts Claude native tool-use/result pairs, not a wrapper stdout claim', () => {
+    const rows = [
+      { type: 'system', subtype: 'init', session_id: sid },
+      { type: 'assistant', session_id: sid, message: { content: [{ type: 'tool_use', id: 'c1',
+        name: 'mcp__memesh__message', input: { action: 'read', message_id: 'm1' } }] } },
+      { type: 'user', session_id: sid, message: { content: [{ type: 'tool_result', tool_use_id: 'c1', content: JSON.stringify({ message }) }] } },
+      { type: 'assistant', session_id: sid, message: { content: [{ type: 'text', text: body }] } },
+      { type: 'result', subtype: 'success', is_error: false, session_id: sid },
+    ];
+    expect(assertConversationReadTurn(conversationNativeTurn('claude', encode(rows), sid), expected, 'Read m1')).toBe(true);
+    expect(() => conversationNativeTurn('claude', encode(rows.filter(row => row.type !== 'user')), sid)).toThrow(/Unpaired/);
+    expect(() => conversationNativeTurn('claude', encode([...rows, { type: 'wrapper', body }]), sid)).toThrow(/variant/);
+  });
+  it('rejects foreign sessions, unknown tools, legacy actions and duplicate terminals', () => {
+    expect(() => conversationNativeTurn('codex', encode(codex()), 'foreign')).toThrow(/session/);
+    const tool = codex();
+    tool[2].item!.tool = 'fetch';
+    expect(() => conversationNativeTurn('codex', encode(tool), sid)).toThrow(/tool/);
+    const legacy = codex();
+    legacy[2].item!.arguments!.action = 'intake';
+    expect(() => conversationNativeTurn('codex', encode(legacy), sid)).toThrow(/arguments/);
+    expect(() => conversationNativeTurn('codex', encode([...codex(), { type: 'turn.completed' }]), sid)).toThrow(/terminal/);
+  });
+  it('never treats queued or pushed as delivered and binds audit actors', () => {
+    const queued = { id: 'm1', events: [{ message_id: 'm1', event: 'queued', detail: JSON.stringify({ actor: 'other' }) }] };
+    expect(assertConversationEvents(queued, 'other', ['queued'], ['delivered', 'read'])).toHaveLength(1);
+    expect(() => assertConversationEvents(queued, sid, ['delivered', 'read'])).toThrow(/Missing/);
+    const delivered = { id: 'm1', events: [{ message_id: 'm1', event: 'delivered', detail: { actor: sid } }] };
+    expect(() => assertConversationEvents(delivered, 'foreign', ['delivered'])).toThrow(/actor/);
+    expect(() => assertConversationEvents(delivered, sid, [], ['delivered'])).toThrow(/Premature/);
+  });
+  it('keeps the prompt-driven pair separate from idle/busy release acceptance', () => {
+    const steps = REQUIRED_LIVE_JOURNEY_STEPS['conversation-pair'].map(name => ({ name }));
+    expect(checkRequiredJourneySteps(steps, { mode: 'conversation-pair', host: null })).toMatchObject({ checked: true });
+    expect(missingRequiredSteps(steps, 'codex')).toContain('idle recipient started its own turn without a driver prompt');
+    expect(missingRequiredSteps(steps, 'claude')).toContain('all four kinds delivered both directions with full body and three markers');
+  });
+});
+
 describe('live-journey report contract', () => {
-  it('uses v4, requires the core product journeys, and keeps distinct real-host delivery steps', () => {
-    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v4');
+  it('uses v5, requires the core product journeys, and keeps distinct real-host delivery steps', () => {
+    expect(LIVE_JOURNEY_SCHEMA_VERSION).toBe('memesh-live-journey/v5');
     expect(CORE_JOURNEY_IDS).toEqual([
       'memory-round-trip',
       'session-start-briefing',
@@ -407,7 +480,7 @@ describe('live-journey report contract', () => {
     for (const host of ['codex', 'claude'] as const) {
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host].some(name => name.includes('model-visible'))).toBe(true);
       expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain(
-        'a send to the stopped session fails closed and the durable row survives',
+        'offline known recipient queued without delivery and received after resume',
       );
     }
     expect(REQUIRED_REGISTRATION_EVIDENCE.codex).toEqual({
@@ -415,19 +488,16 @@ describe('live-journey report contract', () => {
       plugin_loader_verified: true,
     });
     expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toEqual({
-      source: 'interactive_development_channel',
+      source: 'claude_plugin_session_start',
       operator_attestation_recorded: true,
       trusted_instruction_attested: true,
     });
-    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex lease renewed before expiry');
-    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain(
-      'Codex resume registration superseded the prior generation',
-    );
-    expect(REQUIRED_LIVE_JOURNEY_STEPS.codex).toContain('Codex resumed lease renewed before expiry');
-    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain('Claude lease renewed before expiry');
-    expect(REQUIRED_LIVE_JOURNEY_STEPS.claude).toContain(
-      'operator attested that the trusted intake prompt was submitted and READY observed',
-    );
+    for (const host of ['codex', 'claude'] as const) {
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain('two real host SessionStart registrations match native SID and PID');
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain('idle recipient started its own turn without a driver prompt');
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain('busy recipient read and replied in the same native session');
+      expect(REQUIRED_LIVE_JOURNEY_STEPS[host]).toContain('native disconnect retained pending body without delivery');
+    }
     expect(REQUIRED_REGISTRATION_EVIDENCE.claude).toMatchObject({
       trusted_instruction_attested: true,
     });
@@ -1007,7 +1077,8 @@ describe('runCodexProofTurn', () => {
     expect(f.execCalls).toHaveLength(1);
     const { command, args, options } = f.execCalls[0];
     expect(command).toBe('codex');
-    expect(args.slice(0, 5)).toEqual(['exec', '--json', '--skip-git-repo-check', '--dangerously-bypass-hook-trust', '-s']);
+    expect(args.slice(0, 4)).toEqual(['exec', '--json', '--skip-git-repo-check', '-s']);
+    expect(args).not.toContain('--dangerously-bypass-hook-trust');
     expect(args.slice(args.indexOf('-C'))).toEqual(['-C', '/work/space', 'resume', THREAD, CODEX_PROOF_PROMPT]);
     expect(options).toEqual({ env: { CODEX_HOME: f.codexHome } });
     expect(f.tracked).toEqual([f.child]);
@@ -1103,8 +1174,8 @@ describe('required journey steps before PASS', () => {
   });
 
   it('does not take one host\'s steps for another\'s', () => {
-    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.claude), 'codex')).toContain('real Codex thread created');
-    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.codex), 'claude')).toContain('the Claude model called intake itself (model-visible proof)');
+    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.claude), 'codex')).toContain('Codex model-visible full body read and reply in the original native thread');
+    expect(missingRequiredSteps(asSteps(REQUIRED_LIVE_JOURNEY_STEPS.codex), 'claude')).toContain('Claude model-visible full body read and reply in the original native session');
   });
 
   it('skips, saying why, for hosts and modes with no required list', () => {
