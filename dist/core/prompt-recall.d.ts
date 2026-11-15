@@ -4,7 +4,7 @@ export declare const PROMPT_RECALL_MAX_BYTES = 4096;
 export declare const PROMPT_RECALL_MIN_COVERAGE = 0;
 export declare const PROMPT_RECALL_MIN_TERMS = 1;
 export declare const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string>;
-export declare const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
+export declare const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS: number | null;
 export interface ScoredMemory {
     id: number;
     name: string;

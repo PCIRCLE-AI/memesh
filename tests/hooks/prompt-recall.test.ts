@@ -137,7 +137,7 @@ describe('Feature: prompt-time recall hook', () => {
     });
   });
 
-  it('by default the hook brings a style note on its words, leaves out a project status gone stale, and still brings a decision', () => {
+  it('by default the hook brings matching style, decision and old project status within its budget', () => {
     seed();
     const tag = `project:${require('../../scripts/hooks/_shared.js').getProjectName(project)}`;
     openDatabase(dbPath);
@@ -153,10 +153,11 @@ describe('Feature: prompt-time recall hook', () => {
     }
     const text: string = JSON.parse(run('quokka tempo decision made').stdout).hookSpecificOutput.additionalContext;
     expect(text).toContain('Quokka tempo decision');
-    expect(text).not.toContain('Quokka tempo status');
+    expect(text).toContain('quokka tempo status unresolved');
+    expect(Buffer.byteLength(text, 'utf8')).toBeLessThanOrEqual(4096);
     const style: string = JSON.parse(run('quokka tempo style rule answers', {}, 'sess-style').stdout).hookSpecificOutput.additionalContext;
     expect(style).toContain('Quokka tempo style rule');
-    expect(style).not.toContain('Quokka tempo status');
+    expect(Buffer.byteLength(style, 'utf8')).toBeLessThanOrEqual(4096);
   });
 
   it('a match remains available even when a newer decision has overlapping words', () => {

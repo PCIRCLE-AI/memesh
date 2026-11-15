@@ -1854,6 +1854,8 @@ you reclassify a memory. An append to an existing name can also omit `--type`; a
 
 Scoped names resolve first to a same-project original name, then to its qualified name using the full project ID and matching checkout aliases. When another project owns the original name, creation returns `<name>@<full-project-id>` (with a numeric suffix if occupied). Subsequent scoped append, replace, forget, relation and native-editor operations resolve the original name to this project's memory; they never overwrite the foreign row. Without a declared project, names stay literal, including the unbound legacy HTTP path. Existing unfiled memories retain their append policy.
 
+For user-requested `forget`, a same-project namesake takes priority. When none exists, ordinary forgetting uses the supplied actual name; project membership is not an additional refusal to forget that explicit memory.
+
 ```bash
 memesh remember "Use PKCE for the public client"            # derived name, type note
 memesh remember --name auth-choice --obs "PKCE, not implicit" --replace   # keeps type
@@ -2527,6 +2529,9 @@ cutting either side to 2,000 characters. The prefetched memory context block
 is removed from the user side. Each turn event gets a new identity, including
 when the same words are repeated later. The result is `{"outcome":"wrote","names":[...]}`;
 an empty turn returns `{"outcome":"skipped","reason":"the turn has no text"}`.
+When automatic capture is off, validated turns return
+`{"outcome":"skipped","reason":"auto-capture is turned off"}` before opening
+the database. This does not disable manual `remember` or automatic recall.
 Both memories record `metadata.provenance.source_host: "hermes"`.
 `capture-session` has been removed: compression and session end generate no
 activity summaries. Session end only waits for pending turn writes.
@@ -2536,11 +2541,11 @@ a message on stderr.
 `prompt-context` reads the existing database without initializing or migrating it
 and returns `{"text":"...","ids":[...]}`. Its stdin may also include
 `"exclude":[1,2]` for positive memory IDs already delivered to the session.
-At most two strong matches (at most
+At most two eligible keyword-search results (at most
 one assistant conversation) share a 4 KiB UTF-8 budget including the data notice,
 fences and truncation handles. It reads unfiled memories and Hermes captures,
 excluding other hosts/projects and the supplied session's conversations. It
-honors `promptRecall` and the effective `autoCapture` switch. No database or no
+honors `promptRecall` independently of `autoCapture`. No database or no
 match returns empty text and IDs. Explicit `memesh_recall` remains an HTTP tool.
 
 ### memesh delegation

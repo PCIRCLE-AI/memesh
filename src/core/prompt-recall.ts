@@ -61,10 +61,10 @@ const MAX_TERMS = 12;
  */
 export const PROMPT_RECALL_SKIP_TYPES: ReadonlySet<string> = new Set();
 /**
- * A `project` memory (a stored status) not touched for this many days is not
- * brought along: the text does not say that it has gone out of date.
+ * Active project memories remain eligible regardless of age. Replay callers
+ * may explicitly set a finite age limit through maxProjectAgeDays.
  */
-export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS = 30;
+export const PROMPT_RECALL_MAX_PROJECT_AGE_DAYS: number | null = null;
 /** Rows read back from the index per prompt, best BM25 first. */
 const CANDIDATE_WINDOW = 30;
 /** Characters of a memory's observations read back for scoring. */

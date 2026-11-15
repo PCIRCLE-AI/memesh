@@ -81,6 +81,9 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const needsProjectBinding = ((name === 'task_state' || name === 'briefing') && record?.project == null)
     // A write or recall that names its project (an id or false) needs no binding.
     || (name === 'learn' && record?.project == null)
+    // Optional for forget: resolve a local namesake when bound, while the
+    // handler preserves literal-name forgetting when no project is bound.
+    || name === 'forget'
     // `remember` is bound whenever `project` is not given, tags or not: a
     // `project:<plain name>` tag naming this session's own project is stored as
     // the project's id, and only the binding says which project that is. A

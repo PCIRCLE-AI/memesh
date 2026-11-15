@@ -210,7 +210,20 @@ function rememberInTransaction(
   kg: KnowledgeGraph,
 ): RememberResult {
   const healed = withFullProjectTag(args.tags, args.currentProject);
-  const scopedTags = healed.tags ?? [];
+  let retagged: RememberResult['retagged'];
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    // Preserve #511's already-filed plain tag before resolving collisions.
+    const touchedNames = [args.name, ...(args.relations ?? []).filter(rel => rel.type === 'supersedes').map(rel => rel.to)];
+    const keepsPlain = touchedNames.some(name => db
+      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+      .get(name, plainTag) !== undefined);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
+  const scopedTags = args.tags ?? [];
   const scopes = [...new Set(scopedTags.filter(tag => tag.startsWith('project:')).map(tag => tag.slice(8)))];
   const scope = args.project !== undefined ? args.project : scopes.length === 1 ? scopes[0] : undefined;
   args = { ...args, name: resolveProjectMemoryName(db, args.name, scope, args.projectIds, true),
@@ -253,17 +266,6 @@ function rememberInTransaction(
     ...(existing ? [args.name] : []),
     ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
   ];
-  let retagged: RememberResult['retagged'];
-  if (healed.retagged) {
-    const plainTag = healed.retagged.from;
-    const keepsPlain = touched.some((name) => db
-      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
-      .get(name, plainTag) !== undefined);
-    if (!keepsPlain) {
-      args = { ...args, tags: healed.tags };
-      retagged = healed.retagged;
-    }
-  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
   // An inferred checkout does not move an existing shared memory into that
   // project. Explicit scope/tag changes still pass through the ownership guard.
@@ -744,14 +746,6 @@ export function forget(args: ForgetInput): ForgetResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
   args = { ...args, name: resolveProjectMemoryName(db, args.name, args.project, args.projectIds) };
-  if (args.project !== undefined) {
-    // Shared legacy memories remain forgettable; a project's tagged row must
-    // still be its own, after resolving a possible qualified name.
-    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(args.name) as { id: number } | undefined;
-    const scope = row && projectTagsOf(db, row.id).length === 0 ? null : args.project;
-    const refusal = projectOwnershipRefusal(db, args.name, scope, args.projectIds);
-    if (refusal) throw new Error(refusal);
-  }
 
   // Observation-level forget: remove specific observation, keep entity active.
   //

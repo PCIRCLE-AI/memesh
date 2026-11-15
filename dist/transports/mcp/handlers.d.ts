@@ -369,7 +369,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "forget";
-    readonly description: "Archive an entity (soft-delete) or remove a specific observation. Archived entities are hidden from recall but preserved in the database. To remove just one observation, pass the observation parameter.";
+    readonly description: "Archive an entity (soft-delete) or remove a specific observation when the user asks to forget it. A same-project original-name match takes priority, including its qualified name; otherwise uses the supplied name for ordinary forgetting. This is not a project-based refusal to forget an explicitly named memory. Archived entities are hidden from recall but preserved in the database. To remove just one observation, pass the observation parameter.";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {
@@ -477,7 +477,7 @@ export declare const TOOL_DEFINITIONS: readonly [{
     };
 }, {
     readonly name: "task_state";
-    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Fresh state is included in the next session's briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`); stale or unknown-age state becomes a one-line flag at every level. Record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
+    readonly description: "Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Stored state is included at all briefing levels, including minimal; each field retains its date attribution, including old or unknown dates, rather than presenting it as a newly stated fact. Record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: \"\" once a blocker is resolved).";
     readonly inputSchema: {
         readonly type: "object";
         readonly properties: {

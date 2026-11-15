@@ -3,7 +3,7 @@
  * its project may add to a memory it stored under an earlier id, which keeps its one
  * project tag; another project gets a qualified name rather than changing it.
  */
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { remember, forget } from '../../src/core/operations.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
@@ -101,7 +101,7 @@ describe('a write of a checkout\'s project onto what it stored under an earlier 
     expect(forget({ name: 'plan', project: NOW })).toMatchObject({ archived: true, name: own.name });
     expect([kg.getEntity('plan'), kg.getEntity(`plan@${NOW}`)]).toEqual(before);
     expect(() => remember({ name: 'plan', type: 'fact', observations: ['x'], project: null })).toThrow(/without a project/);
-    expect(() => forget({ name: `plan@${NOW}`, project: NOW })).toThrow(/belongs/);
+    expect(forget({ name: `plan@${NOW}`, project: NOW })).toMatchObject({ archived: true, name: `plan@${NOW}` });
     expect(observations('plan')).toEqual(['foreign']);
   });
 
@@ -112,6 +112,30 @@ describe('a write of a checkout\'s project onto what it stored under an earlier 
     expect(observations('legacy')).toEqual(['old', 'new']);
     expect(forget({ name: 'legacy', observation: 'new', project: NOW }).observation_removed).toBe(true);
     expect(observations('legacy')).toEqual(['old']);
+  });
+
+  it('forgets a supplied known name when no local namesake exists, including observation-only deletion', () => {
+    remember({ name: 'known', type: 'fact', observations: ['one', 'two'], project: OTHER });
+    expect(forget({ name: 'known', observation: 'one', project: NOW }).observation_removed).toBe(true);
+    expect(observations('known')).toEqual(['two']);
+    expect(forget({ name: 'known', project: NOW })).toMatchObject({ archived: true, name: 'known' });
+  });
+
+  it('uses indexed searches for qualified candidates rather than an entities scan', () => {
+    remember({ name: 'plan', type: 'fact', observations: ['foreign'], project: OTHER });
+    const db = getDatabase();
+    const prepare = db.prepare.bind(db);
+    let query = '';
+    const spy = vi.spyOn(db, 'prepare').mockImplementation(sql => {
+      if (sql.startsWith('SELECT id, name FROM entities')) query = sql;
+      return prepare(sql);
+    });
+    try { resolveProjectMemoryName(db, 'plan', NOW, [], true); } finally { spy.mockRestore(); }
+    expect(query).not.toBe('');
+    const prefix = `plan@${NOW}`;
+    const plan = db.prepare(`EXPLAIN QUERY PLAN ${query}`).all(prefix, `${prefix}~`, `${prefix}\u007f`) as { detail: string }[];
+    expect(plan.some(row => /SEARCH .*entities/.test(row.detail))).toBe(true);
+    expect(plan.some(row => /SCAN .*entities/.test(row.detail))).toBe(false);
   });
 
   it('finds a secondary name across holes and checkout aliases without accepting noncanonical suffixes', () => {

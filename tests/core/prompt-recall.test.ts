@@ -209,7 +209,7 @@ describe('Feature: prompt recall scoring', () => {
     expect(pick(prompt, { skipTypes: new Set(['reference']) }).scored.map((m) => m.name).sort()).toEqual(['eng-rule', 'style-rule']);
   });
 
-  it('by default a project status not touched for 30 days is not brought along, and nothing of another type is held back by age', () => {
+  it('offers old project status by default; an explicit replay age limit only excludes old project status', () => {
     const db = getDatabase();
     kg().createEntity('old-status', 'project', { title: 'Curlew roadmap status', observations: ['curlew roadmap status unresolved'], tags });
     kg().createEntity('fresh-status', 'project', { title: 'Curlew roadmap review', observations: ['curlew roadmap review done'], tags });
@@ -218,12 +218,14 @@ describe('Feature: prompt recall scoring', () => {
     db.prepare("UPDATE observations SET created_at = ? WHERE entity_id IN (SELECT id FROM entities WHERE name IN ('old-status', 'old-lesson'))").run(days(60));
     db.prepare("UPDATE observations SET created_at = ? WHERE entity_id = (SELECT id FROM entities WHERE name = 'fresh-status')").run(days(5));
     const prompt = 'curlew roadmap';
-    expect(pick(prompt).scored.map((m) => m.name).sort()).toEqual(['fresh-status', 'old-lesson']);
+    expect(pick(prompt).scored.map((m) => m.name).sort()).toEqual(['fresh-status', 'old-lesson', 'old-status']);
+    expect(pick('unresolved').text).toContain('curlew roadmap status unresolved');
+    expect(pick(prompt, { maxProjectAgeDays: 30 }).scored.map((m) => m.name).sort()).toEqual(['fresh-status', 'old-lesson']);
     expect(pick(prompt, { maxProjectAgeDays: null }).scored.map((m) => m.name).sort()).toEqual(['fresh-status', 'old-lesson', 'old-status']);
     expect(pick(prompt, { maxProjectAgeDays: 90 }).scored.map((m) => m.name).sort()).toEqual(['fresh-status', 'old-lesson', 'old-status']);
   });
 
-  it('by default a note-file memory is dated by the file, not by the day it was read', () => {
+  it('offers old note-file status by default; an explicit replay limit dates it by the file', () => {
     const db = getDatabase();
     kg().createEntity('imported-status', 'project', {
       title: 'Godwit rollout status', observations: ['godwit rollout status unresolved'], tags,
@@ -231,16 +233,18 @@ describe('Feature: prompt recall scoring', () => {
     });
     // Read just now, so by its observations alone it is new.
     const prompt = 'godwit rollout';
-    expect(pick(prompt).scored).toEqual([]);
-    expect(pick(prompt, { projectAgeFromNoteDate: false }).scored.map((m) => m.name)).toEqual(['imported-status']);
+    expect(pick(prompt).scored.map((m) => m.name)).toEqual(['imported-status']);
+    expect(pick(prompt).text).toContain('godwit rollout status unresolved');
+    expect(pick(prompt, { maxProjectAgeDays: 30 }).scored).toEqual([]);
+    expect(pick(prompt, { maxProjectAgeDays: 30, projectAgeFromNoteDate: false }).scored.map((m) => m.name)).toEqual(['imported-status']);
     // A file changed yesterday is new, whatever the age of the memory's first read.
     db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.provenance.note_mtime_ms', ?) WHERE name = 'imported-status'").run(Date.now() - 86_400_000);
-    expect(pick(prompt).scored.map((m) => m.name)).toEqual(['imported-status']);
+    expect(pick(prompt, { maxProjectAgeDays: 30 }).scored.map((m) => m.name)).toEqual(['imported-status']);
   });
 
   it('does not impose an extra coverage gate while keeping the other defaults', () => {
     expect(PROMPT_RECALL_MIN_COVERAGE).toBe(0);
     expect([...PROMPT_RECALL_SKIP_TYPES]).toEqual([]);
-    expect(PROMPT_RECALL_MAX_PROJECT_AGE_DAYS).toBe(30);
+    expect(PROMPT_RECALL_MAX_PROJECT_AGE_DAYS).toBeNull();
   });
 });

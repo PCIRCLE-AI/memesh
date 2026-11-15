@@ -152,7 +152,7 @@ it('learn and a default recall follow the bound project, survive a restart, and 
   }
 }, 120000);
 
-it('remember with no tag files the memory under the bound project: found again in A after a restart, not in B, refused on a name A holds', async () => {
+it('bound projects keep same-name memories separate and ordinary user-requested forget works', async () => {
   const runtime = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-ctx-')));
   const a = fs.realpathSync(fs.mkdtempSync(path.join(runtime, 'project-a-')));
   const b = fs.realpathSync(fs.mkdtempSync(path.join(runtime, 'project-b-')));
@@ -188,16 +188,39 @@ it('remember with no tag files the memory under the bound project: found again i
       // Content only: reading through recall itself bumps access counts.
       const all = async () => entities((await inB.tool('recall', { cross_project: true, include_archived: true, limit: 100 })).text)
         .map(({ name, type, title, observations, tags, metadata, confidence, namespace }) => ({ name, type, title, observations, tags, metadata, confidence, namespace }));
-      const before = JSON.stringify(await all());
-      const refused = await inB.tool('remember', { name: 'okapi-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['B writes over A'] });
-      expect(refused.isError).toBe(true);
-      expect(refused.text).toMatch(/"okapi-decision".*project:/s);
-      expect(refused.text).not.toContain('okapi stripes');
-      expect(JSON.stringify(await all())).toBe(before);
+      const before = await all();
+      const stored = await inB.tool('remember', { name: 'okapi-decision', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['B has an independent decision'] });
+      expect(stored.isError, stored.text).toBe(false);
+      const localName = `okapi-decision@${getProjectName(b)}`;
+      expect(JSON.parse(stored.text)).toMatchObject({ stored: true, name: localName });
+      const appended = await inB.tool('remember', { name: 'okapi-decision', observations: ['B appends locally'] });
+      expect(appended.isError, appended.text).toBe(false);
+      expect(JSON.parse(appended.text).name).toBe(localName);
+      const after = await all();
+      expect(after.filter(e => e.name !== localName)).toEqual(before);
+      expect(after.find(e => e.name === localName)).toMatchObject({
+        observations: ['B has an independent decision', 'Why: a fixed choice for this case; revisit if it changes', 'B appends locally'],
+        tags: [`project:${getProjectName(b)}`],
+      });
+
+      // An explicitly named memory is forgettable without a local namesake.
+      const foreignForget = await inB.tool('forget', { name: 'okapi-detail' });
+      expect(foreignForget.isError, foreignForget.text).toBe(false);
+      expect(JSON.parse(foreignForget.text)).toMatchObject({ archived: true, name: 'okapi-detail' });
+      // With a local namesake, the original name resolves to B's own row.
+      const localForget = await inB.tool('forget', { name: 'okapi-decision' });
+      expect(localForget.isError, localForget.text).toBe(false);
+      expect(JSON.parse(localForget.text)).toMatchObject({ archived: true, name: localName });
+      const remaining = entities((await inB.tool('recall', { cross_project: true })).text);
+      expect(remaining.map(e => e.name)).toEqual(['okapi-decision']);
+      expect(remaining[0]).toMatchObject(before.find(e => e.name === 'okapi-decision')!);
     } finally { await inB.client.close(); }
 
     const unbound = await session(runtime, {}, null);
     try {
+      const forgotten = await unbound.tool('forget', { name: 'okapi-decision' });
+      expect(forgotten.isError, forgotten.text).toBe(false);
+      expect(JSON.parse(forgotten.text)).toMatchObject({ archived: true, name: 'okapi-decision' });
       const refused = await unbound.tool('remember', { name: 'nowhere', type: 'fact', observations: ['x'] });
       expect(refused.isError).toBe(true);
       expect(refused.text).toMatch(/^workspace_unavailable: /);

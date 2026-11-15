@@ -143,6 +143,8 @@ Saving is on by default: store decisions, preferences, lessons and context witho
   name; scoped append, replace, forget and relation operations also resolve
   the original name to this project's memory. Without a declared project,
   names remain literal; existing unfiled memories keep their append policy.
+  For user-requested `forget`, a same-project namesake takes priority; when
+  none exists, ordinary forgetting uses the supplied actual name.
 - **Correct a memory in one call**: `remember` it again with its `name`,
   `replace: true` and the `observations` it should now hold (a replace with
   neither `observations` nor `note` is refused, because it would empty the

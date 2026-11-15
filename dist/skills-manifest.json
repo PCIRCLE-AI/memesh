@@ -173,8 +173,8 @@
     },
     {
       "path": "scripts/hooks/_generated/prompt-recall.js",
-      "sha256": "aa9a61ad52c20861333960cb469b3f7fb9f83c49d95725886dbf1a2db8fc2dd1",
-      "bytes": 15244
+      "sha256": "23bd68311d92fe06c55de94b65a71809ed2824640fa6770e65b9eb364482f77e",
+      "bytes": 15246
     },
     {
       "path": "scripts/hooks/_generated/public-network-context.js",
@@ -338,8 +338,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "e04065ea8c2348e70e06cbabf92473e7c993cf20cdcff522ff29c9021372610c",
-      "bytes": 24520
+      "sha256": "bad65f801e93bb4071d1374ab0253e9599bdbe0e69474e1ca82593f28e77c043",
+      "bytes": 24650
     }
   ]
 }

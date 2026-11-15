@@ -119,8 +119,9 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'remember',
     description:
-      'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (with `why`), preferences, patterns, lessons learned, and project context. Saving is on by default: store them without waiting to be asked. Use `forget` when the user asks to remove a specific existing memory. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
+      'Store knowledge as an entity with observations, tags, and relations. Use this to remember decisions (optional `why`), preferences, patterns, lessons learned, and project context. Saving is on by default: store them without waiting to be asked. Use `forget` when the user asks to remove a specific existing memory. An omitted namespace keeps an existing memory in its current namespace; a "supersedes" relation archives its target, while "contradicts" marks a conflict. ' +
       'Quickest form: pass only `note` (free text) and the server derives title, observations and name; the response echoes what it derived. ' +
+      'In a declared project, the original name resolves to its same-project memory. If another project owns the name, creation qualifies it with the full project ID (and a numeric suffix if needed); use the returned actual name. Scoped append and replace also accept the original name without overwriting the other project. ' +
       'To correct a memory, call again with its `name`, `replace: true` and the `observations` it should now hold (a replace without `observations` or `note` is refused, so re-send the ones to keep along with the fix) — the memory keeps the `type` it has unless you pass a different one — and the old content moves to metadata.replaced_history instead of staying next to the fix. ' +
       'Record standalone outcomes and reasons with relevant filenames and numbers; skip repeated confirmations; never store secrets or passwords.',
     inputSchema: {
@@ -286,7 +287,7 @@ export const TOOL_DEFINITIONS = [
   {
     name: 'forget',
     description:
-      'Archive an entity (soft-delete) or remove a specific observation. Archived entities are hidden from recall but preserved in the database. To remove just one observation, pass the observation parameter.',
+      'Archive an entity (soft-delete) or remove a specific observation when the user asks to forget it. A same-project original-name match takes priority, including its qualified name; otherwise uses the supplied name for ordinary forgetting. This is not a project-based refusal to forget an explicitly named memory. Archived entities are hidden from recall but preserved in the database. To remove just one observation, pass the observation parameter.',
     inputSchema: {
       type: 'object' as const,
       properties: {
@@ -372,13 +373,13 @@ export const TOOL_DEFINITIONS = [
     name: 'task_state',
     // The description carries the one rule that keeps this honest, in the
     // place the model actually reads it. These four fields are injected at the
-    // top of the next session (at briefing level `standard` or `full`) and
+    // top of the next session at all briefing levels, with their dates, and
     // acted on as fact, so a value the model GUESSED — "they edited the
     // parser, the goal must be the parser" — is a wrong instruction to a
     // future session with nothing to contradict it.
     // Only what someone actually said belongs here.
     description:
-      'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Fresh state is included in the next session\'s briefing when the `briefing` level is `standard` or `full` (not at the default, `minimal`); stale or unknown-age state becomes a one-line flag at every level. Record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
+      'Read or update where the work stands on this project: the goal, what is next, what is blocked, what was just finished. Call with no arguments to read it. Stored state is included at all briefing levels, including minimal; each field retains its date attribution, including old or unknown dates, rather than presenting it as a newly stated fact. Record ONLY what the user actually stated — never infer a goal or a next step from files edited or commands run, and leave a field out if it was not said. Pass an empty string to clear a field (e.g. blocked: "" once a blocker is resolved).',
     inputSchema: {
       type: 'object' as const,
       properties: {

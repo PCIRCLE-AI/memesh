@@ -252,6 +252,10 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const again = await call('remember', { name: 'legacy-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['two'], tags: [plain] }, repo);
     expect(again.isError, text(again)).toBeFalsy();
     expect(JSON.parse(text(again)).retagged).toBeUndefined();
+    expect(JSON.parse(text(again)).name).toBe('legacy-511');
+    const append = await call('remember', { name: 'legacy-511', observations: ['three'], tags: [plain] }, repo);
+    expect(append.isError, text(append)).toBeFalsy();
+    expect(JSON.parse(text(append)).name).toBe('legacy-511');
     expect(tagsOf('legacy-511')).toEqual([plain]);
   });
 

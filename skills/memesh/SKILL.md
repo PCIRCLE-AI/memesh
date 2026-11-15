@@ -27,7 +27,7 @@ The CLI's `remember` and `learn` file a new memory under the current directory's
 
 Over MCP, `remember`, `learn` and `recall` also take `project`: a project id, or `false` for a memory that belongs to no project. Omitted, the call uses the project the session is bound to (the client's workspace root, or `MEMESH_PROJECT_ROOT`); a call that needs a project and finds none is refused with `workspace_unavailable`. An append to an existing unfiled memory with no explicit project or project tag stays unfiled and can omit `type`. Existing rows cannot be moved or overwritten across scopes.
 
-With a declared project, an original name resolves to that project's existing memory, including checkout aliases. If another project owns the name, creation uses `<name>@<full-project-id>` (a numeric suffix if occupied) and returns the actual name. Scoped append, replace, forget, relation and native-editor operations accept the original name. Without a declared project, names remain literal; unfiled legacy rows keep their existing append policy.
+With a declared project, an original name resolves to that project's existing memory, including checkout aliases. If another project owns the name, creation uses `<name>@<full-project-id>` (a numeric suffix if occupied) and returns the actual name. Scoped append, replace, forget, relation and native-editor operations accept the original name. Without a declared project, names remain literal; unfiled legacy rows keep their existing append policy. For user-requested `forget`, a same-project namesake takes priority; otherwise ordinary forgetting uses the supplied actual name.
 
 ## All 12 MCP tools
 
