@@ -43,6 +43,10 @@ const outDir = resolve(root, 'scripts/hooks/_generated');
 
 // Each entry: compiled leaf module (source of truth) → committed hook copy.
 const SOURCES = [
+  { from: 'dist/core/public-network-context.js', to: 'public-network-context.js', src: 'src/core/public-network-context.ts' },
+  { from: 'dist/network/roster.js', to: 'network-roster.js', src: 'src/network/roster.ts' },
+  { from: 'dist/network/identity.js', to: 'network-identity.js', src: 'src/network/identity.ts' },
+  { from: 'dist/network/types.js', to: 'network-types.js', src: 'src/network/types.ts' },
   { from: 'dist/core/conversation-messages.js', to: 'conversation-messages.js', src: 'src/core/conversation-messages.ts' },
   { from: 'dist/core/conversation-message-migration.js', to: 'conversation-message-migration.js', src: 'src/core/conversation-message-migration.ts' },
   { from: 'dist/core/paths.js', to: 'core-paths.js', src: 'src/core/paths.ts' },

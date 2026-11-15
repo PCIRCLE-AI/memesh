@@ -1,5 +1,7 @@
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { startBridge } from './bridge-control.js';
+import { type NetworkContext } from './types.js';
+export declare function bootstrapNetworkBridge(ctx: NetworkContext, cliEntry: string): Promise<'not-joined' | 'running' | 'starting'>;
 export interface AutoStartOptions {
     dataDir: string;
     dbPath: string;

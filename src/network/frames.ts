@@ -7,6 +7,48 @@ import { SIGNED_ROSTER_MAX_BYTES } from './roster.js';
 import type { SignedRoster } from './types.js';
 import type { BiStream } from './iroh-types.js';
 import { deadline, toBytes } from './endpoint.js';
+import type { NetworkConversationMessage, ConversationDeliveryReceipt, RemoteConversationRegistration } from '../core/conversation-messages.js';
+
+export type ConversationFrame =
+  | { version: 2; kind: 'conversations'; relay: string | null; addrs: string[]; entries: RemoteConversationRegistration[] }
+  | { version: 2; kind: 'conversation-message'; row: NetworkConversationMessage }
+  | { version: 2; kind: 'conversation-receipt'; receipt: ConversationDeliveryReceipt };
+
+/** NET/2 business frames contain only message data or minimal conversation presence. */
+export function parseConversationFrame(bytes: Buffer): ConversationFrame {
+  if (bytes.length > FRAME_MAX_BYTES) throw new FrameError('frame_too_large', 'Frame too large');
+  let raw;
+  try { raw = JSON.parse(bytes.toString('utf8')); }
+  catch { throw new FrameError('frame_invalid', 'Invalid conversation JSON'); }
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || raw.version !== 2) throw new FrameError('frame_invalid', 'Unsupported conversation frame');
+  if (raw.kind === 'conversations' && exactKeys(raw, ['version','kind','relay','addrs','entries'])
+    && isOptionalText(raw.relay) && Array.isArray(raw.addrs) && raw.addrs.length <= 64 && raw.addrs.every((a: unknown) => isText(a, 64))
+    && Array.isArray(raw.entries) && raw.entries.every((r: Record<string, unknown>) => r && typeof r === 'object'
+      && !Array.isArray(r) && exactKeys(r, ['id','host','online']) && isText(r.id)
+      && ['claude-code','codex','hermes'].includes(String(r.host)) && typeof r.online === 'boolean')) return raw;
+  if (raw.kind === 'conversation-message' && exactKeys(raw, ['version','kind','row'])
+    && raw.row && typeof raw.row === 'object' && !Array.isArray(raw.row)
+    && exactKeys(raw.row, ['network_id','sender_machine_id','recipient_machine_id','message'])) return raw;
+  if (raw.kind === 'conversation-receipt' && exactKeys(raw, ['version','kind','receipt'])
+    && raw.receipt && typeof raw.receipt === 'object' && !Array.isArray(raw.receipt)
+    && exactKeys(raw.receipt, ['message_id','event','actor','at'])) return raw;
+  throw new FrameError('frame_invalid', 'Invalid conversation frame');
+}
+
+export function conversationPresenceFrames(relay: string | null, addrs: string[], entries: RemoteConversationRegistration[]): ConversationFrame[] {
+  const frames: ConversationFrame[] = [];
+  let frame: Extract<ConversationFrame, { kind: 'conversations' }> = { version: 2, kind: 'conversations', relay, addrs, entries: [] };
+  for (const entry of entries) {
+    const next = { ...frame, entries: [...frame.entries, entry] };
+    if (Buffer.byteLength(JSON.stringify(next)) > FRAME_MAX_BYTES) {
+      if (!frame.entries.length) throw new FrameError('frame_too_large', 'Presence entry too large');
+      frames.push(frame); frame = { ...frame, entries: [entry] };
+      parseConversationFrame(Buffer.from(JSON.stringify(frame)));
+    } else frame = next;
+  }
+  frames.push(frame);
+  return frames;
+}
 
 export const ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 

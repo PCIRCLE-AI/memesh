@@ -5,10 +5,34 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { spawn } from 'node:child_process';
+import { probeBridge } from './control-socket.js';
+import { logPath } from './bridge-state.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { startBridge } from './bridge-control.js';
 import { readConfig } from './store.js';
-import { networkDir, type NetworkContext } from './types.js';
+import { networkDir, childEnv, type NetworkContext } from './types.js';
+
+/** Short-lived public bootstrap; the hook does not wait for migration or installation. */
+export async function bootstrapNetworkBridge(ctx: NetworkContext, cliEntry: string): Promise<'not-joined' | 'running' | 'starting'> {
+  let directory: fs.Stats;
+  try { directory = fs.lstatSync(networkDir(ctx.dataDir)); }
+  catch (error) { if ((error as NodeJS.ErrnoException).code === 'ENOENT') return 'not-joined'; throw error; }
+  if (!directory.isDirectory() || directory.isSymbolicLink()
+    || (process.platform !== 'win32' && (directory.uid !== process.getuid?.() || (directory.mode & 0o077) !== 0))) throw new Error('Unsafe network directory');
+  const probe = await probeBridge(ctx.dataDir, 200);
+  if (probe.kind === 'running') return 'running';
+  if (probe.kind === 'unresponsive') throw new Error('Network bridge unresponsive; bootstrap refused');
+  const fd = fs.openSync(logPath(ctx.dataDir), fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT | fs.constants.O_NOFOLLOW, 0o600);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile() || stat.nlink !== 1 || (process.platform !== 'win32' && (stat.uid !== process.getuid?.() || (stat.mode & 0o077) !== 0))) throw new Error('Unsafe network log');
+    const child = spawn(process.execPath, [cliEntry, 'network', 'up'], { env: childEnv(ctx), detached: true, windowsHide: true, stdio: ['ignore', fd, fd] });
+    await new Promise<void>((resolve, reject) => { child.once('spawn', resolve); child.once('error', reject); });
+    child.unref();
+    return 'starting';
+  } finally { fs.closeSync(fd); }
+}
 
 const RETRY_AFTER_MS = 30_000;
 

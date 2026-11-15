@@ -34,6 +34,7 @@ export interface NetworkContext {
     env?: NodeJS.ProcessEnv;
 }
 export declare function networkDir(dataDir: string): string;
+export declare function networkMetadataPath(dataDir: string): string;
 export declare function runtimeDir(dataDir: string): string;
 export declare function childEnv(ctx: NetworkContext): NodeJS.ProcessEnv;
 export declare function safeForTerminal(text: string): string;

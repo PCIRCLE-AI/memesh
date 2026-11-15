@@ -1,11 +1,10 @@
 #!/usr/bin/env node
 // Whole message delivery is independent of memory capture and project selection.
 import fs from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { pathToFileURL, fileURLToPath } from 'node:url';
 import { ConversationMessages } from './_generated/conversation-messages.js';
-import { hookSourceHost, recordHookOutcome, SKIP_REASONS, HOOK_BUSY_TIMEOUT_MS } from './_shared.js';
+import { hookSourceHost, recordHookOutcome, SKIP_REASONS, HOOK_BUSY_TIMEOUT_MS, getDbPath, getMemeshDirFromDbPath } from './_shared.js';
 
 const writeStdout = text => new Promise((resolve, reject) => {
   process.stdout.write(text, error => error ? reject(error) : resolve());
@@ -26,7 +25,8 @@ export async function deliverConversationMessages(payload, options = {}) {
       const pid = (options.findHostPid ?? (() => process.ppid))(host);
       if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('conversation-host-process-unavailable');
       store = new ConversationMessages({ busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
-      store.register({ id, host, machine: os.hostname(), pid, wake: host === 'codex'
+      if (store.networkIssue) record('error', `network: ${store.networkIssue}`);
+      store.register({ id, host, machine: store.machine, pid, wake: host === 'codex'
         ? { thread: id } : { socket: process.env.CLAUDE_CODE_MESSAGING_SOCKET } });
       const batch = store.hookBatch(id);
       if (batch.ids.length === 0) {
@@ -38,6 +38,16 @@ export async function deliverConversationMessages(payload, options = {}) {
         await (options.write ?? writeStdout)(output);
         store.recordHookDelivery(id, batch.ids, payload.hook_event_name);
         record('notified', undefined, `messages:${batch.ids.length}`);
+      }
+      if (payload.hook_event_name === 'SessionStart' && fs.existsSync(path.join(getMemeshDirFromDbPath(), 'network'))) {
+        try {
+          const moduleUrl = new URL('../../dist/network/auto-start.js', import.meta.url);
+          const { bootstrapNetworkBridge } = await import(moduleUrl.href);
+          const assetsDir = fileURLToPath(new URL('../../dist/network/', import.meta.url));
+          const result = await bootstrapNetworkBridge({ dataDir: getMemeshDirFromDbPath(), dbPath: getDbPath(), assetsDir,
+            bridgeEntry: path.join(assetsDir, 'bridge.js') }, fileURLToPath(new URL('../../dist/transports/cli/cli.js', import.meta.url)));
+          record(result === 'starting' ? 'notified' : 'skipped', `network-${result}`);
+        } catch (error) { record('error', `network-bootstrap: ${error.message}`); }
       }
     }
   } catch (error) {

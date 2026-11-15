@@ -71,6 +71,7 @@ export declare class ConversationMessages {
     private readonly clock;
     private readonly processAlive;
     private readonly network?;
+    readonly networkIssue?: string;
     constructor(options?: {
         file?: string;
         machine?: string;
@@ -119,9 +120,12 @@ export declare class ConversationMessages {
     recordHookDelivery(caller: string, ids: string[], hook: string): void;
     exportRegistrations(): RemoteConversationRegistration[];
     replaceRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[]): void;
+    upsertRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[]): void;
+    private writeRemoteRegistrations;
     outgoingFor(peerId: string): NetworkConversationMessage[];
     receiveFrom(peerId: string, wire: NetworkConversationMessage): 'accepted' | 'duplicate';
     recordCopyAccepted(peerId: string, messageId: string): void;
+    recordNetworkPush(peerId: string, messageId: string, route: 'claude-socket' | 'codex-queue'): void;
     receiptsFor(peerId: string): ConversationDeliveryReceipt[];
     recordReceiptAccepted(peerId: string, receipt: ConversationDeliveryReceipt): void;
     receiveReceipt(peerId: string, receipt: ConversationDeliveryReceipt): 'accepted' | 'duplicate';

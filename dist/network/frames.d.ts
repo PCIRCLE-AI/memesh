@@ -1,6 +1,24 @@
 import { type AgentContentType, type AgentJsonValue } from '../core/agent-messaging.js';
 import type { SignedRoster } from './types.js';
 import type { BiStream } from './iroh-types.js';
+import type { NetworkConversationMessage, ConversationDeliveryReceipt, RemoteConversationRegistration } from '../core/conversation-messages.js';
+export type ConversationFrame = {
+    version: 2;
+    kind: 'conversations';
+    relay: string | null;
+    addrs: string[];
+    entries: RemoteConversationRegistration[];
+} | {
+    version: 2;
+    kind: 'conversation-message';
+    row: NetworkConversationMessage;
+} | {
+    version: 2;
+    kind: 'conversation-receipt';
+    receipt: ConversationDeliveryReceipt;
+};
+export declare function parseConversationFrame(bytes: Buffer): ConversationFrame;
+export declare function conversationPresenceFrames(relay: string | null, addrs: string[], entries: RemoteConversationRegistration[]): ConversationFrame[];
 export declare const ROSTER_EXCHANGE_MAX_BYTES: number;
 export declare function parseRosterExchange(bytes: Buffer): SignedRoster;
 export declare function exchangeRosterStream(stream: BiStream, local: SignedRoster | null, accept: (incoming: SignedRoster) => SignedRoster, timeoutMs: number): Promise<void>;

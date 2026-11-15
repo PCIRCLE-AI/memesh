@@ -18,6 +18,19 @@ const target: ConversationRegistration = { id: 'B', host: 'codex', machine: os.h
 afterEach(() => { vi.restoreAllMocks(); vi.resetAllMocks(); vi.useRealTimers(); });
 
 describe('registered conversation wake', () => {
+  it('accepts a trusted local roster name but not a remote or similar machine', async () => {
+    vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+      (args.at(-1) as (error: Error | null) => void)(null);
+      return {} as ReturnType<typeof execFile>;
+    });
+    const local = { ...target, machine: 'signed-local' };
+    const incoming = { ...message, recipient_machine: 'signed-local' };
+    expect((await wakeConversationMessage(incoming, local, 'signed-local')).pushed).toBe(true);
+    vi.mocked(execFile).mockClear();
+    expect((await wakeConversationMessage(incoming, { ...local, machine: 'signed-local-remote' }, 'signed-local')).pushed).toBe(false);
+    expect((await wakeConversationMessage(incoming, undefined, 'signed-local')).pushed).toBe(false);
+    expect(execFile).not.toHaveBeenCalled();
+  });
   it('uses only the registered thread and bounded shell-free Codex argv', async () => {
     vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
       (args.at(-1) as (error: Error | null) => void)(null);

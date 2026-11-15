@@ -1,6 +1,10 @@
 import { spawn } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import fs from 'node:fs';
+import { migrateNetworkMetadata } from './metadata.js';
+import { openPublicNetworkDatabase } from '../core/public-network-context.js';
+import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
+import path from 'node:path';
 import { describeChildDeath, startBridge } from './bridge-control.js';
 import { readStatus, reportedPid } from './bridge-state.js';
 import { assertControlPathFits, probeBridge } from './control-socket.js';
@@ -12,7 +16,7 @@ import { parseRelayUrl } from './relay-url.js';
 import { acceptRoster, assertValidName, createRoster, findMember, parseRoster, signRoster } from './roster.js';
 import { ensureRuntime } from './runtime.js';
 import { databaseExists, insertConfig, openNetworkStore, readConfig } from './store.js';
-import { DEFAULT_RELAY_URL, NetworkError, RELAY_OFF, SINGLE_MACHINE_NOTE, childEnv, errorMessage, networkDir, safeForTerminal, } from './types.js';
+import { DEFAULT_RELAY_URL, NetworkError, RELAY_OFF, SINGLE_MACHINE_NOTE, childEnv, errorMessage, networkDir, networkMetadataPath, safeForTerminal, } from './types.js';
 const JOIN_CHILD_DEADLINE_MS = 90_000;
 const JOIN_CHILD_OUTPUT_MAX_BYTES = 1024 * 1024;
 const ADDRESS_WAIT_MS = 10_000;
@@ -29,9 +33,9 @@ function resolveRelay(relay, fallback) {
 }
 const NOT_JOINED = 'This machine is not in a network yet. Run `memesh network create` or `memesh network join`.';
 function withConfig(ctx, use) {
-    if (!databaseExists(ctx.dbPath))
+    if (!databaseExists(networkMetadataPath(ctx.dataDir)))
         throw new NetworkError('not_joined', NOT_JOINED);
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     try {
         const config = readConfig(db);
         if (!config) {
@@ -44,17 +48,21 @@ function withConfig(ctx, use) {
     }
 }
 function refuseIfAlreadyJoined(ctx) {
-    if (!databaseExists(ctx.dbPath))
-        return;
-    const db = openNetworkStore(ctx.dbPath);
-    try {
-        const config = readConfig(db);
-        if (config) {
-            throw new NetworkError('already_joined', `This machine is already in a network as "${config.machine_name}". Leaving a network is not available yet.`);
+    for (const file of [networkMetadataPath(ctx.dataDir), ctx.dbPath]) {
+        const db = openPublicNetworkDatabase(file);
+        if (!db)
+            continue;
+        try {
+            if (!db.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_network_config'").get())
+                continue;
+            const config = readConfig(db);
+            if (config) {
+                throw new NetworkError('already_joined', `This machine is already in a network as "${config.machine_name}". Leaving a network is not available yet.`);
+            }
         }
-    }
-    finally {
-        db.close();
+        finally {
+            db.close();
+        }
     }
 }
 export function createNetwork(ctx, options) {
@@ -84,7 +92,7 @@ export function createNetwork(ctx, options) {
         roster_json: signed.roster_json,
         roster_signature: signed.signature,
     };
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     try {
         insertConfig(db, config, now);
     }
@@ -105,6 +113,7 @@ async function waitForDirectAddresses(ctx) {
     }
 }
 export async function createLink(ctx, options = {}) {
+    await migrateNetworkMetadata(ctx);
     const hours = options.ttlHours ?? DEFAULT_INVITE_TTL_HOURS;
     if (!Number.isFinite(hours) || hours <= 0 || hours > MAX_INVITE_TTL_HOURS) {
         throw new NetworkError('invalid_option', `--ttl-hours must be a number above 0 and at most ${MAX_INVITE_TTL_HOURS}.`);
@@ -128,7 +137,7 @@ export async function createLink(ctx, options = {}) {
         }
     }
     const identity = loadIdentity(ctx.dataDir);
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     try {
         const { token, expiresAtMs } = createInvite(db, ttlMs, Date.now());
         const fields = {
@@ -253,7 +262,7 @@ export async function joinNetwork(ctx, options) {
         roster_json: reply.roster.roster_json,
         roster_signature: reply.roster.signature,
     };
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
     try {
         db.transaction(() => {
             insertConfig(db, config, Date.now());
@@ -266,19 +275,25 @@ export async function joinNetwork(ctx, options) {
     return { config, roster, member, relayReached: result.relay_reached };
 }
 export async function bridgeUp(ctx, options = {}) {
-    withConfig(ctx, () => undefined);
+    assertLegacyPathsAreDifferent(ctx.dbPath, path.join(ctx.dataDir, 'messages.db'));
+    assertLegacyPathsAreDifferent(ctx.dbPath, networkMetadataPath(ctx.dataDir));
     if (options.force) {
         if ((await probeBridge(ctx.dataDir)).kind !== 'not-running') {
             throw new NetworkError('bridge_unresponsive', 'The network bridge is running, so its files cannot be reinstalled. Stop it first with `memesh network down`.');
         }
-        ensureRuntime(ctx, options);
     }
+    await migrateNetworkMetadata(ctx);
+    withConfig(ctx, () => undefined);
+    if (options.force)
+        ensureRuntime(ctx, options);
     return startBridge(ctx);
 }
 export async function getNetworkStatus(ctx) {
-    if (!fs.existsSync(networkDir(ctx.dataDir)) || !fs.existsSync(ctx.dbPath))
+    if (!fs.existsSync(networkDir(ctx.dataDir)))
         return { joined: false };
-    const db = openNetworkStore(ctx.dbPath);
+    const db = openPublicNetworkDatabase(networkMetadataPath(ctx.dataDir));
+    if (!db)
+        return { joined: false };
     let config;
     try {
         config = readConfig(db);

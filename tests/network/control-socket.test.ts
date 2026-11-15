@@ -13,7 +13,7 @@ import { parseLink } from '../../src/network/invites.js';
 import { bridgeUp, createLink, createNetwork, getNetworkStatus } from '../../src/network/operations.js';
 import { createRoster, signRoster } from '../../src/network/roster.js';
 import { insertConfig, openNetworkStore } from '../../src/network/store.js';
-import { childEnv, type NetworkContext } from '../../src/network/types.js';
+import { childEnv, networkMetadataPath, type NetworkContext } from '../../src/network/types.js';
 import { buildTree, contextFor, makeHome, removeTree, type Tree } from './helpers.js';
 
 const NETWORK_ID = '0123456789abcdef0123456789abcdef';
@@ -49,7 +49,7 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
     const signed = signRoster(identity, createRoster(NETWORK_ID, {
       machine_id: identity.machineId, name: 'mac', person: 'kt', joined_at: new Date().toISOString(),
     }));
-    const db = openNetworkStore(target.dbPath);
+    const db = openNetworkStore(networkMetadataPath(target.dataDir), { metadataOnly: true });
     insertConfig(db, {
       network_id: NETWORK_ID, owner_id: identity.machineId, machine_id: identity.machineId,
       machine_name: 'mac', person: 'kt', relay_url: relay, roster_json: signed.roster_json, roster_signature: signed.signature,

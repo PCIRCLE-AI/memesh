@@ -26,9 +26,9 @@ function privateSocket(socketPath: string): fs.Stats {
 }
 
 /** Only registered host metadata reaches this boundary; no model-supplied routes or commands. */
-export async function wakeConversationMessage(message: ConversationMessage, target: ConversationRegistration | undefined): Promise<ConversationWakeResult> {
+export async function wakeConversationMessage(message: ConversationMessage, target: ConversationRegistration | undefined, localMachine = os.hostname().toLowerCase()): Promise<ConversationWakeResult> {
   if (!target || target.id !== message.recipient || target.host !== message.recipient_host
-    || target.machine !== message.recipient_machine || target.machine !== os.hostname().toLowerCase()
+    || target.machine !== message.recipient_machine || target.machine !== localMachine
     || !alive(target.pid) || message.body === null) return { pushed: false, reason: 'unavailable' };
   const content = renderConversationMessage(message);
   if (Buffer.byteLength(content, 'utf8') > MESSAGE_MAX_BYTES) return { pushed: false, reason: 'unavailable' };

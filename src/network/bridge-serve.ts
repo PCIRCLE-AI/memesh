@@ -5,6 +5,11 @@
 // exactly like one that is working.
 
 import fs from 'node:fs';
+import path from 'node:path';
+import { ConversationMessages } from '../core/conversation-messages.js';
+import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
+import { getDbPath } from '../core/paths.js';
+import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { logPath, writeStatus, type BridgeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
@@ -16,17 +21,13 @@ import { explainLoadFailure, loadNative } from './native-loader.js';
 import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint, type RelaySignals } from './relay-monitor.js';
 import { findMember, verifyRoster } from './roster.js';
 import { appendTestFrameLog } from './test-frame-log.js';
-import { createAgentRouterNotifier } from '../core/agent-router.js';
-import { getAgentRouterSocketPath } from '../core/paths.js';
 import {
-  buildMessageFrame, dueMachines, dueOutgoingFor, enqueueOutgoing, expireOverdue, frameLabel, localPresence, messagingAvailable,
-  peerRoute, receiveMessage, receivePresence, recordAttempt, recordUnsendable, retryNowFor, type Joined, type OutboxEntry,
+  peerRoute, rememberPeer, type Joined,
 } from './courier.js';
 import {
-  ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, type Ack, type Frame,
-  exchangeRosterStream,
+  ACK_MAX_BYTES, FRAME_MAX_BYTES, FrameError, parseAck, type Ack,
+  exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, type ConversationFrame,
 } from './frames.js';
-import type { AgentMessagePostCommitNotifier } from '../core/agent-messaging.js';
 import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
   EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir,
@@ -66,6 +67,9 @@ function line(event: string, detail: Record<string, unknown>): string {
 }
 
 export async function serve(dataDir: string, dbPath: string): Promise<number> {
+  // Explicit messages opens must retain the default opener's graph separation.
+  assertLegacyPathsAreDifferent(getDbPath(), path.join(dataDir, 'messages.db'));
+  assertLegacyPathsAreDifferent(getDbPath(), dbPath);
   try { process.umask(0o077); } catch { /* non-POSIX */ }
 
   ensureNetworkDir(dataDir);
@@ -131,7 +135,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   let db: MemeshDatabase;
   let config: NetworkConfig | null;
   try {
-    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
+    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
     config = readConfig(db);
   } catch (err) {
     return fail('exit_database', `Cannot open the database: ${errorMessage(err)}`);
@@ -344,29 +348,38 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     }
   };
 
-  let notifier: AgentMessagePostCommitNotifier | undefined;
-  try {
-    notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
-  } catch {
-    notifier = undefined; // No usable router path: the message is stored and found on the next drain.
-  }
-
+  const messages = (joined: Joined): ConversationMessages => {
+    const self = findMember(joined.roster, machineId);
+    if (!self) throw new Error('This machine is no longer a network member');
+    return new ConversationMessages({ file: path.join(dataDir, 'messages.db'), busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
+      network: { network_id: joined.config.network_id, self: { id: machineId, name: self.name },
+        members: joined.roster.members.map(m => ({ id: m.machine_id, name: m.name })) } });
+  };
   let lastPresenceAt = 0;
-  const answer = (frame: Frame, joined: Joined, remoteId: string): Ack => {
+  const answer = async (frame: ConversationFrame, joined: Joined, remoteId: string): Promise<Ack> => {
     const member = findMember(joined.roster, remoteId);
     if (!member) return { result: 'rejected', code: 'not_a_member' };
-    if (frame.kind === 'presence') {
+    const store = messages(joined);
+    try {
+    if (frame.kind === 'conversations') {
       const firstContact = !peerRoute(db, remoteId);
-      receivePresence(db, member, frame, Date.now());
-      retryNowFor(db, remoteId, Date.now());
+      store.upsertRemoteRegistrations(remoteId, frame.entries);
+      rememberPeer(db, remoteId, frame.relay, frame.addrs, Date.now());
       if (firstContact) lastPresenceAt = 0; // A machine heard from for the first time hears back on the next round, not in a minute.
       return { result: 'accepted' };
     }
-    if (!messagingAvailable(db)) {
-      recordError('messaging_unavailable', 'A message arrived, but the message tables do not exist here yet; it will be retried.');
-      return { result: 'retry', code: 'messaging_unavailable' };
+    if (frame.kind === 'conversation-receipt') return { result: store.receiveReceipt(remoteId, frame.receipt) };
+    const result = store.receiveFrom(remoteId, frame.row);
+    if (result === 'accepted') {
+      const message = store.status(frame.row.message.recipient, frame.row.message.id)[0]!;
+      const wake = await wakeConversationMessage(message, store.wakeTarget(message.id), store.machine);
+      if (wake.pushed) {
+        authorize(remoteId);
+        store.recordNetworkPush(remoteId, message.id, wake.route);
+      }
     }
-    return receiveMessage(db, joined, member, frame, notifier);
+    return { result };
+    } finally { store.close(); }
   };
 
   const answerMember = async (connection: Connection, remoteId: string): Promise<void> => {
@@ -391,9 +404,10 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     }
     let ack: Ack;
     try {
-      const frame = parseFrame(bytes);
-      ack = answer(frame, authorize(remoteId), remoteId);
-      appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+      const frame = parseConversationFrame(bytes);
+      ack = await answer(frame, authorize(remoteId), remoteId);
+      authorize(remoteId);
+      appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frame.kind, result: ack.result, code: ack.code ?? null });
     } catch (err) {
       if (err instanceof FrameError) ack = { result: 'rejected', code: err.code };
       else {
@@ -410,7 +424,8 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   };
 
   /** One frame to one member on its own stream; the answer, and whether it went through the relay. */
-  const sendFrame = async (target: string, frame: Frame): Promise<{ ack: Ack; path: string | null }> => {
+  const sendFrame = async (target: string, frame: ConversationFrame): Promise<{ ack: Ack; path: string | null }> => {
+    parseConversationFrame(Buffer.from(JSON.stringify(frame)));
     const route = peerRoute(db, target);
     const relay = route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl);
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
@@ -426,8 +441,16 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       authorize(target);
       memberConnections.set(connection, target);
       const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening a stream');
-      authorize(target);
-      await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, 'sending a frame');
+      const fresh = messages(authorize(target));
+      try {
+        // A roster/network may have changed while connecting: an old selected
+        // row must never cross into a newly joined network sharing the peer key.
+        if (frame.kind === 'conversation-message'
+          && !fresh.outgoingFor(target).some(row => JSON.stringify(row) === JSON.stringify(frame.row))) throw new Error('Outgoing network binding changed');
+        if (frame.kind === 'conversation-receipt'
+          && !fresh.receiptsFor(target).some(receipt => JSON.stringify(receipt) === JSON.stringify(frame.receipt))) throw new Error('Receipt network binding changed');
+      } finally { fresh.close(); }
+      await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), STREAM_DEADLINE_MS, 'sending a frame');
       await deadline(stream.send.finish(), STREAM_DEADLINE_MS, 'sending a frame');
       const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, 'waiting for the answer')));
       authorize(target);
@@ -444,37 +467,33 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   };
 
   let courierBusy = false;
-  /** One attempt; false when the machine could not be reached, so its run stops there. */
-  const deliver = async (joined: Joined, entry: OutboxEntry): Promise<boolean> => {
-    const frame = buildMessageFrame(db, joined, entry);
-    if (typeof frame === 'string') {
-      recordUnsendable(db, entry, frame, notifier);
-      appendLog(dataDir, 'message_unsendable', { delivery_id: entry.delivery_id, code: frame });
-      return true;
-    }
-    try {
-      const { ack, path } = await sendFrame(entry.machine_id, frame);
-      const outcome = recordAttempt(db, entry, { ack, path }, Date.now(), notifier);
-      appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: ack.code ?? null, path });
-      return true;
-    } catch (err) {
-      if (stopping) return false; // The endpoint closed under it: not an attempt that says anything.
-      const outcome = recordAttempt(db, entry, { failure: 'unreachable' }, Date.now(), notifier);
-      appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: 'unreachable', error: errorMessage(err) });
-      return false;
-    }
-  };
   // Each machine is handled on its own: a member that does not answer costs its own
   // connect deadline, never another member's message or presence.
   const sendingTo = new Set<string>();
   const announcingTo = new Set<string>();
   /** One machine's due messages, in order; stops at the first it cannot reach. */
-  const deliverTo = async (joined: Joined, target: string): Promise<void> => {
+  const deliverTo = async (target: string): Promise<void> => {
     sendingTo.add(target);
     try {
-      for (const entry of dueOutgoingFor(db, target, Date.now())) {
+      const before = messages(authorize(target));
+      let outgoing; let receipts;
+      try { outgoing = before.outgoingFor(target); receipts = before.receiptsFor(target); } finally { before.close(); }
+      for (const row of outgoing) {
         if (stopping) return;
-        if (!(await deliver(joined, entry))) return;
+        const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-message', row });
+        if (ack.result !== 'accepted' && ack.result !== 'duplicate') {
+          appendLog(dataDir, 'message_not_accepted', { message_id: row.message.id, result: ack.result, code: ack.code ?? null });
+          return;
+        }
+        const current = messages(authorize(target));
+        try { current.recordCopyAccepted(target, row.message.id); } finally { current.close(); }
+      }
+      for (const receipt of receipts) {
+        if (stopping) return;
+        const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-receipt', receipt });
+        if (ack.result !== 'accepted' && ack.result !== 'duplicate') return;
+        const current = messages(authorize(target));
+        try { current.recordReceiptAccepted(target, receipt); } finally { current.close(); }
       }
     } catch (err) {
       if (!stopping) recordError('courier_failed', errorMessage(err));
@@ -487,24 +506,25 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   const sentTo = new Map<string, string>();
   /** Send presence to every member whose last copy differs, or to all on a heartbeat. */
   const announce = (joined: Joined, heartbeat: boolean): void => {
-    const frame: Frame = {
-      version: FRAME_VERSION,
-      kind: 'presence',
-      relay: relayUrl === RELAY_OFF ? null : relayUrl,
-      addrs: advertisedAddresses(endpoint),
-      entries: localPresence(db, joined, Date.now()),
-    };
-    const content = JSON.stringify(frame);
+    const store = messages(joined);
+    let frames: ConversationFrame[];
+    try { frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations()); }
+    finally { store.close(); }
+    const content = JSON.stringify(frames);
     for (const member of joined.roster.members) {
       const target = member.machine_id;
       if (target === machineId || announcingTo.has(target)) continue;
       if (!heartbeat && sentTo.get(target) === content) continue; // Nothing new for it.
       if (!peerRoute(db, target) && relayUrl === RELAY_OFF) continue; // No way to reach it yet.
-      // Recorded when sent, so a member that does not answer is tried again on the
-      // heartbeat or the next change, not every second.
-      sentTo.set(target, content);
       announcingTo.add(target);
-      void sendFrame(target, frame)
+      void (async () => {
+        for (const frame of frames) {
+          if (stopping) return;
+          const { ack } = await sendFrame(target, frame);
+          if (ack.result !== 'accepted') throw new Error('Presence not accepted');
+        }
+        sentTo.set(target, content);
+      })()
         .catch((err: unknown) => { if (!stopping) appendLog(dataDir, 'presence_unreachable', { machine_id: target, error: errorMessage(err) }); })
         .finally(() => { announcingTo.delete(target); });
     }
@@ -515,14 +535,14 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     courierBusy = true;
     try {
       revokeConnections();
-      if (!messagingAvailable(db)) return;
       const joined = joinedNow();
       const now = Date.now();
-      enqueueOutgoing(db, joined, now);
-      expireOverdue(db, now, notifier);
+      const store = messages(joined);
+      try { store.maintainMessages(); } finally { store.close(); }
       // Started, not awaited: each machine runs on its own, at most one run each at a time.
-      for (const target of dueMachines(db, now)) {
-        if (!sendingTo.has(target)) void deliverTo(joined, target);
+      for (const member of joined.roster.members) {
+        const target = member.machine_id;
+        if (target !== machineId && !sendingTo.has(target)) void deliverTo(target);
       }
       const heartbeat = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
       if (heartbeat) lastPresenceAt = now;

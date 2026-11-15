@@ -95,6 +95,10 @@ export function networkDir(dataDir: string): string {
   return path.join(dataDir, 'network');
 }
 
+export function networkMetadataPath(dataDir: string): string {
+  return path.join(networkDir(dataDir), 'metadata.db');
+}
+
 export function runtimeDir(dataDir: string): string {
   return path.join(networkDir(dataDir), 'runtime');
 }

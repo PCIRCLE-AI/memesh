@@ -1,4 +1,9 @@
 import fs from 'node:fs';
+import path from 'node:path';
+import { ConversationMessages } from '../core/conversation-messages.js';
+import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
+import { getDbPath } from '../core/paths.js';
+import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
 import { logPath, writeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
 import { advertisedAddresses, bindEndpoint, deadline, toBytes } from './endpoint.js';
@@ -8,10 +13,8 @@ import { explainLoadFailure, loadNative } from './native-loader.js';
 import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint } from './relay-monitor.js';
 import { findMember, verifyRoster } from './roster.js';
 import { appendTestFrameLog } from './test-frame-log.js';
-import { createAgentRouterNotifier } from '../core/agent-router.js';
-import { getAgentRouterSocketPath } from '../core/paths.js';
-import { buildMessageFrame, dueMachines, dueOutgoingFor, enqueueOutgoing, expireOverdue, frameLabel, localPresence, messagingAvailable, peerRoute, receiveMessage, receivePresence, recordAttempt, recordUnsendable, retryNowFor, } from './courier.js';
-import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FRAME_VERSION, FrameError, encodeFrame, parseAck, parseFrame, exchangeRosterStream, } from './frames.js';
+import { peerRoute, rememberPeer, } from './courier.js';
+import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FrameError, parseAck, exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, } from './frames.js';
 import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf } from './store.js';
 import { EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
@@ -45,6 +48,8 @@ function line(event, detail) {
     return `${JSON.stringify({ at: new Date().toISOString(), pid: process.pid, event, ...detail })}\n`;
 }
 export async function serve(dataDir, dbPath) {
+    assertLegacyPathsAreDifferent(getDbPath(), path.join(dataDir, 'messages.db'));
+    assertLegacyPathsAreDifferent(getDbPath(), dbPath);
     try {
         process.umask(0o077);
     }
@@ -110,7 +115,7 @@ export async function serve(dataDir, dbPath) {
     let db;
     let config;
     try {
-        db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
+        db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
         config = readConfig(db);
     }
     catch (err) {
@@ -329,31 +334,45 @@ export async function serve(dataDir, dbPath) {
             }
         }
     };
-    let notifier;
-    try {
-        notifier = createAgentRouterNotifier(getAgentRouterSocketPath());
-    }
-    catch {
-        notifier = undefined;
-    }
+    const messages = (joined) => {
+        const self = findMember(joined.roster, machineId);
+        if (!self)
+            throw new Error('This machine is no longer a network member');
+        return new ConversationMessages({ file: path.join(dataDir, 'messages.db'), busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
+            network: { network_id: joined.config.network_id, self: { id: machineId, name: self.name },
+                members: joined.roster.members.map(m => ({ id: m.machine_id, name: m.name })) } });
+    };
     let lastPresenceAt = 0;
-    const answer = (frame, joined, remoteId) => {
+    const answer = async (frame, joined, remoteId) => {
         const member = findMember(joined.roster, remoteId);
         if (!member)
             return { result: 'rejected', code: 'not_a_member' };
-        if (frame.kind === 'presence') {
-            const firstContact = !peerRoute(db, remoteId);
-            receivePresence(db, member, frame, Date.now());
-            retryNowFor(db, remoteId, Date.now());
-            if (firstContact)
-                lastPresenceAt = 0;
-            return { result: 'accepted' };
+        const store = messages(joined);
+        try {
+            if (frame.kind === 'conversations') {
+                const firstContact = !peerRoute(db, remoteId);
+                store.upsertRemoteRegistrations(remoteId, frame.entries);
+                rememberPeer(db, remoteId, frame.relay, frame.addrs, Date.now());
+                if (firstContact)
+                    lastPresenceAt = 0;
+                return { result: 'accepted' };
+            }
+            if (frame.kind === 'conversation-receipt')
+                return { result: store.receiveReceipt(remoteId, frame.receipt) };
+            const result = store.receiveFrom(remoteId, frame.row);
+            if (result === 'accepted') {
+                const message = store.status(frame.row.message.recipient, frame.row.message.id)[0];
+                const wake = await wakeConversationMessage(message, store.wakeTarget(message.id), store.machine);
+                if (wake.pushed) {
+                    authorize(remoteId);
+                    store.recordNetworkPush(remoteId, message.id, wake.route);
+                }
+            }
+            return { result };
         }
-        if (!messagingAvailable(db)) {
-            recordError('messaging_unavailable', 'A message arrived, but the message tables do not exist here yet; it will be retried.');
-            return { result: 'retry', code: 'messaging_unavailable' };
+        finally {
+            store.close();
         }
-        return receiveMessage(db, joined, member, frame, notifier);
     };
     const answerMember = async (connection, remoteId) => {
         const handshake = await deadline(connection.acceptBi(), STREAM_DEADLINE_MS, 'waiting for roster');
@@ -376,9 +395,10 @@ export async function serve(dataDir, dbPath) {
             }
             let ack;
             try {
-                const frame = parseFrame(bytes);
-                ack = answer(frame, authorize(remoteId), remoteId);
-                appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frameLabel(frame), result: ack.result, code: ack.code ?? null });
+                const frame = parseConversationFrame(bytes);
+                ack = await answer(frame, authorize(remoteId), remoteId);
+                authorize(remoteId);
+                appendLog(dataDir, 'frame_received', { machine_id: remoteId, frame: frame.kind, result: ack.result, code: ack.code ?? null });
             }
             catch (err) {
                 if (err instanceof FrameError)
@@ -399,6 +419,7 @@ export async function serve(dataDir, dbPath) {
         }
     };
     const sendFrame = async (target, frame) => {
+        parseConversationFrame(Buffer.from(JSON.stringify(frame)));
         const route = peerRoute(db, target);
         const relay = route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl);
         const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), relay, route?.addrs ?? []);
@@ -414,8 +435,19 @@ export async function serve(dataDir, dbPath) {
             authorize(target);
             memberConnections.set(connection, target);
             const stream = await deadline(connection.openBi(), STREAM_DEADLINE_MS, 'opening a stream');
-            authorize(target);
-            await deadline(stream.send.writeAll(toBytes(encodeFrame(frame))), STREAM_DEADLINE_MS, 'sending a frame');
+            const fresh = messages(authorize(target));
+            try {
+                if (frame.kind === 'conversation-message'
+                    && !fresh.outgoingFor(target).some(row => JSON.stringify(row) === JSON.stringify(frame.row)))
+                    throw new Error('Outgoing network binding changed');
+                if (frame.kind === 'conversation-receipt'
+                    && !fresh.receiptsFor(target).some(receipt => JSON.stringify(receipt) === JSON.stringify(frame.receipt)))
+                    throw new Error('Receipt network binding changed');
+            }
+            finally {
+                fresh.close();
+            }
+            await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), STREAM_DEADLINE_MS, 'sending a frame');
             await deadline(stream.send.finish(), STREAM_DEADLINE_MS, 'sending a frame');
             const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, 'waiting for the answer')));
             authorize(target);
@@ -433,37 +465,50 @@ export async function serve(dataDir, dbPath) {
         }
     };
     let courierBusy = false;
-    const deliver = async (joined, entry) => {
-        const frame = buildMessageFrame(db, joined, entry);
-        if (typeof frame === 'string') {
-            recordUnsendable(db, entry, frame, notifier);
-            appendLog(dataDir, 'message_unsendable', { delivery_id: entry.delivery_id, code: frame });
-            return true;
-        }
-        try {
-            const { ack, path } = await sendFrame(entry.machine_id, frame);
-            const outcome = recordAttempt(db, entry, { ack, path }, Date.now(), notifier);
-            appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: ack.code ?? null, path });
-            return true;
-        }
-        catch (err) {
-            if (stopping)
-                return false;
-            const outcome = recordAttempt(db, entry, { failure: 'unreachable' }, Date.now(), notifier);
-            appendLog(dataDir, 'message_attempt', { delivery_id: entry.delivery_id, outcome, code: 'unreachable', error: errorMessage(err) });
-            return false;
-        }
-    };
     const sendingTo = new Set();
     const announcingTo = new Set();
-    const deliverTo = async (joined, target) => {
+    const deliverTo = async (target) => {
         sendingTo.add(target);
         try {
-            for (const entry of dueOutgoingFor(db, target, Date.now())) {
+            const before = messages(authorize(target));
+            let outgoing;
+            let receipts;
+            try {
+                outgoing = before.outgoingFor(target);
+                receipts = before.receiptsFor(target);
+            }
+            finally {
+                before.close();
+            }
+            for (const row of outgoing) {
                 if (stopping)
                     return;
-                if (!(await deliver(joined, entry)))
+                const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-message', row });
+                if (ack.result !== 'accepted' && ack.result !== 'duplicate') {
+                    appendLog(dataDir, 'message_not_accepted', { message_id: row.message.id, result: ack.result, code: ack.code ?? null });
                     return;
+                }
+                const current = messages(authorize(target));
+                try {
+                    current.recordCopyAccepted(target, row.message.id);
+                }
+                finally {
+                    current.close();
+                }
+            }
+            for (const receipt of receipts) {
+                if (stopping)
+                    return;
+                const { ack } = await sendFrame(target, { version: 2, kind: 'conversation-receipt', receipt });
+                if (ack.result !== 'accepted' && ack.result !== 'duplicate')
+                    return;
+                const current = messages(authorize(target));
+                try {
+                    current.recordReceiptAccepted(target, receipt);
+                }
+                finally {
+                    current.close();
+                }
             }
         }
         catch (err) {
@@ -476,14 +521,15 @@ export async function serve(dataDir, dbPath) {
     };
     const sentTo = new Map();
     const announce = (joined, heartbeat) => {
-        const frame = {
-            version: FRAME_VERSION,
-            kind: 'presence',
-            relay: relayUrl === RELAY_OFF ? null : relayUrl,
-            addrs: advertisedAddresses(endpoint),
-            entries: localPresence(db, joined, Date.now()),
-        };
-        const content = JSON.stringify(frame);
+        const store = messages(joined);
+        let frames;
+        try {
+            frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
+        }
+        finally {
+            store.close();
+        }
+        const content = JSON.stringify(frames);
         for (const member of joined.roster.members) {
             const target = member.machine_id;
             if (target === machineId || announcingTo.has(target))
@@ -492,9 +538,17 @@ export async function serve(dataDir, dbPath) {
                 continue;
             if (!peerRoute(db, target) && relayUrl === RELAY_OFF)
                 continue;
-            sentTo.set(target, content);
             announcingTo.add(target);
-            void sendFrame(target, frame)
+            void (async () => {
+                for (const frame of frames) {
+                    if (stopping)
+                        return;
+                    const { ack } = await sendFrame(target, frame);
+                    if (ack.result !== 'accepted')
+                        throw new Error('Presence not accepted');
+                }
+                sentTo.set(target, content);
+            })()
                 .catch((err) => { if (!stopping)
                 appendLog(dataDir, 'presence_unreachable', { machine_id: target, error: errorMessage(err) }); })
                 .finally(() => { announcingTo.delete(target); });
@@ -506,15 +560,19 @@ export async function serve(dataDir, dbPath) {
         courierBusy = true;
         try {
             revokeConnections();
-            if (!messagingAvailable(db))
-                return;
             const joined = joinedNow();
             const now = Date.now();
-            enqueueOutgoing(db, joined, now);
-            expireOverdue(db, now, notifier);
-            for (const target of dueMachines(db, now)) {
-                if (!sendingTo.has(target))
-                    void deliverTo(joined, target);
+            const store = messages(joined);
+            try {
+                store.maintainMessages();
+            }
+            finally {
+                store.close();
+            }
+            for (const member of joined.roster.members) {
+                const target = member.machine_id;
+                if (target !== machineId && !sendingTo.has(target))
+                    void deliverTo(target);
             }
             const heartbeat = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
             if (heartbeat)
