@@ -8,6 +8,7 @@ import { guardDatabaseFiles, removeGroupAndOtherAccess } from '../core/file-mode
 import { AGENT_NETWORK_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import type { SignedRoster } from './types.js';
+import { acceptRoster, findMember, verifyRoster } from './roster.js';
 
 export interface NetworkConfig {
   network_id: string;
@@ -69,4 +70,27 @@ export function saveRoster(db: MemeshDatabase, signed: SignedRoster): void {
 
 export function signedRosterOf(config: NetworkConfig): SignedRoster {
   return { roster_json: config.roster_json, signature: config.roster_signature };
+}
+
+/** An older authenticated advertisement requests our current roster, never a rollback. */
+export function exchangeRoster(db: MemeshDatabase, incoming: SignedRoster): SignedRoster {
+  return db.transaction(() => {
+    const config = readConfig(db);
+    if (!config) throw new Error('Network configuration missing.');
+    const current = signedRosterOf(config);
+    const held = verifyRoster(current, config.owner_id, config.network_id);
+    const offered = verifyRoster(incoming, config.owner_id, config.network_id);
+    if (offered.version < held.version) return current;
+    acceptRoster(current, incoming, config.owner_id, config.network_id);
+    if (offered.version > held.version) saveRoster(db, incoming);
+    return incoming;
+  })();
+}
+
+/** Re-read at every application boundary, including already-open connections. */
+export function authorizeNetworkPeer(db: MemeshDatabase, remoteId: string): void {
+  const config = readConfig(db);
+  if (!config) throw new Error('Network configuration missing.');
+  const roster = verifyRoster(signedRosterOf(config), config.owner_id, config.network_id);
+  if (!findMember(roster, config.machine_id) || !findMember(roster, remoteId)) throw new Error('not_a_member');
 }

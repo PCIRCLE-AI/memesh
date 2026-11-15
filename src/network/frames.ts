@@ -3,6 +3,44 @@
 // is never written and is refused when read.
 
 import { AGENT_MESSAGE_JSON_MAX_BYTES, type AgentContentType, type AgentJsonValue } from '../core/agent-messaging.js';
+import { SIGNED_ROSTER_MAX_BYTES } from './roster.js';
+import type { SignedRoster } from './types.js';
+import type { BiStream } from './iroh-types.js';
+import { deadline, toBytes } from './endpoint.js';
+
+export const ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+
+/** Only the bounded signed document is permitted before membership authorization. */
+export function parseRosterExchange(bytes: Buffer): SignedRoster {
+  if (bytes.length > ROSTER_EXCHANGE_MAX_BYTES) throw new FrameError('roster_invalid', 'Roster exchange too large.');
+  const raw: unknown = JSON.parse(bytes.toString('utf8'));
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+    || Object.keys(raw).sort().join(',') !== 'roster_json,signature'
+    || typeof (raw as SignedRoster).roster_json !== 'string'
+    || Buffer.byteLength((raw as SignedRoster).roster_json) > SIGNED_ROSTER_MAX_BYTES
+    || typeof (raw as SignedRoster).signature !== 'string'
+    || (raw as SignedRoster).signature.length > 256) {
+    throw new FrameError('roster_invalid', 'Invalid roster exchange.');
+  }
+  return raw as SignedRoster;
+}
+
+/** A separate bounded stream completes before the caller opens a business stream. */
+export async function exchangeRosterStream(
+  stream: BiStream, local: SignedRoster | null,
+  accept: (incoming: SignedRoster) => SignedRoster, timeoutMs: number,
+): Promise<void> {
+  const write = async (signed: SignedRoster): Promise<void> => {
+    const bytes = Buffer.from(JSON.stringify(signed));
+    parseRosterExchange(bytes);
+    await deadline(stream.send.writeAll(toBytes(bytes)), timeoutMs, 'sending roster');
+    await deadline(stream.send.finish(), timeoutMs, 'finishing roster');
+  };
+  if (local) await write(local);
+  const received = Buffer.from(await deadline(stream.recv.readToEnd(ROSTER_EXCHANGE_MAX_BYTES), timeoutMs, 'receiving roster'));
+  const selected = accept(parseRosterExchange(received));
+  if (!local) await write(selected);
+}
 
 export const FRAME_VERSION = 1;
 /** The message payload limit plus room for the envelope around it. */

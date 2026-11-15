@@ -1,4 +1,35 @@
 import { AGENT_MESSAGE_JSON_MAX_BYTES } from '../core/agent-messaging.js';
+import { SIGNED_ROSTER_MAX_BYTES } from './roster.js';
+import { deadline, toBytes } from './endpoint.js';
+export const ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
+export function parseRosterExchange(bytes) {
+    if (bytes.length > ROSTER_EXCHANGE_MAX_BYTES)
+        throw new FrameError('roster_invalid', 'Roster exchange too large.');
+    const raw = JSON.parse(bytes.toString('utf8'));
+    if (!raw || typeof raw !== 'object' || Array.isArray(raw)
+        || Object.keys(raw).sort().join(',') !== 'roster_json,signature'
+        || typeof raw.roster_json !== 'string'
+        || Buffer.byteLength(raw.roster_json) > SIGNED_ROSTER_MAX_BYTES
+        || typeof raw.signature !== 'string'
+        || raw.signature.length > 256) {
+        throw new FrameError('roster_invalid', 'Invalid roster exchange.');
+    }
+    return raw;
+}
+export async function exchangeRosterStream(stream, local, accept, timeoutMs) {
+    const write = async (signed) => {
+        const bytes = Buffer.from(JSON.stringify(signed));
+        parseRosterExchange(bytes);
+        await deadline(stream.send.writeAll(toBytes(bytes)), timeoutMs, 'sending roster');
+        await deadline(stream.send.finish(), timeoutMs, 'finishing roster');
+    };
+    if (local)
+        await write(local);
+    const received = Buffer.from(await deadline(stream.recv.readToEnd(ROSTER_EXCHANGE_MAX_BYTES), timeoutMs, 'receiving roster'));
+    const selected = accept(parseRosterExchange(received));
+    if (!local)
+        await write(selected);
+}
 export const FRAME_VERSION = 1;
 export const FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
 export const ACK_MAX_BYTES = 1024;
