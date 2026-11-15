@@ -7,6 +7,7 @@ import path from 'node:path';
 import { build } from 'esbuild';
 import ts from 'typescript';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { NETWORK_METADATA_SCHEMA_SQL } from '../../src/storage/agent-network-schema.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
 const srcRoot = path.join(repoRoot, 'src');
@@ -148,9 +149,9 @@ describe('native isolation', () => {
       .filter((file) => localImports(file).some((target) => target.startsWith(networkRoot + path.sep)))
       .map(relative)
       .sort();
-    // The CLI command, the message tool (network addresses, receipts, remote cards), the router (auto-start)
-    // and the expiry pass (what the network knew of a message to another machine, for its sender's notice).
-    expect(importers).toEqual(['src/core/agent-message-expiry.ts', 'src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
+    // The public snapshot reads signed metadata without loading keys or the bridge.
+    // Legacy messaging and expiry remain callable until their S6 retirement.
+    expect(importers).toEqual(['src/core/agent-message-expiry.ts', 'src/core/public-network-context.ts', 'src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
   });
 
   it('nothing in src/network loads a module whose name is not in the code, except the native loader', () => {
@@ -174,16 +175,18 @@ describe('memory stays out of the network path', () => {
       // The retention constant (reached through the courier and agent-messaging): no imports, no SQL.
       'src/core/agent-message-ttl.ts',
       'src/core/agent-messaging.ts',
-      'src/core/agent-router.ts',
       'src/core/agent-scope-id.ts',
+      'src/core/conversation-message-migration.ts',
+      'src/core/conversation-messages.ts',
       'src/core/file-mode.ts',
       // Shared Windows npm argv builder: only fs.existsSync/path; no memory or SQL.
       'src/core/npm-launch.ts',
       'src/core/paths.ts',
-      'src/core/semver.ts',
+      'src/core/public-network-context.ts',
       'src/core/time-utils.ts',
       // Reached only for jsonStringLiteral, through the inbox: it has no imports and no SQL.
       'src/core/work-topology.ts',
+      'src/host-adapters/conversation-wake.ts',
       'src/storage/agent-network-schema.ts',
       'src/storage/sqlite.ts',
     ]);
@@ -243,25 +246,55 @@ describe('memory stays out of the network path', () => {
   // Everything the network code can run, including the messaging modules it reaches.
   const reachedSources = [...new Set(networkSources.flatMap((file) => [...reachableFrom(file)]))];
 
-  it('no SQL that src/network can reach touches a table outside the agent_* messaging and network tables', () => {
+  it('reachable SQL touches only messaging/network tables and the throwaway SQLite probe', () => {
     expect(reachedSources).toContain(path.join(srcRoot, 'core/agent-messaging.ts'));
     const hits = reachedSources.flatMap((file) => touchesMemoryTable(code(fs.readFileSync(file, 'utf8'))).map((table) => `${relative(file)}: ${table}`)).sort();
-    // The router class keeps its version hold in memesh_metadata. The bridge reaches
-    // that file only for the notifier and never builds a router; no memory table is here.
-    // sqlite.ts is reached through the bridge's own store (store.ts opens a MemeshDatabase). Its only
-    // such table is memesh_fts5_probe, created once in a throwaway :memory: database to ask whether
-    // this Node has FTS5; it is never the user's database and holds no user data.
-    expect(hits).toEqual(['src/core/agent-router.ts: memesh_metadata', 'src/storage/sqlite.ts: memesh_fts5_probe']);
+    // The three messages.db tables have no agent_ prefix. Keep their exact callers
+    // bounded rather than exempting those names throughout the reachable graph.
+    // The SQLite probe is still created only in a throwaway :memory: database.
+    expect(hits).toEqual([
+      'src/core/conversation-message-migration.ts: events',
+      'src/core/conversation-message-migration.ts: messages',
+      'src/core/conversation-messages.ts: conversations',
+      'src/core/conversation-messages.ts: events',
+      'src/core/conversation-messages.ts: messages',
+      'src/storage/sqlite.ts: memesh_fts5_probe',
+    ]);
   });
 
   it('every SQL statement in src/network can be read from the code', () => {
     const computed = networkSources.flatMap((file) => computedSql(fs.readFileSync(file, 'utf8')).map((call) => `${relative(file)}: ${call}`));
-    expect(computed).toEqual([]);
+    // Parent-only relocation builds identifiers from one fixed table/column map.
+    // New computed SQL anywhere else, or a changed identifier map, must fail.
+    expect(computed).toEqual([
+      "src/network/metadata.ts: source.prepare(`SELECT ${columns.join(',')} FROM ${table}`)",
+      "src/network/metadata.ts: destination.prepare(`INSERT INTO ${table.table} (${table.columns.join(',')}) VALUES (${table.columns.map(() => '?').join(',')})`)",
+      "src/network/metadata.ts: destination.prepare(`SELECT ${table.columns.join(',')} FROM ${table.table}`)",
+    ]);
+    const metadata = fs.readFileSync(path.join(networkRoot, 'metadata.ts'), 'utf8');
+    const source = ts.createSourceFile('metadata.ts', metadata, ts.ScriptTarget.Latest, true);
+    const maps: string[] = [];
+    const visit = (node: ts.Node): void => {
+      if (ts.isVariableDeclaration(node) && node.name.getText(source) === 'TABLES') maps.push(node.initializer?.getText(source) ?? '');
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+    expect(maps).toEqual([`{
+  agent_network_config: ['id', 'network_id', 'owner_id', 'machine_id', 'machine_name', 'person', 'relay_url', 'roster_json', 'roster_signature', 'created_at_ms'],
+  agent_network_invites: ['hash', 'expires_at_ms', 'used_at'],
+  agent_network_peers: ['machine_id', 'relay_url', 'addrs_json', 'seen_at_ms'],
+} as const`]);
+    expect(metadata).toContain('Object.entries(TABLES).map(([table, columns]) => ({ table, columns,');
+    expect(metadata).toContain('for (const table of rows)');
+    expect([...reachableFrom(path.join(networkRoot, 'bridge.ts'))]).not.toContain(path.join(networkRoot, 'metadata.ts'));
   });
 
   it('the schema the bridge opens with names only network tables', () => {
     const text = fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8');
-    expect(tablesIn(text)).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_outbox', 'agent_network_presence', 'agent_network_peers']);
+    // Physical metadata is three tables; the legacy composed schema retains all
+    // five until S6, with no reliance on their declaration order.
+    expect(tablesIn(NETWORK_METADATA_SCHEMA_SQL)).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_peers']);
+    expect(tablesIn(text).sort()).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_outbox', 'agent_network_peers', 'agent_network_presence']);
     expect(loadsIn(text)).toEqual({ literal: [], computed: [] });
   });
 });
