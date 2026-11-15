@@ -211,7 +211,7 @@ export function importLegacyConversationMessages(source, target, options) {
                 sent_at: utc(original.created_at),
             };
             const detail = canonical({ version: 1, source: snapshot, mapped });
-            const existing = target.prepare('SELECT * FROM messages WHERE id = ?').get(id);
+            const existing = target.prepare('SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at FROM messages WHERE id = ?').get(id);
             if (existing) {
                 const receipts = target.prepare("SELECT detail FROM events WHERE message_id = ? AND event = 'legacy_imported'").all(id);
                 const initial = receipts.length === 1 ? JSON.parse(receipts[0].detail) : undefined;
@@ -227,8 +227,8 @@ export function importLegacyConversationMessages(source, target, options) {
                 alreadyImported++;
             }
             else {
-                target.prepare('INSERT INTO messages (id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)')
-                    .run(mapped.id, mapped.sender, mapped.sender_host, mapped.sender_machine, mapped.recipient, mapped.recipient_host, mapped.recipient_machine, mapped.kind, mapped.body, mapped.body_bytes, mapped.reply_to, mapped.sent_at);
+                target.prepare('INSERT INTO messages (id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at,sender_local,recipient_local) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)')
+                    .run(mapped.id, mapped.sender, mapped.sender_host, mapped.sender_machine, mapped.recipient, mapped.recipient_host, mapped.recipient_machine, mapped.kind, mapped.body, mapped.body_bytes, mapped.reply_to, mapped.sent_at, localSender ? 1 : 0, explicitTargets.length === 1 ? 1 : 0);
                 target.prepare('INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)').run(id, at, 'legacy_imported', detail);
                 imported++;
             }

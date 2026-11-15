@@ -36,12 +36,41 @@ export interface ConversationMessageStatus extends ConversationMessage {
     state: string;
     events: ConversationMessageEvent[];
 }
+export interface ConversationNetworkSnapshot {
+    network_id: string;
+    self: {
+        id: string;
+        name: string;
+    };
+    members: readonly {
+        id: string;
+        name: string;
+    }[];
+}
+export interface RemoteConversationRegistration {
+    id: string;
+    host: ConversationHost;
+    online: boolean;
+}
+export interface NetworkConversationMessage {
+    network_id: string;
+    sender_machine_id: string;
+    recipient_machine_id: string;
+    message: ConversationMessage;
+}
+export interface ConversationDeliveryReceipt {
+    message_id: string;
+    event: 'delivered' | 'read';
+    at: string;
+    actor: string;
+}
 export declare function renderConversationMessage(message: ConversationMessage): string;
 export declare class ConversationMessages {
     private readonly db;
     readonly machine: string;
     private readonly clock;
     private readonly processAlive;
+    private readonly network?;
     constructor(options?: {
         file?: string;
         machine?: string;
@@ -50,8 +79,10 @@ export declare class ConversationMessages {
         legacySource?: MemeshDatabase;
         legacyMessageIds?: readonly string[];
         busyTimeoutMs?: number;
+        network?: ConversationNetworkSnapshot;
     });
     close(): void;
+    private upgradeRoutingSchema;
     maintainMessages(): void;
     registerChannel(caller: string, hostPid: number): void;
     channelBatch(caller: string, hostPid: number): {
@@ -86,6 +117,20 @@ export declare class ConversationMessages {
     };
     private messageBatch;
     recordHookDelivery(caller: string, ids: string[], hook: string): void;
+    exportRegistrations(): RemoteConversationRegistration[];
+    replaceRemoteRegistrations(peerId: string, registrations: readonly RemoteConversationRegistration[]): void;
+    outgoingFor(peerId: string): NetworkConversationMessage[];
+    receiveFrom(peerId: string, wire: NetworkConversationMessage): 'accepted' | 'duplicate';
+    recordCopyAccepted(peerId: string, messageId: string): void;
+    receiptsFor(peerId: string): ConversationDeliveryReceipt[];
+    recordReceiptAccepted(peerId: string, receipt: ConversationDeliveryReceipt): void;
+    receiveReceipt(peerId: string, receipt: ConversationDeliveryReceipt): 'accepted' | 'duplicate';
+    private member;
+    private requirePeer;
+    private remoteRegistration;
+    private outboundMessage;
+    private receiptKey;
+    private receiptAcknowledged;
     private now;
     private findRegistration;
     private registration;
