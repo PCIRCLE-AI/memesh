@@ -471,7 +471,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         mutate(file, 'this.insert(message);', '', 'send insert and rejected audit event');
         mutate(file, "this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });", '', 'send insert and rejected audit event');
       }
-      mutate('src/transports/mcp/handlers.ts', 'session: requestContext.hostSession', 'session: args.sender', 'MCP session-bound handler');
+      mutate('src/transports/mcp/handlers.ts', 'session: requestContext.hostSession', 'session: args.sender', 'MCP awaited session-bound handler');
       mutate('docs/api/API_REFERENCE.md', '| `status` | optional `message_id`', '| `other` | optional `message_id`', 'message action rows');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });
