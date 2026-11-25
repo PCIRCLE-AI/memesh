@@ -1,5 +1,6 @@
 import fs from 'fs';
 import { pathToFileURL } from 'url';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 
 /**
  * A path as ONE word of a command memesh prints for the owner to paste into a
@@ -119,6 +120,11 @@ export function guardDatabaseFiles(dbPath: string): void {
  * to it. The owner's write bit is never added (#520).
  */
 export function requirePrivateWritableDirectory(dir: string, purpose: string): void {
+  if (process.platform === 'win32') {
+    if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a directory, and ${purpose}`);
+    makeWindowsPathsPrivate([dir], dir);
+    return;
+  }
   removeGroupAndOtherAccess(dir);
   const mode = fs.statSync(dir).mode & 0o777;
   if ((mode & 0o077) !== 0) {

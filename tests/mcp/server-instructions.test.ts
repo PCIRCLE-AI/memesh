@@ -9,6 +9,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { DEFAULT_SAVE_INSTRUCTION } from '../../src/core/citation-rule.js';
 
 const dirs: string[] = [];
@@ -25,7 +26,7 @@ function initializeInstructions(): Promise<unknown> {
   const env = {
     PATH: process.env.PATH ?? '', HOME: home, USERPROFILE: home,
     MEMESH_DIR: path.join(home, '.memesh'), MEMESH_DB_PATH: path.join(home, '.memesh', 'knowledge-graph.db'),
-    MEMESH_AUTO_UPDATE: 'off', NODE_OPTIONS: `--import=file://${preload}`,
+    MEMESH_AUTO_UPDATE: 'off', NODE_OPTIONS: `--import=${pathToFileURL(preload).href}`,
   };
   const child = spawn(process.execPath, [path.resolve('dist/mcp/server.js')], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   children.push(child);

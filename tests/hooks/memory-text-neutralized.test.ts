@@ -4,6 +4,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'node:url';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { buildReferenceContext, stripControlChars } from '../../src/core/work-topology.js';
@@ -14,7 +15,7 @@ const chars = (...points: number[]): string => String.fromCodePoint(...points);
 const INVISIBLE = new RegExp('[' + chars(0x200b) + '-' + chars(0x200f, 0x61c) + chars(0x2060) + '-' + chars(0x2064, 0xfeff) + ']');
 const SESSION_HOOK = path.resolve('scripts/hooks/session-start.js');
 const PROMPT_DRIVER = `
-  import { handlePrompt } from ${JSON.stringify(path.resolve('scripts/hooks/prompt-recall.js'))};
+  import { handlePrompt } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/prompt-recall.js')).href)};
   const out = await handlePrompt(JSON.parse(process.env.PAYLOAD), async () => false);
   process.stdout.write(out ?? '');
 `;

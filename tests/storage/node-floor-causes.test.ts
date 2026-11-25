@@ -11,6 +11,7 @@ import { build } from 'esbuild';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import { MIN_NODE_SERIES, UnsupportedNodeError, nodeProblem } from '../../src/storage/sqlite.js';
 import { writeOldNodePreload } from '../helpers/node-floor.js';
 
@@ -121,7 +122,7 @@ describe('Feature: the Node check in a real process', () => {
       console.log(JSON.stringify(out));`;
     const r = spawnSync(process.execPath, [...flags, ...preloads.flatMap((p) => ['--require', p]), '--input-type=module', '-e', script], {
       encoding: 'utf8', timeout: 30_000,
-      env: { PATH: process.env.PATH, BUNDLE: bundle, MODE: mode },
+      env: { PATH: process.env.PATH, BUNDLE: pathToFileURL(bundle).href, MODE: mode },
     });
     expect(r.status, r.stderr).toBe(0);
     return { out: JSON.parse(r.stdout.trim().split('\n').pop() as string), stderr: r.stderr };

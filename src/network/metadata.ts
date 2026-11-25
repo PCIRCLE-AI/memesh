@@ -71,7 +71,7 @@ export async function migrateNetworkMetadata(ctx: NetworkContext): Promise<boole
       destination.pragma('wal_checkpoint(TRUNCATE)');
     } finally { destination.close(); }
     source.exec('COMMIT');
-    const fd = fs.openSync(temporary, 'r'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
+    const fd = fs.openSync(temporary, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     try { fs.linkSync(temporary, target); }
     catch (error) { if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error; }
     fs.unlinkSync(temporary); temporary = undefined;

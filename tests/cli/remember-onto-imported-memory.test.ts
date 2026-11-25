@@ -3,12 +3,13 @@ import { spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 
 const CLI = path.resolve('dist/transports/cli/cli.js');
 const SESSION_HOOK = path.resolve('scripts/hooks/session-start.js');
 const PROMPT_DRIVER = `
-  import { handlePrompt } from ${JSON.stringify(path.resolve('scripts/hooks/prompt-recall.js'))};
+  import { handlePrompt } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/prompt-recall.js')).href)};
   const out = await handlePrompt(JSON.parse(process.env.PAYLOAD), async () => false);
   process.stdout.write(out ?? '');
 `;

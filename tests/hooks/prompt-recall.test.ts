@@ -5,6 +5,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { createRequire } from 'module';
+import { pathToFileURL } from 'node:url';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
@@ -50,7 +51,7 @@ describe('Feature: prompt-time recall hook', () => {
   }
 
   const DRIVER = `
-    import { handlePrompt } from ${JSON.stringify(path.resolve('scripts/hooks/prompt-recall.js'))};
+    import { handlePrompt } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/prompt-recall.js')).href)};
     const out = await handlePrompt(JSON.parse(process.env.PAYLOAD));
     process.stdout.write(out ?? '');
   `;

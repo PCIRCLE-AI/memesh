@@ -25,6 +25,7 @@ import { manifestScope } from './manifest-scope.js';
 import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
+import { isTransientDbError } from '../storage/schema.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
@@ -1589,6 +1590,7 @@ export async function runDoctor(options) {
         : undefined, install === 'unknown' ? { code: 'install-channel.unknown' } : undefined));
     const databasePath = resolveDatabasePath();
     const dbChecks = [];
+    let databaseContention;
     try {
         const db = openDatabaseImpl(databasePath);
         const integrity = quickIntegrityVerdict(db);
@@ -1722,6 +1724,8 @@ export async function runDoctor(options) {
         }
     }
     catch (err) {
+        if (isTransientDbError(err))
+            databaseContention = err;
         dbChecks.length = 0;
         if (err instanceof NoDatabaseYetError) {
             const folderPath = path.dirname(databasePath);
@@ -1782,8 +1786,9 @@ export async function runDoctor(options) {
     }
     const captureWired = wiring.status === 'pass'
         && (wiring.params === undefined || wiring.params.captureWired === 1);
-    checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
-    const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
+    const openForActivity = databaseContention === undefined ? openDatabaseImpl : () => { throw databaseContention; };
+    checks.push(inspectHookActivity(openForActivity, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+    const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openForActivity, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
     checks.push(captureLiveness.check);
     checks.push(inspectPendingConversations());
     const captureReport = captureLiveness.report;

@@ -43,6 +43,7 @@ const outDir = resolve(root, 'scripts/hooks/_generated');
 
 // Each entry: compiled leaf module (source of truth) → committed hook copy.
 const SOURCES = [
+  { from: 'dist/core/windows-permissions.js', to: 'windows-permissions.js', src: 'src/core/windows-permissions.ts' },
   { from: 'dist/core/public-network-context.js', to: 'public-network-context.js', src: 'src/core/public-network-context.ts' },
   { from: 'dist/network/roster.js', to: 'network-roster.js', src: 'src/network/roster.ts' },
   { from: 'dist/network/identity.js', to: 'network-identity.js', src: 'src/network/identity.ts' },

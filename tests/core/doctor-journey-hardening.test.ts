@@ -933,16 +933,26 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
     expect(await waitFor(() => !alive(left!), 3_000), 'the process holding the exited step\'s output survived').toBe(true);
   }, 30_000);
 
-  it('a step that cannot be stopped does not keep the process alive (a real step, a kill that does nothing)', () => {
+  it('a step that cannot be stopped does not keep the process alive (a real step, a kill that does nothing)', async () => {
     const pidFile = path.join(work, 'unstoppable.pid');
     killAfter(pidFile);
     const entry = entryFor(['remember'], `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${HANG}`);
     const runner = path.join(work, 'unstoppable.mjs');
     fs.writeFileSync(runner, `
       import cp from 'node:child_process';
-      // taskkill failing, then the fallback kill doing nothing: the situation on Windows when a process cannot be ended.
+      import { syncBuiltinESMExports } from 'node:module';
+      // Keep the real filesystem/platform preflight; only the stop boundary fails.
       cp.ChildProcess.prototype.kill = function () { return false; };
-      Object.defineProperty(process, 'platform', { value: 'win32' });
+      const realKill = process.kill;
+      process.kill = (pid, signal) => {
+        if (signal === 'SIGKILL') throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+        return realKill(pid, signal);
+      };
+      const realSpawnSync = cp.spawnSync;
+      cp.spawnSync = (command, ...args) => String(command).toLowerCase().endsWith('taskkill.exe')
+        ? { status: 1, error: undefined }
+        : realSpawnSync(command, ...args);
+      syncBuiltinESMExports();
       const { runInstallJourney } = await import(${JSON.stringify(distUrl)});
       const t0 = Date.now();
       const result = await runInstallJourney({ packageRoot: ${JSON.stringify(PACKAGE_ROOT)} }, { cliEntry: ${JSON.stringify(entry)}, timeoutMs: 1500 });
@@ -952,8 +962,13 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
     const r = spawnSync(process.execPath, [runner], { encoding: 'utf8', env: process.env, timeout: 25_000 });
     const resolved = Number(/R:(\d+):/.exec(r.stdout)?.[1]);
     const exited = Number(/E:(\d+)/.exec(r.stdout)?.[1]);
+    const pid = readPid(pidFile);
+    expect(r.status, r.stderr).toBe(0);
+    expect(pid, 'the hanging step never started, so the kill boundary was not exercised').toBeGreaterThan(0);
     expect(r.stdout, r.stderr).toContain('could not be stopped');
     expect(exited - resolved, `verdict at ${resolved} ms, process gone at ${exited} ms (NaN: it never exited by itself)`).toBeLessThan(1_500);
+    killPidFile(pidFile);
+    expect(await waitFor(() => !alive(pid!), 3_000), 'the owned unstopped step survived fixture cleanup').toBe(true);
   }, 60_000);
 
   it('output split inside a multi-byte character is read whole', async () => {

@@ -103,8 +103,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "5ee2bb9aa14d1fa6f7bbccde8e7ab3cd33c4de00e17e25a09a2e861963327a8a",
-      "bytes": 37235
+      "sha256": "0d70108a12ace1c426f828ec802ebf276d81a09b3f066ece5c92a98b2e3921d6",
+      "bytes": 37854
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -118,8 +118,8 @@
     },
     {
       "path": "scripts/hooks/_generated/file-mode.js",
-      "sha256": "1ae0c1df07a7db6f8dc1b76d45bcd3eb781a376314fa8208664123e9304001dc",
-      "bytes": 7310
+      "sha256": "3bd5f086ba831eef20e53e2dccfeeae35f6c95319e7ddb3ede89b00edf0ce567",
+      "bytes": 7604
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
@@ -242,14 +242,19 @@
       "bytes": 7304
     },
     {
+      "path": "scripts/hooks/_generated/windows-permissions.js",
+      "sha256": "1f048434de1d87d10e21e2289bb4500f27078dc1f6a0bae01f5b137d21011fd5",
+      "bytes": 5965
+    },
+    {
       "path": "scripts/hooks/_generated/work-topology.js",
       "sha256": "bacd9a2dba2537cf354d4e8c6d005cfcc4ecae81761406d4af3312c5dc2bd903",
       "bytes": 17097
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "8b427b591cafa34c27dd8e4256e0f61e9c45694be069fd699368cae666c63a7c",
-      "bytes": 111745
+      "sha256": "3b763d374608224258ea223c174d445145e16b39f56e24d273b69481c684549a",
+      "bytes": 112108
     },
     {
       "path": "scripts/hooks/_stop-notes.js",

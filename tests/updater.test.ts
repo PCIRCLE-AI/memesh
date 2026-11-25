@@ -3,6 +3,7 @@ import {
   classifyBump,
   getInstalledGlobalVersion,
 } from '../src/core/updater.js';
+import { npmInvocation } from '../src/core/npm-launch.js';
 
 function makeExecFileSyncMock(handlers: {
   install?: (args: string[], options: Record<string, unknown>) => void;
@@ -13,10 +14,14 @@ function makeExecFileSyncMock(handlers: {
     args: readonly string[] | undefined | null,
     options: Record<string, unknown> = {},
   ) => {
-    expect(file).toBe('npm');
     expect(Array.isArray(args)).toBe(true);
 
-    const command = args as string[];
+    const invocation = npmInvocation([]);
+    expect(invocation).not.toBeNull();
+    expect(file).toBe(invocation!.command);
+    const physical = args as string[];
+    expect(physical.slice(0, invocation!.args.length)).toEqual(invocation!.args);
+    const command = physical.slice(invocation!.args.length);
     if (command[0] === 'install') {
       handlers.install?.(command, options);
       return '';

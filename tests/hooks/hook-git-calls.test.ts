@@ -14,32 +14,41 @@ import path from 'node:path';
 import os from 'node:os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 
-const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
 const slug = (dir: string) => dir.replace(/[^a-zA-Z0-9]/g, '-');
 type Kind = 'remote' | 'no remote' | 'plain directory';
 
-function world(kind: Kind) {
-  const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-gitcalls-')));
-  const bin = path.join(home, 'bin');
-  fs.mkdirSync(bin);
+function world(kind: Kind, spaceInHome = false) {
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-gitcalls-')));
+  const home = spaceInHome ? path.join(root, 'home with space') : root;
+  if (spaceInHome) fs.mkdirSync(home);
   const log = path.join(home, 'git-calls.log');
-  fs.writeFileSync(path.join(bin, 'git'), `#!/bin/sh\necho "$@" >> '${log}'\nexec '${realGit}' "$@"\n`, { mode: 0o755 });
+  const recorder = path.join(home, 'git-recorder.cjs');
+  fs.writeFileSync(recorder, `const fs = require('node:fs');
+const cp = require('node:child_process');
+const original = cp.execFileSync;
+cp.execFileSync = function (command, args, ...rest) {
+  // [WORKAROUND: Only git calls are measured; every command still executes.]
+  if (command === 'git') fs.appendFileSync(process.env.MEMESH_GIT_CALLS, JSON.stringify(args ?? []) + '\\n');
+  return original.call(this, command, args, ...rest);
+};
+require('node:module').syncBuiltinESMExports();
+`);
   const repo = path.join(home, kind === 'plain directory' ? 'plain' : 'repo');
   fs.mkdirSync(path.join(repo, 'sub'), { recursive: true });
-  if (kind !== 'plain directory') execFileSync(realGit, ['-C', repo, 'init', '-q']);
-  if (kind === 'remote') execFileSync(realGit, ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']);
+  if (kind !== 'plain directory') execFileSync('git', ['-C', repo, 'init', '-q']);
+  if (kind === 'remote') execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']);
   const memesh = path.join(home, '.memesh');
   fs.mkdirSync(memesh);
   fs.writeFileSync(path.join(memesh, 'config.json'), JSON.stringify({ updateCheck: false, autoUpdate: 'off' }));
-  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: memesh, MEMESH_AUTO_UPDATE: '0', PATH: `${bin}:${process.env.PATH}` };
+  const env: NodeJS.ProcessEnv = { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: memesh, MEMESH_AUTO_UPDATE: '0', NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(recorder)}`, MEMESH_GIT_CALLS: log };
   delete env.MEMESH_DB_PATH;
   const calls = () => (fs.existsSync(log) ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean) : []);
-  return { home, repo, memesh, env, calls, done: () => fs.rmSync(home, { recursive: true, force: true }) };
+  return { home, repo, memesh, env, calls, done: () => fs.rmSync(root, { recursive: true, force: true }) };
 }
 
 describe('pre-edit-recall: git processes per unthrottled edit', () => {
-  it.each([['remote', 2], ['no remote', 4], ['plain directory', 3]] as const)('%s: at most %i', (kind, most) => {
-    const w = world(kind);
+  it.each([['remote', 2, true], ['no remote', 4, false], ['plain directory', 3, false]] as const)('%s: at most %i', (kind, most, spaceInHome) => {
+    const w = world(kind, spaceInHome);
     try {
       const dbPath = path.join(w.home, 'test.db');
       const db = new Database(dbPath);

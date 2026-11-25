@@ -66,6 +66,18 @@ describe('SQLite lock outcome labels', () => {
  * hooks call it.
  */
 describe('hook outcome records', () => {
+  const postCommitEntry = (JSON.parse(fs.readFileSync(path.resolve('hooks/hooks.json'), 'utf8')) as {
+    hooks?: { PostToolUse?: Array<{ hooks?: Array<{ command?: unknown; timeout?: unknown }> }> };
+  }).hooks?.PostToolUse
+    ?.flatMap((group) => group.hooks ?? [])
+    .find((hook) => hook.command === '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js');
+  if (typeof postCommitEntry?.timeout !== 'number' || !Number.isFinite(postCommitEntry.timeout) || postCommitEntry.timeout <= 0) {
+    throw new Error('hooks.json must declare a positive post-commit timeout');
+  }
+  const POST_COMMIT_HOOK_TIMEOUT_MS = postCommitEntry.timeout * 1000;
+  const A13_LOCKED_COMMITS = 25;
+  // Fixture capacity, not a product SLA: 25 lock attempts plus base and two drains.
+  const A13_TIMEOUT_MS = (A13_LOCKED_COMMITS + 3) * POST_COMMIT_HOOK_TIMEOUT_MS + 15_000;
   let testDir: string;
   let memeshDir: string;
   let repoDir: string;
@@ -105,12 +117,12 @@ describe('hook outcome records', () => {
     }
   });
 
-  function runHook(hook: string, input: object, extraEnv: Record<string, string> = {}): void {
+  function runHook(hook: string, input: object, extraEnv: Record<string, string> = {}, timeout = 20000): void {
     execFileSync('node', [path.resolve(`scripts/hooks/${hook}.js`)], {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DIR: memeshDir, HOME: testDir, ...extraEnv },
       encoding: 'utf8',
-      timeout: 20000,
+      timeout,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
@@ -164,8 +176,8 @@ describe('hook outcome records', () => {
     tool_input: { command: 'git commit --allow-empty -m synthetic' },
     tool_response: { stdout: '', stderr: '', isError: false, interrupted: false } });
   const graphPath = () => path.join(memeshDir, 'knowledge-graph.db');
-  function postCommit(extraEnv: Record<string, string> = {}) {
-    runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv });
+  function postCommit(extraEnv: Record<string, string> = {}, timeout = 20000) {
+    runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv }, timeout);
   }
   function emptyCommit(label: string, seconds?: number) {
     execFileSync('git', ['-C', repoDir, '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-qm', label], {
@@ -300,17 +312,17 @@ DatabaseSync.prototype.prepare = function(sql) {
   });
 
   it('A-13 retains 25 commits across sequential graph-lock failures with an existing marker', () => {
-    const base = emptyCommit('base'); postCommit();
+    const base = emptyCommit('base'); postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
     const start = marker();
     const holder = new DatabaseSync(graphPath());
     const pending: Array<{ full: string; name: string }> = [];
     holder.exec('BEGIN IMMEDIATE');
     try {
-      for (let i = 0; i < 25; i++) {
+      for (let i = 0; i < A13_LOCKED_COMMITS; i++) {
         pending.push(emptyCommit(`blocked-${i}`));
         const ledger = () => fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const before = ledger().length;
-        postCommit();
+        postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
         const fresh = ledger().slice(before).filter(row => row.hook === 'post-commit');
         expect(fresh).toHaveLength(2);
         expect(new Set(fresh.map(row => row.run)).size).toBe(1);
@@ -321,14 +333,14 @@ DatabaseSync.prototype.prepare = function(sql) {
       }
       expect(commitNames()).toEqual([base.name]);
     } finally { holder.exec('ROLLBACK'); holder.close(); }
-    postCommit();
+    postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
     expect(commitNames()).toEqual([base.name, ...pending.slice(0, 20).map(c => c.name)].sort());
     expect(records('post-commit').filter(r => r.reason === SKIP_REASONS.commitsLeftForNextRun).at(-1)?.count).toBe(5);
     expect(marker().heads).toEqual(start.heads);
-    postCommit();
+    postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
     expect(commitNames()).toEqual([base.name, ...pending.map(c => c.name)].sort());
     expect(Object.values(marker().heads)).toContain(pending.at(-1)!.full);
-  }, 80000);
+  }, A13_TIMEOUT_MS);
 
   it('A-13 continues after a write error and persists full-SHA failure counts through three attempts', () => {
     const base = emptyCommit('base'); postCommit();

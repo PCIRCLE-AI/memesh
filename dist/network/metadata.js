@@ -80,7 +80,7 @@ export async function migrateNetworkMetadata(ctx) {
             destination.close();
         }
         source.exec('COMMIT');
-        const fd = fs.openSync(temporary, 'r');
+        const fd = fs.openSync(temporary, 'r+');
         try {
             fs.fsyncSync(fd);
         }

@@ -3,7 +3,7 @@ import { spawnSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { ConversationMessages } from '../../src/core/conversation-messages.js';
+import { ConversationMessages, renderConversationMessage, type ConversationMessage } from '../../src/core/conversation-messages.js';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 
 const cli = path.resolve('dist/transports/cli/cli.js');
@@ -27,7 +27,7 @@ it('binds all four message actions to the Hermes SDK session and rejects a forei
   expect(JSON.parse(discover.stdout).conversations).toContainEqual(expect.objectContaining({ address: 'hermes-sdk', host: 'hermes' }));
 
   const store = new ConversationMessages({ file: messageFile() });
-  let sent: { id: string };
+  let sent: ConversationMessage;
   try {
     store.register({ id: 'other-sdk', host: 'codex', machine: store.machine, pid: process.pid, wake: {} });
     sent = store.send('other-sdk', { recipient: 'hermes-sdk', kind: 'task', body: 'pending Hermes inbox body' }).message;
@@ -56,12 +56,18 @@ it('binds all four message actions to the Hermes SDK session and rejects a forei
   expect(JSON.stringify(JSON.parse(scoped.stdout))).not.toContain('foreign status must stay private');
   const identityField = run(['hermes', 'message', '--session', 'hermes-sdk'], { action: 'discover', sender: 'spoofed' });
   expect(identityField.status).toBe(1);
-  const bounded = run(['hermes', 'message', '--session', 'hermes-sdk'], {
-    action: 'send', recipient: 'other-sdk', kind: 'task', body: 'x'.repeat(7_600),
-  });
+  // The limit includes both machine names, whose length varies on CI runners.
+  const envelope = { ...sent!, sender: 'hermes-sdk', sender_host: 'hermes', recipient: 'other-sdk', recipient_host: 'codex', body: '', body_bytes: 7_600 };
+  const body = 'x'.repeat(8_000 - Buffer.byteLength(renderConversationMessage(envelope)));
+  const bounded = run(['hermes', 'message', '--session', 'hermes-sdk'], { action: 'send', recipient: 'other-sdk', kind: 'task', body });
   expect(bounded.status, bounded.stderr).toBe(0);
+  const readback = new ConversationMessages({ file: messageFile() });
+  try {
+    const message = readback.status('hermes-sdk', JSON.parse(bounded.stdout).message_id)[0];
+    expect(Buffer.byteLength(renderConversationMessage(message))).toBe(8_000);
+  } finally { readback.close(); }
   const overflow = run(['hermes', 'message', '--session', 'hermes-sdk'], {
-    action: 'send', recipient: 'other-sdk', kind: 'task', body: 'x'.repeat(8_000),
+    action: 'send', recipient: 'other-sdk', kind: 'task', body: body + 'x',
   });
   expect(overflow.status).toBe(1);
   expect(overflow.stderr).toContain('message_too_large');

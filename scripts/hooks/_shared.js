@@ -758,31 +758,36 @@ function checkedConversationQuotes(event, env) {
     const remaining = conversationDeadline - Date.now();
     if (remaining <= 0) throw new Error('quote source budget exhausted');
     source = new MemeshDatabase(file, { readOnly: true });
-    source.pragma(`busy_timeout = ${Math.min(HOOK_BUSY_TIMEOUT_MS, remaining)}`);
-    const current = lstatSync(file);
-    if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('quote source changed');
-    if (userPrompt) {
-      const message = source.prepare(`SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at
-        FROM messages WHERE id = ? AND recipient = ? AND recipient_machine = ? AND body IS NOT NULL
-        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=messages.id AND e.event='rejected')`)
-        .get(quoteSource.id, quoteSource.session, quoteSource.machine);
-      if (!message) return clean;
-      const rendered = renderConversationMessage(message);
-      const texts = [rendered, redactSecrets(rendered)];
-      return clean.observations.every(text => texts.includes(text)) ? null : clean;
-    }
-    const bodies = source.prepare(`SELECT m.body FROM messages m
-      WHERE m.recipient = ? AND m.recipient_machine = ? AND m.body IS NOT NULL
-      AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='rejected')
-      AND EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='delivered'
-        AND json_extract(e.detail, '$.actor') = ? AND julianday(e.at) <= julianday(?))`)
-      .all(quoteSource.session, quoteSource.machine, quoteSource.session, new Date(event.capturedAt).toISOString())
-      .map(row => row.body);
-    const texts = [...bodies, ...bodies.map(body => redactSecrets(body))];
-    const observations = clean.observations.map(text => omitAgentMessageText(text, texts).text);
-    if (observations.every(text => !text.split(AGENT_TEXT_OMITTED).join('').trim())) return null;
-    return { ...clean, observations,
-      title: omitAgentMessageText(clean.title ?? '', texts).text };
+    // SQLite's native busy sleeps can exceed the hook's wall-clock budget.
+    // Retry this read against the same deadline; migration/write waits stay unchanged.
+    source.pragma('busy_timeout = 0');
+    return retryWhileLocked(() => {
+      if (Date.now() >= conversationDeadline) throw new Error('quote source budget exhausted');
+      const current = lstatSync(file);
+      if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('quote source changed');
+      if (userPrompt) {
+        const message = source.prepare(`SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at
+          FROM messages WHERE id = ? AND recipient = ? AND recipient_machine = ? AND body IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=messages.id AND e.event='rejected')`)
+          .get(quoteSource.id, quoteSource.session, quoteSource.machine);
+        if (!message) return clean;
+        const rendered = renderConversationMessage(message);
+        const texts = [rendered, redactSecrets(rendered)];
+        return clean.observations.every(text => texts.includes(text)) ? null : clean;
+      }
+      const bodies = source.prepare(`SELECT m.body FROM messages m
+        WHERE m.recipient = ? AND m.recipient_machine = ? AND m.body IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='rejected')
+        AND EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='delivered'
+          AND json_extract(e.detail, '$.actor') = ? AND julianday(e.at) <= julianday(?))`)
+        .all(quoteSource.session, quoteSource.machine, quoteSource.session, new Date(event.capturedAt).toISOString())
+        .map(row => row.body);
+      const texts = [...bodies, ...bodies.map(body => redactSecrets(body))];
+      const observations = clean.observations.map(text => omitAgentMessageText(text, texts).text);
+      if (observations.every(text => !text.split(AGENT_TEXT_OMITTED).join('').trim())) return null;
+      return { ...clean, observations,
+        title: omitAgentMessageText(clean.title ?? '', texts).text };
+    }, Math.max(0, conversationDeadline - Date.now()), file);
   } catch (cause) {
     throw Object.assign(new Error('conversation quote source unavailable'), { code: 'MEMESH_CONVERSATION_QUOTE_SOURCE', cause });
   } finally {

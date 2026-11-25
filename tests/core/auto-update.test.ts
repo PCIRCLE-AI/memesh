@@ -57,6 +57,7 @@ import {
 } from '../../src/core/auto-update.js';
 import { installProvider, inspectInstall, registryProblem, defaultInstallTarget, refreshInstalls, refreshTargets, registerInstall, staleInstalls, HERMES_REASONS, MARKER_FILE } from '../../src/core/hermes-provider.js';
 import { processStartTag } from '../../src/core/process-identity.js';
+import { npmInvocation } from '../../src/core/npm-launch.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 // A test that writes into the current directory (the repository) leaves files that get committed by accident: the
@@ -115,6 +116,28 @@ function account(config?: unknown): { home: string; dir: string } {
   fs.mkdirSync(dir, { recursive: true });
   if (config !== undefined) fs.writeFileSync(path.join(dir, 'config.json'), typeof config === 'string' ? config : JSON.stringify(config));
   return { home, dir };
+}
+
+function windowsNpmCalls(exec: AutoUpdateDeps['exec']): AutoUpdateDeps['exec'] {
+  return (command, args, options) => {
+    if (command !== 'npm') return exec(command, args, options);
+    const invocation = npmInvocation(args, 'win32', process.execPath, () => true);
+    if (!invocation) throw new Error('Windows npm fixture has no npm-cli.js');
+    return exec(invocation.command, invocation.args, options);
+  };
+}
+
+function logicalNpmCall(command: string, args: string[]): { command: string; args: string[] } {
+  const invocation = npmInvocation(args, 'win32', process.execPath, () => true);
+  if (invocation && command === invocation.command && args[0] === invocation.args[0]) return { command: 'npm', args: args.slice(1) };
+  return { command, args };
+}
+
+function logicalNpmEntry(exec: AutoUpdateDeps['exec']): AutoUpdateDeps['exec'] {
+  return (command, args, options) => {
+    const logical = logicalNpmCall(command, args);
+    return exec(logical.command, logical.args, options);
+  };
 }
 
 describe('the policy', () => {
@@ -484,7 +507,8 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
     now: () => new Date(),
     readInstalledVersion: () => '4.13.0',
     readTags: () => (options.tags === undefined ? { latest: '4.13.0' } : options.tags),
-    exec: (cmd, args, opts) => {
+    exec: (command, rawArgs, opts) => {
+      const { command: cmd, args } = logicalNpmCall(command, rawArgs);
       const line = `${cmd} ${args.slice(0, 3).join(' ')}`;
       // This legacy fake represents Codex without JSON support. Keep read-only queries distinct from install steps.
       if (cmd === 'codex' && args.join(' ') === 'plugin marketplace list --json') {
@@ -631,6 +655,13 @@ describe('runAutoUpdate', () => {
     expect(fs.existsSync(path.join(w.a.dir, 'just-upgraded.json'))).toBe(true);
   });
 
+  it('runs the npm update path through the Windows npm-cli invocation', async () => {
+    const w = fakeWorld({ withDb: true });
+    w.deps.exec = windowsNpmCalls(w.deps.exec);
+
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
+  });
+
   it('does not install when the source cannot be verified, and says so', async () => {
     const w = fakeWorld({ verified: false });
     const result = await runAutoUpdate(w.deps);
@@ -647,12 +678,14 @@ describe('runAutoUpdate', () => {
     expect(JSON.stringify(result)).not.toContain('registry did not answer');
   });
 
-  it('retains a rehearsal startup error and never calls it a timeout', async () => {
+  it.each([false, true])('retains a rehearsal startup error and never calls it a timeout (Windows physical=%s)', async (windowsPhysical) => {
     const w = fakeWorld();
     const exec = w.deps.exec;
     w.deps.exec = (command, args, opts) => args[0] === 'ci'
       ? { status: null, stdout: '', stderr: '', startupError: 'could not start npm: spawn npm ENOENT' }
       : exec(command, args, opts);
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
+    if (windowsPhysical) w.deps.exec = windowsNpmCalls(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.dependenciesNotFetched });
     const detail = readAutoUpdateState(w.a.dir)?.detail;
     expect(detail).toContain('could not start npm');
@@ -706,6 +739,7 @@ describe('runAutoUpdate', () => {
       if (args[0] === 'install' && args.includes('-g')) states.push(`install-after-${polls}-polls`);
       return realExec(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     const result = await runAutoUpdate(w.deps);
     expect(result).toMatchObject({ outcome: 'installed' });
     expect(states).toEqual(['install-after-2-polls']);
@@ -957,6 +991,7 @@ describe('Hermes provider copies follow the verified update', () => {
       }
       return result;
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     await runAutoUpdate(w.deps);
     expect(packed).not.toBe('');
     expect(unpackedFrom.length).toBeGreaterThanOrEqual(3); // listed, listed with types, extracted
@@ -2612,6 +2647,7 @@ describe('a runner that has lost its lock stops, and an off written late still s
       if (args[0] === 'audit') { audits += 1; if (audits === 2) fs.writeFileSync(path.join(w.a.dir, 'config.json'), '{"autoUpdate":"off"}'); }
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     let polls = 0;
     w.deps.sleep = async () => { polls += 1; if (polls === 2) fs.rmSync(path.join(w.a.dir, 'live-hosts'), { recursive: true }); };
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.policyOff });
@@ -2634,6 +2670,7 @@ describe('a runner that has lost its lock stops, and an off written late still s
       if (args[0] === 'audit') fs.writeFileSync(path.join(w.a.dir, 'config.json'), '{"autoUpdate":"off"}');
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.policyOff });
     expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
   });
@@ -2646,6 +2683,7 @@ describe('a runner that has lost its lock stops, and an off written late still s
       if (args[0] === 'audit') fs.writeFileSync(path.join(w.a.dir, 'config.json'), '{"autoUpdate":"patch"}');
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'skipped', reason: AUTO_UPDATE_REASONS.bumpNotPermitted });
     expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
   });
@@ -2908,6 +2946,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       }
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
     expect(order).toEqual(['ci(staging):--omit=dev --ignore-scripts --no-audit --no-fund', 'install -g', 'ci(installed):--omit=dev --ignore-scripts --no-audit --no-fund']);
   });
@@ -2955,6 +2994,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) { fs.rmSync(path.join(installedDir, 'WORKS'), { force: true }); return { status: 1, stdout: '', stderr: 'npm error ENOSPC' }; }
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.installFailed });
     expect(fs.readFileSync(path.join(installedDir, 'WORKS'), 'utf8')).toBe('the old version');
   });
@@ -2968,6 +3008,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       if (cmd === 'npm' && args[0] === 'ci' && opts?.cwd === installedDir) fs.rmSync(path.join(path.dirname(installedDir), `memesh.rollback-${process.pid}`), { recursive: true, force: true });
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.installNotUndone });
     expect(AUTO_UPDATE_REASONS.installNotUndone).toContain('memesh update --reinstall');
     // The new version is what is on disk now; the registry says it is the newest. That is not "up to date".
@@ -2981,6 +3022,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
     const w = fakeWorld();
     const real = w.deps.exec;
     w.deps.exec = (cmd, args, opts) => (cmd === 'npm' && args[0] === 'root' ? { status: 1, stdout: '', stderr: 'npm error boom' } : real(cmd, args, opts));
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.globalDirUnknown });
     expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
   });
@@ -2995,6 +3037,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       if (cmd === 'npm' && args[0] === 'root') { unreadable = path.join(installedDir, 'secret'); fs.writeFileSync(unreadable, 'x'); fs.chmodSync(unreadable, 0o000); }
       return r;
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     try {
       expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.rollbackUnavailable });
       expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
@@ -3021,6 +3064,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) fs.rmSync(path.join(installedDir, 'memesh-lock.json'));
       return r;
     };
+    bare.deps.exec = logicalNpmEntry(bare.deps.exec);
     expect(await runAutoUpdate(bare.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.dependencyPinFailed });
     expect(fs.readFileSync(path.join(installedDir, 'WORKS'), 'utf8')).toBe('the old version');
   });
@@ -3036,6 +3080,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
       if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) installs.push(args);
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
     expect(installs).toHaveLength(1);
     expect(installs[0].slice(0, 3)).toEqual(['install', '-g', '--ignore-scripts']);
@@ -3087,6 +3132,7 @@ describe('memesh update --reinstall: this very version, through the same checks'
     const real = w.deps.exec;
     const installs: string[][] = [];
     w.deps.exec = (cmd, args, opts) => { if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) installs.push(args); return real(cmd, args, opts); };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
     expect(readAutoUpdateState(w.a.dir)).toMatchObject({ outcome: 'installed', from: '4.13.0', to: '4.13.0' });
     expect(installs).toHaveLength(1);
@@ -3133,6 +3179,7 @@ describe('an install that dies half way leaves a trace, and a result record clea
       if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) during = readInstalling(w.a.dir);
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     await runAutoUpdate(w.deps);
     expect(during).toMatchObject({ marker: { from: '4.12.0', to: '4.13.0', pid: process.pid }, running: true });
     expect(readInstalling(w.a.dir)).toBeNull();
@@ -3150,6 +3197,7 @@ describe('an install that dies half way leaves a trace, and a result record clea
       }
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     // runAutoUpdate catches and records a failure; what a SIGKILL leaves is the marker alone, so put it back as the kill would have left it.
     await runAutoUpdate(w.deps);
     fs.writeFileSync(path.join(w.a.dir, 'auto-update-installing.json'), JSON.stringify({ at: new Date().toISOString(), from: '4.12.0', to: '4.13.0', pid: 2_147_483_000, started: null }));
@@ -3197,6 +3245,7 @@ describe('a log entry is one line', () => {
     const w = fakeWorld();
     const real = w.deps.exec;
     w.deps.exec = (cmd, args, opts) => (cmd === 'npm' && args[0] === 'install' && args.includes('-g') ? { status: 1, stdout: '', stderr: 'npm error one\nnpm error two\n\n' + 'x'.repeat(500) } : real(cmd, args, opts));
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     await runAutoUpdate(w.deps);
     const detail = readAutoUpdateState(w.a.dir)?.detail ?? '';
     expect(detail).toContain('npm error one npm error two');
@@ -3323,6 +3372,7 @@ describe('working directories left by an update that was killed', () => {
       if (cmd === 'npm' && args[0] === 'install' && !args.includes('-g') && opts?.cwd) ownerSeen = JSON.parse(fs.readFileSync(path.join(opts.cwd, 'owner.json'), 'utf8'));
       return real(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     await runAutoUpdate(w.deps);
     expect(fs.existsSync(left)).toBe(false);
     expect(ownerSeen).toMatchObject({ pid: process.pid });
@@ -3389,6 +3439,7 @@ describe('what the install steps answer decides the outcome', () => {
     const w = fakeWorld();
     const real = w.deps.exec;
     w.deps.exec = (cmd, args, opts) => (cmd === 'npm' && args[0] === 'install' && args.includes('-g') ? { status: 243, stdout: '', stderr: 'npm error EACCES: permission denied' } : real(cmd, args, opts));
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.installFailed });
     expect(readAutoUpdateState(w.a.dir)).toMatchObject({ detail: expect.stringContaining('EACCES') });
     expect(w.calls.filter((c) => c.startsWith('npm ci'))).toHaveLength(1); // the rehearsal in staging; none in the installed package
@@ -3477,6 +3528,7 @@ describe.skipIf(process.platform === 'win32')('the global install and its way ba
       const mine = cmd === 'npm' && (args[0] === 'root' || (args[0] === 'install' && args.includes('-g')) || (args[0] === 'ci' && opts?.cwd?.startsWith(env.npm_config_prefix!)));
       return mine ? realNpm(env, args, opts?.cwd) : fake(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     const prints = () => spawnSync(NODE_BIN, [path.join(installedDir, 'index.js')], { encoding: 'utf8' }).stdout.trim();
     return { w, installedDir, prints, parent: path.dirname(installedDir) };
   }
@@ -3646,6 +3698,7 @@ describe.skipIf(process.platform === 'win32' || process.env.MEMESH_REAL_MEMESH !
       const mine = cmd === 'npm' && (args[0] === 'root' || (args[0] === 'install' && args.includes('-g')));
       return mine ? realNpm(env, args, opts?.cwd) : fake(cmd, args, opts);
     };
+    w.deps.exec = logicalNpmEntry(w.deps.exec);
     return { w, installedDir, base };
   }
   function expectOldStillRuns(t: ReturnType<typeof setup>) {

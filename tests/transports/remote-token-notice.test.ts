@@ -3,6 +3,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { loadOrCreateRemoteToken, remoteTokenStartupNotice } from '../../src/transports/http/server.js';
+import { expectPrivateFile } from '../helpers/permissions.js';
 
 describe('remote token startup notice says where the token really came from', () => {
   let dir: string;
@@ -57,7 +58,7 @@ describe('remote token startup notice says where the token really came from', ()
     const file = path.join(dir, 'remote-token');
     expect(notice).toContain(`Token file: ${file} (mode 600)`);
     expect(notice).toContain(`Rotate by deleting ${file} and restarting.`);
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    expectPrivateFile(file);
     expect(fs.readFileSync(file, 'utf8').trim()).toBe(loaded.token.toString('utf8'));
     expect(notice, 'the token itself must never reach startup output').not.toContain(loaded.token.toString('utf8'));
   });

@@ -5,6 +5,7 @@ import { DatabaseSync } from 'node:sqlite';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { shellQuote } from '../../src/core/file-mode.js';
 import { bundleCliFromSource, runBundledCli } from '../helpers/cli-source-bundle.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
@@ -42,7 +43,7 @@ describe('memesh import of your own backup', () => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-own-backup-'));
     make('alpha', 'ALPHA text');
     make('beta', 'BETA text');
-    file = path.join(home, 'backup.json');
+    file = path.join(home, 'backup with space.json');
     expect(cli(['export', '-o', file]).status).toBe(0);
     // The fixture the tests below depend on: two memories and a signature.
     expect((JSON.parse(fs.readFileSync(file, 'utf8')) as { entities: unknown[] }).entities).toHaveLength(2);
@@ -50,7 +51,7 @@ describe('memesh import of your own backup', () => {
   afterEach(() => removeTempDir(home));
 
   describe('trust', () => {
-    it('your unchanged backup is trusted again, and the output says so', () => {
+    it.skipIf(process.platform === 'win32')('your unchanged backup is trusted again, and the output says so', () => {
       wipeDatabase();
       const r = cli(['import', file]);
       expect(r.status, r.stderr).toBe(0);
@@ -61,7 +62,7 @@ describe('memesh import of your own backup', () => {
       expect(r.stdout).not.toContain('as untrusted');
     });
 
-    it('a memory that was untrusted when exported stays untrusted', () => {
+    it.skipIf(process.platform === 'win32')('a memory that was untrusted when exported stays untrusted', () => {
       const foreign = path.join(home, 'foreign.json');
       writeForeign(foreign);
       expect(cli(['import', foreign]).status).toBe(0);
@@ -76,7 +77,7 @@ describe('memesh import of your own backup', () => {
       expect(r.stdout).toContain('1 memory imported as untrusted');
     });
 
-    it('one changed byte makes the whole file untrusted', () => {
+    it.skipIf(process.platform === 'win32')('one changed byte makes the whole file untrusted', () => {
       const text = fs.readFileSync(file, 'utf8');
       expect(text).toContain('ALPHA text');
       fs.writeFileSync(file, text.replace('ALPHA text', 'ALPHA tex7'));
@@ -89,7 +90,7 @@ describe('memesh import of your own backup', () => {
       expect(r.stdout).toContain('2 memories imported as untrusted');
     });
 
-    it('a file with its signature removed is untrusted', () => {
+    it.skipIf(process.platform === 'win32')('a file with its signature removed is untrusted', () => {
       const data = JSON.parse(fs.readFileSync(file, 'utf8')) as Record<string, unknown>;
       expect(data.signature).toBeDefined();
       delete data.signature;
@@ -102,7 +103,7 @@ describe('memesh import of your own backup', () => {
       expect(r.stdout).toContain('--trust');
     });
 
-    it('a file signed by another folder is untrusted', () => {
+    it.skipIf(process.platform === 'win32')('a file signed by another folder is untrusted', () => {
       const other = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-own-backup-other-'));
       try {
         make('alpha', 'ALPHA text', other);
@@ -125,6 +126,19 @@ describe('memesh import of your own backup', () => {
         expect(fs.existsSync(path.join(fresh, '.memesh', 'agent-router.token'))).toBe(false);
       } finally { removeTempDir(fresh); }
     });
+
+    it.skipIf(process.platform !== 'win32')('Windows warns about an unsigned export, then imports its memories as untrusted and readable', () => {
+      const exported = cli(['export', '-o', file]);
+      expect(exported.status, exported.stderr).toBe(0);
+      expect(exported.stderr).toContain('this file is not signed');
+      expect(JSON.parse(fs.readFileSync(file, 'utf8'))).not.toHaveProperty('signature');
+      wipeDatabase();
+      const imported = cli(['import', file]);
+      expect(imported.status, imported.stderr).toBe(0);
+      expect(imported.stdout).toContain('2 memories imported as untrusted');
+      expect(row('alpha')?.trust).toBe('untrusted');
+      expect(observations('alpha')).toEqual(['ALPHA text']);
+    });
   });
 
   describe('forgotten memories', () => {
@@ -135,7 +149,7 @@ describe('memesh import of your own backup', () => {
       expect(r.status, r.stderr).toBe(0);
       expect(row('alpha')?.status).toBe('archived');
       expect(r.stdout).toContain('Kept archived: 1 memory you archived (forgot), left alone.');
-      expect(r.stdout).toContain(`run: memesh import ${file} --restore-archived`);
+      expect(r.stdout).toContain(`run: memesh import ${shellQuote(file)} --restore-archived`);
       // Only beta, which is active and unchanged, counts as skipped; the forgotten alpha has its own line.
       expect(r.stdout).toContain('Imported: 0, Skipped: 1, Appended: 0');
     });
@@ -156,7 +170,7 @@ describe('memesh import of your own backup', () => {
 
     it('--merge append names the same command with its own flag', () => {
       const r = cli(['import', file, '--merge', 'append']);
-      expect(r.stdout).toContain(`run: memesh import ${file} --merge append --restore-archived`);
+      expect(r.stdout).toContain(`run: memesh import ${shellQuote(file)} --merge append --restore-archived`);
     });
   });
 

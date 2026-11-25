@@ -177,6 +177,8 @@ describe('memory stays out of the network path', () => {
       'src/core/paths.ts',
       'src/core/public-network-context.ts',
       'src/core/time-utils.ts',
+      // Windows ACL operations only; no memory contents or graph queries.
+      'src/core/windows-permissions.ts',
       // Reached only for jsonStringLiteral, through the inbox: it has no imports and no SQL.
       'src/host-adapters/conversation-wake.ts',
       'src/storage/agent-network-schema.ts',

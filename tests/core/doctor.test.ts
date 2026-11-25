@@ -3399,10 +3399,15 @@ describe('database failure diagnostics (F15)', () => {
     const previousEnv = process.env.MEMESH_DB_PATH;
     process.env.MEMESH_DB_PATH = dbPath;
     try {
-      const result = await runDoctor({
+      let locked = true;
+      const open = vi.fn(() => {
+        if (locked) throw new Error('database is locked');
+        return makeDatabase(1) as never;
+      });
+      const options: Parameters<typeof runDoctor>[0] = {
         packageRoot,
         packageVersion: '4.1.4',
-        openDatabaseImpl: () => { throw new Error('database is locked'); },
+        openDatabaseImpl: open,
         closeDatabaseImpl: () => undefined,
         getConfigPathImpl: () => path.join(packageRoot, 'config.json'),
         getUpdateCheckImpl: async () => makeUpdateCheck(),
@@ -3417,7 +3422,8 @@ describe('database failure diagnostics (F15)', () => {
           if (p === dbPath) return { mode: 0o600, size: 4096 } as fs.Stats;
           throw new Error('ENOENT');
         }) as unknown as typeof fs.statSync,
-      });
+      };
+      const result = await runDoctor(options);
       const dbCheck = result.checks.find(c => c.id === 'database')!;
       expect(dbCheck.summary).toMatch(/^Another process has the database locked/);
       expect(dbCheck.fix).not.toMatch(/mv |reset/i);
@@ -3425,6 +3431,11 @@ describe('database failure diagnostics (F15)', () => {
       const others = result.checks.filter((c) => c.id !== 'database' && /database is locked/.test(`${c.summary} ${c.fix ?? ''}`));
       for (const check of others) expect(check.fix, check.id).not.toMatch(/disk/);
       expect(result.checks.some((c) => c.id !== 'database' && /locked; wait/.test(c.fix ?? ''))).toBe(true);
+      expect(open).toHaveBeenCalledTimes(1);
+      locked = false;
+      const recovered = await runDoctor(options);
+      expect(open.mock.calls.length).toBeGreaterThan(1);
+      expect(recovered.checks.find(c => c.id === 'database')?.status).toBe('pass');
     } finally {
       if (previousEnv === undefined) delete process.env.MEMESH_DB_PATH;
       else process.env.MEMESH_DB_PATH = previousEnv;
@@ -5878,6 +5889,7 @@ describe('doctor: automatic updates', () => {
 
   it('does not crash where the system has no passwd entry and reports the default on policy', async () => {
     const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
+    const savedCi = process.env.CI;
     const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry for this uid'); });
     try {
       const root = createPackageRoot();
@@ -5887,6 +5899,7 @@ describe('doctor: automatic updates', () => {
       const savedDb = process.env.MEMESH_DB_PATH;
       process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
       delete process.env.MEMESH_AUTO_UPDATE;
+      delete process.env.CI;
       try {
         const result = await runDoctor({
           packageRoot: root, packageVersion: '4.0.3',
@@ -5908,6 +5921,7 @@ describe('doctor: automatic updates', () => {
     } finally {
       spy.mockRestore();
       if (savedPolicy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = savedPolicy;
+      if (savedCi === undefined) delete process.env.CI; else process.env.CI = savedCi;
     }
   });
 });

@@ -1,7 +1,7 @@
 import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);
 
 // dist/network/bridge.js
-import path14 from "node:path";
+import path15 from "node:path";
 
 // dist/core/paths.js
 import os from "os";
@@ -125,12 +125,121 @@ async function bindEndpoint(iroh, secret, relay, alpns, env = process.env) {
 
 // dist/network/identity.js
 import { createPrivateKey, createPublicKey, randomBytes, sign, verify } from "node:crypto";
-import fs2 from "node:fs";
-import path3 from "node:path";
+import fs3 from "node:fs";
+import path4 from "node:path";
 
 // dist/core/file-mode.js
-import fs from "fs";
+import fs2 from "fs";
 import { pathToFileURL } from "url";
+
+// dist/core/windows-permissions.js
+import fs from "node:fs";
+import path3 from "node:path";
+import childProcess from "node:child_process";
+var SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())) | ConvertFrom-Json
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $self = $identity.User.Value
+  $admin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  $sidType = [Security.Principal.SecurityIdentifier]
+  $allow = [Security.AccessControl.AccessControlType]::Allow
+  function Read-Acl($file) {
+    $attributes = [IO.File]::GetAttributes($file)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'path changed' }
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return [IO.Directory]::GetAccessControl($file) }
+    return [IO.File]::GetAccessControl($file)
+  }
+  function Check-Acl($acl) {
+    $owner = $acl.GetOwner($sidType).Value
+    if ($owner -ne $self -and -not ($admin -and $owner -eq 'S-1-5-32-544')) { throw 'foreign owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'null DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+          ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -and
+           $ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessDenied)) { throw 'unsupported ACE' }
+    }
+  }
+  function Trusted-Allow($rule) {
+    $sid = $rule.IdentityReference.Value
+    return $sid -in @($self, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4') -or
+      ($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
+  }
+  function Rule-Key($rule) {
+    return '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value, $rule.AccessControlType,
+      [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags
+  }
+  foreach ($file in $request.paths) {
+    $acl = Read-Acl $file
+    Check-Acl $acl
+    $owner = $acl.GetOwner($sidType).Value
+    $changed = -not $acl.AreAccessRulesProtected
+    if ($changed) { $acl.SetAccessRuleProtection($true, $true) }
+    foreach ($rule in @($acl.GetAccessRules($true, $true, $sidType))) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) {
+        $acl.RemoveAccessRuleSpecific($rule)
+        $changed = $true
+      }
+    }
+    $expected = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    if ($changed) {
+      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
+      else { [IO.File]::SetAccessControl($file, $acl) }
+    }
+    $actual = Read-Acl $file
+    Check-Acl $actual
+    if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
+    foreach ($rule in $actual.GetAccessRules($true, $true, $sidType)) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
+    }
+    $keys = (@($actual.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    if ($keys -ne $expected) { throw 'rights changed' }
+  }
+  if ($request.writableDirectory) {
+    $probe = [IO.Path]::Combine($request.writableDirectory, '.memesh-write-' + [Guid]::NewGuid().ToString('N'))
+    $stream = $null
+    try {
+      $stream = [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), 4096, [IO.FileOptions]::DeleteOnClose)
+      $stream.WriteByte(0)
+    } finally { if ($null -ne $stream) { $stream.Dispose() } }
+  }
+  [Console]::Out.Write('{"ok":true}')
+} catch {
+  [Console]::Out.Write('{"ok":false}')
+  exit 1
+}
+`;
+function makeWindowsPathsPrivate(targets, writableDirectory) {
+  const paths = [];
+  for (const target of targets) {
+    if (fs.statSync(target, { throwIfNoEntry: false }) !== void 0)
+      paths.push(fs.realpathSync(target));
+  }
+  if (paths.length === 0 && writableDirectory === void 0)
+    return;
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  try {
+    if (!systemRoot || !path3.win32.isAbsolute(systemRoot))
+      throw new Error("Windows system directory unavailable");
+    const output = childProcess.execFileSync(path3.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SCRIPT, "utf16le").toString("base64")], {
+      input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory })).toString("base64"),
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      timeout: 15e3,
+      maxBuffer: 4096
+    });
+    if (JSON.parse(output.trim()).ok !== true)
+      throw new Error("ACL verification failed");
+  } catch (cause) {
+    throw Object.assign(new Error("Cannot verify private Windows permissions; use a writable folder owned by your Windows account.", { cause }), { code: "MEMESH_PRIVATE_PATH" });
+  }
+}
+
+// dist/core/file-mode.js
 function shellQuote(value) {
   const word = value.startsWith("-") ? `./${value}` : value;
   return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -139,10 +248,10 @@ var warned = /* @__PURE__ */ new Set();
 function removeGroupAndOtherAccess(target) {
   let stat2;
   try {
-    stat2 = fs.statSync(target);
+    stat2 = fs2.statSync(target);
     const mode2 = stat2.mode & 4095;
     if ((mode2 & 63) !== 0)
-      fs.chmodSync(target, mode2 & ~63);
+      fs2.chmodSync(target, mode2 & ~63);
   } catch (err) {
     const code = err.code;
     if (code === "ENOENT")
@@ -165,15 +274,15 @@ function belongsToAnotherUser(stat2) {
 function databaseFiles(dbPath) {
   let real = dbPath;
   try {
-    if (fs.lstatSync(dbPath).isSymbolicLink())
-      real = fs.realpathSync(dbPath);
+    if (fs2.lstatSync(dbPath).isSymbolicLink())
+      real = fs2.realpathSync(dbPath);
   } catch {
   }
   return [real, `${real}-wal`, `${real}-shm`];
 }
 function holdsBytes(file) {
   try {
-    return fs.statSync(file).size > 0;
+    return fs2.statSync(file).size > 0;
   } catch {
     return false;
   }
@@ -191,13 +300,19 @@ function guardDatabaseFiles(dbPath) {
   refuseMismatchedSidecars(dbPath);
 }
 function requirePrivateWritableDirectory(dir, purpose) {
+  if (process.platform === "win32") {
+    if (!fs2.statSync(dir).isDirectory())
+      throw new Error(`${dir} is not a directory, and ${purpose}`);
+    makeWindowsPathsPrivate([dir], dir);
+    return;
+  }
   removeGroupAndOtherAccess(dir);
-  const mode2 = fs.statSync(dir).mode & 511;
+  const mode2 = fs2.statSync(dir).mode & 511;
   if ((mode2 & 63) !== 0) {
     throw new Error(`${dir} is still open to other users (${mode2.toString(8)}), and ${purpose}. Run: chmod go-rwx ${shellQuote(dir)}`);
   }
   try {
-    fs.accessSync(dir, fs.constants.W_OK);
+    fs2.accessSync(dir, fs2.constants.W_OK);
   } catch {
     throw new Error(`${dir} is read-only, and ${purpose}. MeMesh does not make it writable; if you want it to run, run: chmod u+w ${shellQuote(dir)}`);
   }
@@ -210,7 +325,7 @@ function refuseMismatchedSidecars(dbPath, options = {}) {
   if (process.platform === "win32")
     return;
   const [real, wal, shm] = databaseFiles(dbPath);
-  const database = fs.statSync(real, { throwIfNoEntry: false });
+  const database = fs2.statSync(real, { throwIfNoEntry: false });
   if (!database)
     return;
   const fewer = [];
@@ -219,7 +334,7 @@ function refuseMismatchedSidecars(dbPath, options = {}) {
   let fewerBits = 0;
   let extraBits = 0;
   for (const sidecar of [wal, shm]) {
-    const stat2 = fs.statSync(sidecar, { throwIfNoEntry: false });
+    const stat2 = fs2.statSync(sidecar, { throwIfNoEntry: false });
     if (!stat2)
       continue;
     if (options.readOnly && stat2.size > 0)
@@ -263,11 +378,11 @@ function isMachineId(value) {
   return typeof value === "string" && MACHINE_ID.test(value);
 }
 function identityPath(dataDir2) {
-  return path3.join(networkDir(dataDir2), "identity.key");
+  return path4.join(networkDir(dataDir2), "identity.key");
 }
 function ensureNetworkDir(dataDir2) {
   const dir = networkDir(dataDir2);
-  fs2.mkdirSync(dir, { recursive: true, mode: 448 });
+  fs3.mkdirSync(dir, { recursive: true, mode: 448 });
   removeGroupAndOtherAccess(dir);
   return dir;
 }
@@ -284,7 +399,7 @@ function loadIdentity(dataDir2) {
   const file = identityPath(dataDir2);
   let secret;
   try {
-    secret = fs2.readFileSync(file);
+    secret = fs3.readFileSync(file);
   } catch (err) {
     const code = err.code;
     throw new NetworkError(code === "ENOENT" ? "not_joined" : "identity_invalid", code === "ENOENT" ? "This machine has not joined a network." : `Cannot read ${file} (${code}).`);
@@ -451,8 +566,8 @@ function consumeInvite(db, tokenHash, now) {
 }
 
 // dist/network/store.js
-import fs3 from "node:fs";
-import path4 from "node:path";
+import fs4 from "node:fs";
+import path5 from "node:path";
 
 // dist/storage/agent-network-schema.js
 var NETWORK_METADATA_SCHEMA_SQL = `
@@ -604,9 +719,9 @@ function assertNodeSupported() {
 var BUSY_TIMEOUT_MS = 3e4;
 var MemeshDatabase = class extends DatabaseSync {
   #depth = 0;
-  constructor(path15, options = {}) {
+  constructor(path16, options = {}) {
     assertNodeSupported();
-    super(path15, options);
+    super(path16, options);
     this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
   }
   pragma(statement) {
@@ -642,8 +757,8 @@ var MemeshDatabase = class extends DatabaseSync {
 
 // dist/network/store.js
 function openNetworkStore(dbPath, options = {}) {
-  const dir = path4.dirname(dbPath);
-  fs3.mkdirSync(dir, { recursive: true });
+  const dir = path5.dirname(dbPath);
+  fs4.mkdirSync(dir, { recursive: true });
   try {
     process.umask(63);
   } catch {
@@ -753,9 +868,9 @@ function handleJoinRequest(db, identity, remoteMachineId, bytes, now) {
 }
 
 // dist/network/native-loader.js
-import fs4 from "node:fs";
+import fs5 from "node:fs";
 import { createRequire as createRequire2 } from "node:module";
-import path5 from "node:path";
+import path6 from "node:path";
 
 // dist/network/runtime-platform.js
 function currentLibc() {
@@ -779,21 +894,21 @@ function nativeFileName(packageName) {
 
 // dist/network/native-loader.js
 function loadNative(runtimeDirectory) {
-  const lockText = fs4.readFileSync(path5.join(runtimeDirectory, "package-lock.json"), "utf8");
+  const lockText = fs5.readFileSync(path6.join(runtimeDirectory, "package-lock.json"), "utf8");
   const name = platformPackage(lockText, process.platform, process.arch, currentLibc());
   const missing = `the native networking file for ${process.platform}-${process.arch} is missing from the install`;
   if (name === null)
     throw new Error(missing);
   let file;
   try {
-    file = fs4.realpathSync(path5.join(runtimeDirectory, "node_modules", name, nativeFileName(name)));
+    file = fs5.realpathSync(path6.join(runtimeDirectory, "node_modules", name, nativeFileName(name)));
   } catch {
     throw new Error(missing);
   }
-  if (!file.startsWith(fs4.realpathSync(runtimeDirectory) + path5.sep)) {
+  if (!file.startsWith(fs5.realpathSync(runtimeDirectory) + path6.sep)) {
     throw new Error("the native networking file points outside the install, so it was not loaded");
   }
-  return createRequire2(path5.join(runtimeDirectory, "package.json"))(file);
+  return createRequire2(path6.join(runtimeDirectory, "package.json"))(file);
 }
 function explainLoadFailure(err) {
   const message = errorMessage(err).split("\n")[0];
@@ -852,21 +967,21 @@ async function runJoinClient(dataDir2, input) {
 }
 
 // dist/network/bridge-serve.js
-import fs12 from "node:fs";
-import path13 from "node:path";
+import fs13 from "node:fs";
+import path14 from "node:path";
 
 // dist/core/conversation-messages.js
-import fs7 from "node:fs";
-import path8 from "node:path";
+import fs8 from "node:fs";
+import path9 from "node:path";
 import os2 from "node:os";
 import { randomUUID } from "node:crypto";
 
 // dist/core/public-network-context.js
-import fs5 from "node:fs";
-import path6 from "node:path";
+import fs6 from "node:fs";
+import path7 from "node:path";
 function stat(file) {
   try {
-    return fs5.lstatSync(file);
+    return fs6.lstatSync(file);
   } catch (error) {
     if (error.code === "ENOENT")
       return void 0;
@@ -874,18 +989,18 @@ function stat(file) {
   }
 }
 function openPublicNetworkDatabase(file, consistentSnapshot = false) {
-  const parent = stat(path6.dirname(file));
+  const parent = stat(path7.dirname(file));
   if (!parent)
     return void 0;
-  let expectedParent = path6.resolve(path6.dirname(file));
+  let expectedParent = path7.resolve(path7.dirname(file));
   if (process.platform === "darwin") {
     for (const alias of ["/var", "/tmp"]) {
-      if ((expectedParent === alias || expectedParent.startsWith(`${alias}/`)) && fs5.realpathSync(alias) === `/private${alias}`) {
+      if ((expectedParent === alias || expectedParent.startsWith(`${alias}/`)) && fs6.realpathSync(alias) === `/private${alias}`) {
         expectedParent = `/private${expectedParent}`;
       }
     }
   }
-  if (!parent.isDirectory() || parent.isSymbolicLink() || fs5.realpathSync(path6.dirname(file)) !== expectedParent || process.platform !== "win32" && (parent.uid !== process.getuid?.() || (parent.mode & 63) !== 0))
+  if (!parent.isDirectory() || parent.isSymbolicLink() || fs6.realpathSync(path7.dirname(file)) !== expectedParent || process.platform !== "win32" && (parent.uid !== process.getuid?.() || (parent.mode & 63) !== 0))
     throw new Error("Unsafe network metadata directory");
   const main = stat(file);
   if (!main)
@@ -908,7 +1023,7 @@ function openPublicNetworkDatabase(file, consistentSnapshot = false) {
   return db;
 }
 function readPublicNetworkContext(dataDir2) {
-  const db = openPublicNetworkDatabase(path6.join(dataDir2, "network", "metadata.db"));
+  const db = openPublicNetworkDatabase(path7.join(dataDir2, "network", "metadata.db"));
   if (!db)
     return void 0;
   try {
@@ -931,8 +1046,8 @@ function readPublicNetworkContext(dataDir2) {
 
 // dist/core/conversation-message-migration.js
 import { createHash as createHash2 } from "node:crypto";
-import fs6 from "node:fs";
-import path7 from "node:path";
+import fs7 from "node:fs";
+import path8 from "node:path";
 
 // dist/core/time-utils.js
 function parseSqliteUtcMs(sqliteTimestamp) {
@@ -954,20 +1069,20 @@ function sqliteUtcToIso(sqliteTimestamp) {
 
 // dist/core/conversation-message-migration.js
 function legacyConversationArchiveFiles(graph, target) {
-  const directory = path7.dirname(path7.resolve(graph));
-  if (directory !== path7.dirname(path7.resolve(target)))
+  const directory = path8.dirname(path8.resolve(graph));
+  if (directory !== path8.dirname(path8.resolve(target)))
     throw new Error("Legacy archive and message store must share a data directory");
-  const backups = path7.join(directory, "backups");
-  const names = /* @__PURE__ */ new Set([path7.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path7.basename(graph)}`, "agent-messages-expired.db"]);
+  const backups = path8.join(directory, "backups");
+  const names = /* @__PURE__ */ new Set([path8.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path8.basename(graph)}`, "agent-messages-expired.db"]);
   const privateEntry = (file, directoryEntry) => {
-    const stat2 = fs6.lstatSync(file);
+    const stat2 = fs7.lstatSync(file);
     if (stat2.isSymbolicLink() || !(directoryEntry ? stat2.isDirectory() : stat2.isFile()) || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
       throw new Error(`Unsafe legacy archive path: ${file}`);
     }
   };
-  const candidates = [...names].map((name) => path7.join(backups, name)).filter((file) => {
+  const candidates = [...names].map((name) => path8.join(backups, name)).filter((file) => {
     try {
-      return fs6.lstatSync(file) !== void 0;
+      return fs7.lstatSync(file) !== void 0;
     } catch (error) {
       const code = error.code;
       if (code === "ENOENT" || code === "ENOTDIR")
@@ -985,7 +1100,7 @@ function legacyConversationArchiveFiles(graph, target) {
     assertLegacyPathsAreDifferent(file, graph);
     assertLegacyPathsAreDifferent(file, target);
     for (const suffix of ["-wal", "-shm", "-journal"]) {
-      if (fs6.lstatSync(file + suffix, { throwIfNoEntry: false }))
+      if (fs7.lstatSync(file + suffix, { throwIfNoEntry: false }))
         privateEntry(file + suffix, false);
     }
     refuseMismatchedSidecars(file, { readOnly: true });
@@ -1087,12 +1202,12 @@ function assertLegacyDestinationIsDifferent(source, targetFile) {
   assertLegacyPathsAreDifferent(sourceFile, targetFile);
 }
 function assertLegacyPathsAreDifferent(sourceFile, targetFile) {
-  if (path7.resolve(sourceFile) === path7.resolve(targetFile))
+  if (path8.resolve(sourceFile) === path8.resolve(targetFile))
     throw new Error("Legacy source and target must be different files");
   let a, b;
   try {
-    a = fs6.statSync(sourceFile);
-    b = fs6.statSync(targetFile);
+    a = fs7.statSync(sourceFile);
+    b = fs7.statSync(targetFile);
   } catch (error) {
     if (error.code === "ENOENT")
       return;
@@ -1329,7 +1444,7 @@ var ConversationMessages = class {
     if (busyTimeoutMs !== void 0 && (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 3e4)) {
       throw new Error("busyTimeoutMs must be an integer between 0 and 30000");
     }
-    const file = options.file ?? path8.join(getMemeshDirFromDbPath(), "messages.db");
+    const file = options.file ?? path9.join(getMemeshDirFromDbPath(), "messages.db");
     if (options.legacySource)
       assertLegacyDestinationIsDifferent(options.legacySource, file);
     const legacyFile = options.file === void 0 && options.legacySource === void 0 ? getDbPath() : void 0;
@@ -1362,24 +1477,34 @@ var ConversationMessages = class {
     });
     let ownedSource;
     try {
-      if (legacyFile !== void 0 && fs7.existsSync(legacyFile)) {
-        const directory = path8.dirname(fs7.realpathSync(legacyFile));
-        const stat2 = fs7.statSync(directory);
+      if (legacyFile !== void 0 && fs8.existsSync(legacyFile)) {
+        const directory = path9.dirname(fs8.realpathSync(legacyFile));
+        const stat2 = fs8.statSync(directory);
         if (!stat2.isDirectory() || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
           throw new Error("Legacy retirement requires an owner-private source directory");
         }
-        fs7.accessSync(directory, fs7.constants.W_OK | fs7.constants.X_OK);
+        fs8.accessSync(directory, fs8.constants.W_OK | fs8.constants.X_OK);
         guardDatabaseFiles(legacyFile);
         ownedSource = new MemeshDatabase(legacyFile);
         if (busyTimeoutMs !== void 0)
           ownedSource.pragma(`busy_timeout = ${busyTimeoutMs}`);
         assertLegacyDestinationIsDifferent(ownedSource, file);
       }
-      fs7.mkdirSync(path8.dirname(file), { recursive: true, mode: 448 });
-      requirePrivateWritableDirectory(path8.dirname(file), "messages must remain owner-private");
+      fs8.mkdirSync(path9.dirname(file), { recursive: true, mode: 448 });
+      requirePrivateWritableDirectory(path9.dirname(file), "messages must remain owner-private");
+      if (process.platform === "win32") {
+        const directory = fs8.realpathSync(path9.dirname(file));
+        const files = databaseFiles(file);
+        for (const target of files) {
+          if (fs8.statSync(target, { throwIfNoEntry: false }) && path9.dirname(fs8.realpathSync(target)) !== directory) {
+            throw new Error("Message files must remain in their owner-private directory.");
+          }
+        }
+        makeWindowsPathsPrivate(files);
+      }
       guardDatabaseFiles(file);
-      const fd = fs7.openSync(file, "a", 384);
-      fs7.closeSync(fd);
+      const fd = fs8.openSync(file, "a", 384);
+      fs8.closeSync(fd);
       this.db = new MemeshDatabase(file);
       try {
         if (busyTimeoutMs !== void 0)
@@ -1890,10 +2015,10 @@ var ConversationMessages = class {
 };
 
 // dist/host-adapters/conversation-wake.js
-import fs8 from "node:fs";
+import fs9 from "node:fs";
 import net from "node:net";
 import os3 from "node:os";
-import path9 from "node:path";
+import path10 from "node:path";
 import { execFile } from "node:child_process";
 var TIMEOUT_MS = 2e3;
 var MAX_OUTPUT_BYTES = 16 * 1024;
@@ -1908,9 +2033,9 @@ function alive(pid) {
   }
 }
 function privateSocket(socketPath) {
-  if (!path9.isAbsolute(socketPath) || process.platform === "win32")
+  if (!path10.isAbsolute(socketPath) || process.platform === "win32")
     throw new Error("Socket unavailable");
-  const stat2 = fs8.lstatSync(socketPath);
+  const stat2 = fs9.lstatSync(socketPath);
   if (!stat2.isSocket() || (stat2.mode & 63) !== 0 || typeof process.getuid !== "function" || stat2.uid !== process.getuid())
     throw new Error("Socket unavailable");
   return stat2;
@@ -1981,27 +2106,27 @@ async function wakeConversationMessage(message, target, localMachine = os3.hostn
 }
 
 // dist/network/bridge-state.js
-import fs9 from "node:fs";
-import path10 from "node:path";
+import fs10 from "node:fs";
+import path11 from "node:path";
 function statusPath(dataDir2) {
-  return path10.join(networkDir(dataDir2), "bridge-status.json");
+  return path11.join(networkDir(dataDir2), "bridge-status.json");
 }
 function logPath(dataDir2) {
-  return path10.join(networkDir(dataDir2), "bridge.log");
+  return path11.join(networkDir(dataDir2), "bridge.log");
 }
 function writeStatus(dataDir2, status) {
   const file = statusPath(dataDir2);
   const temporary = `${file}.tmp-${process.pid}`;
-  fs9.writeFileSync(temporary, `${JSON.stringify(status)}
+  fs10.writeFileSync(temporary, `${JSON.stringify(status)}
 `, { mode: 384 });
-  fs9.renameSync(temporary, file);
+  fs10.renameSync(temporary, file);
 }
 
 // dist/network/control-socket.js
 import { createHash as createHash3, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
-import fs10 from "node:fs";
+import fs11 from "node:fs";
 import net2 from "node:net";
-import path11 from "node:path";
+import path12 from "node:path";
 
 // dist/network/frames.js
 function parseConversationFrame(bytes) {
@@ -2195,7 +2320,7 @@ function controlPath(dataDir2) {
   if (process.platform === "win32") {
     return `\\\\.\\pipe\\memesh-bridge-${createHash3("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
   }
-  return path11.join(networkDir(dataDir2), "bridge.sock");
+  return path12.join(networkDir(dataDir2), "bridge.sock");
 }
 function controlPathFits(dataDir2) {
   return Buffer.byteLength(controlPath(dataDir2)) <= SOCKET_PATH_MAX_BYTES;
@@ -2207,13 +2332,13 @@ function assertControlPathFits(dataDir2) {
 }
 function dataDirIdentity(dataDir2) {
   try {
-    return fs10.realpathSync.native(dataDir2);
+    return fs11.realpathSync.native(dataDir2);
   } catch {
     return dataDir2;
   }
 }
 function tokenPath(dataDir2) {
-  return path11.join(networkDir(dataDir2), "control.token");
+  return path12.join(networkDir(dataDir2), "control.token");
 }
 var TOKEN_FORMAT = /^[0-9a-f]{64}$/;
 function ensureControlToken(dataDir2) {
@@ -2222,23 +2347,23 @@ function ensureControlToken(dataDir2) {
   if (existing !== null)
     return existing;
   const temporary = `${file}.tmp-${process.pid}`;
-  fs10.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
+  fs11.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
   try {
-    fs10.chmodSync(temporary, 384);
-    if (fs10.existsSync(file) && readControlToken(dataDir2) === null)
-      fs10.rmSync(file, { force: true });
-    fs10.linkSync(temporary, file);
+    fs11.chmodSync(temporary, 384);
+    if (fs11.existsSync(file) && readControlToken(dataDir2) === null)
+      fs11.rmSync(file, { force: true });
+    fs11.linkSync(temporary, file);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs10.rmSync(temporary, { force: true });
+    fs11.rmSync(temporary, { force: true });
   }
   return readControlToken(dataDir2);
 }
 function readControlToken(dataDir2) {
   try {
-    const token = fs10.readFileSync(tokenPath(dataDir2), "utf8");
+    const token = fs11.readFileSync(tokenPath(dataDir2), "utf8");
     return TOKEN_FORMAT.test(token) ? token : null;
   } catch {
     return null;
@@ -2298,7 +2423,7 @@ async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
 }
 function identityOf(file) {
   try {
-    const { dev, ino } = fs10.lstatSync(file);
+    const { dev, ino } = fs11.lstatSync(file);
     return { dev, ino };
   } catch {
     return null;
@@ -2308,7 +2433,7 @@ var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino ==
 function takeOverStaleLock(lock, judged) {
   const aside = `${lock}.stale-${process.pid}`;
   try {
-    fs10.renameSync(lock, aside);
+    fs11.renameSync(lock, aside);
   } catch (err) {
     if (err.code === "ENOENT")
       return;
@@ -2317,26 +2442,26 @@ function takeOverStaleLock(lock, judged) {
   try {
     if (sameFile(identityOf(aside), judged))
       return;
-    fs10.linkSync(aside, lock);
+    fs11.linkSync(aside, lock);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs10.rmSync(aside, { force: true });
+    fs11.rmSync(aside, { force: true });
   }
 }
 async function withStartupLock(dataDir2, use) {
-  const lock = path11.join(networkDir(dataDir2), "bridge.sock.startup.lock");
+  const lock = path12.join(networkDir(dataDir2), "bridge.sock.startup.lock");
   const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
   let mine;
   for (; ; ) {
     try {
-      const fd = fs10.openSync(lock, "wx", 384);
-      const { dev, ino } = fs10.fstatSync(fd);
+      const fd = fs11.openSync(lock, "wx", 384);
+      const { dev, ino } = fs11.fstatSync(fd);
       mine = { dev, ino };
-      fs10.writeSync(fd, `${process.pid}
+      fs11.writeSync(fd, `${process.pid}
 `);
-      fs10.closeSync(fd);
+      fs11.closeSync(fd);
       break;
     } catch (err) {
       if (err.code !== "EEXIST")
@@ -2355,15 +2480,15 @@ async function withStartupLock(dataDir2, use) {
     return await use(() => sameFile(identityOf(lock), mine));
   } finally {
     if (sameFile(identityOf(lock), mine))
-      fs10.rmSync(lock, { force: true });
+      fs11.rmSync(lock, { force: true });
   }
 }
 function startupLockIsStale(lock) {
   try {
-    const age = Date.now() - fs10.statSync(lock).mtimeMs;
+    const age = Date.now() - fs11.statSync(lock).mtimeMs;
     if (age >= STARTUP_LOCK_STALE_MS)
       return true;
-    const raw = fs10.readFileSync(lock, "utf8").trim();
+    const raw = fs11.readFileSync(lock, "utf8").trim();
     if (!/^[1-9][0-9]*$/.test(raw))
       return age >= STARTUP_LOCK_EMPTY_STALE_MS;
     process.kill(Number(raw), 0);
@@ -2395,10 +2520,10 @@ function removeStaleSocket(target, judged) {
     return;
   if (!sameFile(identityOf(target), judged))
     return;
-  if (!fs10.lstatSync(target).isSocket()) {
+  if (!fs11.lstatSync(target).isSocket()) {
     throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
   }
-  fs10.unlinkSync(target);
+  fs11.unlinkSync(target);
 }
 function parseOp(line2, token) {
   try {
@@ -2497,7 +2622,7 @@ function heldBy(server, target) {
       return "ours";
     let current;
     try {
-      const { dev, ino } = fs10.lstatSync(target);
+      const { dev, ino } = fs11.lstatSync(target);
       current = { dev, ino };
     } catch (err) {
       return err.code === "ENOENT" ? "lost" : "unreadable";
@@ -2553,13 +2678,13 @@ async function pingRelay(relayUrl, fetchImpl = fetch) {
 }
 
 // dist/network/test-frame-log.js
-import fs11 from "node:fs";
-import path12 from "node:path";
+import fs12 from "node:fs";
+import path13 from "node:path";
 function appendTestFrameLog(file, bytes) {
-  const folder = path12.dirname(path12.resolve(file));
+  const folder = path13.dirname(path13.resolve(file));
   let folderStat;
   try {
-    folderStat = fs11.lstatSync(folder);
+    folderStat = fs12.lstatSync(folder);
   } catch {
     return `the frame log folder ${folder} does not exist`;
   }
@@ -2571,20 +2696,20 @@ function appendTestFrameLog(file, bytes) {
     return `the frame log folder ${folder} belongs to another user`;
   let fd;
   try {
-    fd = fs11.openSync(file, fs11.constants.O_WRONLY | fs11.constants.O_APPEND | fs11.constants.O_CREAT | fs11.constants.O_NOFOLLOW, 384);
+    fd = fs12.openSync(file, fs12.constants.O_WRONLY | fs12.constants.O_APPEND | fs12.constants.O_CREAT | fs12.constants.O_NOFOLLOW, 384);
   } catch (err) {
     return `the frame log ${file} could not be opened safely (${err.code ?? "error"})`;
   }
   try {
-    const stat2 = fs11.fstatSync(fd);
+    const stat2 = fs12.fstatSync(fd);
     if (!stat2.isFile())
       return `the frame log ${file} is not a regular file`;
-    fs11.fchmodSync(fd, 384);
-    fs11.writeSync(fd, `${bytes.toString("utf8")}
+    fs12.fchmodSync(fd, 384);
+    fs12.writeSync(fd, `${bytes.toString("utf8")}
 `);
     return null;
   } finally {
-    fs11.closeSync(fd);
+    fs12.closeSync(fd);
   }
 }
 
@@ -2623,9 +2748,9 @@ var SEND_CONNECT_DEADLINE_MS = 2e4;
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs12.existsSync(file) && fs12.statSync(file).size > LOG_MAX_BYTES)
-      fs12.renameSync(file, `${file}.1`);
-    fs12.appendFileSync(file, line(event, detail), { mode: 384 });
+    if (fs13.existsSync(file) && fs13.statSync(file).size > LOG_MAX_BYTES)
+      fs13.renameSync(file, `${file}.1`);
+    fs13.appendFileSync(file, line(event, detail), { mode: 384 });
   } catch {
     try {
       process.stderr.write(line(event, detail));
@@ -2638,7 +2763,7 @@ function line(event, detail) {
 `;
 }
 async function serve(dataDir2, dbPath) {
-  assertLegacyPathsAreDifferent(getDbPath(), path13.join(dataDir2, "messages.db"));
+  assertLegacyPathsAreDifferent(getDbPath(), path14.join(dataDir2, "messages.db"));
   assertLegacyPathsAreDifferent(getDbPath(), dbPath);
   try {
     process.umask(63);
@@ -3091,7 +3216,7 @@ async function serve(dataDir2, dbPath) {
     if (!self)
       throw new Error("This machine is no longer a network member");
     return new ConversationMessages({
-      file: path13.join(dataDir2, "messages.db"),
+      file: path14.join(dataDir2, "messages.db"),
       busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
       network: {
         network_id: joined.config.network_id,
@@ -3203,13 +3328,13 @@ async function serve(dataDir2, dbPath) {
       await deadline(stream.send.finish(), STREAM_DEADLINE_MS, "sending a frame");
       const ack = parseAck(Buffer.from(await deadline(stream.recv.readToEnd(ACK_MAX_BYTES), STREAM_DEADLINE_MS, "waiting for the answer")));
       authorize(target);
-      let path15 = null;
+      let path16 = null;
       try {
         const selected = connection.paths().find((candidate) => candidate.isSelected);
-        path15 = selected ? selected.isRelay ? "relay" : "direct" : null;
+        path16 = selected ? selected.isRelay ? "relay" : "direct" : null;
       } catch {
       }
-      return { ack, path: path15 };
+      return { ack, path: path16 };
     } finally {
       memberConnections.delete(connection);
       connection.close(0n, toBytes("done"));
@@ -3233,8 +3358,8 @@ async function serve(dataDir2, dbPath) {
       for (const row of outgoing) {
         if (stopping)
           return;
-        const { ack, path: path15 } = await sendFrame(target, { version: 2, kind: "conversation-message", row });
-        appendLog(dataDir2, "frame_sent", { frame: "conversation-message", message_id: row.message.id, result: ack.result, path: path15 });
+        const { ack, path: path16 } = await sendFrame(target, { version: 2, kind: "conversation-message", row });
+        appendLog(dataDir2, "frame_sent", { frame: "conversation-message", message_id: row.message.id, result: ack.result, path: path16 });
         if (ack.result !== "accepted" && ack.result !== "duplicate") {
           appendLog(dataDir2, "message_not_accepted", { message_id: row.message.id, result: ack.result, code: ack.code ?? null });
           return;
@@ -3249,8 +3374,8 @@ async function serve(dataDir2, dbPath) {
       for (const receipt of receipts) {
         if (stopping)
           return;
-        const { ack, path: path15 } = await sendFrame(target, { version: 2, kind: "conversation-receipt", receipt });
-        appendLog(dataDir2, "frame_sent", { frame: "conversation-receipt", message_id: receipt.message_id, result: ack.result, path: path15 });
+        const { ack, path: path16 } = await sendFrame(target, { version: 2, kind: "conversation-receipt", receipt });
+        appendLog(dataDir2, "frame_sent", { frame: "conversation-receipt", message_id: receipt.message_id, result: ack.result, path: path16 });
         if (ack.result !== "accepted" && ack.result !== "duplicate")
           return;
         const current = messages(authorize(target));
@@ -3423,7 +3548,7 @@ async function readBoundedStdin(limit) {
   return Buffer.concat(chunks).toString("utf8");
 }
 var mode = process.argv[2];
-var dataDir = path14.resolve(getMemeshDirFromDbPath());
+var dataDir = path15.resolve(getMemeshDirFromDbPath());
 if (mode === "check") {
   const result = check(dataDir);
   await reply(result);

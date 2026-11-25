@@ -31,6 +31,7 @@ import { manifestScope } from './manifest-scope.js';
 import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
+import { isTransientDbError } from '../storage/schema.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
 import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
@@ -3365,6 +3366,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Staging here means the block emits exactly one `database` row, whichever
   // way it ends.
   const dbChecks: DoctorCheck[] = [];
+  let databaseContention: unknown;
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
     // A file can open and count its entities while another table's pages are
@@ -3665,6 +3667,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     }
 
   } catch (err) {
+    if (isTransientDbError(err)) databaseContention = err;
     // Replaces, not appends: whatever was staged before the throw describes a
     // database this function has just concluded it cannot use.
     dbChecks.length = 0;
@@ -3767,11 +3770,13 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // settings-walk pass counts only when the walk saw a capture event.
   const captureWired = wiring.status === 'pass'
     && (wiring.params === undefined || wiring.params.captureWired === 1);
-  checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  // Reuse this run's lock failure instead of waiting again for each activity row.
+  const openForActivity = databaseContention === undefined ? openDatabaseImpl : () => { throw databaseContention; };
+  checks.push(inspectHookActivity(openForActivity, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
   // Next to hook-activity on purpose: "did it run" and "did it write" are
   // read together, and separating them is what let a green heartbeat cover
   // an empty graph for two days (#327).
-  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
+  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openForActivity, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
   checks.push(captureLiveness.check);
   checks.push(inspectPendingConversations());
   // The figures behind the capture-liveness row, surfaced on the result so

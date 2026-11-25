@@ -97,18 +97,22 @@ describe('the budget runs on its own clock', () => {
   }, 30_000);
 
   it('a step that could not be stopped is reported with its process, not as stopped', async () => {
-    // Where taskkill is what stops a step (Windows), a failing taskkill is the real situation; elsewhere the platform is stood in.
-    const real = process.platform;
-    if (real !== 'win32') Object.defineProperty(process, 'platform', { value: 'win32' });
+    const pid = 2_147_000_001;
+    const realKill = process.kill;
+    // Keep the real platform for journey setup; POSIX only stands in for this process-group kill failing.
+    const kill = process.platform === 'win32' ? undefined : vi.spyOn(process, 'kill').mockImplementation((target, signal) => {
+      if (target === -pid && signal === 'SIGKILL') throw Object.assign(new Error('kill EPERM'), { code: 'EPERM' });
+      return realKill(target, signal);
+    });
     try {
-      hooks.__journeySpawn = () => unkillable(2_147_000_001, () => false);
+      hooks.__journeySpawn = () => unkillable(pid, () => false);
       const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { timeoutMs: 1_200 });
       expect(result.timedOut).toBe(true);
       expect(result.steps[0].reason).toContain('could not be stopped');
       expect(result.steps[0].reason).toContain('2147000001');
       expect(result.steps[0].reason).not.toContain('and was stopped');
     } finally {
-      Object.defineProperty(process, 'platform', { value: real });
+      kill?.mockRestore();
     }
   }, 30_000);
 });

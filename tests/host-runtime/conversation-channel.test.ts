@@ -40,7 +40,7 @@ describe('compiled conversation Channel entry', () => {
       expect(client.getServerCapabilities()?.experimental).toHaveProperty('claude/channel');
       const message = f.send();
       await vi.waitFor(() => expect(notices).toEqual([renderConversationMessage(message)]), { timeout: 3500 });
-      expect(f.store.status('B', message.id)[0].events.map(event => event.event)).toEqual(['queued', 'pushed']);
+      await vi.waitFor(() => expect(f.store.status('B', message.id)[0].events.map(event => event.event)).toEqual(['queued', 'pushed']), { timeout: 3500 });
       expect(fs.existsSync(path.join(f.root, 'knowledge-graph.db'))).toBe(false);
     } finally { await client.close(); }
     await vi.waitFor(() => {

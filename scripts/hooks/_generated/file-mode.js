@@ -8,6 +8,7 @@
 // ============================================================================
 import fs from 'fs';
 import { pathToFileURL } from 'url';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 export function shellQuote(value) {
     const word = value.startsWith('-') ? `./${value}` : value;
     return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -84,6 +85,12 @@ export function guardDatabaseFiles(dbPath) {
     refuseMismatchedSidecars(dbPath);
 }
 export function requirePrivateWritableDirectory(dir, purpose) {
+    if (process.platform === 'win32') {
+        if (!fs.statSync(dir).isDirectory())
+            throw new Error(`${dir} is not a directory, and ${purpose}`);
+        makeWindowsPathsPrivate([dir], dir);
+        return;
+    }
     removeGroupAndOtherAccess(dir);
     const mode = fs.statSync(dir).mode & 0o777;
     if ((mode & 0o077) !== 0) {

@@ -8,6 +8,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawnSync } from 'child_process';
+import { pathToFileURL } from 'node:url';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 import { currentPolicy, productionDeps, resolveUpdatePolicy, runAutoUpdate, safeAccountHome } from '../../src/core/auto-update.js';
 
@@ -61,7 +62,7 @@ describe('account home isolation', () => {
       const probe = 'process.stdout.write(require("os").userInfo().homedir)';
       const preload = path.resolve('scripts/lib/account-home-preload.mjs');
       const without = spawnSync(process.execPath, ['-e', probe], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home } });
-      const withIt = spawnSync(process.execPath, ['--import', preload, '-e', probe], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home } });
+      const withIt = spawnSync(process.execPath, ['--import', pathToFileURL(preload).href, '-e', probe], { encoding: 'utf8', env: { PATH: process.env.PATH, HOME: home } });
       expect(without.status === 0, without.stderr).toBe(true);
       expect(without.stdout).not.toBe(home); // the system account database, not HOME
       expect(withIt.status === 0, withIt.stderr).toBe(true);

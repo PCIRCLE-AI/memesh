@@ -132,7 +132,7 @@ it('does not create messages.db for memory-only capture', () => {
   expect(rows().find(row => row.type === 'conversation')?.content).toBe('My complete independent assistant response.');
 });
 
-it('keeps locked quote reads within the hook budget and replays after unlock', async () => {
+it.each([['held', false], ['released during the read', true]] as const)('keeps locked quote reads within the hook budget and replays after unlock (%s)', async (_mode, releaseDuringRead) => {
   const file = path.join(home, '.memesh/messages.db');
   const store = new ConversationMessages({ file });
   store.close();
@@ -144,7 +144,9 @@ it('keeps locked quote reads within the hook budget and replays after unlock', a
     import { DatabaseSync } from 'node:sqlite';
     const db = new DatabaseSync(${JSON.stringify(file)});
     db.exec('BEGIN EXCLUSIVE'); process.stdout.write('ready');
-    process.stdin.once('data', () => { db.exec('ROLLBACK'); db.close(); process.exit(0); });
+    // [WORKAROUND: Fixture shutdown; the parent asserts exit, PID cleanup and captured content.]
+    const release = () => { db.exec('ROLLBACK'); db.close(); process.exit(0); };
+    ${releaseDuringRead ? 'setTimeout(release, 400);' : "process.stdin.once('data', release);"}
   `], { env, stdio: ['pipe', 'pipe', 'pipe'] });
   const closed = new Promise(resolve => child.once('exit', code => resolve(code)));
   try {
@@ -157,12 +159,13 @@ it('keeps locked quote reads within the hook budget and replays after unlock', a
     // One 2s contention budget plus hook startup/cleanup, not two separate waits.
     expect(performance.now() - started).toBeLessThan(3000);
     const pending = path.join(home, '.memesh/pending-conversations');
-    expect(fs.readdirSync(pending)).toHaveLength(1);
-    child.stdin.end('release');
+    expect(fs.existsSync(pending) ? fs.readdirSync(pending) : []).toHaveLength(releaseDuringRead ? 0 : 1);
+    if (releaseDuringRead) expect(rows().find(row => row.type === 'conversation')?.content).toBe('A complete assistant response retained while its quote source is locked.');
+    else child.stdin.end('release');
     expect(await closed).toBe(0);
     expect(() => process.kill(child.pid!, 0)).toThrow(expect.objectContaining({ code: 'ESRCH' }));
     start();
-    expect(fs.readdirSync(pending)).toEqual([]);
+    expect(fs.existsSync(pending) ? fs.readdirSync(pending) : []).toEqual([]);
     expect(rows().find(row => row.type === 'conversation')?.content).toBe('A complete assistant response retained while its quote source is locked.');
   } finally {
     if (child.exitCode === null) { child.kill('SIGKILL'); await closed; }

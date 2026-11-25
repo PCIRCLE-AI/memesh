@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest';
 import { action, assertPersonAtTerminal, promptForLink } from '../../src/network/command.js';
 import { buildTree, makeHome, removeTree, writeTtyPreload, type Tree } from './helpers.js';
@@ -125,7 +126,7 @@ describe('memesh network, as a person or script runs it', () => {
     const home = makeHome();
     homes.push(home);
     const { MEMESH_DIR: _dir, MEMESH_DB_PATH: _db, ...env } = process.env;
-    const result = spawnSync(process.execPath, [`--import=${preload}`, tree.cli, 'network', 'link'], {
+    const result = spawnSync(process.execPath, [`--import=${pathToFileURL(preload).href}`, tree.cli, 'network', 'link'], {
       encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home }, timeout: 60_000,
     });
     expect(result.status).toBe(1);
@@ -227,7 +228,7 @@ describe('memesh network, as a person or script runs it', () => {
       const home = makeHome();
       homes.push(home);
       const { MEMESH_DIR: _dir, MEMESH_DB_PATH: _db, ...env } = process.env;
-      const result = spawnSync(process.execPath, [`--import=${preload}`, tree.cli, 'network', 'join', '--name', 'mac', '--person', 'kt'], {
+      const result = spawnSync(process.execPath, [`--import=${pathToFileURL(preload).href}`, tree.cli, 'network', 'join', '--name', 'mac', '--person', 'kt'], {
         encoding: 'utf8', env: { ...env, HOME: home, USERPROFILE: home }, input: 'memesh://join/abc\u0003', timeout: 60_000,
       });
       expect(result.status).toBe(1);
