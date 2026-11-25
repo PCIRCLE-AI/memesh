@@ -185,6 +185,7 @@ npm-global installs, the Claude Code plugin and the Codex plugin are all covered
   its verified `memesh-lock.json` copied to `package-lock.json`, and restores the previous version if that fails; the
   Claude Code plugin installs the dependencies with `npm ci` from the lockfile of
   the release commit; the Codex plugin is installed from a self-contained bundle.
+- **Manual npm installs** resolve dependency ranges; only the verified updater applies the release's `memesh-lock.json` pins.
 - **See what it did**: `memesh doctor` (row "Automatic updates").
 - **Update right now**: `memesh update` (same checks, no waiting).
 - **Turn it off**: `memesh config set autoUpdate off`, or set the environment

@@ -50,15 +50,4 @@ export function projectScopeRejection(value) {
     }
     return null;
 }
-export const AGENT_MESSAGE_SCOPE_COLUMNS = [
-    { table: 'agent_messages', columns: ['project', 'recipient'] },
-    { table: 'agent_message_deliveries', columns: ['project', 'recipient'] },
-    { table: 'agent_message_events', columns: ['project', 'recipient'] },
-    { table: 'agent_message_cursors', columns: ['project', 'recipient'] },
-    { table: 'agent_message_receipts', columns: ['project', 'recipient', 'actor'] },
-    { table: 'agent_message_idempotency', columns: ['project'] },
-    { table: 'agent_ack_facts', columns: ['actor'] },
-    { table: 'agent_workflow_facts', columns: ['actor'] },
-    { table: 'agent_retention_facts', columns: ['actor'] },
-];
 //# sourceMappingURL=agent-scope-id.js.map

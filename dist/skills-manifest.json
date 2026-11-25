@@ -53,8 +53,8 @@
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "bd6795af70c29912aeb628b929410c4a1abe6b9bea032e2be159f63630518358",
-      "bytes": 3376
+      "sha256": "c531ae4cbf809d98baf8fdb4bb7cc22acab04c161e47e16ca1b37814ea1faa39",
+      "bytes": 2709
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
@@ -98,8 +98,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-message-migration.js",
-      "sha256": "4063660fca7343e976ace0ef08f0e2c35b97b75d9f4ebf170f1ad7c2a62a3b42",
-      "bytes": 18855
+      "sha256": "f9a2e2fe6074fa6d790b0ec275447a6c3b93c130eaa0d051f768b2543262e149",
+      "bytes": 20183
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",

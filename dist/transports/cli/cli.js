@@ -35208,6 +35208,25 @@ function assertLegacyConversationArchiveSchema(source) {
       throw new Error(`Invalid legacy archive: missing ${name}`);
   }
 }
+function readLegacyRow(message, read) {
+  try {
+    return read();
+  } catch (error62) {
+    if (!(error62 instanceof Error))
+      throw error62;
+    let reason = error62.message;
+    if (error62 instanceof SyntaxError)
+      reason = "invalid JSON";
+    else if (reason.startsWith("Legacy migration conflict for message "))
+      reason = "Legacy migration conflict";
+    else if (!/^Legacy (?:message has (?:invalid [a-z_ ]+|multiple conversation targets)|timestamp is not a calendar instant|row contains an unsupported value)$/.test(reason))
+      throw error62;
+    const id = typeof message.message_id === "string" ? message.message_id.slice(0, 200) : "<unknown>";
+    throw new Error(`Cannot migrate legacy message ${JSON.stringify(id)}: ${reason}. Source data is unchanged. Restore a valid backup or repair this legacy row, then retry.`, {
+      cause: { name: error62.name, message: reason }
+    });
+  }
+}
 function historicalHostMatches(adapter, host, origin) {
   const family2 = adapter === "codex-cli-queue" ? "codex" : adapter === "claude-channel" || adapter === "claude-inbox" ? "claude" : void 0;
   if (family2 === void 0)
@@ -35288,7 +35307,7 @@ function importLegacyConversationMessages(source, target, options) {
       return [];
     const rows = (table, column, values) => tables.has(table) ? source.prepare(`SELECT * FROM ${table} WHERE ${column} IN (SELECT value FROM json_each(?))`).all(JSON.stringify(values)).sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
     const messages = options.messageIds === void 0 ? source.prepare("SELECT * FROM agent_messages ORDER BY message_id").all() : source.prepare("SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id").all(JSON.stringify(options.messageIds));
-    return messages.flatMap((message) => {
+    return messages.flatMap((message) => readLegacyRow(message, () => {
       const sentAt = utc(message.created_at);
       if (Date.parse(sentAt) <= options.nowMs - 14 * 864e5)
         return [];
@@ -35325,78 +35344,79 @@ function importLegacyConversationMessages(source, target, options) {
       facts.agent_session_instances = tables.has("agent_session_instances") ? source.prepare("SELECT * FROM agent_session_instances WHERE project = ?").all(project).filter((row) => identities.has(row.session_instance_id) || identities.has(row.principal_id)).sort((a, b) => canonical(a).localeCompare(canonical(b))) : [];
       facts.agent_principals = rows("agent_principals", "project", [project]).filter((row) => identities.has(row.principal_id));
       return [{ message, facts }];
-    });
+    }));
   })();
   return target.transaction(() => {
     let imported = 0, alreadyImported = 0;
-    for (const snapshot2 of snapshots) {
-      const { message: original, facts } = snapshot2;
-      const project = text(original.project, "project");
-      const id = text(original.message_id, "message_id");
-      const senderName = text(original.sender, "sender");
-      const recipientName = text(original.recipient, "recipient");
-      const explicitTargets = [...new Set(facts.agent_message_deliveries.map((row) => row.target_kind === "session" ? session(row.recipient) : session(row.intended_session)).filter((value) => value !== void 0))];
-      if (explicitTargets.length > 1)
-        throw new Error("Legacy message has multiple conversation targets");
-      const recipient = explicitTargets[0] ?? legacyIdentity(project, recipientName);
-      const origin = provenance(original);
-      const senderSession = session(origin.sender_session);
-      const matchingSenders = facts.agent_session_instances.filter((row) => row.session_instance_id === senderSession && row.project === project && (row.principal_id === senderName || row.session_instance_id === senderName) && historicalHostMatches(row.adapter_kind, original.sender_host, origin));
-      const localSender = senderSession !== void 0 && matchingSenders.length === 1 && origin.via !== "network" && origin.from_machine === void 0 && origin.origin_message_id === void 0;
-      const sender = localSender ? senderSession : legacyIdentity(project, senderName);
-      const payload = text(original.payload_json, "payload_json");
-      const decoded = JSON.parse(payload);
-      const body = original.content_type === "text/plain" && original.payload_tombstoned_at == null ? text(decoded, "text payload") : payload;
-      const mapped = {
-        id,
-        sender,
-        sender_host: typeof original.sender_host === "string" && original.sender_host ? original.sender_host : "unknown",
-        sender_machine: localSender ? options.localMachine : "unknown",
-        recipient,
-        recipient_host: null,
-        recipient_machine: explicitTargets.length === 1 ? options.localMachine : "unknown",
-        kind: "legacy",
-        body,
-        body_bytes: Buffer.byteLength(body, "utf8"),
-        reply_to: original.reply_to_message_id == null ? null : text(original.reply_to_message_id, "reply_to"),
-        sent_at: utc(original.created_at)
-      };
-      const detail = canonical({ version: 1, source: snapshot2, mapped });
-      const existing = target.prepare("SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at FROM messages WHERE id = ?").get(id);
-      if (existing) {
-        const receipts = target.prepare("SELECT detail FROM events WHERE message_id = ? AND event = 'legacy_imported'").all(id);
-        const initial = receipts.length === 1 ? JSON.parse(receipts[0].detail) : void 0;
-        const routing = (deliveries) => deliveries.map((row) => canonical({
-          delivery_id: row.delivery_id ?? null,
-          message_id: row.message_id ?? null,
-          project: row.project ?? null,
-          recipient: row.recipient ?? null,
-          target_kind: row.target_kind ?? "principal",
-          intended_session: row.intended_session ?? null
-        })).sort();
-        if (!initial?.source?.message || !initial.mapped || !initial.source.facts?.agent_message_deliveries || canonical(existing) !== canonical(initial.mapped) || canonical(initial.source.message) !== canonical(original) || canonical(routing(initial.source.facts.agent_message_deliveries)) !== canonical(routing(facts.agent_message_deliveries))) {
-          throw new Error(`Legacy migration conflict for message ${id}`);
-        }
-        alreadyImported++;
-      } else {
-        target.prepare("INSERT INTO messages (id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at,sender_local,recipient_local) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(mapped.id, mapped.sender, mapped.sender_host, mapped.sender_machine, mapped.recipient, mapped.recipient_host, mapped.recipient_machine, mapped.kind, mapped.body, mapped.body_bytes, mapped.reply_to, mapped.sent_at, localSender ? 1 : 0, explicitTargets.length === 1 ? 1 : 0);
-        target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at2, "legacy_imported", detail);
-        imported++;
-      }
-      const priorRows = target.prepare("SELECT event,detail FROM events WHERE message_id = ? AND event IN ('legacy_fact','legacy_handled')").all(id);
-      const prior = new Set(priorRows.map((row) => `${row.event}:${row.detail}`));
-      for (const [table, records] of Object.entries(facts))
-        for (const row of records) {
-          const handled = table === "agent_message_receipts" && ["intake", "ack", "disposition"].includes(String(row.receipt_kind)) || table === "agent_ack_facts" || table === "agent_workflow_facts";
-          const event = handled ? "legacy_handled" : "legacy_fact";
-          const fact = canonical({ table, row });
-          const key = `${event}:${fact}`;
-          if (!prior.has(key)) {
-            target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at2, event, fact);
-            prior.add(key);
+    for (const snapshot2 of snapshots)
+      readLegacyRow(snapshot2.message, () => {
+        const { message: original, facts } = snapshot2;
+        const project = text(original.project, "project");
+        const id = text(original.message_id, "message_id");
+        const senderName = text(original.sender, "sender");
+        const recipientName = text(original.recipient, "recipient");
+        const explicitTargets = [...new Set(facts.agent_message_deliveries.map((row) => row.target_kind === "session" ? session(row.recipient) : session(row.intended_session)).filter((value) => value !== void 0))];
+        if (explicitTargets.length > 1)
+          throw new Error("Legacy message has multiple conversation targets");
+        const recipient = explicitTargets[0] ?? legacyIdentity(project, recipientName);
+        const origin = provenance(original);
+        const senderSession = session(origin.sender_session);
+        const matchingSenders = facts.agent_session_instances.filter((row) => row.session_instance_id === senderSession && row.project === project && (row.principal_id === senderName || row.session_instance_id === senderName) && historicalHostMatches(row.adapter_kind, original.sender_host, origin));
+        const localSender = senderSession !== void 0 && matchingSenders.length === 1 && origin.via !== "network" && origin.from_machine === void 0 && origin.origin_message_id === void 0;
+        const sender = localSender ? senderSession : legacyIdentity(project, senderName);
+        const payload = text(original.payload_json, "payload_json");
+        const decoded = JSON.parse(payload);
+        const body = original.content_type === "text/plain" && original.payload_tombstoned_at == null ? text(decoded, "text payload") : payload;
+        const mapped = {
+          id,
+          sender,
+          sender_host: typeof original.sender_host === "string" && original.sender_host ? original.sender_host : "unknown",
+          sender_machine: localSender ? options.localMachine : "unknown",
+          recipient,
+          recipient_host: null,
+          recipient_machine: explicitTargets.length === 1 ? options.localMachine : "unknown",
+          kind: "legacy",
+          body,
+          body_bytes: Buffer.byteLength(body, "utf8"),
+          reply_to: original.reply_to_message_id == null ? null : text(original.reply_to_message_id, "reply_to"),
+          sent_at: utc(original.created_at)
+        };
+        const detail = canonical({ version: 1, source: snapshot2, mapped });
+        const existing = target.prepare("SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at FROM messages WHERE id = ?").get(id);
+        if (existing) {
+          const receipts = target.prepare("SELECT detail FROM events WHERE message_id = ? AND event = 'legacy_imported'").all(id);
+          const initial = receipts.length === 1 ? JSON.parse(receipts[0].detail) : void 0;
+          const routing = (deliveries) => deliveries.map((row) => canonical({
+            delivery_id: row.delivery_id ?? null,
+            message_id: row.message_id ?? null,
+            project: row.project ?? null,
+            recipient: row.recipient ?? null,
+            target_kind: row.target_kind ?? "principal",
+            intended_session: row.intended_session ?? null
+          })).sort();
+          if (!initial?.source?.message || !initial.mapped || !initial.source.facts?.agent_message_deliveries || canonical(existing) !== canonical(initial.mapped) || canonical(initial.source.message) !== canonical(original) || canonical(routing(initial.source.facts.agent_message_deliveries)) !== canonical(routing(facts.agent_message_deliveries))) {
+            throw new Error(`Legacy migration conflict for message ${id}`);
           }
+          alreadyImported++;
+        } else {
+          target.prepare("INSERT INTO messages (id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at,sender_local,recipient_local) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)").run(mapped.id, mapped.sender, mapped.sender_host, mapped.sender_machine, mapped.recipient, mapped.recipient_host, mapped.recipient_machine, mapped.kind, mapped.body, mapped.body_bytes, mapped.reply_to, mapped.sent_at, localSender ? 1 : 0, explicitTargets.length === 1 ? 1 : 0);
+          target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at2, "legacy_imported", detail);
+          imported++;
         }
-    }
+        const priorRows = target.prepare("SELECT event,detail FROM events WHERE message_id = ? AND event IN ('legacy_fact','legacy_handled')").all(id);
+        const prior = new Set(priorRows.map((row) => `${row.event}:${row.detail}`));
+        for (const [table, records] of Object.entries(facts))
+          for (const row of records) {
+            const handled = table === "agent_message_receipts" && ["intake", "ack", "disposition"].includes(String(row.receipt_kind)) || table === "agent_ack_facts" || table === "agent_workflow_facts";
+            const event = handled ? "legacy_handled" : "legacy_fact";
+            const fact = canonical({ table, row });
+            const key = `${event}:${fact}`;
+            if (!prior.has(key)) {
+              target.prepare("INSERT INTO events (message_id,at,event,detail) VALUES (?,?,?,?)").run(id, at2, event, fact);
+              prior.add(key);
+            }
+          }
+      });
     return { imported, alreadyImported };
   }).immediate();
 }
@@ -67358,15 +67378,6 @@ function inspectProjectIdentitySplit(db2) {
   const total = splits.reduce((sum, split) => sum + split.activeMemories, 0);
   return createCheck("project-identity-split", "Project tags", "warn", `${total} active ${total === 1 ? "memory" : "memories"} in ${splits.length} ${splits.length === 1 ? "project is" : "projects are"} filed under a plain project name (project:<name>) that the project's sessions never read; they use the full id (project:<name>~<hash>).`, "Run `memesh kg rename-project` to list every project tag with its count. For a plain name listed next to an id of the same name, kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them (it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.");
 }
-function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
-  if (!codexPluginCacheDetected)
-    return null;
-  const configPath = path41.join(getMemeshDirFromDbPath(), "hosts", "codex-session.json");
-  if (existsSyncImpl(configPath)) {
-    return createInfo("codex-session-setup", "Codex ordinary-session notifications", "A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
-  }
-  return createInfo("codex-session-setup", "Codex ordinary-session notifications", "No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.");
-}
 function parseJsonFile(filePath, readFileSyncImpl) {
   try {
     const raw = readFileSyncImpl(filePath, "utf8");
@@ -68738,7 +68749,6 @@ async function runDoctor(options) {
   checks.push(inspectMcpConfig(packageRoot3, install, existsSyncImpl, readFileSyncImpl, envImpl));
   checks.push(...inspectHooksConfig(packageRoot3, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
   const pluginHost = detectPluginHost(packageRoot3);
-  let codexPluginCacheDetected = pluginHost === "codex";
   let claudePluginCacheDetected = pluginHost === "claude-code";
   const hosts = detectHostsHere(existsSyncImpl, memeshDir());
   const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), hosts, install, installedPluginsPathImpl, pluginHost);
@@ -68749,8 +68759,6 @@ async function runDoctor(options) {
     const discoveredCounts = /* @__PURE__ */ new Map();
     const discoveredPluginCaches = pluginCacheDiscoveryImpl ? pluginCacheDiscoveryImpl() : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
     for (const discovered of discoveredPluginCaches) {
-      if (discovered.host === "codex")
-        codexPluginCacheDetected = true;
       if (discovered.host === "claude-code")
         claudePluginCacheDetected = true;
       const check2 = discovered.unverifiableReason ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason) : inspectPluginCacheCurrency("plugin-marketplace", discovered.host, discovered.packageRoot, discovered.installedPluginsPath, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
@@ -68766,9 +68774,6 @@ async function runDoctor(options) {
   if (claudePluginCacheDetected) {
     checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
   }
-  const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
-  if (codexSessionSetup)
-    checks.push(codexSessionSetup);
   const captureWired = wiring.status === "pass" && (wiring.params === void 0 || wiring.params.captureWired === 1);
   checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
   const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));

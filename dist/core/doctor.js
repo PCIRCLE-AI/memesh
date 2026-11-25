@@ -196,15 +196,6 @@ function inspectProjectIdentitySplit(db) {
         + 'kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them '
         + '(it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.');
 }
-function inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl) {
-    if (!codexPluginCacheDetected)
-        return null;
-    const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-    if (existsSyncImpl(configPath)) {
-        return createInfo('codex-session-setup', 'Codex ordinary-session notifications', 'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.');
-    }
-    return createInfo('codex-session-setup', 'Codex ordinary-session notifications', 'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.');
-}
 function parseJsonFile(filePath, readFileSyncImpl) {
     try {
         const raw = readFileSyncImpl(filePath, 'utf8');
@@ -1760,7 +1751,6 @@ export async function runDoctor(options) {
     checks.push(inspectMcpConfig(packageRoot, install, existsSyncImpl, readFileSyncImpl, envImpl));
     checks.push(...inspectHooksConfig(packageRoot, platform, existsSyncImpl, readFileSyncImpl, statSyncImpl));
     const pluginHost = detectPluginHost(packageRoot);
-    let codexPluginCacheDetected = pluginHost === 'codex';
     let claudePluginCacheDetected = pluginHost === 'claude-code';
     const hosts = detectHostsHere(existsSyncImpl, memeshDir());
     const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), hosts, install, installedPluginsPathImpl, pluginHost);
@@ -1773,8 +1763,6 @@ export async function runDoctor(options) {
             ? pluginCacheDiscoveryImpl()
             : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
         for (const discovered of discoveredPluginCaches) {
-            if (discovered.host === 'codex')
-                codexPluginCacheDetected = true;
             if (discovered.host === 'claude-code')
                 claudePluginCacheDetected = true;
             const check = discovered.unverifiableReason
@@ -1792,9 +1780,6 @@ export async function runDoctor(options) {
     if (claudePluginCacheDetected) {
         checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
     }
-    const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
-    if (codexSessionSetup)
-        checks.push(codexSessionSetup);
     const captureWired = wiring.status === 'pass'
         && (wiring.params === undefined || wiring.params.captureWired === 1);
     checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));

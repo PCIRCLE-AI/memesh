@@ -57,6 +57,21 @@ export function assertLegacyConversationArchiveSchema(source: MemeshDatabase): v
 export const LEGACY_CONVERSATION_PREFIX = 'legacy:';
 type Row = Record<string, unknown>;
 interface Snapshot { message: Row; facts: Record<string, Row[]> }
+function readLegacyRow<T>(message: Row, read: () => T): T {
+  try { return read(); }
+  catch (error) {
+    if (!(error instanceof Error)) throw error;
+    let reason = error.message;
+    if (error instanceof SyntaxError) reason = 'invalid JSON';
+    else if (reason.startsWith('Legacy migration conflict for message ')) reason = 'Legacy migration conflict';
+    else if (!/^Legacy (?:message has (?:invalid [a-z_ ]+|multiple conversation targets)|timestamp is not a calendar instant|row contains an unsupported value)$/.test(reason)) throw error;
+    const id = typeof message.message_id === 'string' ? message.message_id.slice(0, 200) : '<unknown>';
+    throw new Error(`Cannot migrate legacy message ${JSON.stringify(id)}: ${reason}. Source data is unchanged. Restore a valid backup or repair this legacy row, then retry.`, {
+      // eslint-disable-next-line preserve-caught-error -- Raw parser causes can expose stored message content.
+      cause: { name: error.name, message: reason },
+    });
+  }
+}
 function historicalHostMatches(adapter: unknown, host: unknown, origin: Row): boolean {
   const family = adapter === 'codex-cli-queue' ? 'codex'
     : adapter === 'claude-channel' || adapter === 'claude-inbox' ? 'claude' : undefined;
@@ -150,7 +165,7 @@ export function importLegacyConversationMessages(
     const messages = options.messageIds === undefined
       ? source.prepare('SELECT * FROM agent_messages ORDER BY message_id').all()
       : source.prepare('SELECT * FROM agent_messages WHERE message_id IN (SELECT value FROM json_each(?)) ORDER BY message_id').all(JSON.stringify(options.messageIds));
-    return (messages as Row[]).flatMap(message => {
+    return (messages as Row[]).flatMap(message => readLegacyRow(message, () => {
       const sentAt = utc(message.created_at); // Invalid time fails the whole snapshot, not a silently skipped row.
       if (Date.parse(sentAt) <= options.nowMs - 14 * 86_400_000) return [];
       const id = text(message.message_id, 'message_id');
@@ -178,12 +193,12 @@ export function importLegacyConversationMessages(
       facts.agent_principals = rows('agent_principals', 'project', [project])
         .filter(row => identities.has(row.principal_id));
       return [{ message, facts }];
-    });
+    }));
   })();
 
   return target.transaction(() => {
     let imported = 0, alreadyImported = 0;
-    for (const snapshot of snapshots) {
+    for (const snapshot of snapshots) readLegacyRow(snapshot.message, () => {
       const { message: original, facts } = snapshot;
       const project = text(original.project, 'project');
       const id = text(original.message_id, 'message_id');
@@ -252,7 +267,7 @@ export function importLegacyConversationMessages(
           prior.add(key);
         }
       }
-    }
+    });
     return { imported, alreadyImported };
   }).immediate();
 }

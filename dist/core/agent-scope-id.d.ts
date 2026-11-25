@@ -6,8 +6,4 @@ export declare function lastPathSegment(value: string): string | null;
 export declare function agentScopeIdRejection(field: string, value: string): string | null;
 export declare function sessionIdRejection(field: string, value: string): string | null;
 export declare function projectScopeRejection(value: string): string | null;
-export declare const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
-    readonly table: string;
-    readonly columns: readonly string[];
-}>;
 //# sourceMappingURL=agent-scope-id.d.ts.map

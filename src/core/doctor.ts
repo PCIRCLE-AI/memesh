@@ -499,34 +499,6 @@ function inspectProjectIdentitySplit(db: MemeshDatabase): DoctorCheck | undefine
   );
 }
 
-/**
- * Report how ordinary Codex sessions choose their local routing identity.
- * A plugin cache copy is only evidence of cached source; live discovery is
- * still the authoritative proof that Codex enabled the plugin and its
- * SessionStart companion registered this thread.
- */
-function inspectCodexSessionSetup(
-  codexPluginCacheDetected: boolean,
-  existsSyncImpl: typeof fs.existsSync,
-): DoctorCheck | null {
-  if (!codexPluginCacheDetected) return null;
-
-  const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-  if (existsSyncImpl(configPath)) {
-    return createInfo(
-      'codex-session-setup',
-      'Codex ordinary-session notifications',
-      'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
-    );
-  }
-
-  return createInfo(
-    'codex-session-setup',
-    'Codex ordinary-session notifications',
-    'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
-  );
-}
-
 function parseJsonFile(
   filePath: string,
   readFileSyncImpl: typeof fs.readFileSync,
@@ -3755,7 +3727,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // installedPluginsPathImpl may be undefined — detectPluginRuntime owns the
   // default path; restating it here was a second copy of the same location.
   const pluginHost = detectPluginHost(packageRoot);
-  let codexPluginCacheDetected = pluginHost === 'codex';
   let claudePluginCacheDetected = pluginHost === 'claude-code';
   const hosts = detectHostsHere(existsSyncImpl, memeshDir());
   const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), hosts, install, installedPluginsPathImpl, pluginHost);
@@ -3767,7 +3738,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       ? pluginCacheDiscoveryImpl()
       : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
     for (const discovered of discoveredPluginCaches) {
-      if (discovered.host === 'codex') codexPluginCacheDetected = true;
       if (discovered.host === 'claude-code') claudePluginCacheDetected = true;
       const check = discovered.unverifiableReason
         ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
@@ -3787,8 +3757,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   if (claudePluginCacheDetected) {
     checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
   }
-  const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
-  if (codexSessionSetup) checks.push(codexSessionSetup);
   // hook-activity's never-ran verdict only reds when wiring is actually in
   // place — otherwise the wiring row above already tells the story, and an
   // MCP-only install would carry a permanent unfixable FAIL.

@@ -42,25 +42,15 @@ import {
   assertCodexRanNoCommands,
   assertCodexReply,
   assertInstalledCodexPluginJourney,
-  assertCompanionRunning,
   assertDistPresent,
-  assertExactCodexQueueRouting,
   assertHostAcceptOnly,
-  assertNoHostOutcomeReceipts,
   assertIntakeReceipt,
-  assertMcpDiscoverCards,
-  assertMcpDenied,
-  assertMcpFetchedMessage,
   assertNativeAccepted,
-  assertNoLiveRegistrations,
   assertNotCi,
   assertSupportedPlatform,
   assertOutsideOwnerMemesh,
   assertTaskOwnedCodexHome,
-  assertRecipientUnavailable,
-  assertSessionStartLauncherSucceeded,
   assertSocketPathFits,
-  awaitSessionDisconnect,
   buildJourneyEnv,
   buildLiveJourneyPayload,
   appendCodexMessageToolApproval,
@@ -174,11 +164,9 @@ describe('parseArgs', () => {
     expect(parseArgs(['--core-only'])).toMatchObject({ host: null, mode: 'core-only' });
   });
 
-  it('accepts the bounded automatic Codex registration mode without a host', () => {
-    expect(parseArgs(['--codex-session-auto-registration'])).toMatchObject({
-      host: null,
-      mode: 'codex-session-auto-registration',
-    });
+  it('rejects the retired automatic Codex registration flag before any host can run', () => {
+    expect(() => parseArgs(['--codex-session-auto-registration']))
+      .toThrow(/Unknown argument --codex-session-auto-registration/);
   });
 
   it('accepts each supported host', () => {
@@ -206,12 +194,7 @@ describe('parseArgs', () => {
   });
 
   it('requires a host', () => {
-    expect(() => parseArgs([])).toThrow(/--host is required.*codex-session-auto-registration/);
-  });
-
-  it('rejects combining automatic registration with a host mode', () => {
-    expect(() => parseArgs(['--codex-session-auto-registration', '--host', 'codex', '--codex-home', '/private/tmp/codex-home']))
-      .toThrow(/cannot be combined with --host/);
+    expect(() => parseArgs([])).toThrow(/--host is required.*core-only/);
   });
 
   it('rejects combining core-only with a host mode', () => {
@@ -258,11 +241,6 @@ describe('--help', () => {
   it('documents the isolated installed-plugin Codex registration', () => {
     expect(helpText()).toMatch(/--codex-home/);
     expect(helpText()).toMatch(/never starts the companion itself/);
-  });
-
-  it('documents the bounded automatic-registration invocation', () => {
-    expect(helpText()).toMatch(/npm run qa:live-journey -- --codex-session-auto-registration/);
-    expect(helpText()).toMatch(/fresh HOME.*fake `codex queue`/);
   });
 
   it('pins router socket and token state inside the task-owned journey directory', () => {
@@ -1218,7 +1196,6 @@ describe('required journey steps before PASS', () => {
     expect(missingRequiredSteps([], 'claude-inbox')).toBeNull();
     expect(checkRequiredJourneySteps([], { host: 'claude-inbox', mode: null })).toMatchObject({ checked: false, skippedBecause: expect.stringMatching(/claude-inbox has no required step list/) });
     expect(checkRequiredJourneySteps([], { host: null, mode: 'core-only' })).toMatchObject({ checked: false, skippedBecause: expect.stringMatching(/core-only/) });
-    expect(checkRequiredJourneySteps([], { host: null, mode: 'codex-session-auto-registration' })).toMatchObject({ checked: false });
   });
 });
 
@@ -1468,30 +1445,6 @@ describe('assertNativeAccepted', () => {
   });
 });
 
-describe('assertRecipientUnavailable', () => {
-  it('accepts a non-zero exit naming recipient_unavailable', () => {
-    expect(() => assertRecipientUnavailable({
-      status: 1,
-      stderr: 'Error: recipient_unavailable: the exact active session did not accept the native message.\n',
-    })).not.toThrow();
-  });
-
-  it('rejects a send to a stopped session that SUCCEEDED', () => {
-    expect(() => assertRecipientUnavailable({ status: 0, stderr: '' }))
-      .toThrow(/did not fail closed/);
-  });
-
-  it('rejects a KILLED send process — no exit status is not a decision', () => {
-    expect(() => assertRecipientUnavailable({ status: null, stderr: 'recipient_unavailable' }))
-      .toThrow(/killed before it produced an exit status/);
-  });
-
-  it('rejects a different failure wearing a non-zero exit code', () => {
-    expect(() => assertRecipientUnavailable({ status: 1, stderr: 'Error: native_message_too_large' }))
-      .toThrow(/Expected recipient_unavailable/);
-  });
-});
-
 describe('assertHostAcceptOnly', () => {
   const expected = {
     messageId: MESSAGE_ID,
@@ -1537,201 +1490,6 @@ describe('assertHostAcceptOnly', () => {
     expect(() => assertHostAcceptOnly([
       { ...receipts[0], adapter_kind: 'claude-channel' },
     ], expected)).toThrow(/names adapter/);
-  });
-});
-
-describe('assertNoHostOutcomeReceipts', () => {
-  it('accepts a durable failed-send projection with no host or model outcome', () => {
-    expect(assertNoHostOutcomeReceipts([
-      { receipt_kind: 'intake', message_id: MESSAGE_ID },
-    ], { messageId: MESSAGE_ID })).toHaveLength(1);
-  });
-
-  it('rejects host_accept, ACK, and disposition facts', () => {
-    for (const receipt_kind of ['host_accept', 'ack', 'disposition']) {
-      expect(() => assertNoHostOutcomeReceipts([
-        { receipt_kind, message_id: MESSAGE_ID },
-      ], { messageId: MESSAGE_ID })).toThrow(/no host_accept, ACK, or disposition/);
-    }
-  });
-
-  it('ignores receipts belonging to another message', () => {
-    expect(assertNoHostOutcomeReceipts([
-      { receipt_kind: 'host_accept', message_id: 'other-message' },
-    ], { messageId: MESSAGE_ID })).toEqual([]);
-  });
-});
-
-describe('assertExactCodexQueueRouting', () => {
-  const messages = [
-    { sessionId: 'thread-a', messageId: 'message-a', deliveryId: 'delivery-a', project: 'project', sender: 'sender-a', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-a' } },
-    { sessionId: 'thread-b', messageId: 'message-b', deliveryId: 'delivery-b', project: 'project', sender: 'sender-b', contentType: 'application/json', payload: { qa_sentinel: 'sentinel-b' } },
-  ];
-  // The Codex queue carries only a notice naming the message; the body stays in the inbox.
-  const invocation = (message: (typeof messages)[number]) => ({
-    thread_id: message.sessionId,
-    serialized_message: JSON.stringify({
-      message_type: 'memesh_message_notice',
-      handling: 'fetch it from the inbox',
-      project: message.project,
-      recipient: message.sessionId,
-      target_kind: 'session',
-      message_id: message.messageId,
-      delivery_id: message.deliveryId,
-    }),
-  });
-
-  it('accepts exactly one matching native notice for each exact-session send', () => {
-    expect(assertExactCodexQueueRouting(messages.map(invocation), messages)).toHaveLength(2);
-  });
-
-  it('rejects extra, duplicate, or crossed queue delivery', () => {
-    expect(() => assertExactCodexQueueRouting([
-      ...messages.map(invocation), invocation(messages[0]),
-    ], messages)).toThrow(/3 invocations for 2 sends/);
-    expect(() => assertExactCodexQueueRouting([
-      invocation(messages[0]), invocation(messages[0]),
-    ], messages)).toThrow(/2 invocations for thread-a/);
-    expect(() => assertExactCodexQueueRouting([
-      invocation(messages[0]),
-      { ...invocation(messages[1]), thread_id: 'thread-b', serialized_message: invocation(messages[0]).serialized_message },
-    ], messages)).toThrow(/crossed exact-session boundaries/);
-  });
-
-  it('rejects a notice that carries the message body or an envelope', () => {
-    const withBody = invocation(messages[0]);
-    const serialized = JSON.parse(withBody.serialized_message);
-    serialized.note = `sentinel ${messages[0].payload.qa_sentinel}`;
-    withBody.serialized_message = JSON.stringify(serialized);
-    expect(() => assertExactCodexQueueRouting([
-      withBody, invocation(messages[1]),
-    ], messages)).toThrow(/crossed exact-session boundaries/);
-    const withEnvelope = invocation(messages[0]);
-    const enveloped = JSON.parse(withEnvelope.serialized_message);
-    enveloped.envelope = { payload: messages[0].payload };
-    withEnvelope.serialized_message = JSON.stringify(enveloped);
-    expect(() => assertExactCodexQueueRouting([
-      withEnvelope, invocation(messages[1]),
-    ], messages)).toThrow(/crossed exact-session boundaries/);
-  });
-
-  it('rejects a notice naming another delivery, and an inbox fetch whose body differs', () => {
-    const wrongDelivery = invocation(messages[0]);
-    const serialized = JSON.parse(wrongDelivery.serialized_message);
-    serialized.delivery_id = 'delivery-b';
-    wrongDelivery.serialized_message = JSON.stringify(serialized);
-    expect(() => assertExactCodexQueueRouting([
-      wrongDelivery, invocation(messages[1]),
-    ], messages)).toThrow(/crossed exact-session boundaries/);
-    const fetchedWrong = messages.map((message, index) => ({
-      ...message,
-      fetched: {
-        message_id: message.messageId, sender: message.sender, content_type: message.contentType,
-        payload: index === 0 ? { qa_sentinel: 'wrong' } : message.payload,
-      },
-    }));
-    expect(() => assertExactCodexQueueRouting(messages.map(invocation), fetchedWrong))
-      .toThrow(/crossed exact-session boundaries/);
-    const fetchedRight = messages.map((message) => ({
-      ...message,
-      fetched: { message_id: message.messageId, sender: message.sender, content_type: message.contentType, payload: message.payload },
-    }));
-    expect(assertExactCodexQueueRouting(messages.map(invocation), fetchedRight)).toHaveLength(2);
-  });
-});
-
-describe('MCP message readback and access denial', () => {
-  const expected = {
-    messageId: MESSAGE_ID,
-    project: 'memesh-live-journey',
-    sender: 'codex-thread-a',
-    recipient: THREAD,
-    contentType: 'application/json',
-    payload: { qa_sentinel: SENTINEL, body: 'unpredictable payload' },
-  };
-  const fetched = {
-    message_id: expected.messageId,
-    project: expected.project,
-    sender: expected.sender,
-    recipient: expected.recipient,
-    target_kind: 'session',
-    content_type: expected.contentType,
-    payload: expected.payload,
-  };
-
-  it('accepts only an exact project, recipient, content type, and payload readback', () => {
-    expect(assertMcpFetchedMessage(fetched, expected)).toMatchObject(fetched);
-  });
-
-  it('rejects matching ids with the wrong project, recipient, or payload', () => {
-    expect(() => assertMcpFetchedMessage({ ...fetched, project: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
-    expect(() => assertMcpFetchedMessage({ ...fetched, recipient: 'wrong' }, expected)).toThrow(/scope.*payload-mismatched/);
-    expect(() => assertMcpFetchedMessage({ ...fetched, payload: { qa_sentinel: 'wrong' } }, expected)).toThrow(/scope.*payload-mismatched/);
-  });
-
-  it('requires explicit MCP failure without echoing the private sentinel', () => {
-    const denied = { isError: true, content: [{ type: 'text', text: 'Agent message is not available.' }] };
-    expect(assertMcpDenied(denied, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL }))
-      .toContain('not available');
-    expect(() => assertMcpDenied({ ...denied, isError: false }, {
-      label: 'wrong scope', error: /not available/, sentinel: SENTINEL,
-    })).toThrow(/did not fail/);
-    expect(() => assertMcpDenied({
-      isError: true, content: [{ type: 'text', text: `not available: ${SENTINEL}` }],
-    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
-    expect(() => assertMcpDenied({
-      isError: true,
-      content: [{ type: 'text', text: 'not available' }],
-      structuredContent: { payload: { qa_sentinel: SENTINEL } },
-    }, { label: 'wrong scope', error: /not available/, sentinel: SENTINEL })).toThrow(/leaked/);
-  });
-});
-
-describe('assertMcpDiscoverCards', () => {
-  const expected = [
-    { session_id: 'thread-a', principal_id: 'codex-thread-thread-a', project: 'memesh-live-journey' },
-    { session_id: 'thread-b', principal_id: 'codex-thread-thread-b', project: 'memesh-live-journey' },
-  ];
-
-  it('accepts the exact pair of thread-scoped Codex cards', () => {
-    expect(assertMcpDiscoverCards({ cards: expected.map((card) => ({ ...card, host_kind: 'codex' })) }, expected))
-      .toHaveLength(2);
-  });
-
-  it('rejects missing or identity-mismatched cards', () => {
-    expect(() => assertMcpDiscoverCards({ cards: [expected[0]] }, expected)).toThrow(/expected exactly 2/);
-    expect(() => assertMcpDiscoverCards({
-      cards: expected.map((card, index) => ({ ...card, host_kind: 'codex', ...(index === 1 ? { principal_id: 'wrong' } : {}) })),
-    }, expected)).toThrow(/identity-mismatched/);
-    expect(() => assertMcpDiscoverCards({
-      cards: [{ ...expected[0], host_kind: 'codex' }, { ...expected[0], host_kind: 'codex' }],
-    }, expected)).toThrow(/identity-mismatched/);
-  });
-});
-
-describe('ordinary MCP registration boundary', () => {
-  it('accepts only a discover result with zero live registrations', () => {
-    expect(assertNoLiveRegistrations({ cards: [] })).toEqual([]);
-    expect(() => assertNoLiveRegistrations({ cards: [{ host_kind: 'codex' }] }))
-      .toThrow(/MCP-only control created or observed 1 live registrations/);
-    expect(() => assertNoLiveRegistrations({})).toThrow(/invalid number/);
-  });
-
-  it('rejects a SessionStart companion that exited before registration readback', () => {
-    expect(() => assertCompanionRunning({ exitCode: null, signalCode: null }, 'companion')).not.toThrow();
-    expect(() => assertCompanionRunning({ exitCode: 0, signalCode: null }, 'companion'))
-      .toThrow(/exited before its live registration was verified/);
-    expect(() => assertCompanionRunning({ exitCode: null, signalCode: 'SIGTERM' }, 'companion'))
-      .toThrow(/exited before its live registration was verified/);
-  });
-
-  it('accepts a cleanly exited SessionStart launcher after discover proves the detached companion', () => {
-    expect(() => assertSessionStartLauncherSucceeded({ exitCode: 0, signalCode: null }, 'launcher')).not.toThrow();
-    expect(() => assertSessionStartLauncherSucceeded({ exitCode: null, signalCode: null }, 'launcher')).not.toThrow();
-    expect(() => assertSessionStartLauncherSucceeded({ exitCode: 1, signalCode: null }, 'launcher'))
-      .toThrow(/failed before its detached companion registered/);
-    expect(() => assertSessionStartLauncherSucceeded({ exitCode: null, signalCode: 'SIGTERM' }, 'launcher'))
-      .toThrow(/failed before its detached companion registered/);
   });
 });
 
@@ -1921,63 +1679,7 @@ describe('intake receipts', () => {
   });
 });
 
-describe('shutdown decision', () => {
-  const noSleep = () => Promise.resolve();
-
-  it('is immediately safe when no session was ever registered', async () => {
-    const announce = vi.fn();
-    await expect(awaitSessionDisconnect({
-      sessionId: null,
-      isGone: () => false,
-      waitMs: 30_000,
-      now: () => 0,
-      sleep: noSleep,
-      announce,
-    })).resolves.toBe(true);
-    expect(announce).not.toHaveBeenCalled();
-  });
-
-  it('is safe once the session has left the router directory', async () => {
-    let calls = 0;
-    await expect(awaitSessionDisconnect({
-      sessionId: 'abc',
-      isGone: () => (calls += 1) > 2,
-      waitMs: 30_000,
-      now: () => 0,
-      sleep: noSleep,
-      announce: () => {},
-    })).resolves.toBe(true);
-  });
-
-  it('tells the operator what to do, once, while it waits', async () => {
-    let calls = 0;
-    const announce = vi.fn();
-    await awaitSessionDisconnect({
-      sessionId: 'abc',
-      isGone: () => (calls += 1) > 3,
-      waitMs: 30_000,
-      now: () => 0,
-      sleep: noSleep,
-      announce,
-    });
-    expect(announce).toHaveBeenCalledTimes(1);
-    expect(announce.mock.calls[0][0]).toMatch(/detached replacement/);
-  });
-
-  it('is NOT safe when the session is still connected at the bound', async () => {
-    // The orphan case: a connected host whose router disappears spawns a
-    // detached replacement that recreates this very directory.
-    let clock = 0;
-    await expect(awaitSessionDisconnect({
-      sessionId: 'abc',
-      isGone: () => false,
-      waitMs: 5_000,
-      now: () => (clock += 2_000),
-      sleep: noSleep,
-      announce: () => {},
-    })).resolves.toBe(false);
-  });
-
+describe('working directory cleanup', () => {
   it('keeps the directory when a session is still connected, and removes it otherwise', () => {
     expect(shouldRemoveWorkingDirectories({ keep: false, keptForSafety: false })).toBe(true);
     expect(shouldRemoveWorkingDirectories({ keep: false, keptForSafety: true })).toBe(false);

@@ -147,38 +147,3 @@ export function projectScopeRejection(value: string): string | null {
   }
   return null;
 }
-
-/**
- * Every durable-message column that holds a routing identity, with the role
- * each column plays. One list is imported by `kg rename-project`
- * (`core/project-tags.ts`) and mirrored — it cannot be imported from
- * JavaScript — by the read-only invariant in
- * `scripts/audit/memory-invariants.mjs`.
- *
- * Table and column names here are literals and never caller input, so
- * interpolating them into SQL is safe.
- *
- * The router and presence tables (`agent_principals`,
- * `agent_session_instances`, `agent_session_connections`,
- * `agent_presence_facts`, `agent_dispatch_attempts`) are deliberately absent:
- * their `project` is not a `MessageSchema` field at all — each host process
- * derives it itself, from its own working directory or `--workspace`
- * (`getProjectName`, core/paths.ts), the same as an ordinary Codex thread
- * does. It is never read back from the owner-written host config
- * `memesh agent setup` writes (#474 — a `project` field there, if present,
- * is inert, kept only for a script that still passes one).
- */
-export const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
-  readonly table: string;
-  readonly columns: readonly string[];
-}> = [
-  { table: 'agent_messages', columns: ['project', 'recipient'] },
-  { table: 'agent_message_deliveries', columns: ['project', 'recipient'] },
-  { table: 'agent_message_events', columns: ['project', 'recipient'] },
-  { table: 'agent_message_cursors', columns: ['project', 'recipient'] },
-  { table: 'agent_message_receipts', columns: ['project', 'recipient', 'actor'] },
-  { table: 'agent_message_idempotency', columns: ['project'] },
-  { table: 'agent_ack_facts', columns: ['actor'] },
-  { table: 'agent_workflow_facts', columns: ['actor'] },
-  { table: 'agent_retention_facts', columns: ['actor'] },
-];

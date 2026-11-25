@@ -1131,7 +1131,7 @@ The limit protects the server from accidentally parsing large payloads (e.g. an 
 | POST | /v1/export | Export memories as JSON bundle |
 | POST | /v1/import | Import memories from JSON bundle with merge strategy |
 | POST | /v1/learn | Record structured lesson from mistake or discovery; requires `project` (`400` without it) |
-| POST | /v1/message | Run one durable-message lifecycle action using the same schema as the MCP `message` tool |
+| POST | /v1/message | **Retired** — answers `410 Gone`. Use the conversation MCP tool or `memesh message`. |
 | POST | /v1/why | File attribution: join caller-resolved commit hashes to commit entities, their sessions, and file-tag memories |
 | GET | /v1/entities | List entities, newest first; supports `?type=<type>` or `?project=<name>` (not both; `project` follows the same rule as `/v1/projects`: the `project:` tag, else a `lesson-<project>-<pattern>` name of a project at least two characters long), `?limit=<n>` (1–5000, default 20), `?offset=<n>` (0–1000000; skip that many of the newest matches, to page) and `?status=all|active` (default `active`; `all` includes archived). `project` is at most 300 characters. |
 | GET | /v1/entities/:name | Get single entity |
@@ -1668,11 +1668,11 @@ kind of evidence.
 
 `memesh serve` provides the API only. The standalone Dashboard was removed in 4.11.0; `/dashboard` returns 404. Use the Claude Mod or Codex MCP/native forms for memory editing.
 
-Request/response bodies for `POST /v1/remember`, `/v1/recall`, `/v1/forget`, and `/v1/message` mirror the MCP tool schemas above (same field names, same types). HTTP responses wrap results as `{ "success": true, "data": ... }`.
+Request/response bodies for `POST /v1/remember`, `/v1/recall`, and `/v1/forget` mirror the MCP tool schemas above (same field names, same types). HTTP responses wrap results as `{ "success": true, "data": ... }`.
 
 When `POST /v1/forget` names a memory that does not exist (with or without an observation selector), it returns HTTP 404 with `"success": false` and `errorCode: "resource.not-found"`. A present memory with no matching observation returns HTTP 400 with `"success": false` and `errorCode: "operation.failed"`, leaving the stored memory unchanged. The MCP `forget` tool returns an error result for these calls, and the CLI exits 1. Successful archives (including repeated archives) and matching observation removals still return HTTP 200 with `"success": true` and `data`.
 
-`POST /v1/message` supports every `message` action above. A waiting `poll` request ends when a targeted event arrives, the bounded timeout expires, or the HTTP request is cancelled. The server removes the wait listener when the request closes.
+`POST /v1/message` returns `410 Gone`; conversation messaging is available through MCP and CLI.
 
 **Example**:
 

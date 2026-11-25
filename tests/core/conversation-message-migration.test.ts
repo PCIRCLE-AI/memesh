@@ -186,6 +186,35 @@ it.each(['payload', 'target', 'timestamp'])('rolls back the whole target batch o
   expect(f.rows()).toBe(before);
 });
 
+it.each([
+  ['created_at', 'invalid-time-private-content', 'invalid timestamp'],
+  ['created_at', '2026-02-30T12:00:00.000Z', 'not a calendar instant'],
+  ['provenance_json', '{private-content', 'invalid JSON'],
+  ['payload_json', '{private-content', 'invalid JSON'],
+])('identifies a malformed %s row without exposing its contents, preserves both stores, and permits retry', (field, invalid, reason) => {
+  const f = fixture();
+  f.add('z-broken'); f.add('a-valid');
+  f.source.prepare(`UPDATE agent_messages SET ${field}=? WHERE message_id=?`).run(invalid, 'z-broken');
+  const before = f.rows(), target = f.store.status();
+  for (const run of [f.migrate, () => f.open(true)]) {
+    let message = '';
+    try { run(); } catch (error) {
+      message = (error as Error).message;
+      expect(JSON.stringify((error as Error).cause)).not.toContain('private-content');
+    }
+    expect(message).toContain('Cannot migrate legacy message "z-broken"');
+    expect(message).toContain(reason);
+    expect(message).toContain('Source data is unchanged');
+    expect(message).toContain('Restore a valid backup or repair this legacy row, then retry');
+    expect(message).not.toContain('private-content');
+    expect(f.rows()).toBe(before);
+    expect(f.store.status()).toEqual(target);
+  }
+  const valid = field === 'created_at' ? new Date(NOW).toISOString() : field === 'payload_json' ? '"body"' : '{}';
+  f.source.prepare(`UPDATE agent_messages SET ${field}=? WHERE message_id=?`).run(valid, 'z-broken');
+  expect(f.migrate()).toEqual({ imported: 2, alreadyImported: 0 });
+});
+
 it('refuses two handles pointing at the same inode', () => {
   const f = fixture();
   const alias = new MemeshDatabase(path.join(f.root, 'legacy.db'));

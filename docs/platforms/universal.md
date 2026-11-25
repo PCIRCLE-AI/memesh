@@ -19,7 +19,7 @@ Use the `message` MCP tool or `memesh message` for the four conversation actions
 - `read` returns complete pending messages and records delivery/read. Replies reference the original message ID. Neither implies the requested work was completed.
 - Native wakeup and model-visible delivery need host-specific evidence; registration alone does not prove either.
 
-`POST /v1/message` retains a separate legacy HTTP protocol, including `poll`, `fetch`, `intake` and workflow receipts. Its one-day retention and principal routing are not the MCP/CLI conversation contract. Keep HTTP clients on that protocol rather than sending its actions to the conversation tool. Cross-machine conversation delivery transfers messages between joined machines; memory remains local. Universal host resume is not implied.
+`POST /v1/message` is retired and returns `410 Gone`. Use the conversation MCP tool or CLI. Cross-machine conversation delivery transfers messages between joined machines; memory remains local. Universal host resume is not implied.
 
 ## Option A: HTTP API
 
