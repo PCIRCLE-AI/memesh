@@ -296,7 +296,11 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(pkg.scripts['verify:artifact']).toContain('test:packaged:upgrade');
     const upgrade = read('scripts/smoke-packed-upgrade.mjs');
     expect(upgrade).toContain('auto-update-runner.mjs');
-    expect(upgrade).toContain('SUCCESS target=${candidateVersion} installed=${candidateVersion}');
+    expect(upgrade).toContain('runLocked(lockPath');
+    expect(upgrade).toContain('await runAutoUpdate({ ...deps, ...context })');
+    expect(upgrade).toContain('AUTO_UPDATE_REASONS.dependencyPinFailed');
+    expect(upgrade).toContain('explicit off reached registry or install steps');
+    expect(upgrade).toContain('real registry provenance and native dispatch remain unverified');
     expect(upgrade).toContain('MEMESH_UPGRADE_FORCE_FAILURE');
     expect(upgrade).toContain('fs.copyFileSync(candidateTarball, invalidCandidate)');
     expect(upgrade).toContain('fs.truncateSync(invalidCandidate');
@@ -1160,20 +1164,14 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
     expect(read('scripts/smoke-packed-upgrade.mjs')).toContain("const registry = 'https://registry.npmjs.org/'");
   });
 
-  // #477: the upgrade smoke writes its fake npm through the shared helper,
-  // with the module type its `require` body needs, so an ancestor
-  // package.json declaring "type": "module" cannot turn the shim into ESM.
-  it('the upgrade smoke writes its fake npm through writeNodeShim as commonjs', () => {
-    for (const [rel, call] of [
-      ['scripts/smoke-packed-upgrade.mjs', "writeNodeShim(shimDir, 'npm',"],
-    ]) {
-      const source = read(rel);
-      expect(source).toContain("import { writeNodeShim } from './lib/node-shim.mjs';");
-      const start = source.indexOf(call);
-      expect(start, rel).toBeGreaterThan(-1);
-      const end = source.indexOf(');', source.indexOf('`, ', start));
-      expect(source.slice(start, end), rel).toMatch(/`, 'commonjs'$/);
-    }
+  // Calling npm's own CLI avoids a generated shim inheriting an ancestor's
+  // ESM mode, while preserving this Node and the fixture's isolated env.
+  it('the upgrade smoke calls real npm through Node without a PATH shim', () => {
+    const source = read('scripts/smoke-packed-upgrade.mjs');
+    expect(source).toContain('path.isAbsolute(npmCli)');
+    expect(source).toContain('spawnSync(process.execPath, [npmCli, ...args]');
+    expect(source).not.toContain('writeNodeShim');
+    expect(source).not.toContain('npm-shim');
   });
 
   // The other half. `buildIsolatedRuntimeEnv` pins a database path; the suite
