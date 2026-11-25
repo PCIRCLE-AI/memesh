@@ -115,11 +115,11 @@ The host derives identity. Do not provide project, sender, privacy, idempotency,
 
 Messages and audit events are maintained for 14 days when the store next opens; maintenance creates one undelivered notice after a day. Bodies are untrusted data and no update/delete actions exist. Both plugin manifests declare the SessionStart/UserPromptSubmit conversation hook. Claude Stop also carries complete pending messages in its block reason; Codex receives complete messages after Bash tool calls. Output must succeed before delivery is recorded, and memory hooks no longer publish legacy principal addresses. Private hook/MCP checks do not establish native-host/model reading or wakeup.
 
-The older HTTP agent-message protocol remains compatibility-only. Its `poll`, `fetch`, `intake`, `ack`, `disposition`, and `receipts` fields are not conversation MCP/CLI actions. Available graph messages younger than 14 days are imported with their original body and audit when the conversation store opens. Unknown legacy names remain audit-only identities; inspect them through the owner CLI status view rather than guessing a conversation address. This does not restore already removed history or establish a released-package upgrade.
+The retired HTTP message endpoint returns `410 Gone`. Opening the default conversation store imports available graph messages younger than 14 days with their original body and audit, then retires the old message tables. Unknown legacy names remain audit-only; inspect them through CLI status rather than guessing an address. Already removed history cannot be recovered.
 
 ## What's Already Automatic (Plugin Hooks)
 
-Both plugin manifests share the 12 hook commands in this table. Host-specific execution is gated; the Codex-only commands are described below:
+Both plugin manifests share the 11 hook commands in this table. Host-specific execution is gated; the Codex-only commands are described below:
 
 | Hook | When | What it does |
 |------|------|-------------|
@@ -134,7 +134,6 @@ Both plugin manifests share the 12 hook commands in this table. Host-specific ex
 | **Stop (message gate, Claude Code only)** | A registered conversation has pending messages | Blocks with complete bounded message envelopes, then records delivery after stdout succeeds. The per-session ledger bounds repeated blocks; Codex skips this gate |
 | **PreCompact** | Before context compaction | Saves knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
-| **SessionStart/SessionEnd (Codex)** | An ordinary Codex CLI plugin session starts, resumes, or ends | For the legacy HTTP/native transport, launches the detached exact-thread companion, replaces its generation on resume, and retires it after the bounded idle queue window; a matching owner-private config may override its project/principal |
 
 Codex additionally declares a Bash message hook that emits complete pending envelopes after successful tool calls, with private concurrency and pipe-failure safeguards; overflow remains queued. Its native plan-activity hook is separate from message delivery.
 

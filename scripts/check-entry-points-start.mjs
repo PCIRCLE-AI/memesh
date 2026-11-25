@@ -35,63 +35,13 @@ const rootOption = process.argv.indexOf('--root');
 const packageDir = rootOption >= 0 ? path.resolve(process.argv[rootOption + 1] ?? '') : path.resolve(here, '..');
 
 const DEFAULT_TIMEOUT_MS = 10_000;
-// Measured locally (this session, darwin): a fresh memesh-router socket
-// appears in ~1.5s, including opening and migrating a brand-new SQLite
-// database. That is not this gate's floor — it runs unskipped on
-// ubuntu-latest with no local measurement to lean on, and this repo has
-// already paid for the lesson that a timeout sized to the fastest machine
-// becomes a flaky red build elsewhere (vitest.config.ts's hookTimeout going
-// 10s→30s for the same reason; CLAUDE.md records a degraded CI runner
-// measured at 5x slower). This is a poll that returns the instant the
-// readiness signal appears, so a generous ceiling costs the happy path
-// nothing.
+// Return as soon as the HTTP readiness signal appears.
 const DAEMON_READY_TIMEOUT_MS = 15_000;
 const DAEMON_SHUTDOWN_GRACE_MS = 10_000;
 
-/**
- * Which platforms cannot prove a given entry point starts, and why.
- *
- * Exported (not inlined) so a test can pin it without a Windows machine:
- * `tests/entry-points-start.test.ts` calls this with `'win32'`/`'darwin'`
- * directly rather than relying on CI to happen to run on the right OS the
- * day the pin needs checking.
- *
- * Only one entry exists today. `memesh-router` (src/host-runtime/router.ts)
- * calls `assertSecureLocalHostRuntimeSupported()` at MODULE SCOPE — line 16,
- * before any function boundary — and that call throws
- * `SECURE_LOCAL_HOST_RUNTIME_UNSUPPORTED` on win32 with no surrounding
- * try/catch anywhere between it and the module's top level. Windows support
- * for the secure local host runtime is an explicit, documented design
- * decision (config.ts:6-13), not a bug this gate should be reporting as one
- * — but the resulting failure is also not a clean "starts and reports
- * failure" the gate can assert on with confidence without a Windows machine
- * to verify the exact shape against. Skipping it, loudly, is more honest
- * than guessing at an assertion this repo cannot verify in this session.
- *
- * `memesh-host-claude`/`memesh-host-codex`/`memesh-host-acp` are NOT here:
- * all three read `MEMESH_HOST_CONFIG`/`--config` and throw "A host config
- * file is required…" BEFORE any Windows-specific code path is reached
- * (config.ts `readHostConfig` checks `configuredPath` before calling
- * `readHostConfigFile`, which is the only place `assertSecureLocalHostRuntimeSupported`
- * runs for those three). Their missing-config failure mode is identical on
- * every platform, so it is asserted on every platform — see ASSERTIONS
- * below, where two of the three currently fail that assertion for an
- * unrelated reason (a missing try/catch, not a Windows gap).
- *
- * @param {NodeJS.Platform} platform
- * @returns {{relativePath: string, reason: string}[]}
- */
-export function computeSkipList(platform) {
-  if (platform !== 'win32') return [];
-  return [
-    {
-      relativePath: 'dist/host-runtime/router.js',
-      reason:
-        'memesh-router calls assertSecureLocalHostRuntimeSupported() at module scope ' +
-        '(src/host-runtime/router.ts:16) with no try/catch — Windows is explicitly ' +
-        'unsupported by design for the secure local host runtime (src/host-runtime/config.ts:6-13).',
-    },
-  ];
+/** All declared entry points must be checked on every platform. */
+export function computeSkipList(_platform) {
+  return [];
 }
 
 /**
@@ -249,31 +199,11 @@ function looksLikeStackTrace(stderr) {
 
 async function main() {
   const gateRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'mep-'));
-  // Belt-and-suspenders: mkdtemp already defaults to 0700 on every platform
-  // this gate runs on, but the router's own startup check (agent-router.ts
-  // `start()`: `(directoryMode & 0o077) !== 0` throws `insecure_socket_directory`)
-  // is exactly the kind of check this gate exists to actually exercise, not
-  // assume past. Making it explicit removes any dependency on umask.
+  // Isolate every child under an explicitly private directory.
   fs.chmodSync(gateRoot, 0o700);
   const memeshDir = path.join(gateRoot, '.memesh');
   fs.mkdirSync(memeshDir, { recursive: true });
   const memeshDbPath = path.join(memeshDir, 'kg.db');
-  // NESTED under gateRoot, not a sibling of it — a sibling's directory is
-  // `os.tmpdir()` itself, which is the shared, world-writable system temp dir
-  // on Linux (`/tmp`, mode 1777), not gateRoot's own private (0700)
-  // directory. That is precisely the failure this router rejects: measured
-  // on ubuntu-latest CI, `memesh-router` refused to start with
-  // `insecure_socket_directory: Router socket directory must be private` —
-  // masked locally on macOS only because `os.tmpdir()` there already
-  // resolves to a per-user 0700 directory, so the bug was invisible on the
-  // one platform this gate had been run on before it first reached CI.
-  // AF_UNIX paths are capped at 103 bytes (agent-router.ts `validateSocketPath`);
-  // nesting one level costs one path separator — measured 66 bytes total on
-  // macOS's unusually long tmpdir (`/var/folders/.../T/mep-XXXXXX/r.sock`),
-  // well inside the limit, and shorter still on Linux's `/tmp`.
-  const routerSocket = path.join(gateRoot, 'r.sock');
-  const routerTokenFile = path.join(gateRoot, 'r.token');
-
   const baseEnv = {
     ...buildIsolatedSuiteEnv(process.env, { runtimeHome: gateRoot }),
     MEMESH_DIR: memeshDir,
@@ -369,78 +299,20 @@ async function main() {
     }
   }
 
-  /** `memesh-router` — a Unix-domain-socket daemon (src/host-runtime/router.ts).
-   * Like the HTTP server it never reads stdin. It creates the socket file
-   * inline in module top-level code (no "ready" log line to grep for), so
-   * the socket's existence on disk IS the started signal — the same proof
-   * scripts/smoke-packed-artifact.mjs uses for the same reason. */
-  async function assertRouterDaemon(absolutePath, env) {
-    const child = spawn(process.execPath, [absolutePath], {
-      env: { ...env, MEMESH_ROUTER_SOCKET: routerSocket, MEMESH_ROUTER_TOKEN_FILE: routerTokenFile },
-      stdio: ['ignore', 'pipe', 'pipe'],
-    });
-    let stderr = '';
-    let exitInfo = null;
-    child.stderr.setEncoding('utf8');
-    child.stderr.on('data', (chunk) => { stderr += chunk; });
-    child.once('exit', (code, signal) => { exitInfo = { code, signal }; });
-    try {
-      await waitFor(() => fs.existsSync(routerSocket) || exitInfo !== null, 'memesh-router to create its socket', DAEMON_READY_TIMEOUT_MS);
-      if (exitInfo !== null) throw new Error(`exited before creating a socket (${JSON.stringify(exitInfo)})\nstderr: ${stderr.slice(0, 500)}`);
-    } finally {
-      if (exitInfo === null) {
-        child.kill('SIGTERM');
-        try {
-          await waitFor(() => exitInfo !== null, 'memesh-router to exit after SIGTERM', DAEMON_SHUTDOWN_GRACE_MS);
-        } catch {
-          child.kill('SIGKILL');
-        }
-      }
-      for (const f of [routerSocket, routerTokenFile]) {
-        try { fs.rmSync(f, { force: true }); } catch { /* best effort */ }
-      }
-    }
-    if (exitInfo !== null && exitInfo.code !== 0 && exitInfo.code !== null) {
-      throw new Error(`memesh-router did not shut down cleanly on SIGTERM (${JSON.stringify(exitInfo)})`);
-    }
-  }
-
-  /** `memesh-host-claude` / `memesh-host-codex` / `memesh-host-acp` — each
-   * needs a host config file (`--config` or MEMESH_HOST_CONFIG) it will not
-   * find here. All three call `readHostConfig()` (src/host-runtime/config.ts:15),
-   * which throws "A host config file is required…" before touching stdin or
-   * any Windows-gated code path. The REQUIRED behaviour (spec, and this
-   * gate) is: fail closed with a named error and a non-crash exit — not a
-   * raw Node stack trace.
-   *
-   * All three now meet this — `codex.ts`/`acp.ts` originally called
-   * `await run…Host()` at top level with no try/catch and Node dumped the
-   * raw exception with stack frames; CHANGELOG.md's "Every host runtime now
-   * fails closed with the reason, not a stack trace" entry (fix/host-runtimes-
-   * fail-closed) gave every host runtime one shared `runHostEntry` wrapper
-   * instead of three hand-copied try/catch blocks, precisely so this
-   * assertion could stop being written to a spec none of them met yet. */
+  /** Without the actual Claude session, fail closed with a named error. */
   async function assertHostRuntimeFailsClosed(absolutePath, env) {
     const result = await run(absolutePath, [], { input: '', env });
     if (result.timedOut) throw new Error(`timed out after ${DEFAULT_TIMEOUT_MS}ms instead of failing closed`);
-    if (result.status === 0) throw new Error('exited 0 with no host config — expected a fail-closed non-zero exit');
+    if (result.status === 0) throw new Error('exited 0 without the actual host session — expected a fail-closed non-zero exit');
+    if (!/memesh-host-claude: Claude Channel requires the actual host session/.test(result.stderr)) {
+      throw new Error(`expected the actual host session error, received: ${result.stderr.slice(0, 500)}`);
+    }
     if (result.stderr.trim() === '') throw new Error(`exited ${result.status} with no stderr message — a fail-closed exit must name the error`);
     if (looksLikeStackTrace(result.stderr)) {
       throw new Error(
         `exited ${result.status} but stderr is a raw stack trace, not a named error:\n${result.stderr.slice(0, 800)}`,
       );
     }
-  }
-
-  /** `memesh-host-codex-session` (both the `bin` entry and the async
-   * SessionStart hook — same file, src/host-runtime/codex-session.ts).
-   * The generic entry-point gate supplies a deliberately invalid non-UUID
-   * session id, so the companion must exit before creating router state. The
-   * packaged live journey separately proves valid zero-config registration. */
-  async function assertCodexSessionInvalidIdentityNoop(absolutePath, env, payload) {
-    const result = await run(absolutePath, [], { input: JSON.stringify(payload), env });
-    if (result.timedOut) throw new Error(`timed out after ${DEFAULT_TIMEOUT_MS}ms`);
-    if (result.status !== 0) throw new Error(`exited ${result.status} for an invalid session identity (expected a quiet fail-closed no-op)\nstderr: ${result.stderr.slice(0, 500)}`);
   }
 
   /** The eight ordinary hook scripts under scripts/hooks/. Each gets the
@@ -478,13 +350,7 @@ async function main() {
     'dist/transports/cli/cli.js': { run: (abs, env) => assertCliVersion(abs, env) },
     'dist/mcp/server.js': { run: (abs, env) => assertMcpStdioEof(abs, env) },
     'dist/transports/http/server.js': { run: (abs, env) => assertHttpDaemon(abs, env) },
-    'dist/host-runtime/router.js': { run: (abs, env) => assertRouterDaemon(abs, env) },
     'dist/host-runtime/claude.js': { run: (abs, env) => assertHostRuntimeFailsClosed(abs, env) },
-    'dist/host-runtime/codex.js': { run: (abs, env) => assertHostRuntimeFailsClosed(abs, env) },
-    'dist/host-runtime/acp.js': { run: (abs, env) => assertHostRuntimeFailsClosed(abs, env) },
-    'dist/host-runtime/codex-session.js': {
-      run: (abs, env) => assertCodexSessionInvalidIdentityNoop(abs, env, hookPayload({ hook_event_name: 'SessionStart', source: 'startup' })),
-    },
     'scripts/hooks/pre-edit-recall.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'PreToolUse', hookPayload({
         hook_event_name: 'PreToolUse', tool_name: 'Edit', tool_input: { file_path: path.join(projectCwd, 'src/x.ts') },
@@ -641,9 +507,6 @@ async function main() {
     // forever cannot outlast a process still writing, so this is a bounded
     // best-effort clean, not a correctness requirement.
     try { fs.rmSync(gateRoot, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* best effort */ }
-    for (const f of [routerSocket, routerTokenFile]) {
-      try { fs.rmSync(f, { force: true }); } catch { /* best effort */ }
-    }
   }
 
   process.stdout.write(
@@ -667,7 +530,7 @@ async function main() {
 }
 
 // Guard `main()` behind an entrypoint check — mirroring the same pattern
-// src/host-runtime/{claude,codex,acp,codex-session}.ts already use — so that
+// src/host-runtime/claude.ts already use — so that
 // `computeSkipList`/`findUnresolvedPlaceholders` can be imported directly by
 // tests (tests/entry-points-start.test.ts) without running the whole gate,
 // spawning 17 processes, and calling `process.exit()`, as an import side

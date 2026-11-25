@@ -61,5 +61,4 @@ export const AGENT_MESSAGE_SCOPE_COLUMNS = [
     { table: 'agent_workflow_facts', columns: ['actor'] },
     { table: 'agent_retention_facts', columns: ['actor'] },
 ];
-export const AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes('project')).map((e) => e.table);
 //# sourceMappingURL=agent-scope-id.js.map

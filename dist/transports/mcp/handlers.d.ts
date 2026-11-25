@@ -606,10 +606,10 @@ export declare const TOOL_DEFINITIONS: readonly [{
             action: z.ZodLiteral<"send">;
             recipient: z.ZodString;
             kind: z.ZodEnum<{
+                result: "result";
                 task: "task";
                 question: "question";
                 review_request: "review_request";
-                result: "result";
             }>;
             body: z.ZodString;
             reply_to: z.ZodOptional<z.ZodString>;

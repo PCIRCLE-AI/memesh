@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase } from '../../src/db.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 import { remember } from '../../src/core/operations.js';
 
 const cliLoader = `
@@ -37,7 +37,7 @@ function send(home: string, recipient: string, key: string, includeMemory = true
   fs.writeFileSync(path.join(directory, 'config.json'), JSON.stringify({ updateCheck: false, autoUpdate: 'off' }), { mode: 0o600 });
   const db = openDatabase(path.join(directory, 'knowledge-graph.db'));
   try {
-    sendAgentMessage(db, { project: 'briefing-cli-project', sender: 'sender', recipient,
+    seedLegacyMessage(db, { project: 'briefing-cli-project', sender: 'sender', recipient,
       idempotency_key: key, content_type: 'application/json', payload: {} });
     if (includeMemory) remember({ name: 'briefing-memory', type: 'note', title: 'CLI memory sentinel',
       observations: ['Keep ordinary project context'], project: 'briefing-cli-project' });

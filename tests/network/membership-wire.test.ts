@@ -23,7 +23,7 @@ it('real management lost ACK is idempotent and NET/2 counts only proven nonmembe
   const members = [owner, peer].map((id, i) => ({ machine_id: id.machineId, name: i ? 'beta' : 'alpha', person: 'synthetic', joined_at: new Date().toISOString() }));
   const roster = { ...createRoster('c'.repeat(32), members[0]), members };
   const signed = signRoster(owner, roster);
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: owner.machineId, machine_name: 'alpha', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
   const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
   const iroh = loadIrohForTest(runtime);
@@ -88,7 +88,7 @@ it('a verified self-removal learned through NET/2 also stops local networking', 
   const roster = { ...createRoster('e'.repeat(32), members[0]), members };
   const signed = signRoster(owner, roster);
   const removed = signRoster(owner, { ...roster, version: 2, members: [members[0]] });
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: member.machineId, machine_name: 'beta', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
   const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
   const iroh = loadIrohForTest(runtime);

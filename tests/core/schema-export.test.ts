@@ -4,7 +4,7 @@ import path from 'node:path';
 import { z } from 'zod';
 import { AjvJsonSchemaValidator } from '@modelcontextprotocol/sdk/validation/ajv';
 import { exportOpenAITools } from '../../src/core/schema-export.js';
-import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, MessageSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
+import { BriefingSchema, HttpLearnSchema, LearnSchema, McpLearnSchema, RememberSchema, RecallSchema, WorkPackageSchema } from '../../src/transports/schemas.js';
 import { TOOL_DEFINITIONS } from '../../src/transports/mcp/handlers.js';
 import { ConversationMessageActionSchema } from '../../src/transports/conversation-messaging.js';
 
@@ -230,16 +230,6 @@ describe('exportOpenAITools', () => {
         expect(ConversationMessageActionSchema.safeParse(input).success).toBe(false);
       }
     }
-  });
-
-  it('keeps legacy HTTP/internal MessageSchema validation guards', () => {
-    expect(MessageSchema.safeParse({
-      action: 'poll', project: 'memesh', recipient: 'codex', wait_ms: 30_001,
-    }).success).toBe(false);
-    expect(MessageSchema.safeParse({ action: 'poll', project: 'memesh' }).success).toBe(false);
-    expect(MessageSchema.safeParse({
-      action: 'ack', project: 'memesh', recipient: 'codex', message_id: 'm-1', idempotency_key: 'ack-1', disposition: 'completed',
-    }).success).toBe(false);
   });
 
   // Non-tautological parity: derive the expected fields from the Zod schemas

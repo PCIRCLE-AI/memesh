@@ -82,7 +82,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
   // NET/2 admits a bounded owner-signed roster before any business stream. Use
   // the caller's actual saved membership, not a fabricated successful handshake.
   const exchangeMembership = async (ctx: NetworkContext, connection: Connection): Promise<void> => {
-    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
     let config;
     try { config = readConfig(db); } finally { db.close(); }
     if (!config) throw new Error('no caller network config');
@@ -158,7 +158,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(memberView.members).toEqual(ownerView.members);
     expect(ownerView.bridge.running).toBe(true);
 
-    const db = openNetworkStore(networkMetadataPath(member.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(member.dataDir));
     try {
       const config = readConfig(db);
       if (!config) throw new Error('no config');
@@ -188,7 +188,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     expect(await refusal(joinWith(link, 'expired-local'))).toBe('invite_expired');
 
     const { link: fresh } = await inviteFrom(owner);
-    const db = openNetworkStore(networkMetadataPath(owner.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(owner.dataDir));
     try {
       db.prepare('UPDATE agent_network_invites SET expires_at_ms = 1 WHERE used_at IS NULL').run();
     } finally {
@@ -399,7 +399,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const ctx = machine();
     await expect(joinNetwork(ctx, { link, name: 'typo', person: 'kt', relay: 'http://127.0.0.1:9/' })).rejects.toMatchObject({ code: 'relay_unreachable' });
     expect((await readNetworkStatus(ctx)).joined).toBe(false);
-    const db = openNetworkStore(networkMetadataPath(owner.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(owner.dataDir));
     try {
       expect(db.prepare('SELECT used_at FROM agent_network_invites WHERE hash = ?').get(hashToken(parseLink(link).token))).toEqual({ used_at: null });
     } finally {
@@ -451,7 +451,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     await joinWith(first.link, 'real-member', member);
 
     const second = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
-    const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
     db.prepare('UPDATE agent_network_config SET roster_signature = ?').run(Buffer.alloc(64, 1).toString('base64url'));
     db.close();
 
@@ -482,7 +482,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
     const ctx = machine();
     createNetwork(ctx, { name: 'locked-owner', person: 'kt', relay: 'off' });
     const { link } = await createLink(ctx, { includeAddresses: true, ttlHours: 1 });
-    const holder = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+    const holder = openNetworkStore(networkMetadataPath(ctx.dataDir));
     holder.exec('BEGIN IMMEDIATE');
     const started = Date.now();
     const outcome = await refusal(joinWith(link, 'while-locked'));
@@ -783,7 +783,7 @@ http.createServer((req, res) => { console.log(req.url); res.statusCode = status;
     it('bind', async () => {
       const ctx = machine();
       createNetwork(ctx, { name: 'bind-owner', person: 'kt', relay: 'off' });
-      const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+      const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
       db.prepare('UPDATE agent_network_config SET relay_url = ?').run('not a url');
       db.close();
       await expectFailed(ctx, /Cannot open a network connection/);

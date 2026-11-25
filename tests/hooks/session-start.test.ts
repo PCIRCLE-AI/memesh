@@ -511,51 +511,6 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames).toContain('global-item');
   });
 
-  it('Regression: generic SessionStart does not leak unread recipient activity', async () => {
-    // A REAL schema and a REAL send. A hand-rolled deliveries row cannot be
-    // inserted at all — the schema enforces the FK to agent_messages — so a
-    // fixture that fakes the tables proves nothing about this path.
-    const { openDatabase, closeDatabase, getDatabase } = await import('../../src/db.js');
-    const { executeAgentMessageAction } = await import('../../src/transports/agent-messaging.js');
-    const { getProjectName } = await import('../../src/core/paths.js');
-    // The same derivation the hook uses, not a scrape of its banner.
-    const project = getProjectName('/tmp/testproj');
-
-    openDatabase(dbPath);
-    const prevSocket = process.env.MEMESH_ROUTER_SOCKET;
-    process.env.MEMESH_ROUTER_SOCKET = path.join(testDir, 'no-router.sock');
-    try {
-      const sent = await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project, sender: 'codex-reviewer', recipient: 'claude-implementer',
-        idempotency_key: 'hook-unread-1', payload: { text: 'review done' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' }) as { message_id: string };
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project, sender: 'codex-reviewer', recipient: 'gemini-reviewer',
-        idempotency_key: 'hook-unread-1b', payload: { text: 'another review done' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      closeDatabase();
-
-      const generic = runHook({ cwd: '/tmp/testproj' });
-      const ctx1 = String((generic.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
-      expect(ctx1).not.toContain('message waiting');
-      expect(ctx1).not.toContain('claude-implementer');
-      expect(ctx1).not.toContain('gemini-reviewer');
-
-      openDatabase(dbPath);
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'intake', project, recipient: 'claude-implementer', message_id: sent.message_id,
-        intake_state: 'fetched', idempotency_key: 'hook-intake-1',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      closeDatabase();
-
-      const fetched = runHook({ cwd: '/tmp/testproj' });
-      expect(String((fetched.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '')).not.toContain('message waiting');
-    } finally {
-      try { closeDatabase(); } catch { /* already closed */ }
-      if (prevSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET; else process.env.MEMESH_ROUTER_SOCKET = prevSocket;
-    }
-  });
-
   // Conversation messages have their own whole-body hook. A stale principal
   // override must not restore the retired address/protocol or hide memories.
   it('preserves project memory without a retired principal address when a recipient is configured', () => {

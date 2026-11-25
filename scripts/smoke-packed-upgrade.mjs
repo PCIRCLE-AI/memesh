@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { npmSync } from './lib/npm-bin.mjs';
+import { npmSync, parsePackResult } from './lib/npm-bin.mjs';
 import { writeNodeShim } from './lib/node-shim.mjs';
 import { buildCredentialFreeBaseEnv } from './lib/isolated-env.mjs';
 import { assertEveryPathProven, fetchPackument, selectUpgradePaths } from './lib/upgrade-matrix.mjs';
@@ -454,7 +454,7 @@ try {
     timeout: processTimeoutMs,
     killSignal: 'SIGTERM',
   });
-  const [{ filename }] = JSON.parse(packJson);
+  const { filename } = parsePackResult(packJson);
   const candidateTarball = path.join(upgradeRoot, filename);
   assert.ok(fs.existsSync(candidateTarball), `npm pack did not create ${candidateTarball}`);
   console.log(`candidate: version=${candidateVersion} tarball=${filename} sha256=${sha256(candidateTarball)}`);

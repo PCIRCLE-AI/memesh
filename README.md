@@ -105,7 +105,7 @@ MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit p
 
 ---
 
-The Claude Code plugin ships **12 hooks**; the Codex plugin also registers two Codex-only commands. MeMesh does not classify saving intent by
+The Claude Code plugin ships **11 hooks**; the Codex plugin also registers two Codex-only commands. MeMesh does not classify saving intent by
 keywords: conversations are captured by default, and the agent can store structured memories. Sessions start with a bounded
 memory overview and recent user conversation titles. When a prompt matches
 stored memory, up to two memories bring their content along, within one 4 KiB
@@ -125,7 +125,7 @@ standalone Web Dashboard.
 - The current MCP/CLI conversation schema is exactly `discover`, `send`, `read`, and `status`. `send` takes `recipient`, `kind` (`task`, `question`, `review_request`, `result`), a text `body`, and optional `reply_to` (the CLI reads body text from stdin); it derives sender identity from the host, not `--sender` or `--project`.
 - The complete rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients and oversized sends are rejected and audited; known offline recipients are queued. Store-open maintenance retains messages and events for 14 days and creates one notice for an eligible undelivered message after a day.
 - `read` records delivery/read. `status` shows sent/received messages and audit events; the CLI owner view can emit the complete history with `--json`. There are no update or delete actions.
-- The legacy HTTP agent-message lifecycle remains separate for compatibility. Its polling, fetch and receipt fields are not valid conversation MCP/CLI fields; see the [messaging guide](docs/platforms/agent-messaging.md#legacy-http-messaging).
+- The retired HTTP message endpoint returns `410 Gone`; use the [conversation interface](docs/platforms/agent-messaging.md).
 
 </details>
 

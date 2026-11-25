@@ -10,5 +10,4 @@ export declare const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
     readonly table: string;
     readonly columns: readonly string[];
 }>;
-export declare const AGENT_MESSAGE_PROJECT_TABLES: readonly string[];
 //# sourceMappingURL=agent-scope-id.d.ts.map

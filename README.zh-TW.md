@@ -103,7 +103,7 @@ MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及
 
 ---
 
-Claude Code 插件共有 12 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。MeMesh 不掃描你的話判斷儲存意圖，由 agent 依你的話自己判斷。每個 session 開場帶入有上限的記憶全貌與近期使用者對話標題；提問命中已存記憶時，最多兩筆記憶的內容會一起帶入，整段連同資料提示與 `[mem:id]` 編號合計不超過 4 KiB（UTF-8）。開場標題不代表內容已讀；內容超量會明示截取，附上可用 `recall` 讀取的編號。標題含 pending、blocked 或等待也可取回。提問帶入可用 `memesh config set promptRecall false` 關閉。
+Claude Code 插件共有 11 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。MeMesh 不掃描你的話判斷儲存意圖，由 agent 依你的話自己判斷。每個 session 開場帶入有上限的記憶全貌與近期使用者對話標題；提問命中已存記憶時，最多兩筆記憶的內容會一起帶入，整段連同資料提示與 `[mem:id]` 編號合計不超過 4 KiB（UTF-8）。開場標題不代表內容已讀；內容超量會明示截取，附上可用 `recall` 讀取的編號。標題含 pending、blocked 或等待也可取回。提問帶入可用 `memesh config set promptRecall false` 關閉。
 記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。
@@ -113,7 +113,7 @@ Claude Code 插件共有 12 個 hook 指令；Codex 插件另有 2 個 Codex 專
 - MCP／CLI 對話介面只有 `discover`、`send`、`read`、`status`。寄件身分來自 host；MCP 以 `body` 傳文字，CLI 從 stdin 讀取。
 - 完整 rendered envelope 上限為 8,000 UTF-8 bytes。未知收件者與超量訊息會拒絕並留下稽核紀錄；已登記但離線的收件者會排隊。
 - 下次開啟訊息庫時，維護會清除已滿 14 天的訊息與事件，並對仍符合條件、滿一天未交付的訊息建立一次通知。`queued` 不代表已交付、已讀、已回覆或已完成。
-- `read` 記錄交付／已讀；`status` 顯示稽核，CLI 的 `--json` 可輸出完整擁有者紀錄。舊 HTTP 協定另外保留；其 project／poll／fetch／收據欄位不適用於新對話工具。見[訊息指南](docs/platforms/agent-messaging.md)。
+- `read` 記錄交付／已讀；`status` 顯示稽核，CLI 的 `--json` 可輸出完整擁有者紀錄。舊 HTTP 訊息端點已退役並回傳 `410 Gone`。見[訊息指南](docs/platforms/agent-messaging.md)。
 
 </details>
 

@@ -47,7 +47,7 @@ const NOT_JOINED = 'This machine is not in a network yet. Run `memesh network cr
 function withConfig<T>(ctx: NetworkContext, use: (db: ReturnType<typeof openNetworkStore>, config: NetworkConfig) => T): T {
   // Asking must not create: someone who never joined keeps having no database.
   if (!databaseExists(networkMetadataPath(ctx.dataDir))) throw new NetworkError('not_joined', NOT_JOINED);
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   try {
     const config = readConfig(db);
     if (!config) {
@@ -112,7 +112,7 @@ export function createNetwork(ctx: NetworkContext, options: CreateOptions): { co
     roster_json: signed.roster_json,
     roster_signature: signed.signature,
   };
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   try {
     insertConfig(db, config, now);
   } finally {
@@ -175,7 +175,7 @@ export async function createLink(ctx: NetworkContext, options: LinkOptions = {})
   }
 
   const identity = loadIdentity(ctx.dataDir);
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   try {
     const { token, expiresAtMs } = createInvite(db, ttlMs, Date.now());
     const fields: InviteLink = {
@@ -320,7 +320,7 @@ export async function joinNetwork(ctx: NetworkContext, options: JoinOptions): Pr
     roster_json: reply.roster.roster_json,
     roster_signature: reply.roster.signature,
   };
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   try {
     db.transaction(() => {
       insertConfig(db, config, Date.now());

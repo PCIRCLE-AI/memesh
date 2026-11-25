@@ -240,27 +240,6 @@ const HOOK_CASES: HookCase[] = [
       stop_hook_active: false,
     },
   },
-  {
-    file: 'codex-session.js',
-    commandPath: 'dist/host-runtime/codex-session.js',
-    boundEvent: 'SessionStart',
-    input: {
-      session_id: '00000000-0000-4000-8000-000000000001',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-    },
-  },
-  {
-    file: 'codex-session.js',
-    commandPath: 'dist/host-runtime/codex-session.js',
-    boundEvent: 'SessionEnd',
-    input: {
-      session_id: '00000000-0000-4000-8000-000000000001',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'SessionEnd',
-    },
-  },
 ];
 
 describe('Feature: Claude Code hook-output contract', () => {

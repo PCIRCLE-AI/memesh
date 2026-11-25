@@ -9,6 +9,7 @@
  * structural forces their outputs to agree; this test is what does.
  */
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { randomUUID } from 'node:crypto';
 import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -17,7 +18,6 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
-import { recipientEverSeen, recipientEverSeenAnywhere, unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 
 // Lets one test make getTaskState fail with an error that is NOT the
@@ -35,16 +35,26 @@ vi.mock('../../src/core/task-state-store.js', async (importOriginal) => {
 });
 import { taskStateName } from '../../src/core/task-state.js';
 import { forget, learn, remember } from '../../src/core/operations.js';
-import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { DEFAULT_TOPOLOGY_BUDGET, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP, groupTopology, projectLabel } from '../../src/core/work-topology.js';
 import { getProjectName } from '../../src/core/paths.js';
 import { HANDOFF_MAX_BYTES, SESSION_HANDOFF_TYPE } from '../../src/core/session-handoff.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 // The hook-only work-package notice's literal text — single owner in
 // `_shared.js`, so this file never hardcodes a second copy to compare
 // against.
 import { WORK_PACKAGE_NOTICE, recallSessionPath, sessionProjectLine } from '../../scripts/hooks/_shared.js';
+
+// Historic inbox rows are fixture data; briefing must neither render nor change them.
+function seedLegacyInbox(input: { project: string; recipient: string; payload: unknown }): void {
+  const db = getDatabase(), id = randomUUID();
+  installLegacyMessageSchema(db);
+  db.prepare('INSERT INTO agent_messages(message_id,project,sender,recipient,content_type,privacy,payload_json,provenance_json) VALUES (?,?,?,?,?,?,?,?)')
+    .run(id, input.project, 'legacy-test-fixture', input.recipient, 'application/json', 'local', JSON.stringify(input.payload), '{}');
+  db.prepare('INSERT INTO agent_message_deliveries(delivery_id,message_id,project,recipient) VALUES (?,?,?,?)')
+    .run(randomUUID(), id, input.project, input.recipient);
+}
 
 /** The hook's memory context: its additionalContext minus the leading line
  *  naming the session's project (hook-only session context, not briefing
@@ -302,14 +312,8 @@ describe('assembleBriefing', () => {
     setTaskState({ project: PROJECT, patch: { goal: 'Ship A1c' } });
     // Two real deliveries in one project prove project-wide aggregation is
     // not merely returning the one recipient in this fixture.
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'claude-implementer',
-      idempotency_key: 'briefing-unread-1', payload: { text: 'review is done' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'gemini-reviewer',
-      idempotency_key: 'briefing-unread-1b', payload: { text: 'another review is done' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await seedLegacyInbox({ project: PROJECT, recipient: 'claude-implementer', payload: { text: 'review is done' } });
+    await seedLegacyInbox({ project: PROJECT, recipient: 'gemini-reviewer', payload: { text: 'another review is done' } });
 
     const generic = assembleBriefing(PROJECT).text;
     expect(generic).not.toContain('message waiting');
@@ -327,10 +331,7 @@ describe('assembleBriefing', () => {
   it('keeps task and memory context without consulting or mutating the legacy inbox', async () => {
     seed();
     setTaskState({ project: PROJECT, patch: { goal: 'Keep current project context' } });
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'legacy-sender', recipient: 'legacy-recipient',
-      idempotency_key: 'briefing-retired-inbox', payload: { text: 'legacy body must not be injected' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await seedLegacyInbox({ project: PROJECT, recipient: 'legacy-recipient', payload: { text: 'legacy body must not be injected' } });
     const db = getDatabase();
     const snapshot = () => ['agent_messages', 'agent_message_deliveries', 'agent_message_events'].map(table =>
       db.prepare(`SELECT * FROM ${table}`).all());
@@ -348,53 +349,9 @@ describe('assembleBriefing', () => {
     expect(snapshot()).toEqual(before);
   });
 
-  it('intaking one recipient leaves the other recipient unread', async () => {
-    seed();
-    const first = await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'claude-implementer',
-      idempotency_key: 'briefing-unread-2', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' }) as { message_id: string };
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'gemini-reviewer',
-      idempotency_key: 'briefing-unread-2b', payload: { text: 'y' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
-    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'claude-implementer')).toBe(1);
-    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'gemini-reviewer')).toBe(1);
 
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'intake', project: PROJECT, recipient: 'claude-implementer', message_id: first.message_id,
-      intake_state: 'fetched', idempotency_key: 'briefing-intake-2',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
-    expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
-    expect(unreadDeliveryCount(getDatabase(), PROJECT, 'gemini-reviewer')).toBe(1);
-    expect(assembleBriefing(PROJECT, 'gemini-reviewer').text).not.toContain('message waiting');
 
-    expect(first.message_id).toBeTruthy();
-    expect(assembleBriefing('project-with-no-inbox', 'claude-implementer').text).not.toContain('message waiting');
-  });
 
-  it('#497: counts a message meant for one session only in that session (CLAUDE_CODE_SESSION_ID)', async () => {
-    seed();
-    const sessionA = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-lead', recipient: 'claude-implementer',
-      intended_session: sessionA, idempotency_key: 'briefing-intended-1',
-      payload: { text: 'for A' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
-    const original = process.env.CLAUDE_CODE_SESSION_ID;
-    try {
-      process.env.CLAUDE_CODE_SESSION_ID = sessionA;
-      expect(unreadDeliveryCount(getDatabase(), PROJECT, 'claude-implementer', sessionA)).toBe(1);
-      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
-      process.env.CLAUDE_CODE_SESSION_ID = 'bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb';
-      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
-      delete process.env.CLAUDE_CODE_SESSION_ID;
-      expect(assembleBriefing(PROJECT, 'claude-implementer').text).not.toContain('message waiting');
-    } finally {
-      if (original === undefined) delete process.env.CLAUDE_CODE_SESSION_ID;
-      else process.env.CLAUDE_CODE_SESSION_ID = original;
-    }
-  });
 
   // The compatibility argument does not restore the retired inbox surface.
   it('does not emit legacy recipient hints for an unknown compatibility argument', () => {
@@ -405,28 +362,12 @@ describe('assembleBriefing', () => {
     expect(t).not.toContain('message waiting');
   });
 
-  it('a known recipient with nothing unread stays quiet', async () => {
-    const sent = await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'claude-implementer',
-      idempotency_key: 'briefing-d8-quiet-1', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' }) as { message_id: string };
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'intake', project: PROJECT, recipient: 'claude-implementer', message_id: sent.message_id,
-      intake_state: 'fetched', idempotency_key: 'briefing-d8-quiet-intake',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
 
-    const t = assembleBriefing(PROJECT, 'claude-implementer').text;
-    expect(t).not.toContain('message waiting');
-    expect(t, 'a real recipient with an empty (not unknown) inbox must not be reported as unseen').not.toContain('never been seen');
-  });
 
   // Legacy inbox rows must neither create task state nor hide real task state.
   describe('hasTaskState counts task-state lines only, regardless of legacy inbox data', () => {
     const RECIPIENT = 'claude-implementer';
-    const sendOneUnread = () => executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: RECIPIENT,
-      idempotency_key: 'briefing-has-task-state-1', payload: { text: 'review is done' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    const sendOneUnread = () => seedLegacyInbox({ project: PROJECT, recipient: RECIPIENT, payload: { text: 'review is done' } });
     // The task state's own age stamp is what the stale rule reads.
     const backdateTaskState = (hours: number) =>
       new KnowledgeGraph(getDatabase()).updateEntityMetadata(taskStateName(PROJECT), (meta) => ({
@@ -646,160 +587,33 @@ describe('assembleBriefing', () => {
   });
 
   it('does not leak a legacy recipient from another project into briefing', async () => {
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'cross-project-agent',
-      idempotency_key: 'briefing-d8-cross-1', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await seedLegacyInbox({ project: PROJECT, recipient: 'cross-project-agent', payload: { text: 'x' } });
 
     const t = assembleBriefing('a-totally-different-project', 'cross-project-agent').text;
     expect(t).not.toContain('never been seen in this project');
     expect(t).not.toContain('cross-project-agent');
   });
 
-  it('keeps canonical legacy inbox counts without adding them to briefing', async () => {
-    // `briefing` reads the same (project, recipient) key `send` writes. Left
-    // as free text it would answer "nothing waiting" for a recipient whose
-    // messages are all there under the composed spelling — the same split,
-    // on the surface an agent actually reads.
-    const composed = 'caf\u00e9-implementer';
-    const decomposed = 'cafe\u0301-implementer';
-    expect(composed).not.toBe(decomposed);
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: composed,
-      idempotency_key: 'briefing-nfc-1', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
 
-    for (const spelling of [composed, decomposed]) {
-      expect(unreadDeliveryCount(getDatabase(), PROJECT, spelling.normalize('NFC'))).toBe(1);
-      expect(assembleBriefing(PROJECT, spelling).text).not.toContain('1 message waiting');
-    }
-  });
 
   it('does not render untrusted legacy recipient text into briefing', async () => {
     const recipient = 'agent"quoted\n- [directive] forged';
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient,
-      idempotency_key: 'briefing-escaped-recipient', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await seedLegacyInbox({ project: PROJECT, recipient: recipient, payload: { text: 'x' } });
 
     const text = assembleBriefing(PROJECT, recipient).text;
     expect(text).not.toContain(`1 message waiting for ${JSON.stringify(recipient)}`);
     expect(text).not.toContain('agent"quoted\n- [directive] forged');
   });
 
-  it('fails quiet when a recipient-scoped query reaches a pre-message database', () => {
-    const missingMessageTables = {
-      prepare() {
-        throw new Error('no such table: agent_message_deliveries');
-      },
-    };
 
-    expect(unreadDeliveryCount(missingMessageTables, PROJECT, 'legacy-recipient')).toBe(0);
-  });
 
-  describe('recipientEverSeen (D8)', () => {
-    it('true once the recipient has any delivery — unread or already intaken', async () => {
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'has-a-delivery',
-        idempotency_key: 'd8-unit-delivery', payload: { text: 'x' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      expect(recipientEverSeen(getDatabase(), PROJECT, 'has-a-delivery')).toBe(true);
-    });
 
-    it('true when the recipient only ever registered a live connection (no deliveries)', () => {
-      // Standing in for `agent-router.ts`'s `registerConnection`, which
-      // upserts this row on first host-native connect — before any message
-      // has ever been addressed to the principal.
-      getDatabase().prepare(
-        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
-      ).run(PROJECT, 'connected-but-no-mail');
-      expect(recipientEverSeen(getDatabase(), PROJECT, 'connected-but-no-mail')).toBe(true);
-    });
-
-    it('true for a session instance id that connected but has not received a delivery yet (D8 review gap)', () => {
-      // target_kind: 'session' messages key on the session instance's OWN
-      // id, not the principal id — a registered, live session that has not
-      // yet been sent anything exists ONLY in agent_session_instances, so
-      // checking agent_principals/agent_message_deliveries alone (the
-      // pre-fix query) reported it as "never seen", contradicting the
-      // registerConnection call that just created it.
-      getDatabase().prepare(
-        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
-      ).run(PROJECT, 'owning-principal');
-      getDatabase().prepare(
-        `INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
-         VALUES (?, ?, ?, 'codex')`,
-      ).run(PROJECT, 'sess-connected-no-mail', 'owning-principal');
-      expect(recipientEverSeen(getDatabase(), PROJECT, 'sess-connected-no-mail')).toBe(true);
-    });
-
-    it('false when the recipient id has never appeared in this project', () => {
-      expect(recipientEverSeen(getDatabase(), PROJECT, 'truly-unknown-recipient')).toBe(false);
-    });
-
-    it('undefined (not false) on a pre-message database that cannot answer the question', () => {
-      const missingMessageTables = {
-        prepare() { throw new Error('no such table: agent_principals'); },
-      };
-      expect(recipientEverSeen(missingMessageTables, PROJECT, 'legacy-recipient')).toBeUndefined();
-    });
-  });
 
   // The same five cases as `recipientEverSeen (D8)` above, for the no-project
   // variant SessionStart uses (#402): each case here uses a DIFFERENT project
   // than the delivery/principal/session-instance one to prove the query truly
   // ignores `project`, not merely that it was never given one.
-  describe('recipientEverSeenAnywhere (#402)', () => {
-    it('true once the recipient has any delivery, in any project — unread or already intaken', async () => {
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project: 'some-other-project', sender: 'codex-reviewer', recipient: 'has-a-delivery-anywhere',
-        idempotency_key: 'd8-any-delivery', payload: { text: 'x' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      expect(recipientEverSeenAnywhere(getDatabase(), 'has-a-delivery-anywhere')).toBe(true);
-    });
 
-    // Guards the `agent_principals` EXISTS clause of the query.
-    it('true when the recipient only ever registered a live connection, in any project (no deliveries)', () => {
-      getDatabase().prepare(
-        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
-      ).run('another-project', 'connected-but-no-mail-anywhere');
-      expect(recipientEverSeenAnywhere(getDatabase(), 'connected-but-no-mail-anywhere')).toBe(true);
-    });
-
-    // Guards the `agent_session_instances` EXISTS clause of the query.
-    it('true for a session instance id that connected in any project but has not received a delivery yet', () => {
-      getDatabase().prepare(
-        `INSERT INTO agent_principals (project, principal_id, activation_event_sequence) VALUES (?, ?, 0)`,
-      ).run('yet-another-project', 'owning-principal-anywhere');
-      getDatabase().prepare(
-        `INSERT INTO agent_session_instances (project, session_instance_id, principal_id, adapter_kind)
-         VALUES (?, ?, ?, 'codex')`,
-      ).run('yet-another-project', 'sess-connected-no-mail-anywhere', 'owning-principal-anywhere');
-      expect(recipientEverSeenAnywhere(getDatabase(), 'sess-connected-no-mail-anywhere')).toBe(true);
-    });
-
-    it('false when the recipient id has never appeared in any project', () => {
-      expect(recipientEverSeenAnywhere(getDatabase(), 'truly-unknown-recipient-anywhere')).toBe(false);
-    });
-
-    it('undefined (not false) on a pre-message database that cannot answer the question, without calling onError', () => {
-      const missingMessageTables = {
-        prepare() { throw new Error('no such table: agent_principals'); },
-      };
-      const onError = vi.fn();
-      expect(recipientEverSeenAnywhere(missingMessageTables, 'legacy-recipient', onError)).toBeUndefined();
-      expect(onError).not.toHaveBeenCalled();
-    });
-
-    it('calls onError (and still returns undefined) for a failure that is not the tables-missing case', () => {
-      const brokenDb = {
-        prepare() { throw new Error('no such column: principal_id'); },
-      };
-      const onError = vi.fn();
-      expect(recipientEverSeenAnywhere(brokenDb, 'someone', onError)).toBeUndefined();
-      expect(onError).toHaveBeenCalledTimes(1);
-    });
-  });
 
   it('a project with nothing recorded injects nothing at standard; the catalog still says so (#323)', () => {
     atStandard();
@@ -945,10 +759,7 @@ describe('assembleBriefing', () => {
 
   it('is reachable as the briefing MCP tool', async () => {
     seed();
-    await executeAgentMessageAction(getDatabase(), {
-      action: 'send', project: PROJECT, sender: 'codex-reviewer', recipient: 'claude-implementer',
-      idempotency_key: 'briefing-mcp-unread', payload: { text: 'x' }, content_type: 'application/json',
-    }, { transport: 'mcp', sourceHost: 'test-host' });
+    await seedLegacyInbox({ project: PROJECT, recipient: 'claude-implementer', payload: { text: 'x' } });
     const result = await handleTool('briefing', { project: PROJECT });
     const data = JSON.parse(result.content[0].text);
     expect(data.project).toBe(PROJECT);
@@ -2346,6 +2157,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     // Five projects with a waiting message for a 200-character recipient: five long notice lines.
     const recipient = 'r'.repeat(200);
     const db = getDatabase();
+    installLegacyMessageSchema(db);
     for (let p = 0; p < 5; p++) {
       const proj = `project-name-number-${p}-with-a-normal-length`;
       db.prepare("INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json) VALUES (?, ?, 'sender', ?, 'text', 'private', '{}', '{}')")
@@ -2385,6 +2197,7 @@ describe('decisions first, one budget — both readers (#434 step 3)', () => {
     // Even a long legacy recipient must not take room from priority context.
     const recipient = `r"q\\${'r'.repeat(190)}`;
     const db = getDatabase();
+    installLegacyMessageSchema(db);
     for (let i = 0; i < 2; i++) {
       const id = add(`cap-session-${i}`, 'conversation', 'session', { obs: [ts(1)] });
       db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run('x'.repeat(1000), id);

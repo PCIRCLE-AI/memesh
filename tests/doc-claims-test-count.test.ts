@@ -123,7 +123,7 @@ describe('the READMEs-state-no-test-count rule', () => {
       const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
       const accepted = run();
       expect([0, 1]).toContain(accepted.status);
-      expect(accepted.stdout, `${accepted.stdout}\n${accepted.stderr}`).toContain('12 hook commands exist and scripts/hooks agrees with the manifest');
+      expect(accepted.stdout, `${accepted.stdout}\n${accepted.stderr}`).toContain('11 hook commands exist and scripts/hooks agrees with the manifest');
       if (accepted.status === 1) expect(accepted.stderr).toContain('documents name nested subcommands that do not exist');
       expect(accepted.stderr).not.toContain('doc-claim-fixture.js');
       fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-orphan.js'), '');

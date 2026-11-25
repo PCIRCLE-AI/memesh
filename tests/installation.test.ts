@@ -212,17 +212,17 @@ describe('Installation Verification', () => {
       expect(skill).toContain('Queued is not delivery, read, reply, completion, wakeup, or authorization');
       expect(skill).toContain('Output must succeed before delivery is recorded');
       expect(skill).toContain('Private hook/MCP checks do not establish native-host/model reading or wakeup');
-      expect(skill).toContain('older HTTP agent-message protocol remains compatibility-only');
+      expect(skill).toContain('retired HTTP message endpoint returns `410 Gone`');
     });
 
-    it('separates conversation actions from optional owner-only legacy host setup', () => {
+    it('documents conversation actions without requiring retired host setup', () => {
       const install = fs.readFileSync('llms-install.md', 'utf8');
       const guide = fs.readFileSync('docs/platforms/agent-messaging.md', 'utf8');
-      expect(install).toContain('Optional legacy local-host setup');
+      expect(install).toContain('Conversation messages');
       expect(install).toContain('conversation MCP/CLI interface needs no router setup command');
-      expect(install).toContain('Keep its private configuration owner-only and require explicit Channel admission');
-      expect(install).toContain('`memesh-router` is its owner diagnostic/legacy entrypoint, not a prerequisite');
-      expect(install).toContain('Host-native/Codex acceptance remains separate runtime verification');
+      expect(install).toContain('Claude Channel use requires explicit host admission');
+      expect(install).not.toContain('memesh-router');
+      expect(install).toContain('retired HTTP message endpoint returns `410 Gone`');
       for (const document of [install, guide]) {
         for (const action of ['discover', 'send', 'read', 'status']) {
           expect(document).toContain(`\`${action}\``);
@@ -234,8 +234,8 @@ describe('Installation Verification', () => {
       expect(guide).toContain('Identity is derived from the host session');
       expect(guide).toContain('Do not pass `project`, `sender`');
       expect(guide).toContain('`send` reads its body from stdin, never an argv body flag');
-      expect(guide).toContain('Do not mix its `poll`, `fetch`, `intake`, `ack`, `disposition`, or `receipts` fields into a conversation call');
-      expect(guide).toContain('Private subprocess/MCP checks do not prove native-host execution, wakeup or model reading');
+      expect(guide).toContain('`POST /v1/message` is retired and returns `410 Gone`');
+      expect(guide).toContain('These delivery records do not prove that a model read or acted on the body');
     });
   });
 
@@ -250,11 +250,7 @@ describe('Installation Verification', () => {
         'memesh',
         'memesh-http',
         'memesh-mcp',
-        'memesh-router',
         'memesh-host-claude',
-        'memesh-host-codex',
-        'memesh-host-codex-session',
-        'memesh-host-acp',
       ].sort());
     });
   });

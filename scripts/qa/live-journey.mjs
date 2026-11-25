@@ -343,9 +343,7 @@ export const ALLOWED_CODEX_EVENT_TYPES = new Set([
 /** dist artefacts this check runs. Missing any of them is a refusal, not a skip. */
 export const REQUIRED_DIST = [
   'dist/core/paths.js',
-  'dist/host-runtime/router.js',
   'dist/transports/cli/cli.js',
-  'dist/host-runtime/codex-session.js',
   'dist/host-runtime/claude.js',
   'dist/mcp/server.js',
   'scripts/hooks/session-start.js',
@@ -1818,8 +1816,6 @@ export const CODEX_PLUGIN_CANDIDATE_FILES = Object.freeze([
   '.codex-plugin/mcp.json',
   'hooks/hooks.json',
   'dist/mcp/server.js',
-  'dist/host-runtime/codex-session.js',
-  'dist/host-runtime/router.js',
   'dist/transports/cli/cli.js',
 ]);
 

@@ -33,7 +33,7 @@ it.skipIf(!supported || process.platform === 'win32')('native NET/2 accepts late
   const latest = signRoster(owner, roster);
   const runtime = installRuntimeOnce(tree);
   linkRuntime(beta, runtime);
-  const db = openNetworkStore(networkMetadataPath(beta.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(beta.dataDir));
   insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: b.machineId,
     machine_name: 'beta', person: 'b', relay_url: 'off', roster_json: old.roster_json, roster_signature: old.signature }, Date.now());
   const iroh = loadIrohForTest(runtime);

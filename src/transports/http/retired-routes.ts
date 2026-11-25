@@ -15,6 +15,8 @@
  * script and a silent 404.
  */
 export const RETIRED_ROUTES: Readonly<Record<string, string>> = {
+  '/v1/message':
+    'POST /v1/message is retired. Use the message tool or CLI; HTTP does not identify a host conversation.',
   '/v1/consolidate':
     'POST /v1/consolidate is retired. It rewrote memories with an LLM summary and deleted the originals, with no review step. Use the MCP work_package tool to stage an agent result, then review and accept or reject the proposal.',
   '/v1/verify':

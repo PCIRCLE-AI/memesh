@@ -250,14 +250,6 @@ describe.skipIf(!canDenyReads)('#520 RO3: every hook database open passes the sa
     expect(sidecarsWritable()).toEqual([false, false]);
   });
 
-  it('unreadMessageLines (the inbox read) refuses too, and reports it', () => {
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let failure = '';
-    shared.unreadMessageLines(env, (err: unknown) => { failure = String((err as Error)?.message ?? err); });
-    expect(failure).toContain('fewer owner permissions');
-    expect(sidecarsWritable()).toEqual([false, false]);
-  });
-
   it('the memory-invariants audit refuses too', () => {
     const r = spawnSync(process.execPath, [path.resolve('scripts/audit/memory-invariants.mjs'), '--db', dbPath], {
       env, encoding: 'utf8', timeout: 20000,
@@ -329,9 +321,12 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // once each: a second, identical or different, constructor in db.ts fails
     // too. db.ts's open runs after guardDatabaseFiles in openDatabase;
     // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
-    // in-memory probe; agent-message-expiry.ts's is the cleanup pass's own second connection to the file the process
-    // already opened through openDatabase (its guard ran at that open); sqlite.ts's is a comment.
+    // in-memory probe; sqlite.ts's is a comment.
     // Backup and conversation stores guard their file families before opening.
+    // Default legacy retirement additionally verifies the physical parent is
+    // owner-private and writable/searchable without chmod, then opens writable
+    // for its transaction lock. Destination/inode isolation remains checked;
+    // retirement tests cover rollback, competing writers and unsafe parents.
     // Archive reads first pass private-path, alias and sidecar checks in legacyConversationArchiveFiles.
     // Repair/salvage inputs use immutable reads without pending pages, otherwise
     // readonly sidecar refusal; repair's original write lock uses strict refusal.
@@ -345,7 +340,7 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // permissions, directory links, identity verification and repeated migration.
     const known = [
       "core/auto-update.ts: const db = new MemeshDatabase(dbPath, { readOnly: true });",
-      "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });",
+      "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile);",
       "core/conversation-messages.ts: const archive = new MemeshDatabase(archiveFile, { readOnly: true });",
       "core/conversation-messages.ts: this.db = new MemeshDatabase(file);",
       "core/database-repair.ts: return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });",
@@ -354,7 +349,6 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
       "core/node-salvage.ts: const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });",
       "core/node-salvage.ts: dst = new MemeshDatabase(outputPath);",
       "core/public-network-context.ts: const db = new MemeshDatabase(pending || consistentSnapshot ? file : immutableAddress(file), { readOnly: true });",
-      "core/agent-message-expiry.ts: const pass = new MemeshDatabase(file);",
       "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
       "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",

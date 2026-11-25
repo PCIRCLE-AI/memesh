@@ -1,18 +1,14 @@
 {
   "name": "@pcircle/memesh",
   "version": "4.13.0",
-  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
+  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. Local SQLite storage; no cloud required.",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
     "memesh": "dist/transports/cli/cli.js",
     "memesh-mcp": "dist/mcp/server.js",
     "memesh-http": "dist/transports/http/server.js",
-    "memesh-router": "dist/host-runtime/router.js",
-    "memesh-host-claude": "dist/host-runtime/claude.js",
-    "memesh-host-codex": "dist/host-runtime/codex.js",
-    "memesh-host-codex-session": "dist/host-runtime/codex-session.js",
-    "memesh-host-acp": "dist/host-runtime/acp.js"
+    "memesh-host-claude": "dist/host-runtime/claude.js"
   },
   "files": [
     "dist/",
@@ -33,7 +29,7 @@
     "scripts/check-plugin-hook-artifact.mjs",
     "scripts/lib/npm-bin.mjs",
     "AGENTS.md",
-    "npm-shrinkwrap.json"
+    "memesh-lock.json"
   ],
   "scripts": {
     "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/build-mcp-bundle.mjs && node scripts/build-cli-bundle.mjs && node scripts/generate-hook-core.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && node scripts/smoke-test.mjs",

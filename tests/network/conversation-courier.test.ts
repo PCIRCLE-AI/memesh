@@ -74,7 +74,7 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
     for (const ctx of contexts) await run(ctx, tree.cli, ['network', 'up']);
     await wait(async () => contexts.every(c => Boolean(readStatus(c.dataDir)?.direct_addresses.length)), 'addresses');
     contexts.forEach((ctx, i) => {
-      const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+      const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
       rememberPeer(db, identities[1-i].machineId, null, readStatus(contexts[1-i].dataDir)!.direct_addresses, Date.now()); db.close();
     });
     await wait(async () => (await cli(a, 'session-a', ['discover'])).conversations.some((c: {address: string}) => c.address === 'session-b@beta'), 'presence-a');

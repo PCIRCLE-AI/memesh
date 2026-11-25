@@ -162,9 +162,10 @@ export function importLegacyConversationMessages(source, target, options) {
             const id = text(message.message_id, 'message_id');
             const facts = {};
             for (const table of ['agent_message_deliveries', 'agent_message_events', 'agent_message_receipts',
-                'agent_message_idempotency', 'agent_retention_facts', 'agent_network_outbox', 'agent_message_expiries']) {
+                'agent_message_idempotency', 'agent_retention_facts', 'agent_network_outbox', 'agent_message_expiries', 'archive_log']) {
                 facts[table] = rows(table, 'message_id', [id]);
             }
+            facts.agent_message_expiry_runs = rows('agent_message_expiry_runs', 'run_id', facts.agent_message_expiries.map(row => row.run_id));
             const deliveries = facts.agent_message_deliveries.map(row => row.delivery_id);
             for (const table of ['agent_dispatch_attempts', 'agent_host_accepts', 'agent_ack_facts', 'agent_workflow_facts']) {
                 facts[table] = rows(table, 'delivery_id', deliveries);
@@ -256,5 +257,52 @@ export function importLegacyConversationMessages(source, target, options) {
                 }
         }
         return { imported, alreadyImported };
+    }).immediate();
+}
+export const LEGACY_CONVERSATION_TABLES = [
+    'agent_messages', 'agent_message_deliveries', 'agent_message_events', 'agent_message_idempotency',
+    'agent_message_cursors', 'agent_message_receipts', 'agent_principals', 'agent_session_instances',
+    'agent_session_connections', 'agent_presence_facts', 'agent_dispatch_attempts', 'agent_host_accepts',
+    'agent_ack_facts', 'agent_workflow_facts', 'agent_retention_facts', 'agent_message_expiry_runs',
+    'agent_message_expiry_lease', 'agent_message_expiries', 'agent_network_outbox', 'agent_network_presence',
+];
+export function retireLegacyConversationTables(source, target, options) {
+    if (source === target)
+        throw new Error('Legacy source and target must be different databases');
+    const file = databaseFile(target);
+    if (file)
+        assertLegacyDestinationIsDifferent(source, file);
+    const tableNames = () => source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map(row => row.name);
+    if (!tableNames().some(name => LEGACY_CONVERSATION_TABLES.includes(name))) {
+        return { imported: 0, alreadyImported: 0, retired: 0 };
+    }
+    return source.transaction(() => {
+        const tables = tableNames();
+        const remaining = new Set(LEGACY_CONVERSATION_TABLES.filter(name => tables.includes(name)));
+        const parents = new Map(tables.map(name => [name,
+            source.prepare('SELECT "table" AS parent FROM pragma_foreign_key_list(?)').all(name).map(row => row.parent),
+        ]));
+        for (const name of tables) {
+            if (!remaining.has(name) && parents.get(name).some(parent => remaining.has(parent))) {
+                throw new Error(`Cannot retire legacy messaging: retained table ${name} still references it`);
+            }
+        }
+        if (!remaining.has('agent_messages') && [...remaining].some(name => source.prepare(`SELECT 1 FROM ${name} LIMIT 1`).get())) {
+            throw new Error('Cannot retire legacy messaging without its source message table');
+        }
+        const order = [];
+        while (remaining.size) {
+            const next = [...remaining].find(name => ![...remaining].some(child => parents.get(child).includes(name)));
+            if (!next)
+                throw new Error('Cannot retire cyclic legacy message tables');
+            order.push(next);
+            remaining.delete(next);
+        }
+        const copied = importLegacyConversationMessages(source, target, {
+            nowMs: options.nowMs, localMachine: options.localMachine,
+        });
+        for (const name of order)
+            source.exec(`DROP TABLE ${name}`);
+        return { ...copied, retired: order.length };
     }).immediate();
 }

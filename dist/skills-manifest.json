@@ -18,13 +18,13 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "50c6045e26951ce1eab657b9e08632d3fff1df3941a451dd540cc25a6a61ae02",
-      "bytes": 4317
+      "sha256": "ebc918dabdd28a817ff5cb44aa47a1374425b8ae2cf3b398e15eb0f6d68b88b2",
+      "bytes": 3767
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "2061fd99c5171e08c18aff37f5f94f516daaa10eeed2b549a762569ee64c07de",
-      "bytes": 3385
+      "sha256": "ef42abcf28818db8f1dc66c2f7dc5a85f8fea021027d525fdeeb0e984ea242e5",
+      "bytes": 2879
     },
     {
       "path": "hooks/native-memory.js",
@@ -47,24 +47,14 @@
       "bytes": 14762
     },
     {
-      "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "4f193897725965cbfe748c238761b78a33d7aca715d0e5f5184e0aa388dadea2",
-      "bytes": 12010
-    },
-    {
-      "path": "scripts/hooks/_generated/agent-message-ttl.js",
-      "sha256": "e10d3ef0e7d1d0a1e72a99c76b896311ec75e8b36357f9e291d072cc71822d59",
-      "bytes": 758
-    },
-    {
       "path": "scripts/hooks/_generated/agent-network-schema.js",
-      "sha256": "0c6ce9064b2363bd9bb8df9d21a9b97e4611abafe506c6b4a2f1bf6759d89003",
-      "bytes": 2578
+      "sha256": "b01735104fd55bc662d558b94eb4fc250974524b27fabf040a706074dfe7be09",
+      "bytes": 1317
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "a44d557620bcc4bbf5144cca4037391270351fcab577af597ecaeab3e57a1a9a",
-      "bytes": 3514
+      "sha256": "bd6795af70c29912aeb628b929410c4a1abe6b9bea032e2be159f63630518358",
+      "bytes": 3376
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
@@ -103,18 +93,18 @@
     },
     {
       "path": "scripts/hooks/_generated/codex-session-principal.js",
-      "sha256": "ff9fa8cad5d64655346409d53c4d49047eb0dab3fe55d2d84423b5fb67ea419c",
-      "bytes": 2203
+      "sha256": "f9ccb8233d4a5f36549b0889f8d4a871fe0a8318ecca29de5a62628255ac8c48",
+      "bytes": 754
     },
     {
       "path": "scripts/hooks/_generated/conversation-message-migration.js",
-      "sha256": "3b4ddeb96b5895a9b7dddf992f883b31f50d0d4735627174feea1474e2350ff5",
-      "bytes": 16010
+      "sha256": "4063660fca7343e976ace0ef08f0e2c35b97b75d9f4ebf170f1ad7c2a62a3b42",
+      "bytes": 18855
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "be5136391e1aaf7b3619d9eeb9e785b1c7607ebee74f6ecee38df3750d9bbcc8",
-      "bytes": 36588
+      "sha256": "5ee2bb9aa14d1fa6f7bbccde8e7ab3cd33c4de00e17e25a09a2e861963327a8a",
+      "bytes": 37235
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -198,8 +188,8 @@
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "baaf68e9ce1b9f57487f7f74db68c63c38cd7b66aad871fc1cd2a509d976d294",
-      "bytes": 31476
+      "sha256": "448eb5aa06dfaa0499d53d8760038691a244e3a25c4160adee4e65303022a171",
+      "bytes": 15419
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -258,8 +248,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "55996acc80cb7f051d0c3b182674c6c4f4930b169f353fdc2a1347b3252bd0c3",
-      "bytes": 131436
+      "sha256": "bb64611b5a71a61b578825b9ba8eb2ec5308a5ab3ecdea657bab10ff5d62c668",
+      "bytes": 110678
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -343,8 +333,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "bad65f801e93bb4071d1374ab0253e9599bdbe0e69474e1ca82593f28e77c043",
-      "bytes": 24650
+      "sha256": "54e6795b99fda2d6ac5416c0757da8441d4c9062d3dbb656669a9c57f0ab2769",
+      "bytes": 24138
     }
   ]
 }

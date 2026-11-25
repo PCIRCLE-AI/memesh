@@ -10,6 +10,7 @@ import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { lessonSlug } from '../../src/core/lesson-slug.js';
 import { AGENT_MESSAGE_SCOPE_COLUMNS, isFilesystemPathScopeId } from '../../src/core/agent-scope-id.js';
 import { remember, importMemories } from '../../src/core/operations.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 
 /**
  * scripts/audit/memory-invariants.mjs is the check that would have caught
@@ -49,6 +50,7 @@ function insertEntity(db: DatabaseSync, name: string, type: string, extra: Recor
 
 /** One message + its delivery + its event, the three rows a real send writes. */
 function seedDelivery(db: DatabaseSync, messageId: string, project: string, recipient: string): void {
+  installLegacyMessageSchema(db);
   db.prepare(
     `INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json)
      VALUES (?, ?, 'sender-1', ?, 'text/plain', 'private', '"hi"', '{}')`,

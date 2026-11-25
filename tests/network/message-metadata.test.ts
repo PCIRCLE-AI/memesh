@@ -83,7 +83,7 @@ it('keeps local read/status after signed removal while remote authorization clos
   const store = new ConversationMessages();
   store.register({ id: 'local', host: 'codex', machine: store.machine, pid: process.pid, wake: {} });
   const sent = store.send('local', { recipient: 'local', kind: 'task', body: 'local history' }); store.close();
-  const metadata = openNetworkStore(networkMetadataPath(f.root), { metadataOnly: true });
+  const metadata = openNetworkStore(networkMetadataPath(f.root));
   saveRoster(metadata, signRoster(f.owner, { ...f.roster, version: 3, members: [f.roster.members[0]] })); metadata.close();
   const removed = new ConversationMessages();
   try {
@@ -97,7 +97,7 @@ it('keeps local read/status after signed removal while remote authorization clos
 it('does not trust tampered signatures or repair unsafe metadata permissions', async () => {
   const f = fixture(); await migrateNetworkMetadata(f.ctx);
   const file = networkMetadataPath(f.root);
-  const db = openNetworkStore(file, { metadataOnly: true });
+  const db = openNetworkStore(file);
   db.prepare("UPDATE agent_network_config SET roster_signature='invalid'").run(); db.close();
   expect(() => readPublicNetworkContext(f.root)).toThrow();
   fs.chmodSync(file, 0o644);

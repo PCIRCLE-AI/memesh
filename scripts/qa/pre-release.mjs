@@ -192,6 +192,7 @@ function main() {
       // upgrade evidence are reused; the newly packed candidate is still smoked.
       let failed = false;
       for (const id of ['verify:release', 'test:packaged']) {
+        console.log(`--- ${id}`);
         const child = spawnSync('npm', ['run', id], { cwd: repoRoot, stdio: 'inherit', shell: process.platform === 'win32' });
         if (child.status !== 0) {
           results.push({ id, status: child.status, signal: child.signal });

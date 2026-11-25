@@ -165,4 +165,4 @@ docs/notes/
 /.sdlc-run/
 
 # Written only while the package is being packed (scripts/shrinkwrap.mjs); never committed.
-/npm-shrinkwrap.json
+/memesh-lock.json

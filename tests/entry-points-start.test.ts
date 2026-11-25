@@ -225,6 +225,19 @@ describe('unresolved ${...} placeholders fail the gate', () => {
   });
 });
 
+it('rejects a Claude entry that fails for a retired config instead of missing host identity', () => {
+  const root = fixtureRoot();
+  write(root, 'package.json', JSON.stringify({ bin: { 'memesh-host-claude': 'dist/host-runtime/claude.js' } }));
+  write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
+    command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-edit-recall.js',
+  }] }] } }));
+  write(root, 'scripts/hooks/pre-edit-recall.js', 'process.exit(0);');
+  write(root, 'dist/host-runtime/claude.js', "console.error('memesh-host-claude: A host config file is required'); process.exit(1);");
+  const result = run(root);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain('actual host session');
+});
+
 describe('Windows skip list does not grow silently', () => {
   // Requirement: "If any binary genuinely cannot be started in CI, do not
   // skip it silently... add a test that the skip list is not silently
@@ -235,14 +248,8 @@ describe('Windows skip list does not grow silently', () => {
     expect(computeSkipList('linux')).toEqual([]);
   });
 
-  it('is pinned to exactly memesh-router on win32', () => {
-    const relativePaths = computeSkipList('win32').map((entry) => entry.relativePath);
-    expect(relativePaths).toEqual(['dist/host-runtime/router.js']);
+  it('has no retired-router exception on Windows', () => {
+    expect(computeSkipList('win32')).toEqual([]);
   });
 
-  it('every skipped entry names a non-empty reason', () => {
-    for (const entry of computeSkipList('win32')) {
-      expect(entry.reason.length).toBeGreaterThan(0);
-    }
-  });
 });

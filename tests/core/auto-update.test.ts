@@ -514,7 +514,7 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
         fs.mkdirSync(installedDir, { recursive: true });
         fs.writeFileSync(path.join(installedDir, 'package.json'), JSON.stringify({ version: '4.13.0' }));
         fs.writeFileSync(path.join(installedDir, 'NEW'), 'the new version, without its dependencies');
-        if (options.shrinkwrap !== null) fs.writeFileSync(path.join(installedDir, 'npm-shrinkwrap.json'), options.shrinkwrap ?? shrinkwrapText());
+        if (options.shrinkwrap !== null) fs.writeFileSync(path.join(installedDir, 'memesh-lock.json'), options.shrinkwrap ?? shrinkwrapText());
         return { status: 0, stdout: '', stderr: '' };
       }
       if (cmd === 'npm' && args[0] === 'ci') {
@@ -523,7 +523,7 @@ function fakeWorld(options: { rehearsalResult?: { status: number | null; stdout:
         return options.rehearsalResult ?? { status: 0, stdout: '', stderr: '' };
       }
       if (cmd === 'tar' && args.includes('-xzOf')) {
-        return options.shrinkwrap === null ? { status: 2, stdout: '', stderr: 'tar: package/npm-shrinkwrap.json: Not found in archive' } : { status: 0, stdout: options.shrinkwrap ?? shrinkwrapText(), stderr: '' };
+        return options.shrinkwrap === null ? { status: 2, stdout: '', stderr: 'tar: package/memesh-lock.json: Not found in archive' } : { status: 0, stdout: options.shrinkwrap ?? shrinkwrapText(), stderr: '' };
       }
       if (cmd === 'tar' && options.realTar) {
         const r = spawnSync(cmd, args, { cwd: opts?.cwd, encoding: 'utf8', env: { ...process.env, ...(opts?.env ?? {}) } });
@@ -2873,7 +2873,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
     const verdict = judgeShrinkwrap(text, '4.13.0');
     expect(verdict.ok).toBe(false);
     expect((verdict as { detail: string }).detail.length).toBeGreaterThan(10);
-    expect((verdict as { detail: string }).detail).toMatch(/npm-shrinkwrap\.json|zod|ws|x /);
+    expect((verdict as { detail: string }).detail).toMatch(/memesh-lock\.json|zod|ws|x /);
   });
 
   it('a release without a shrinkwrap, or with an incomplete one, is not installed', async () => {
@@ -2891,7 +2891,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
     w.deps.exec = (cmd, args, opts) => { if (cmd === 'tar' && args.includes('-xzOf')) seen.push(args); return real(cmd, args, opts); };
     await runAutoUpdate(w.deps);
     expect(seen).toHaveLength(1);
-    expect(seen[0].at(-1)).toBe('package/npm-shrinkwrap.json');
+    expect(seen[0].at(-1)).toBe('package/memesh-lock.json');
     expect(seen[0][1]).toMatch(/pcircle-memesh-4\.13\.0\.tgz$/);
   });
 
@@ -2902,7 +2902,10 @@ describe('the dependency tree is pinned by the release, and installed without ru
     const order: string[] = [];
     w.deps.exec = (cmd, args, opts) => {
       if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) order.push('install -g');
-      if (cmd === 'npm' && args[0] === 'ci') order.push(`ci(${/global-root[\\/]@pcircle[\\/]memesh$/.test(opts?.cwd ?? '') ? 'installed' : 'staging'}):${args.slice(1).join(' ')}`);
+      if (cmd === 'npm' && args[0] === 'ci') {
+        expect(fs.readFileSync(path.join(opts!.cwd!, 'package-lock.json'), 'utf8')).toBe(shrinkwrapText());
+        order.push(`ci(${/global-root[\\/]@pcircle[\\/]memesh$/.test(opts?.cwd ?? '') ? 'installed' : 'staging'}):${args.slice(1).join(' ')}`);
+      }
       return real(cmd, args, opts);
     };
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
@@ -3015,7 +3018,7 @@ describe('the dependency tree is pinned by the release, and installed without ru
     const installedDir = path.join(path.dirname(bare.deps.dbPath), 'global-root', '@pcircle', 'memesh');
     bare.deps.exec = (cmd, args, opts) => {
       const r = bareReal(cmd, args, opts);
-      if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) fs.rmSync(path.join(installedDir, 'npm-shrinkwrap.json'));
+      if (cmd === 'npm' && args[0] === 'install' && args.includes('-g')) fs.rmSync(path.join(installedDir, 'memesh-lock.json'));
       return r;
     };
     expect(await runAutoUpdate(bare.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.dependencyPinFailed });
@@ -3057,6 +3060,20 @@ describe('the Claude Code plugin read-back looks at the plugin registry, not at 
     const w = claudeWorld(extra);
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.claudeReadbackFailed });
     expect(fs.existsSync(path.join(w.a.dir, 'just-upgraded.json'))).toBe(false);
+  });
+
+  it('a staging lockfile that cannot be written stops before replacing the installed package', async () => {
+    const w = fakeWorld();
+    const real = w.deps.exec;
+    w.deps.exec = (cmd, args, opts) => {
+      const result = real(cmd, args, opts);
+      if (cmd === 'tar' && args[0] === '-xzf') {
+        fs.mkdirSync(path.join(args[args.indexOf('-C') + 1], 'package', 'package-lock.json'));
+      }
+      return result;
+    };
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.dependenciesNotFetched });
+    expect(w.calls.some((call) => call.startsWith('npm install -g'))).toBe(false);
   });
 });
 
@@ -3435,10 +3452,10 @@ describe.skipIf(process.platform === 'win32')('the global install and its way ba
   function makeTarball(base: string, version: string, label: string, inSync: boolean): string {
     const dir = path.join(base, `pkg-${label}`);
     fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@pcircle/memesh', version, main: 'index.js', files: ['index.js', 'npm-shrinkwrap.json'], devDependencies: inSync ? {} : { 'a-dev-tool': '1.0.0' } }));
+    fs.writeFileSync(path.join(dir, 'package.json'), JSON.stringify({ name: '@pcircle/memesh', version, main: 'index.js', files: ['index.js', 'memesh-lock.json'], devDependencies: inSync ? {} : { 'a-dev-tool': '1.0.0' } }));
     fs.writeFileSync(path.join(dir, 'index.js'), `console.log('${label}');\n`);
     // npm ci refuses a shrinkwrap that does not match package.json: that is the failure that comes AFTER npm install -g succeeded.
-    fs.writeFileSync(path.join(dir, 'npm-shrinkwrap.json'), JSON.stringify({ name: '@pcircle/memesh', version, lockfileVersion: 3, requires: true, packages: { '': { name: '@pcircle/memesh', version } } }));
+    fs.writeFileSync(path.join(dir, 'memesh-lock.json'), JSON.stringify({ name: '@pcircle/memesh', version, lockfileVersion: 3, requires: true, packages: { '': { name: '@pcircle/memesh', version } } }));
     const packed = spawnSync('npm', ['pack', '--pack-destination', base, '--ignore-scripts', '--silent'], { cwd: dir, encoding: 'utf8', env: { ...process.env, npm_config_cache: path.join(base, 'cache') } });
     if (packed.status !== 0) throw new Error(`npm pack failed: ${packed.stderr}`);
     return path.join(base, packed.stdout.trim().split('\n').pop() ?? '');
@@ -3467,7 +3484,8 @@ describe.skipIf(process.platform === 'win32')('the global install and its way ba
   it('control: a release whose pinned install works replaces the old version, and no copy of the old one is left', async () => {
     const t = setup(true);
     expect(t.prints()).toBe('OLD');
-    expect(await runAutoUpdate(t.w.deps)).toMatchObject({ outcome: 'installed' });
+    const result = await runAutoUpdate(t.w.deps);
+    expect(result, JSON.stringify(readAutoUpdateState(t.w.a.dir))).toMatchObject({ outcome: 'installed' });
     expect(t.prints()).toBe('NEW');
     expect(fs.readdirSync(t.parent).filter((n) => n.startsWith('memesh.rollback'))).toEqual([]);
   }, 180_000);

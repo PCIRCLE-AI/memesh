@@ -1,12 +1,8 @@
 #!/usr/bin/env node
-// Writes (prepack) and removes (postpack) the `npm-shrinkwrap.json` that ships inside the published package.
-//
-// Why: an unattended update installs the package on the owner's machine, and npm resolves the package's dependencies
-// at that moment from whatever the registry answers that day. A published npm-shrinkwrap.json makes the release itself
-// decide every version, with a hash for each. The file is package-lock.json (the same tree the tests ran against), kept
-// whole: npm checks it against package.json, dev dependencies included, and ignores one that does not match. It exists
-// only while the package is being packed and is never committed, because npm would then prefer it over
-// package-lock.json for every checkout.
+// Writes (prepack) and removes (postpack) the release's `memesh-lock.json`.
+// npm 12 excludes npm-shrinkwrap.json and package-lock.json from tarballs. The updater
+// verifies this copy of the tested lockfile, then writes it as package-lock.json for
+// npm ci. Keep dev entries too: npm ci checks the whole manifest even with --omit=dev.
 //
 //   node scripts/shrinkwrap.mjs write    (npm "prepack")
 //   node scripts/shrinkwrap.mjs remove   (npm "postpack")
@@ -14,7 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-export const SHRINKWRAP_FILE = 'npm-shrinkwrap.json';
+export const SHRINKWRAP_FILE = 'memesh-lock.json';
 
 /** A full sha512 digest in base64 (64 bytes = 88 characters ending in ==). sha1 and the shorter hashes are not accepted. */
 export const SHA512_INTEGRITY = /^sha512-[A-Za-z0-9+/]{86}==$/;

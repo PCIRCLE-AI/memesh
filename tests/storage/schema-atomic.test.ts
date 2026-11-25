@@ -24,10 +24,10 @@ const tableNames = (db: MemeshDatabase) =>
 describe('createSchema', () => {
   it('a failure part-way leaves no tables behind, not the first few', () => {
     const db = new MemeshDatabase(path.join(tmp(), 'half.db'));
-    // The last statement of the schema indexes a column this table lacks: it fails after every memory table was created.
-    db.exec('CREATE TABLE agent_network_outbox (id INTEGER)');
-    expect(() => createSchema(db)).toThrow(/next_attempt_at_ms|no such column/);
-    expect(tableNames(db)).toEqual(['agent_network_outbox']);
+    // The last CREATE TABLE conflicts with an existing index name, after all memory tables were created.
+    db.exec('CREATE TABLE schema_conflict (id INTEGER); CREATE INDEX agent_network_peers ON schema_conflict(id)');
+    expect(() => createSchema(db)).toThrow(/index named agent_network_peers/);
+    expect(tableNames(db)).toEqual(['schema_conflict']);
     expect(tableNames(db)).toHaveLength(1);
     db.close();
   });

@@ -66,7 +66,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     contexts.forEach((ctx, i) => {
       // Deliberately retain the pre-upgrade graph config as the no-resurrection canary.
       for (const file of [ctx.dbPath, networkMetadataPath(ctx.dataDir)]) {
-        const db = openNetworkStore(file, { metadataOnly: true }); insertConfig(db, configs[i], Date.now());
+        const db = openNetworkStore(file); insertConfig(db, configs[i], Date.now());
         db.pragma('wal_checkpoint(TRUNCATE)'); db.close();
       }
       graphHashes.push(hash(ctx.dbPath)); keyHashes.push(hash(identityPath(ctx.dataDir)));
@@ -79,7 +79,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     for (const ctx of contexts) await run(ctx, ['up']);
     await wait(() => contexts.every(ctx => Boolean(readStatus(ctx.dataDir)?.direct_addresses.length)), 'addresses');
     contexts.forEach((ctx, i) => {
-      const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+      const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
       contexts.forEach((peer, j) => { if (i !== j) rememberPeer(db, ids[j].machineId, null, readStatus(peer.dataDir)!.direct_addresses, Date.now()); });
       db.close();
     });
@@ -99,7 +99,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     const repeated = JSON.parse(await run(a, ['remove', ids[2].machineId, '--json']));
     expect(repeated).toMatchObject({ roster_version: 3, already_removed: true });
     // Simulate the retained stale disk state of an offline member, not a new join.
-    const stale = openNetworkStore(networkMetadataPath(b.dataDir), { metadataOnly: true });
+    const stale = openNetworkStore(networkMetadataPath(b.dataDir));
     insertConfig(stale, configs[1], Date.now());
     rememberPeer(stale, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now()); stale.close();
     await run(b, ['up'], 'revoked-start');
@@ -112,22 +112,22 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
       expect(JSON.parse(await run(ctx, ['read', '--message-id', messageIds[i]], 0, `local-${i}`)).message.body).toBe(`LOCAL HISTORY ${i}🙂`);
       expect(JSON.parse(await run(ctx, ['status', '--message-id', messageIds[i], '--json'], 0, `local-${i}`)).messages[0].id).toBe(messageIds[i]);
       if (i) {
-        const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+        const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
         for (const table of ['agent_network_config', 'agent_network_invites', 'agent_network_peers']) expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
         db.close();
       }
     }
-    const owner = openNetworkStore(networkMetadataPath(a.dataDir), { metadataOnly: true });
+    const owner = openNetworkStore(networkMetadataPath(a.dataDir));
     expect(verifyRoster(signedRosterOf(readConfig(owner)!), ids[0].machineId, roster.network_id).members.map(m => m.machine_id)).toEqual([ids[0].machineId]); owner.close();
     await run(a, ['down']);
     // Owner offline: an unconfirmed caller retains membership and the helper
     // restores the original stopped state, rather than falsely claiming leave.
-    const pending = openNetworkStore(networkMetadataPath(b.dataDir), { metadataOnly: true });
+    const pending = openNetworkStore(networkMetadataPath(b.dataDir));
     insertConfig(pending, configs[1], Date.now());
     rememberPeer(pending, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now()); pending.close();
     expect(await run(b, ['leave', '--json'], 1)).toMatch(/membership|connect|timed out/i);
     expect((await probeBridge(b.dataDir)).kind).toBe('not-running');
-    const retained = openNetworkStore(networkMetadataPath(b.dataDir), { metadataOnly: true });
+    const retained = openNetworkStore(networkMetadataPath(b.dataDir));
     expect(readConfig(retained)).toEqual(configs[1]); retained.close();
     expect(hash(b.dbPath)).toBe(graphHashes[1]);
     events.push({ bridgePids, graphHashes, keyHashes, historyPreserved: true });

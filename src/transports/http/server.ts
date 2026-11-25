@@ -11,7 +11,6 @@ import {
   closeDatabase,
   getDatabase,
   failureMessage,
-  isDatabaseOpen,
 } from '../../db.js';
 import {
   remember,
@@ -30,7 +29,6 @@ import {
 } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
-import { startAgentMessageExpiryScheduler } from '../../core/agent-message-expiry.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -47,11 +45,8 @@ import {
   ExportSchema as ExportBody, ImportSchema as ImportBody,
   HttpLearnSchema as LearnBody,
   WhySchema as WhyBody,
-  MessageSchema as MessageBody,
   UserPatternsSchema,
 } from '../schemas.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
-import { startRouterIfDown } from '../../host-runtime/router-client.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
@@ -813,37 +808,6 @@ for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
 app.post('/v1/export',      (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import',      (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn',       (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
-// Durable agent messaging uses one action-discriminated endpoint so custom
-// local bridges get the same lifecycle as MCP.  Long-poll cancellation is
-// tied to the actual HTTP connection; a disconnected client must not leave a
-// database poll running until its nominal timeout.
-app.post('/v1/message', (req, res) => {
-  const controller = new AbortController();
-  function cleanupListeners(): void {
-    req.removeListener('aborted', abortIfOpen);
-    res.removeListener('close', abortIfOpen);
-    res.removeListener('finish', cleanupListeners);
-  }
-  function abortIfOpen(): void {
-    if (!res.writableEnded) controller.abort();
-    cleanupListeners();
-  }
-  req.once('aborted', abortIfOpen);
-  res.once('close', abortIfOpen);
-  res.once('finish', cleanupListeners);
-
-  handlePost(MessageBody, req, res, async (data) => {
-    try {
-      return await executeAgentMessageAction(getDatabase(), data, {
-        transport: 'http',
-        sourceHost: 'http',
-        signal: controller.signal,
-      }, { startRouterIfDown });
-    } finally {
-      cleanupListeners();
-    }
-  });
-});
 // --- Why --- file attribution from the graph side only. Commit hashes come
 // from the caller (see WhySchema) — this route runs no git, ever.
 app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => {
@@ -1300,13 +1264,6 @@ export function startServer(
      * developer's real ~/.memesh) on every build.
      */
     autoUpdateCheck?: boolean;
-    /**
-     * Opt-IN to the one-day agent-message expiry (core/agent-message-expiry.ts),
-     * the same scheduler the router and the MCP server run. Set by the CLI
-     * `serve` command and the standalone `memesh-http` entry, so a server that
-     * is the only MeMesh process running still deletes what is a day old.
-     */
-    agentMessageExpiry?: boolean;
     /** Test seams for the background update-cache fill. */
     updateCheckImpl?: typeof checkForUpdate;
     lastUpdateCheckImpl?: typeof getLastUpdateCheck;
@@ -1430,18 +1387,6 @@ export function startServer(
   // back via `req.socket.server` so the requirement is per-listener,
   // not process-global.
   serverAuthRequired.set(server, isRemote);
-  if (opts?.agentMessageExpiry === true) {
-    const stopExpiry = startAgentMessageExpiryScheduler(
-      () => (isDatabaseOpen() ? getDatabase() : null),
-      { trigger: 'http-serve' },
-    );
-    // `memesh serve` and memesh-http exit without waiting for 'close': a running pass is closed on the way out too.
-    process.once('exit', stopExpiry);
-    server.on('close', () => {
-      process.removeListener('exit', stopExpiry);
-      stopExpiry();
-    });
-  }
   return server;
 }
 
@@ -1458,7 +1403,7 @@ const isMain = process.env.MEMESH_CLI_SERVE !== '1'
 if (isMain || process.argv[1]?.endsWith('memesh-http')) {
   let server: ReturnType<typeof startServer>;
   try {
-    server = startServer(undefined, undefined, { agentMessageExpiry: true });
+    server = startServer();
   } catch (err) {
     // Same treatment as the CLI `serve` path: the refusal message is
     // actionable on its own and does not need a stack trace wrapped round it.

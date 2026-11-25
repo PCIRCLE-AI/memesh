@@ -18,7 +18,6 @@ let work: string;
 let cliPath: string;
 let preload: string;
 let homeWithDb: string;
-let routerPath: string;
 
 beforeAll(async () => {
   work = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-nodefloor-cli-'));
@@ -29,16 +28,6 @@ beforeAll(async () => {
     absWorkingDir: REPO_ROOT,
     entryPoints: [path.join(REPO_ROOT, 'src', 'transports', 'cli', 'cli.ts')],
     outfile: cliPath,
-    bundle: true, platform: 'node', format: 'esm', target: `node${MIN_NODE_SERIES}`, packages: 'bundle',
-    external: ['node:*'], legalComments: 'none',
-    banner: { js: "import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);" },
-  });
-  routerPath = path.join(work, 'dist', 'host-runtime', 'router.js');
-  fs.mkdirSync(path.dirname(routerPath), { recursive: true });
-  await build({
-    absWorkingDir: REPO_ROOT,
-    entryPoints: [path.join(REPO_ROOT, 'src', 'host-runtime', 'router.ts')],
-    outfile: routerPath,
     bundle: true, platform: 'node', format: 'esm', target: `node${MIN_NODE_SERIES}`, packages: 'bundle',
     external: ['node:*'], legalComments: 'none',
     banner: { js: "import { createRequire as __memeshCreateRequire } from 'node:module'; const require = __memeshCreateRequire(import.meta.url);" },
@@ -152,16 +141,4 @@ describe('Feature: the CLI on a Node below the floor', () => {
     expect(r.stdout).toContain('none of MeMesh works until that is fixed');
   });
 
-  it('the router refuses before it writes a token or anything else', () => {
-    const home = path.join(work, 'home-router');
-    fs.mkdirSync(home, { recursive: true });
-    const r = spawnSync(process.execPath, ['--require', preload, routerPath], {
-      encoding: 'utf8', timeout: CHILD_TIMEOUT_MS, killSignal: 'SIGKILL',
-      env: { ...process.env, HOME: home, USERPROFILE: home },
-    });
-    expect(r.error, 'the router did not finish: the Node floor is not holding').toBeUndefined();
-    expect(r.status).toBe(1);
-    expect(r.stderr).toContain(SENTENCE);
-    expect(fs.existsSync(path.join(home, '.memesh'))).toBe(false);
-  });
 });

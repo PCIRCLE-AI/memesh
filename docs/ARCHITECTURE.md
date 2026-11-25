@@ -63,13 +63,7 @@ This repository is the standalone local package. Hosted workspace and enterprise
 | `memesh` | `src/transports/cli/cli.ts` |
 | `memesh-mcp` | `src/mcp/server.ts` |
 | `memesh-http` | `src/transports/http/server.ts` |
-| `memesh-router` | `src/host-runtime/router.ts` |
 | `memesh-host-claude` | `src/host-runtime/claude.ts` |
-| `memesh-host-codex` | `src/host-runtime/codex.ts` |
-| `memesh-host-codex-session` | `src/host-runtime/codex-session.ts` |
-| `memesh-host-acp` | `src/host-runtime/acp.ts` |
-
-`memesh-host-acp` is experimental protocol-development code, not a release-gated native-wakeup provider.
 
 ---
 
@@ -81,11 +75,8 @@ MeMesh separates concerns into two layers:
 - `types.ts` — shared TypeScript interfaces (zero external deps)
 - `operations.ts` — `remember`, `recall`, `forget`, `export`, `import` as shared operations called by all transports
 - `native-memory-editor.ts` — edits an existing project memory through `remember`, preserves history without increasing confidence, refuses stale edits, and reads back stored text. MCP form elicitation supplies terminal forms; the Claude Desktop Mod prepares a revision and submits its pane inputs to the same operation, with no separate writer, database or web server.
-- `agent-messaging.ts` — transactional exact-recipient messages, opaque cursors, bounded waits, payload fetch, a 64 KiB JSON-encoded durable payload cap, and independent receipt facts
-- `agent-router.ts` — owner-private local routing from a durable message event to an eligible active host adapter, plus a bounded project-scoped directory of live registrations; native delivery is bounded by a 16 KiB cap on the untrusted full envelope, including routing metadata and payload; the Claude Code channel carries that envelope, the Codex CLI queue only a notice naming the message. Ordinary Claude MCP sessions use `host-runtime/claude-inbox.ts` to register presence and send a notice through the native inbox when available. Exact-session acceptance requires a matching new transcript receive record; it does not mean the model has read or accepted the message. A Channel connection for the same session takes precedence.
-- `agent-message-ttl.ts` — the one-day message lifetime and the cutoff every reader shares. A leaf, mirrored into `scripts/hooks/_generated/` so the hooks' unread count agrees with it
-- `agent-message-expiry.ts` — deletes messages one day after creation, read or not, and tells the sender of an unread one. Started on a timer by the router daemon, `memesh serve` and the MCP server; copies what it deletes into an archive file (kept one more day) before deleting it; records every run (including ones that find nothing) in `agent_message_expiry_runs`, which `memesh doctor` reads
-- `session-activity.ts` — formats bounded session summaries from available repository, host status, title and current task data. Claude task state comes from native transcript plan records; Codex plan state comes from its native `update_plan` hook. Hosts include the summary in heartbeats only when the router advertises the feature.
+- `conversation-messages.ts` — separate message storage, append-only audit, recipient registration and fourteen-day retention
+- `conversation-message-migration.ts` — imports eligible legacy messages and their audit without modifying the source
 - `config.ts` — owner-local configuration reads and partial updates for the retained non-model settings
 - `paths.ts` — centralised filesystem path resolution (HOME-first override; shared with hooks via a build-generated copy in `scripts/hooks/_generated/`)
 - `scoring.ts` — multi-factor scoring engine: weights search relevance, recency, frequency, confidence, recall-impact; exports `rankEntities()` used by all recall paths
@@ -102,8 +93,8 @@ MeMesh separates concerns into two layers:
 
 **Transports** (`src/transports/`) — thin adapters that expose core operations:
 - `cli/cli.ts` — Commander CLI (`memesh` command; `message`, `agent`, `config`, `kg`, `dream`, `hermes`, and `delegation` have subcommands)
-- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including two retired 410 routes, HTTP API only; bearer-auth gate when bound non-loopback
-- `agent-messaging.ts` — shared MCP/HTTP/CLI dispatcher that records cooperative transport provenance (not authenticated human/model identity) and never turns a read into a receipt
+- `http/server.ts` — Express server (`memesh serve`, default port 3737): 31 `/v1` endpoints including 3 retired 410 routes, HTTP API only; bearer-auth gate when bound non-loopback
+- `conversation-messaging.ts` — trusted-host MCP/CLI dispatcher for `send`, `discover`, `read` and `status`
 - `src/mcp/server.ts` + `src/transports/mcp/handlers.ts` — stdio MCP server (`memesh-mcp`, 12 tools); `src/mcp/tools.ts` is a re-export shim
 
 This separation means the same `remember`/`recall`/`forget` logic runs identically whether invoked from a terminal, an HTTP request, or an MCP tool call. Governed product-improvement proposals reuse the dream staging/review lifecycle: agents can propose over MCP, and humans apply or reject through the CLI or HTTP endpoints.
@@ -148,7 +139,7 @@ src/
 ├── index.ts               # Package exports
 ├── cli/
 ├── host-adapters/         # Native Claude/Codex adapters; ACP remains experimental and not release-gated
-├── host-runtime/          # Private-router connection and managed host runtime
+├── host-runtime/          # Claude conversation Channel entry and lifecycle
 ├── mcp/
 │   ├── server.ts          # MCP stdio server (opens the database and registers tool handlers)
 │   └── tools.ts           # Re-export shim → transports/mcp/handlers.ts
@@ -184,7 +175,7 @@ src/
 
 **paths.ts** — Centralised filesystem path resolution. Exports `homeDir()` (HOME-env-first override for testability), `memeshDir()` (MEMESH_DIR > `<home>/.memesh`), `getDbPath()` (MEMESH_DB_PATH > `<memeshDir>/knowledge-graph.db`), `getMemeshDirFromDbPath()` (parent dir of active DB file, used for sibling state files), and `getProjectName(cwdInput?)`. Automatic project identity is `<readable repo label>~<32 hex>`: the suffix hashes a password-free remote locator when a network remote exists, otherwise the native real path of the primary Git root or non-Git directory. Only spellings that are certain to name one repository converge on one locator and so one id: on GitHub, GitLab and Bitbucket the standard `git@` login and the https address, with or without `.git`. On any other host the remote is read as spelled (ssh login, port, absolute-versus-home-relative path and `.git` all count), so two repositories there cannot share an id. A write uses that one id. A read covers every id the same checkout may have been filed under (`getProjectIds`: the id above, the ids earlier spellings of the remote gave (`remoteLocatorAliases`), and the path's id and its earlier short form, which a checkout with a remote also reads so what it stored before the remote was added stays readable), each derived exactly, never matched by name. Accepted cost: a path later reused by another repository reads what the earlier one left under it. This keeps one repo stable across clones, subdirectories, symlinks, and linked worktrees while isolating unrelated same-basename repositories. Results are resolved once per cwd and cached. Replaces 10+ inline `process.env.MEMESH_DB_PATH ?? path.join(os.homedir(), …)` patterns that had subtly different fallbacks. Hooks run the always-on capture path even when `dist/` is absent or stale (plugin-marketplace `--ignore-scripts`; source pull before build), so they cannot import the main `dist/` tree at will. Because `paths.ts`, `src/storage/fts-index.ts` and `src/storage/entity-write.ts` are runtime-leaf modules, `npm run build` copies their compiled output to `scripts/hooks/_generated/` (via `scripts/generate-hook-core.mjs`); `_shared.js` imports that committed, version-locked copy. This replaces the former hand-mirror (the source of the P0 FTS drift): the copy is byte-locked to core. Every generated leaf is gated by a CI `git diff` on rebuild (`scripts/check-generated-mirror.mjs`) and by the `memesh doctor` manifest; `tests/hooks/mirror-parity.test.ts` additionally checks behaviour parity only for the modules it names (paths, the FTS reindex, briefing-level, session-limit, bash-edited-paths).
 
-**file-mode.ts** — The one permission rule for MeMesh's own files and folders (#520): remove group/other access and never change the owner's bits, so a database or folder the owner made read-only stays read-only. `removeGroupAndOtherAccess()` warns on stderr when a change cannot be applied, once per file or folder per process: with the `chmod go-rwx` command for the owner's own file or folder, and, for one that belongs to another user (where that command is not the owner's to run), with the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns; `requirePrivateWritableDirectory()` is the stricter form for the router and the Codex session companion, which must write their sockets and state into the data folder: it stops with the reason instead of adding the owner's write bit. `refuseMismatchedSidecars()` stops an open, before SQLite touches anything, when a `-wal` or `-shm` has fewer owner permissions than the database file, or is empty and has more, and names the files and the `chmod` commands: SQLite resets an empty sidecar to the database's mode when it opens it and opens a non-empty read-only one read-only (leaving the database silently read-only), and MeMesh never changes an owner bit itself. `ownerWriteCommand()` is the `chmod u+w` line printed when a database opens read-only because its owner removed write access, or, when one of those files belongs to another user, the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns. `guardDatabaseFiles()` is both steps for the database (resolving a symlinked database path first, since SQLite keeps the `-wal`/`-shm` beside the real file) and runs before every open: `openDatabase()`, and in the hooks `openMemeshDb()` in `_shared.js`, the only place a hook may construct a `MemeshDatabase` on the memesh database (read-only handles included, because SQLite resets an empty sidecar's mode on any open; `tests/hooks/data-folder-permissions.test.ts` fails on any other construction). It is a runtime leaf, copied to `scripts/hooks/_generated/file-mode.js`, so the hooks' `ensurePrivateDir`, `openMemeshDb` and the audit scripts that read the database (`memory-invariants.mjs`, `measure-signals.mjs`, `measure-work-topology-baseline.mjs`) apply the same rule.
+**file-mode.ts** — The one permission rule for MeMesh's own files and folders (#520): remove group/other access and never change the owner's bits, so a database or folder the owner made read-only stays read-only. `removeGroupAndOtherAccess()` warns on stderr when a change cannot be applied, once per file or folder per process: with the `chmod go-rwx` command for the owner's own file or folder, and, for one that belongs to another user (where that command is not the owner's to run), with the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns; `requirePrivateWritableDirectory()` is the stricter form for message stores and network runtime directories, which must be writable: it stops with the reason instead of adding the owner's write bit. `refuseMismatchedSidecars()` stops an open, before SQLite touches anything, when a `-wal` or `-shm` has fewer owner permissions than the database file, or is empty and has more, and names the files and the `chmod` commands: SQLite resets an empty sidecar to the database's mode when it opens it and opens a non-empty read-only one read-only (leaving the database silently read-only), and MeMesh never changes an owner bit itself. `ownerWriteCommand()` is the `chmod u+w` line printed when a database opens read-only because its owner removed write access, or, when one of those files belongs to another user, the advice to point `MEMESH_DB_PATH` at a database the owner owns, in a folder the owner owns. `guardDatabaseFiles()` is both steps for the database (resolving a symlinked database path first, since SQLite keeps the `-wal`/`-shm` beside the real file) and runs before every open: `openDatabase()`, and in the hooks `openMemeshDb()` in `_shared.js`, the only place a hook may construct a `MemeshDatabase` on the memesh database (read-only handles included, because SQLite resets an empty sidecar's mode on any open; `tests/hooks/data-folder-permissions.test.ts` fails on any other construction). It is a runtime leaf, copied to `scripts/hooks/_generated/file-mode.js`, so the hooks' `ensurePrivateDir`, `openMemeshDb` and the audit scripts that read the database (`memory-invariants.mjs`, `measure-signals.mjs`, `measure-work-topology-baseline.mjs`) apply the same rule.
 
 **scoring.ts** — Multi-factor scoring engine. `scoreEntity()` combines five signals from `DEFAULT_WEIGHTS`: search relevance (0.30), recency via exponential decay (0.25), access frequency via log normalization (0.18), confidence (0.17), and recall-effectiveness impact via Laplace smoothing (0.10). `rankEntities()` sorts any entity list by score descending. Applied to word-search and recent-list recall (`recall()` and `recallEnhanced()`); exact ID lookup preserves the requested order.
 
@@ -330,79 +321,28 @@ Store-open maintenance handles 14-day expiry and the one-day undelivered
 notice. Queueing does not prove native wakeup, model-visible delivery or
 completion. Both manifests declare the conversation hook; its private Codex-shaped wire
 flow is checked. Actual native-host/model and cross-machine conversation
-delivery are not established by this or the legacy implementations below.
+delivery require separate real-host evidence.
 The default opener imports eligible legacy graph messages and fixed archive
 files beside the configured graph into this store. Only messages younger than
 14 days are imported, with their original IDs, timestamps, bodies and audit;
 reopening is idempotent and preserves the source. Explicit-file and borrowed
 source entry points do not discover archives implicitly.
 
-### Wake an eligible local message recipient (optional)
+### Native conversation wake and retention
 
-This retained router/adapter branch is for **legacy HTTP agent messages**,
-not the current four-action MCP/CLI conversation interface.
+`src/host-adapters/conversation-wake.ts` targets an eligible registered local
+session through its Claude socket or Codex queue. The Claude Channel reads
+pending messages from `messages.db` and sends full bounded envelopes.
+A wake or successful transport write alone does not prove model acceptance.
+HTTP `POST /v1/message` returns 410; it has no trusted host conversation identity.
 
-```
-POST /v1/message send (legacy HTTP)
-  -> durable exact-recipient message + notification event in SQLite
-  -> owner-private local agent router
-  -> eligible active supported host adapter (Claude Code channel or Codex CLI queue)
-  -> Claude: bounded untrusted full envelope; Codex: short notice, body read from the inbox
-     (64 KiB JSON-encoded durable payload; 16 KiB complete native envelope)
-  -> exact-session send returns only after native host acceptance
-```
+Maintenance records one undelivered notice after one day and removes a message
+and its events fourteen days after its original send time. Opening the store
+and the long-lived Channel use the same maintenance transaction.
 
-### Expire a message (automatic)
-
-This timer and archive belong to legacy HTTP/graph messages. Conversation messages use the separate store-open maintenance above.
-
-```
-router daemon / MCP server / `memesh serve` timer (5 min; first run 1 s after start)
-  -> skip if the last finished run is younger than the interval (a run left "started" by a dead process, or dated in the future, does not count)
-  -> any message older than one day that is not being delivered, any archive row older than a day, any notice still
-     owed, or old presence rows?  no -> record "nothing_expired" (or "deferred_in_flight" when the only old messages
-     are still being delivered), stop
-  -> write probe. The run works on a connection of its own whose every statement waits at most 100 ms for another
-     process's lock: a lock at this or any later step ends the run as "database_busy", keeping every batch it
-     finished; an unwritable database records "read_only". A row that cannot be written because of the lock is
-     written, marked late, by the next run in the same process; a process that stops mid-run closes its row as
-     "interrupted" and gives the lease back on the way out
-  -> take the one-row lease in the database; held by a live process -> record "skipped_concurrent", stop
-  -> close any run left "started" as "interrupted"; write this run as "started"
-  -> remove archive rows archived more than a day ago (by the time kept in the archive, never by file name), 100
-     messages per transaction (renewing the lease) with an event-loop turn between; first, so a batch that cannot be
-     archived does not also stop the archive from shrinking. A database not named knowledge-graph.db also removes its
-     own rows from backups/agent-messages-expired.db, which an earlier MeMesh shared between the databases of a folder
-  -> per batch of 100: copy the rows (message, delivery, events, idempotency key, receipts, retention facts, attempts,
-     host accepts, acks, workflow facts) by column name into the database's own archive (backups/agent-messages-expired.db
-     for knowledge-graph.db, backups/agent-messages-expired-<file name> for any other), replacing an older
-     copy and starting its extra day again, and commit; check the archive holds them with the same content (an
-     archive path that is a symlink, wherever it points, the database itself or not a database is refused, and
-     a batch that cannot be archived ends the batches, not the run); then, in one
-     transaction on the main database: renew the lease, remember the ids in agent_message_expiries (an unread one
-     with its notice still owed), DELETE FROM agent_messages (foreign keys cascade), save the run's counts; give
-     the event loop a turn
-  -> write one notice per (project, sender) for every remembered id that still owes one, this run's and any a
-     stopped run left, and mark those ids; a notice is never changed once written
-  -> delete old presence facts and ended connections not pinned by a remaining attempt
-  -> finish the run's row; forget remembered ids older than 30 days, except one whose notice is still owed
-```
-
-Readers do not wait for the run: `poll`, `fetch`, receipts, the unread count and the router's drain all filter on the same cutoff, so a message past its day is gone to them before it is gone from disk. Cursor rows are kept: a cursor is a sequence number, and sequence numbers are never reused. Session instances and principals are kept too: they are one small row per session and answer "is this recipient known".
-
-Implementation anchors: `src/core/agent-messaging.ts`, `src/core/agent-router.ts`,
-`src/transports/agent-messaging.ts`, `src/host-adapters/`, `src/host-runtime/`, and
-`docs/platforms/agent-messaging.md`.
-
-This branch is optional and local-only: an oversized full envelope returns `native_message_too_large`; unavailable, stopped, disconnected, or unsupported exact sessions return `recipient_unavailable` and are not resumed or replaced. A session send with `fallback_to_principal` that is refused this way is sent again to the principal that session registered under, meant for that session (`intended_session`, #497); the Claude channel host registers under `CLAUDE_CODE_SESSION_ID`, so that session id is also the hooks' `session_id`. A host queue acceptance is a host receipt, not recipient acknowledgement or workflow disposition. See the [`message` API contract](api/API_REFERENCE.md#message) and the [Local Agent Messaging Guide](platforms/agent-messaging.md) for the lifecycle and supported-host limits.
-
-Before sending, `message discover` can read the router's live registrations for
-one exact project. It returns session/principal routing identity, host kind,
-declared work summary, generation, and authoritative lease expiry. `model` is
-always `null` — no host tells MeMesh which model a session runs — and the key
-stays because older clients require it.
-The directory is in-memory presence joined to the current connection row; it is
-not a second durable registry, and the read creates no message or receipt facts.
+Implementation anchors: `src/core/conversation-messages.ts`,
+`src/host-adapters/conversation-wake.ts`, `src/transports/conversation-messaging.ts`,
+`src/host-adapters/`, `src/host-runtime/`, and `docs/platforms/agent-messaging.md`.
 
 ### Search knowledge (recall)
 
@@ -512,7 +452,7 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares its commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field. It includes the shared `messages.js` command and adds two Codex-only PostToolUse commands (`codex-busy-message-notice.js` and `codex-plan-activity.js`); a parity test checks the shared commands.
 
-### Hook Commands (12 hooks)
+### Hook Commands (11 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -527,7 +467,6 @@ Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifec
 | user-prompt-intent.js | UserPromptSubmit | Capture accepted user prompt text with secret redaction; the separate message hook supplies conversation envelopes |
 | prompt-recall.js | UserPromptSubmit | Bring content for at most two matching memories, at most one assistant conversation, within a 4 KiB UTF-8 context budget; opening title indexes do not suppress content |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
-| codex-session.js | Codex SessionStart (startup/resume) + SessionEnd | Launch an owner-private detached registration companion, retain a bounded 45-second idle queue window after SessionEnd, replace the exact generation on resume, and retire it at expiry; a matching owner-private config optionally overrides project/principal |
 
 ### Pre-Edit Recall (`scripts/hooks/pre-edit-recall.js`)
 
@@ -594,7 +533,7 @@ The Codex Bash PostToolUse hook emits complete pending conversation envelopes as
 
 ### Legacy identity helpers and channel warning
 
-The retained HTTP/native transport has separate principal configuration and identity helpers. Current conversation hooks use registered native session IDs and do not print principal inbox instructions. SessionStart still warns about a mistyped Claude Channel launch flag, or a channel target without the exact required flag; that warning does not establish native message acceptance. See the [legacy HTTP boundary](platforms/agent-messaging.md#legacy-http-messaging).
+Conversation hooks use registered native session IDs. The old router, detached Codex companion and principal inbox instructions are retired. SessionStart warns about missing or mistyped Claude Channel flags; this warning does not establish message delivery.
 
 ### Pre-Compact (`scripts/hooks/pre-compact.js`)
 

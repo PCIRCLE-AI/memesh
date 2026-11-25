@@ -139,7 +139,7 @@ function reuseFixture(scriptOverrides: Record<string, string> = {}) {
 describe('approved UI waiver and evidence reuse through the actual gate', () => {
   it('skips only approved UI and suite replay, keeps original failure, and labels reuse honestly', () => {
     const fixture = reuseFixture({ 'qa:ui-review': 'node -e "process.exit(3)"', 'verify:artifact': 'node -e "process.exit(3)"' });
-    const run = runGate(fixture.dir, fixture.env);
+    const run = runGate(fixture.dir, { ...fixture.env, npm_config_loglevel: 'silent' });
     expect(run.status, run.stdout + run.stderr).toBe(0);
     expect(run.stdout).not.toContain('qa:ui-review');
     expect(run.stdout).toContain('REUSED_WITH_CONCERNS  verify:artifact');

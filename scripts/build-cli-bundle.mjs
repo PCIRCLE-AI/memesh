@@ -18,7 +18,6 @@ const executableEntryPoints = new Set(
 );
 const entryPoints = [
   ...executableEntryPoints,
-  path.join(distRoot, 'host-adapters/codex-app-server.js'),
   path.join(distRoot, 'host-adapters/claude-channel.js'),
   // Spawned by the CLI as a child process, so it has to run from a tree with no node_modules too.
   path.join(distRoot, 'network/bridge.js'),

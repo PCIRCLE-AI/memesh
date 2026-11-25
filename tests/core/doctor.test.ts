@@ -334,8 +334,6 @@ function makeDatabase(
         };
       }
       if (sql.includes('sqlite_master')) return { get: () => ({ present: 1 }) };
-      // The inbox read probe asks whether deliveries carry intended_session.
-      if (sql.includes('pragma_table_info')) return { get: () => undefined };
       if (sql.includes('fts_vocab')) {
         return { get: () => ({ c: opts.unsegmentedCount ?? 0 }) };
       }
@@ -4927,28 +4925,13 @@ describe('npm-global vs. discovered plugin-cache version skew (F3/F5)', () => {
 });
 
 describe('Claude Channel registration diagnostic', () => {
-  async function runChannelCase(server: unknown, target?: { path: string; mode?: number; content?: string; symlinkTo?: string }) {
+  async function runChannelCase(server: unknown) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-'));
     tempRoots.push(home);
     const packageRoot = createPackageRoot(path.join(home, '.claude', 'plugins', 'cache', 'pcircle-memesh', 'memesh', '4.8.2'));
     const previousHome = process.env.HOME;
     process.env.HOME = home;
     try {
-      if (target) {
-        fs.mkdirSync(path.dirname(target.path), { recursive: true });
-        const content = target.content ?? JSON.stringify({
-          router_socket: path.join(path.dirname(target.path), 'memesh-router.sock'),
-          token_file: path.join(path.dirname(target.path), 'memesh-router.token'),
-          project: 'fixture', principal_id: 'claude-reviewer', server_name: 'memesh-channel',
-        });
-        if (target.symlinkTo) {
-          fs.writeFileSync(target.symlinkTo, content);
-          fs.symlinkSync(target.symlinkTo, target.path);
-        } else {
-          fs.writeFileSync(target.path, content);
-          fs.chmodSync(target.path, target.mode ?? 0o600);
-        }
-      }
       writeJson(path.join(home, '.claude.json'), server);
       return await runDoctor({
         packageRoot,
@@ -4973,12 +4956,6 @@ describe('Claude Channel registration diagnostic', () => {
     return result.checks.find(check => check.id === 'claude-channel');
   }
 
-  function channelTarget(name: string) {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-target-'));
-    tempRoots.push(root);
-    return path.join(root, name);
-  }
-
   function channelCommand(name: string, mode = 0o700) {
     const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
     tempRoots.push(root);
@@ -5001,23 +4978,13 @@ describe('Claude Channel registration diagnostic', () => {
     return command;
   }
 
-  async function withPlatform<T>(platform: NodeJS.Platform, run: () => Promise<T>): Promise<T> {
-    const descriptor = Object.getOwnPropertyDescriptor(process, 'platform')!;
-    Object.defineProperty(process, 'platform', { ...descriptor, value: platform });
-    try {
-      return await run();
-    } finally {
-      Object.defineProperty(process, 'platform', descriptor);
-    }
-  }
-
   it('WARNs when the opt-in channel is absent and does not leak paths', async () => {
     const result = await runChannelCase({ mcpServers: {} });
     const row = channelRow(result)!;
     expect(row.status).toBe('warn');
     expect(row.code).toBe('claude-channel.unregistered');
     expect(row.informational).not.toBe(true);
-    expect(row.summary).toMatch(/durable MCP\/inbox.*inactive/i);
+    expect(row.summary).toMatch(/conversation messaging.*inactive/i);
     expect(row.summary).not.toMatch(/\/private\/|\/Users\/|memesh-claude-channel-/);
     expect(result.status).toBe('PASS_WITH_CONCERNS');
     const report = formatDoctorReport(result, '4.8.2').join('\n');
@@ -5025,108 +4992,58 @@ describe('Claude Channel registration diagnostic', () => {
     expect(report).toContain('[WARN] Claude Channel registration');
   });
 
-  it('WARNs when a registration points to a missing target', async () => {
-    const missing = channelTarget('missing.json');
-    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', missing] } } });
-    expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/missing, insecure, malformed, or incomplete/i);
-    expect(channelRow(result)?.summary).not.toContain(missing);
+  it('reports a normal no-config registration as CONFIGURED, not native acceptance', async () => {
+    for (const args of [undefined, []]) {
+      const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args } } });
+      expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
+      expect(channelRow(result)?.summary).toContain('CONFIGURED');
+      expect(channelRow(result)?.summary).toContain('native model reception are not verified');
+    }
   });
 
-  it('WARNs malformed registrations', async () => {
-    const target = channelTarget('malformed-registration.json');
-    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'other', args: ['--config', target] } } }, { path: target, mode: 0o644 });
-    expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/malformed/i);
+  it('rejects legacy config arguments without reading their target', async () => {
+    const read = vi.spyOn(fs, 'readFileSync');
+    const target = '/nonexistent-retired-host-config.json';
+    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } });
+    expect(channelRow(result)?.status).toBe('warn');
     expect(channelRow(result)?.summary).not.toContain(target);
+    expect(read.mock.calls.some(([file]) => String(file) === target)).toBe(false);
+    read.mockRestore();
   });
 
-  it('WARNs an insecure owner config target', async () => {
-    const target = channelTarget('insecure.json');
-    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } }, { path: target, mode: 0o644 });
-    expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/missing, insecure, malformed, or incomplete/i);
-    expect(channelRow(result)?.summary).not.toContain(target);
-  });
-
-  it('WARNs a coherent registration on Windows because live notification cannot be established', async () => {
-    const target = channelTarget('configured.json');
-    const result = await withPlatform('win32', () => runChannelCase(
-      { mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } }, { path: target },
-    ));
-    const row = channelRow(result)!;
-    expect(row).toMatchObject({ status: 'warn' });
-    expect(row.informational).not.toBe(true);
-    expect(row.summary).toMatch(/missing, insecure, malformed, or incomplete/i);
-    expect(row.summary).toMatch(/notification is not established/i);
-    expect(row.summary).not.toContain(target);
-  });
-
-  it.skipIf(process.platform === 'win32')('reports a coherent registration as CONFIGURED on a supported platform', async () => {
-    const target = channelTarget('configured.json');
-    const result = await runChannelCase(
-      { mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } }, { path: target },
-    );
-    const row = channelRow(result)!;
-    expect(row).toMatchObject({ status: 'pass', informational: true });
-    expect(row.summary).toMatch(/CONFIGURED/);
-    expect(row.summary).toMatch(/admission.*not verified/i);
-  });
-
-  // #474: the Claude channel host no longer reads `project` to decide its
-  // routing project (it derives one from its own working directory), and
-  // `memesh agent setup claude` no longer writes the field unless asked —
-  // a config missing it entirely must still read as coherent, not as
-  // "missing, insecure, malformed, or incomplete".
-  it.skipIf(process.platform === 'win32')('reports a coherent registration as CONFIGURED even with no project field at all', async () => {
-    const target = channelTarget('configured-no-project.json');
-    const dir = path.dirname(target);
-    const result = await runChannelCase(
-      { mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } },
-      {
-        path: target,
-        content: JSON.stringify({
-          router_socket: path.join(dir, 'memesh-router.sock'),
-          token_file: path.join(dir, 'memesh-router.token'),
-          principal_id: 'claude-reviewer', server_name: 'memesh-channel',
-        }),
-      },
-    );
-    const row = channelRow(result)!;
-    expect(row).toMatchObject({ status: 'pass', informational: true });
-    expect(row.summary).toMatch(/CONFIGURED/);
+  it('rejects malformed registration arguments', async () => {
+    for (const args of [null, 'bad', [42]]) {
+      const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args } } });
+      expect(channelRow(result)?.status).toBe('warn');
+    }
   });
 
   it.skipIf(process.platform === 'win32')('accepts an absolute executable named memesh-host-claude', async () => {
-    const target = channelTarget('configured.json');
     const command = channelCommand('memesh-host-claude');
     const result = await runChannelCase(
-      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+      { mcpServers: { 'memesh-channel': { command, args: [] } } },
     );
     expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
   });
 
   it.skipIf(process.platform === 'win32')('accepts the npm-style memesh-host-claude symlink when its executable target has another basename', async () => {
-    const target = channelTarget('configured.json');
     const command = npmStyleChannelCommand('claude-channel-runner.js');
     const result = await runChannelCase(
-      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+      { mcpServers: { 'memesh-channel': { command, args: [] } } },
     );
     expect(channelRow(result)).toMatchObject({ status: 'pass', informational: true });
   });
 
   it.skipIf(process.platform === 'win32')('rejects an executable whose only execute bit is not usable by its owner', async () => {
-    const target = channelTarget('configured.json');
     const command = channelCommand('memesh-host-claude', 0o001);
     const result = await runChannelCase(
-      { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+      { mcpServers: { 'memesh-channel': { command, args: [] } } },
     );
     expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/command or --config declaration is malformed/i);
+    expect(channelRow(result)?.summary).toMatch(/command or arguments are malformed/i);
   });
 
   it.skipIf(process.platform === 'win32')('rejects relative, lookalike, missing, broken, directory, and non-executable absolute commands', async () => {
-    const target = channelTarget('configured.json');
     const missingRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
     const brokenRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
     const directoryRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-claude-channel-command-'));
@@ -5147,28 +5064,11 @@ describe('Claude Channel registration diagnostic', () => {
 
     for (const command of commands) {
       const result = await runChannelCase(
-        { mcpServers: { 'memesh-channel': { command, args: ['--config', target] } } }, { path: target },
+        { mcpServers: { 'memesh-channel': { command, args: [] } } },
       );
       expect(channelRow(result)).toMatchObject({ status: 'warn' });
-      expect(channelRow(result)?.summary).toMatch(/command or --config declaration is malformed/i);
+      expect(channelRow(result)?.summary).toMatch(/command or arguments are malformed/i);
     }
-  });
-
-  it('WARNs when the declared target content is malformed or incomplete', async () => {
-    const target = channelTarget('malformed-content.json');
-    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } }, { path: target, content: '{broken' });
-    expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/missing, insecure, malformed, or incomplete/i);
-    expect(channelRow(result)?.summary).not.toContain(target);
-  });
-
-  it('WARNs when the declared target is a symlink', async () => {
-    const target = channelTarget('link.json');
-    const realTarget = path.join(path.dirname(target), 'real.json');
-    const result = await runChannelCase({ mcpServers: { 'memesh-channel': { command: 'memesh-host-claude', args: ['--config', target] } } }, { path: target, symlinkTo: realTarget });
-    expect(channelRow(result)).toMatchObject({ status: 'warn' });
-    expect(channelRow(result)?.summary).toMatch(/missing, insecure, malformed, or incomplete/i);
-    expect(channelRow(result)?.summary).not.toContain(realTarget);
   });
 
   it('does not add a Claude row for a Codex plugin cache', async () => {
@@ -5460,7 +5360,6 @@ describe('doctor rows that had no assertion', () => {
       const memeshDir = isolateMemeshDir();
       const configPath = path.join(memeshDir, 'hosts', 'codex-session.json');
       const readPaths: string[] = [];
-      let routerCalls = 0;
 
       const result = await runDoctorImpl(codexOptions(packageRoot, {
         existsSyncImpl: (candidate: fs.PathLike) => fs.existsSync(candidate),
@@ -5468,15 +5367,11 @@ describe('doctor rows that had no assertion', () => {
           if (String(candidate) === configPath) readPaths.push(configPath);
           return (fs.readFileSync as any)(candidate, ...args);
         }) as typeof fs.readFileSync,
-        messageRouterStatusProbeImpl: async () => {
-          routerCalls++;
-          return { socket_path: '/tmp/unused.sock', socket: 'missing' as const };
-        },
       }));
 
       expect(result.checks.find(check => check.id === 'codex-session-setup')?.status).toBe('pass');
       expect(readPaths).toEqual([]);
-      expect(routerCalls).toBe(0);
+      expect(result.checks.some(check => check.id === 'message-router-status')).toBe(false);
     });
   });
 
@@ -5496,8 +5391,7 @@ describe('doctor rows that had no assertion', () => {
       };
       for (const [key, value] of Object.entries(hints)) setEnv(key, value);
       for (const relative of ['dist/transports/cli/doctor-message-probe.js', 'dist/mcp/server.js',
-        'dist/transports/mcp/handlers.js', 'dist/host-adapters/codex-app-server.js',
-        'dist/host-adapters/claude-channel.js', 'dist/host-adapters/acp-client.js']) {
+        'dist/transports/mcp/handlers.js']) {
         const file = path.join(packageRoot, relative);
         fs.mkdirSync(path.dirname(file), { recursive: true });
         fs.writeFileSync(file, '');
@@ -5541,7 +5435,7 @@ describe('doctor rows that had no assertion', () => {
       expect(calls).toBe(0);
       expect(check.informational).toBe(true);
       expect(check.summary).toContain('Not verified (opt-in)');
-      expect(check.summary).toContain('does not check a live router socket');
+      expect(check.summary).toContain('does not verify host registration or native model reception');
     });
 
     it('reports the injected installed-artifact probe success', async () => {
@@ -5557,7 +5451,7 @@ describe('doctor rows that had no assertion', () => {
       expect(check.status).toBe('pass');
       expect(check.informational).toBeFalsy();
       expect(check.summary).toContain('four-action message schema');
-      expect(check.summary).toContain('No live router socket');
+      expect(check.summary).toContain('native model reception were not verified');
     });
 
     it('reports the injected installed-artifact probe failure with remediation', async () => {
@@ -5567,168 +5461,54 @@ describe('doctor rows that had no assertion', () => {
 
       const check = row(await runDoctorImpl(options(packageRoot, {
         probeMessageCapability: true,
-        messageCapabilityProbeImpl: () => ({ ok: false, message: 'missing dist host adapter' }),
+        messageCapabilityProbeImpl: () => ({ ok: false, message: 'missing installed MCP server' }),
       })), 'message-capability');
 
       expect(check.status).toBe('fail');
       expect(check.code).toBe('message-capability.probe-failed');
-      expect(check.summary).toContain('missing dist host adapter');
+      expect(check.summary).toContain('missing installed MCP server');
       expect(check.fix).toContain('MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1');
     });
   });
 
-  describe('message-router-status probe', () => {
-    it('is opt-in and never probes the Local socket by default', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      let calls = 0;
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        probeMessageRouterStatus: false,
-        messageRouterStatusProbeImpl: async () => {
-          calls++;
-          return { socket_path: '/tmp/memesh-router.sock', socket: 'reachable' as const };
-        },
-      })), 'message-router-status');
-
-      expect(calls).toBe(0);
-      expect(check.informational).toBe(true);
-      expect(check.summary).toContain('never starts a router');
-      expect(check.summary).toContain('wakes a stopped session');
-    });
-
-    it('separates reachable router availability from active-host delivery claims', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        probeMessageRouterStatus: true,
-        messageRouterStatusProbeImpl: async () => ({
-          socket_path: '/tmp/memesh-router.sock', socket: 'reachable',
-        }),
-      })), 'message-router-status');
-
-      expect(check.status).toBe('pass');
-      expect(check.summary).toContain('router availability');
-      expect(check.summary).toContain('does not prove an active host registration');
-      expect(check.summary).toContain('host_accept');
-    });
-
-    it('reports a missing router as no native host registration rather than stopped-session wakeup', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        probeMessageRouterStatus: true,
-        messageRouterStatusProbeImpl: async () => ({
-          socket_path: '/tmp/memesh-router.sock', socket: 'missing', detail: 'ENOENT',
-        }),
-      })), 'message-router-status');
-
-      expect(check.status).toBe('warn');
-      expect(check.code).toBe('message-router.socket-missing');
-      expect(check.summary).toContain('No active host is registered');
-      expect(check.summary).toContain('will not wake a stopped or missing session');
-      expect(check.summary).toContain('No idle exit of the router is recorded');
-      expect(check.fix).toContain('ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS)');
-      expect(check.fix).toContain('a message send starts it again');
-    });
-
-    it('says when the router last ended itself for idleness, so that is not mistaken for a crash', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      const db = makeDatabase(3) as unknown as { prepare: (sql: string) => unknown };
-      const original = db.prepare.bind(db);
-      db.prepare = (sql: string) => sql.includes('memesh_metadata WHERE key = ?')
-        ? { get: () => ({ value: '2026-11-11T10:00:00.000Z' }) }
-        : original(sql);
-
-      const check = row(await runDoctorImpl(options(packageRoot, {
-        openDatabaseImpl: () => db as never,
-        probeMessageRouterStatus: true,
-        messageRouterStatusProbeImpl: async () => ({ socket_path: '/tmp/memesh-router.sock', socket: 'missing', detail: 'ENOENT' }),
-      })), 'message-router-status');
-
-      expect(check.summary).toContain('The router last ended itself for idleness at 2026-11-11T10:00:00.000Z.');
-      expect(check.summary).not.toContain('No idle exit of the router is recorded');
-    });
-
-    it('does not send an owner whose default path is too long to an override that cannot fix it', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      const previousSocket = process.env.MEMESH_ROUTER_SOCKET;
-      const previousDir = process.env.MEMESH_DIR;
-      delete process.env.MEMESH_ROUTER_SOCKET;
-      process.env.MEMESH_DIR = `/tmp/${'x'.repeat(150)}`;
-      try {
-        const check = row(await runDoctorImpl(options(packageRoot, {
-          probeMessageRouterStatus: true,
-        })), 'message-router-status');
-        expect(check.status).toBe('fail');
-        expect(check.code).toBe('message-router.socket-path-too-long');
-        expect(check.fix).toMatch(/^Move HOME/);
-        expect(check.fix).not.toMatch(/^Set MEMESH_ROUTER_SOCKET/);
-        // Where the default socket sits, and the one condition on its folder.
-        expect(check.fix).toContain('MEMESH_DB_PATH');
-        expect(check.fix).toMatch(/owner-private/);
-        // It must also say what the variable does NOT reach, so it cannot be
-        // mistaken for the cure.
-        expect(check.fix).toMatch(/ordinary Codex sessions(?:,? which)? use the default path/);
-      } finally {
-        if (previousSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET;
-        else process.env.MEMESH_ROUTER_SOCKET = previousSocket;
-        if (previousDir === undefined) delete process.env.MEMESH_DIR;
-        else process.env.MEMESH_DIR = previousDir;
-      }
-    });
-
-    // #404 — a socket path over the 103-byte limit also has no file on disk,
-    // so the plain lstat-based probe reported it identically to "missing" and
-    // sent the owner to restart a router that fails on the exact same path.
-    // This exercises the real probe (no `messageRouterStatusProbeImpl`
-    // override), so the length check itself is covered, not only the check
-    // this test's stub would otherwise fabricate.
-    it('names a too-long socket path instead of reporting a dead-end "missing"', async () => {
-      const packageRoot = createPackageRoot();
-      tempRoots.push(packageRoot);
-      isolateMemeshDir();
-      const previousSocket = process.env.MEMESH_ROUTER_SOCKET;
-      const longSocket = `/tmp/${'x'.repeat(150)}.sock`;
-      process.env.MEMESH_ROUTER_SOCKET = longSocket;
-
-      try {
-        const check = row(await runDoctorImpl(options(packageRoot, {
-          probeMessageRouterStatus: true,
-        })), 'message-router-status');
-
-        expect(check.status).toBe('fail');
-        expect(check.code).toBe('message-router.socket-path-too-long');
-        expect(check.summary).toContain(String(Buffer.byteLength(longSocket)));
-        expect(check.summary).toContain('103-byte limit');
-        expect(check.fix).toContain('MEMESH_ROUTER_SOCKET');
-        expect(check.fix).toMatch(/HOME|MEMESH_DIR/);
-        // The variable reaches the router, doctor, senders and ordinary Claude
-        // sessions only; the advice must not promise more than that.
-        expect(check.fix).toMatch(/^Set MEMESH_ROUTER_SOCKET to a shorter absolute path/);
-        expect(check.fix).toMatch(/owner-private/);
-        expect(check.fix).toContain('It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions.');
-        // The one config an ordinary Codex session can have is named as an exception.
-        expect(check.fix).toContain('hosts/codex-session.json');
-        expect(check.fix).toMatch(/ordinary Codex sessions(?:,? which)? use the default path/);
-        expect(check.fix).not.toMatch(/^Move HOME/);
-      } finally {
-        if (previousSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET;
-        else process.env.MEMESH_ROUTER_SOCKET = previousSocket;
-      }
-    });
+  it('does not expose or consult the retired router diagnostic even when its old opt-in is set', async () => {
+    const packageRoot = createPackageRoot();
+    tempRoots.push(packageRoot);
+    isolateMemeshDir();
+    setEnv('MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER', '1');
+    setEnv('MEMESH_ROUTER_SOCKET', '/nonexistent-retired-router.sock');
+    const result = await runDoctorImpl(options(packageRoot));
+    expect(result.checks.some(check => check.id === 'message-router-status')).toBe(false);
   });
 
   describe('database integrity', () => {
+    it('checks memory health without querying retired messaging tables or offering router repairs', async () => {
+      const packageRoot = createPackageRoot();
+      tempRoots.push(packageRoot);
+      isolateMemeshDir();
+      const database = makeDatabase(5);
+      const queries: string[] = [];
+      const report = await runDoctorImpl(options(packageRoot, {
+        openDatabaseImpl: () => ({
+          ...database,
+          prepare(sql: string) {
+            queries.push(sql);
+            if (/agent_(?:messages|message_|dispatch_|host_|session_)/i.test(sql)) {
+              throw new Error('retired messaging table must not be queried');
+            }
+            return database.prepare(sql);
+          },
+        }) as never,
+      }));
+      expect(row(report, 'database')).toMatchObject({ status: 'pass' });
+      expect(row(report, 'database').summary).toContain('5 entities');
+      expect(queries.some(sql => sql.includes('quick_check'))).toBe(true);
+      expect(queries.filter(sql => /agent_(?:messages|message_|dispatch_|host_|session_)/i.test(sql))).toEqual([]);
+      for (const id of ['agent_message_storage', 'agent_message_expiry', 'codex-queue-daemon', 'held-notices', 'unreadable-transcripts', 'message-router-status']) {
+        expect(report.checks.some(check => check.id === id)).toBe(false);
+      }
+    });
+
     it('fails the database row when quick_check finds damage, with restore advice rather than "start fresh"', async () => {
       const packageRoot = createPackageRoot();
       tempRoots.push(packageRoot);

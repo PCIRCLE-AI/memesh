@@ -16,7 +16,7 @@ function fixture() {
   const members = [owner, peer].map((id, i) => ({ machine_id: id.machineId, name: i ? 'beta' : 'alpha', person: 'test', joined_at: new Date().toISOString() }));
   const roster = { ...createRoster('a'.repeat(32), members[0]), members };
   const signed = signRoster(owner, roster);
-  const db = openNetworkStore(path.join(root, 'metadata.db'), { metadataOnly: true }); stores.push(db);
+  const db = openNetworkStore(path.join(root, 'metadata.db')); stores.push(db);
   const config = { network_id: roster.network_id, machine_id: owner.machineId, owner_id: owner.machineId, machine_name: 'alpha', person: 'test', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature };
   insertConfig(db, config, Date.now());
   return { db, owner, peer, config, roster, signed };

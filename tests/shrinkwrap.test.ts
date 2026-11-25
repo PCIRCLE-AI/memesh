@@ -1,5 +1,5 @@
 /**
- * The published package carries an npm-shrinkwrap.json so an unattended update installs exactly the dependency versions
+ * The published package carries a memesh-lock.json so an unattended update installs exactly the dependency versions
  * the release was tested with (scripts/shrinkwrap.mjs writes it while packing). The unit tests pin what the file may
  * contain; the last two prove the real lockfile can become one, and that packing is wired to do it.
  */
@@ -71,7 +71,7 @@ describe('what each installed entry has to be: the writer and the updater ask th
     ['a link', (p) => { p['node_modules/a'] = { resolved: '../a', link: true }; }, 'a has no pinned version'],
   ];
   // The updater also checks that every declared dependency is pinned, before the entries: for a link that is the line it stops at.
-  const judgedAs: Record<string, string> = { 'a link': 'npm-shrinkwrap.json does not pin a' };
+  const judgedAs: Record<string, string> = { 'a link': 'memesh-lock.json does not pin a' };
 
   it.each(cases)('refuses %s, in both places, naming the entry', (label, mutate, detail) => {
     const l = lock(mutate);
@@ -166,11 +166,11 @@ describe('this repository', () => {
     const manifest = read('package.json');
     expect(manifest.scripts.prepack).toBe('node scripts/shrinkwrap.mjs write');
     expect(manifest.scripts.postpack).toBe('node scripts/shrinkwrap.mjs remove');
-    expect(manifest.files).toContain('npm-shrinkwrap.json'); // npm leaves it out of the tarball otherwise
+    expect(manifest.files).toContain('memesh-lock.json');
     // Neither a compiled Python cache directory nor a stray .pyc of the Hermes provider is packed.
     expect(manifest.files).toContain('!extensions/hermes-memesh/**/__pycache__');
     expect(manifest.files).toContain('!extensions/hermes-memesh/**/*.pyc');
-    expect(fs.readFileSync('.gitignore', 'utf8').split('\n')).toContain('/npm-shrinkwrap.json'); // at the root only: a nested file of that name is not ours to hide
+    expect(fs.readFileSync('.gitignore', 'utf8').split('\n')).toContain('/memesh-lock.json'); // at the root only: a nested file of that name is not ours to hide
     expect(manifest.scripts.preinstall ?? manifest.scripts.install ?? manifest.scripts.postinstall).toBeUndefined();
   });
 });

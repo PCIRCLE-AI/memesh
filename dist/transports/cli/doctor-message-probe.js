@@ -7761,7 +7761,6 @@ var require_cross_spawn = __commonJS({
 
 // dist/transports/cli/doctor-message-probe.js
 import assert2 from "node:assert/strict";
-import { pathToFileURL } from "node:url";
 
 // node_modules/zod/v4/core/util.js
 var util_exports = {};
@@ -17737,11 +17736,6 @@ var StdioClientTransport = class {
 // dist/transports/cli/doctor-message-probe.js
 var root = process.argv[2];
 assert2.ok(root, "installed package root is required");
-await Promise.all([
-  import(pathToFileURL(root + "/dist/host-adapters/codex-app-server.js").href),
-  import(pathToFileURL(root + "/dist/host-adapters/claude-channel.js").href),
-  import(pathToFileURL(root + "/dist/host-adapters/acp-client.js").href)
-]);
 var client = new Client({ name: "memesh-doctor-message-probe", version: "1" });
 var transport = new StdioClientTransport({
   command: process.execPath,

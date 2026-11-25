@@ -105,7 +105,7 @@ export const AUTO_UPDATE_REASONS = {
   rollbackUnavailable: 'not installed: a copy of the installed version could not be made, so a failed install could not be undone',
   commitNotOnMain: 'not installed: the release was not built from a commit on the main branch of the official repository',
   commitUnconfirmed: 'not installed: it could not be confirmed that the release commit is on the main branch of the official repository (GitHub did not answer); a later run tries again',
-  dependenciesNotPinned: 'not installed: the package does not pin its dependencies (no complete npm-shrinkwrap.json), so what would be installed could not be checked',
+  dependenciesNotPinned: 'not installed: the package does not pin its dependencies (no complete memesh-lock.json), so what would be installed could not be checked',
   codexMarketplaceUnreadable: 'not installed: the Codex config.toml could not be read, so it is not known whether the pcircle-memesh marketplace is the official one',
   codexHomeUnknown: 'not installed: the Codex directory this plugin lives in could not be worked out from where it is installed, so the Codex plugin was left alone',
   codexMarketplaceMissing: 'not installed: the Codex marketplace pcircle-memesh is not in config.toml and MeMesh did not remove it, so it was taken as removed on purpose and not added back; `memesh update --reinstall` adds it back (pinned to this release) and installs the plugin',
@@ -545,21 +545,21 @@ function shrinkwrapEntryProblem(key: string, entry: unknown): string | null {
 }
 
 /**
- * npm resolves a package's dependencies at install time unless the package carries an `npm-shrinkwrap.json`: then the
- * published file decides every version. An unattended install must not depend on what the registry answers that day, so
+ * The release carries the tested lockfile as memesh-lock.json, which the updater uses as package-lock.json for npm ci.
+ * An unattended install must not depend on what the registry answers that day, so
  * a release without a complete one is not installed. Complete: this version's own root entry, every dependency it
  * declares present, and every installed entry with a version, its own address on the npm registry and a full sha512 integrity.
  */
 export function judgeShrinkwrap(text: string, version: string): { ok: true } | { ok: false; detail: string } {
   let parsed: unknown;
-  try { parsed = JSON.parse(text); } catch { return { ok: false, detail: 'npm-shrinkwrap.json is not JSON' }; }
+  try { parsed = JSON.parse(text); } catch { return { ok: false, detail: 'memesh-lock.json is not JSON' }; }
   const packages = at(parsed, 'packages');
-  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) return { ok: false, detail: 'npm-shrinkwrap.json has no package list' };
+  if (packages === null || typeof packages !== 'object' || Array.isArray(packages)) return { ok: false, detail: 'memesh-lock.json has no package list' };
   const entries = Object.entries(packages as Record<string, unknown>);
-  if (at(packages, '', 'version') !== version) return { ok: false, detail: 'npm-shrinkwrap.json is not for this version' };
+  if (at(packages, '', 'version') !== version) return { ok: false, detail: 'memesh-lock.json is not for this version' };
   const dependencies = at(packages, '', 'dependencies');
   for (const name of dependencies !== null && typeof dependencies === 'object' ? Object.keys(dependencies as object) : []) {
-    if (typeof at(packages, `node_modules/${name}`, 'version') !== 'string') return { ok: false, detail: `npm-shrinkwrap.json does not pin ${name}` };
+    if (typeof at(packages, `node_modules/${name}`, 'version') !== 'string') return { ok: false, detail: `memesh-lock.json does not pin ${name}` };
   }
   for (const [key, entry] of entries) {
     if (key === '') continue;
@@ -960,8 +960,8 @@ function stageAndVerify(deps: AutoUpdateDeps, target: string): Staged | { ok: fa
   if (!verdict.ok) return fail(AUTO_UPDATE_REASONS.sourceNotVerified, verdict.reason);
   const onMain = judgeCommitOnMain(deps.exec(process.execPath, ['-e', COMPARE_SCRIPT, compareUrl(verdict.gitCommit)], { cwd: stage, env: compareEnv(deps.env), timeoutMs: 40_000 }), verdict.gitCommit, proxyConfigured(deps.env) && !nodeUsesEnvProxy());
   if (!onMain.ok) return fail(onMain.code === 'notOnMain' ? AUTO_UPDATE_REASONS.commitNotOnMain : AUTO_UPDATE_REASONS.commitUnconfirmed, onMain.detail);
-  const shrinkwrap = deps.exec('tar', ['-xzOf', tarball, 'package/npm-shrinkwrap.json']);
-  const pinned = shrinkwrap.status === 0 ? judgeShrinkwrap(shrinkwrap.stdout, target) : { ok: false as const, detail: shrinkwrap.startupError || 'the package has no npm-shrinkwrap.json' };
+  const shrinkwrap = deps.exec('tar', ['-xzOf', tarball, 'package/memesh-lock.json']);
+  const pinned = shrinkwrap.status === 0 ? judgeShrinkwrap(shrinkwrap.stdout, target) : { ok: false as const, detail: shrinkwrap.startupError || 'the package has no memesh-lock.json' };
   if (!pinned.ok) return fail(AUTO_UPDATE_REASONS.dependenciesNotPinned, pinned.detail);
   // The pinned install is done here first, with nothing installed yet: a registry that answers 500, a download that hangs or a hash
   // that does not match then stops the update while the version that works is still in place. (The real install repeats it, from the cache.)
@@ -970,6 +970,8 @@ function stageAndVerify(deps: AutoUpdateDeps, target: string): Staged | { ok: fa
   const unpack = deps.exec('tar', ['-xzf', tarball, '-C', unpackDir, '--no-same-owner']);
   const unpacked = path.join(unpackDir, 'package');
   if (unpack.status !== 0 || !fs.existsSync(unpacked)) return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, unpack.startupError || 'the verified package could not be unpacked');
+  try { fs.writeFileSync(path.join(unpacked, 'package-lock.json'), shrinkwrap.stdout); }
+  catch (err) { return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, err instanceof Error ? err.message : String(err)); }
   const rehearsal = execNpm(deps.exec, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: unpacked, timeoutMs: PIN_TIMEOUT_MS });
   if (rehearsal.status !== 0) return fail(AUTO_UPDATE_REASONS.dependenciesNotFetched, commandFailure(rehearsal, 'npm ci'));
   let lockIntegrity: unknown;
@@ -1248,7 +1250,8 @@ function installGlobal(deps: AutoUpdateDeps, tarball: string): { ok: true } | { 
   };
   const install = execNpm(deps.exec, ['install', '-g', '--ignore-scripts', tarball]);
   if (install.status !== 0) return failed(AUTO_UPDATE_REASONS.installFailed, install.stderr);
-  if (!fs.existsSync(path.join(installedDir, 'npm-shrinkwrap.json'))) return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, 'the installed package has no npm-shrinkwrap.json');
+  try { fs.copyFileSync(path.join(installedDir, 'memesh-lock.json'), path.join(installedDir, 'package-lock.json')); }
+  catch (err) { return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, err instanceof Error ? err.message : String(err)); }
   const pin = execNpm(deps.exec, ['ci', '--omit=dev', '--ignore-scripts', '--no-audit', '--no-fund'], { cwd: installedDir, timeoutMs: PIN_TIMEOUT_MS });
   if (pin.status !== 0) return failed(AUTO_UPDATE_REASONS.dependencyPinFailed, commandFailure(pin, 'npm ci'));
   if (had) { try { fs.rmSync(rollbackDir, { recursive: true, force: true }); } catch { /* a copy that stays is swept by the next run */ } }

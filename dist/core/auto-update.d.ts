@@ -46,7 +46,7 @@ export declare const AUTO_UPDATE_REASONS: {
     readonly rollbackUnavailable: "not installed: a copy of the installed version could not be made, so a failed install could not be undone";
     readonly commitNotOnMain: "not installed: the release was not built from a commit on the main branch of the official repository";
     readonly commitUnconfirmed: "not installed: it could not be confirmed that the release commit is on the main branch of the official repository (GitHub did not answer); a later run tries again";
-    readonly dependenciesNotPinned: "not installed: the package does not pin its dependencies (no complete npm-shrinkwrap.json), so what would be installed could not be checked";
+    readonly dependenciesNotPinned: "not installed: the package does not pin its dependencies (no complete memesh-lock.json), so what would be installed could not be checked";
     readonly codexMarketplaceUnreadable: "not installed: the Codex config.toml could not be read, so it is not known whether the pcircle-memesh marketplace is the official one";
     readonly codexHomeUnknown: "not installed: the Codex directory this plugin lives in could not be worked out from where it is installed, so the Codex plugin was left alone";
     readonly codexMarketplaceMissing: "not installed: the Codex marketplace pcircle-memesh is not in config.toml and MeMesh did not remove it, so it was taken as removed on purpose and not added back; `memesh update --reinstall` adds it back (pinned to this release) and installs the plugin";

@@ -1,6 +1,6 @@
 # Conversation messages
 
-This guide describes the current MCP and CLI conversation interface. It is a local candidate contract, not evidence that every host, native notification, or cross-machine path has been accepted at runtime.
+Use the MCP tool or CLI to send messages between registered conversations.
 
 ## Four actions
 
@@ -40,28 +40,25 @@ Messages and their audit events are retained for 14 days when store maintenance 
 
 ## Hooks and host boundaries
 
-Both plugin manifests declare the SessionStart and UserPromptSubmit message hook. Claude Stop can block with complete pending envelopes; Codex also emits them after Bash tool calls. Output must succeed before delivery is recorded; overflow or a failed pipe remains queued. Private per-conversation ledgers and locks retain repeat, active-Stop and concurrency safeguards. Previously surfaced IDs are excluded before applying the 8,000-byte budget, so they cannot hide a later new message. Memory hooks no longer print principal addresses or instructions for retired actions. Private subprocess/MCP checks do not prove native-host execution, wakeup or model reading.
+Both plugins deliver pending messages at SessionStart and UserPromptSubmit. Claude Stop can block with pending envelopes; Codex also emits them after Bash tool calls. Delivery is recorded only after output succeeds. Overflow and pipe failures leave messages queued; already surfaced messages do not hide later ones. These delivery records do not prove that a model read or acted on the body.
 
-The default conversation-store opening imports available legacy graph messages younger than 14 days, including handled history, and checks the configured graph path's parent directory for its named archive and the historical shared archive. It preserves original message IDs, bodies, send times and available audit facts; importing does not restart the 14-day lifetime. Explicit destinations or borrowed sources do not discover ambient archives. Archive sources are not deleted or chmodded by the import; the live graph still uses its existing file guard, and a read-only SQLite open can create private auxiliary files. Unsafe or unreadable sources cause a visible failure instead of being silently treated as imported. An unidentifiable legacy name stays in an unclaimable audit namespace; the owner CLI can inspect it. Legacy cleanup refreshes the audit under its source write lock before deleting a batch. A failed later refresh preserves that batch, while earlier committed batches, an existing archive and the failed diagnostic can remain. This is not recovery of already removed history or proof of an installed older-release upgrade.
+## Existing history
+
+Opening the default store imports available legacy graph and archive messages younger than 14 days, including handled history. Original IDs, bodies, timestamps and available audit facts are preserved; the retention clock does not restart. After copying succeeds, the old message tables are retired while memories and session aliases remain. A copy or retirement failure leaves the old tables intact for retry. Borrowed sources and archives are not deleted or chmodded. Unsafe or unreadable sources produce a visible error. Unknown legacy names remain audit-only identities, visible through CLI status. Already removed history cannot be recovered.
 
 ## Legacy HTTP messaging
 
-The source still contains the older durable HTTP/agent-message lifecycle for compatibility, including project-scoped routing, polling, fetching and receipt records. It is not the MCP/CLI four-action conversation API above, and its limits, host adapters and retention rules must not be inferred from this guide. See [`src/transports/agent-messaging.ts`](../../src/transports/agent-messaging.ts) and the HTTP reference for that legacy surface. Do not mix its `poll`, `fetch`, `intake`, `ack`, `disposition`, or `receipts` fields into a conversation call.
+`POST /v1/message` is retired and returns `410 Gone`. Use the conversation interface above.
 
-## Repeatable owner-run live checks
+## Check delivery
 
-Use two actual registered conversations and their own host identity. The
-current source declares that message hook for Claude and Codex. The private
-Codex-shaped hook/MCP flow is checked; native-host execution, model reading
-and native wakeup remain separately unverified.
+Use two registered conversations:
 
 1. In a registered conversation, discover an address that is actually listed.
 2. Send a short synthetic body to that address with kind `question`.
 3. Trigger the recipient's next prompt hook and inspect the delivered body.
 4. Reply to its sender with `reply_to`; inspect both conversations' status.
 5. Confirm that an unknown address and an oversized envelope produce rejected
-   audit events. Queue acceptance alone does not satisfy steps3 or4.
+   audit events. A queued message has not yet been delivered or read.
 
-After successful migration, the owner can use the original message id in
-conversation-store status. If it is not listed, preserve the old notice as
-pending; do not delete the old message or claim it was delivered.
+Use the original message ID to inspect migrated history with `memesh message status --message-id <uuid> --json`.

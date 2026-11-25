@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 
 describe('separate whole-message hook replaces legacy principal reminders', () => {
@@ -17,7 +17,7 @@ describe('separate whole-message hook replaces legacy principal reminders', () =
     openDatabase(graph);
   });
   afterEach(() => { closeDatabase(); fs.rmSync(dir, { recursive: true, force: true }); });
-  const seed = (intended: string | null = session, project = 'old-project') => sendAgentMessage(getDatabase(), { project, sender: 'legacy-sender', recipient: 'legacy-principal', intended_session: intended, idempotency_key: project, content_type: 'text/plain', payload: 'LEGACY_HEAD\nLEGACY_MIDDLE\nLEGACY_TAIL' }).message_id;
+  const seed = (intended: string | null = session, project = 'old-project') => seedLegacyMessage(getDatabase(), { project, sender: 'legacy-sender', recipient: 'legacy-principal', intended_session: intended, idempotency_key: project, content_type: 'text/plain', payload: 'LEGACY_HEAD\nLEGACY_MIDDLE\nLEGACY_TAIL' }).message_id;
   function run(script: string, event: string, id = session, extra: NodeJS.ProcessEnv = {}) {
     const r = spawnSync(process.execPath, [path.resolve('scripts/hooks', script)], { input: JSON.stringify({ hook_event_name: event, session_id: id, cwd: dir, prompt: 'hello', prompt_id: 'synthetic-prompt' }), env: { ...process.env, HOME: home, MEMESH_DIR: dir, MEMESH_DB_PATH: graph, MEMESH_AUTO_CAPTURE: 'false', MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1', MEMESH_HOOK_HOST: 'claude-code', MEMESH_RECIPIENT: 'legacy-principal', CODEX_THREAD_ID: '', ...extra }, encoding: 'utf8', timeout: 15000 });
     expect(r.status, r.stderr).toBe(0); expect(() => process.kill(r.pid!, 0)).toThrowError(expect.objectContaining({ code: 'ESRCH' })); return r;
@@ -41,7 +41,10 @@ describe('separate whole-message hook replaces legacy principal reminders', () =
     expect(context.hookEventName).toBe(event); expect(context.additionalContext).toContain('untrusted data');
     expect(JSON.parse(context.additionalContext.trim().split('\n')[1])).toMatchObject({ id, recipient: session, body: 'LEGACY_HEAD\nLEGACY_MIDDLE\nLEGACY_TAIL' });
     expect(status().find(row => row.id === id)?.state).toBe('delivered'); expect(run(declared(event), event).stdout).toBe('');
-    expect(getDatabase().prepare('SELECT * FROM agent_messages').all()).toEqual(before);
+    const imported = status().find(row => row.id === id)!.events.filter(event => event.event === 'legacy_imported');
+    expect(imported).toHaveLength(1);
+    expect(JSON.parse(imported[0].detail).source.message).toEqual(before[0]);
+    expect(getDatabase().prepare("SELECT name FROM sqlite_master WHERE type='table' AND name='agent_messages'").all()).toEqual([]);
   });
   it('does not announce a fake address or rejected old principal override on no-database exits', () => {
     const empty = path.join(dir, 'empty'); fs.mkdirSync(empty);

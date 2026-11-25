@@ -9,14 +9,11 @@ import {
   ListToolsRequestSchema,
 } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'url';
-import { startAgentMessageExpiryScheduler } from '../core/agent-message-expiry.js';
-import { openDatabase, closeDatabase, getDatabase, isDatabaseOpen } from '../db.js';
+import { openDatabase, closeDatabase } from '../db.js';
 import { databaseOpenFailureReport } from '../core/database-diagnosis.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
-import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
-import type { RouterHostConnection } from '../host-runtime/router-client.js';
 import { updateControlDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
 import { findPackageRoot } from '../core/package-root.js';
 import { DEFAULT_SAVE_INSTRUCTION } from '../core/citation-rule.js';
@@ -42,22 +39,7 @@ const server = new Server(
   { capabilities: { tools: {} }, instructions: DEFAULT_SAVE_INSTRUCTION }
 );
 
-let presence: RouterHostConnection | undefined;
 let closing = false;
-server.oninitialized = () => {
-  if (normalizeClientHost(server.getClientVersion()?.name) !== 'claude-code') return;
-  void (async () => {
-    const roots = server.getClientCapabilities()?.roots
-      ? (await server.listRoots(undefined, { timeout: 3000 })).roots.map(root => root.uri)
-      : [];
-    const connection = await startClaudeInboxPresence(roots);
-    if (closing) await connection?.close();
-    else presence = connection;
-  })().catch(error => {
-    // Registration is optional to core memory tools, but never silently green.
-    console.error('[memesh] Claude online registration:', error instanceof Error ? error.message : String(error));
-  });
-};
 
 // List tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -141,11 +123,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   );
 });
 
-// Start
-// Agent messages are kept one day (core/agent-message-expiry.ts). This server
-// is a long-lived process with the database open, so it runs the pass too.
-let stopExpiry: () => void = () => undefined;
-
 async function main() {
   // The agent that started this server is a running host: the updater waits
   // for it to exit before it replaces any file (this covers hosts with no hooks).
@@ -163,7 +140,6 @@ async function main() {
     console.error(databaseOpenFailureReport(err, getDbPath()));
     throw err;
   }
-  stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'mcp-server' });
   const transport = new StdioServerTransport();
   await server.connect(transport);
   // A host that wires only this server runs no SessionStart hook, so nothing else would start the updater there. It is the same
@@ -177,11 +153,9 @@ async function main() {
   }
 }
 
-async function shutdown() {
+function shutdown() {
   if (closing) return;
   closing = true;
-  stopExpiry();
-  await presence?.close();
   try { closeDatabase(); } catch { /* best effort */ }
   process.exit(0);
 }

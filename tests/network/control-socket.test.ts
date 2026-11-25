@@ -49,7 +49,7 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
     const signed = signRoster(identity, createRoster(NETWORK_ID, {
       machine_id: identity.machineId, name: 'mac', person: 'kt', joined_at: new Date().toISOString(),
     }));
-    const db = openNetworkStore(networkMetadataPath(target.dataDir), { metadataOnly: true });
+    const db = openNetworkStore(networkMetadataPath(target.dataDir));
     insertConfig(db, {
       network_id: NETWORK_ID, owner_id: identity.machineId, machine_id: identity.machineId,
       machine_name: 'mac', person: 'kt', relay_url: relay, roster_json: signed.roster_json, roster_signature: signed.signature,

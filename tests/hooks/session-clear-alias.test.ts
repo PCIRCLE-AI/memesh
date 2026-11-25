@@ -1,16 +1,4 @@
-/**
- * #497 and `/clear`: Claude Code gives the session a new id for its hooks and
- * Bash, while its MCP servers (the memesh MCP server, the claude channel host)
- * keep the id they were started with. A message meant for the session must
- * still reach it, and still be intakeable, under either id.
- *
- * What links the two ids is the `claude` process both run under: every
- * SessionStart records (launcher pid, launcher start time) -> session id, and
- * a SessionStart with source "clear" links its new id to the one recorded for
- * the same process before. These tests run session-start.js under a real
- * stand-in `claude` process (a node script named `claude`), so the ancestry
- * walk and `ps` are real.
- */
+// `/clear` keeps launcher aliases and ordinary prompt capture scoped to the session.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawn, spawnSync } from 'child_process';
 import fs from 'fs';
@@ -18,11 +6,9 @@ import os from 'os';
 import path from 'path';
 import { createRequire } from 'module';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
-import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
-import { sessionAliasChain, unreadDeliveryCount, unreadMessageRefsFor } from '../../src/core/agent-message-inbox.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
-import { registerAgentSession } from '../helpers/agent-session-fixture.js';
 
 const require = createRequire(import.meta.url);
 // Plain JS helpers with no type declarations.
@@ -211,16 +197,13 @@ describe('Feature: #497 /clear keeps one session one session', () => {
       expect(aliases()).toEqual([]);
     });
 
-    it('keeps the spawn-time id reachable through more than nine /clears', () => {
+    it('records every link through more than nine /clears', () => {
       const ids = Array.from({ length: 12 }, (_, i) => `00000000-0000-4000-8000-${String(i).padStart(12, '0')}`);
       recordSessionLauncher(() => getDatabase(), { sessionId: ids[0], source: 'startup', launcher });
       for (const id of ids.slice(1)) recordSessionLauncher(() => getDatabase(), { sessionId: id, source: 'clear', launcher });
 
       expect(aliases()).toHaveLength(11);
-      const chain = sessionAliasChain(getDatabase(), ids[11]);
-      expect(chain.has(ids[0])).toBe(true);
-      expect(chain.size).toBe(12);
-      expect(sessionAliasChain(getDatabase(), ids[0]).has(ids[11])).toBe(true);
+      expect(aliases()).toEqual(ids.slice(1).map((id, index) => ({ session_id: id, previous_session_id: ids[index] })));
     });
 
     posixOnly('records a first startup with no database file yet under its own reason', () => {
@@ -249,30 +232,26 @@ describe('Feature: #497 /clear keeps one session one session', () => {
     });
   });
 
-  describe('after /clear, a message meant for the session', () => {
-    async function sendIntended(session: string, key: string) {
-      return executeAgentMessageAction(getDatabase(), {
-        action: 'send', project: 'team-room', sender: 'codex-lead', recipient: 'claude-implementer',
-        intended_session: session, idempotency_key: key, payload: 'for the session', content_type: 'text/plain',
-      }, { transport: 'mcp', sourceHost: 'test-host' }) as Promise<{ message_id: string }>;
-    }
+  describe('prompt capture after /clear', () => {
+
     const prompt = (sessionId: string) => spawnSync('node', [path.resolve('scripts/hooks/user-prompt-intent.js')], {
       input: JSON.stringify({ prompt: 'hello there', session_id: sessionId, cwd }),
       env: { ...process.env, HOME: tmp, MEMESH_DB_PATH: dbPath, MEMESH_RECIPIENT: 'claude-implementer' },
       encoding: 'utf8',
       timeout: 15000,
     });
-    const intake = (messageId: string, hostSession: string, key: string) => executeAgentMessageAction(getDatabase(), {
-      action: 'intake', project: 'team-room', recipient: 'claude-implementer', message_id: messageId,
-      intake_state: 'ingested', idempotency_key: key,
-    }, { transport: 'mcp', sourceHost: 'claude-code', hostSession });
+
     const cleared = () => underOneClaude([{ source: 'startup', session_id: OLD }, { source: 'clear', session_id: NEW }]);
 
     posixOnly('captures ordinary prompts after clear without reviving legacy reminders or consuming the aliased inbox', async () => {
       cleared();
-      await sendIntended(OLD, 'k-old');
-
       const db = getDatabase();
+      installLegacyMessageSchema(db);
+      db.prepare('INSERT INTO agent_messages(message_id,project,sender,recipient,content_type,privacy,payload_json,provenance_json) VALUES (?,?,?,?,?,?,?,?)')
+        .run('alias-message', 'team-room', 'legacy-fixture', 'claude-implementer', 'text/plain', 'local', JSON.stringify('legacy fixture'), '{}');
+      db.prepare('INSERT INTO agent_message_deliveries(delivery_id,message_id,project,recipient,intended_session) VALUES (?,?,?,?,?)')
+        .run('alias-delivery', 'alias-message', 'team-room', 'claude-implementer', OLD);
+
       const before = db.prepare('SELECT * FROM agent_message_deliveries ORDER BY delivery_id').all();
       for (const session of [NEW, OTHER]) {
         const result = prompt(session);
@@ -291,51 +270,13 @@ describe('Feature: #497 /clear keeps one session one session', () => {
       }
       // These are legacy alias guarantees, not new messages.js clear routing.
       expect(aliases()).toEqual([{ session_id: NEW, previous_session_id: OLD }]);
-      expect(unreadDeliveryCount(db, 'team-room', 'claude-implementer', NEW)).toBe(1);
-      expect(unreadDeliveryCount(db, 'team-room', 'claude-implementer', OTHER)).toBe(0);
       expect(db.prepare('SELECT * FROM agent_message_deliveries ORDER BY delivery_id').all()).toEqual(before);
     });
 
-    posixOnly('counts it as waiting under either id in core too (briefing, CLI), and not for another session', async () => {
-      cleared();
-      await sendIntended(OLD, 'k-core');
-      const db = getDatabase();
 
-      expect(unreadMessageRefsFor(db, 'claude-implementer', NEW)).toHaveLength(1);
-      expect(unreadDeliveryCount(db, 'team-room', 'claude-implementer', NEW)).toBe(1);
-      expect(unreadMessageRefsFor(db, 'claude-implementer', OTHER)).toHaveLength(0);
-    });
 
-    posixOnly('accepts intake from the MCP server holding the old id and from the CLI holding the new one', async () => {
-      cleared();
-      const forNew = await sendIntended(NEW, 'k-new');
-      const forOld = await sendIntended(OLD, 'k-old-2');
 
-      await expect(intake(forNew.message_id, OLD, 'i-1')).resolves.toMatchObject({ receipt_kind: 'intake' });
-      await expect(intake(forOld.message_id, NEW, 'i-2')).resolves.toMatchObject({ receipt_kind: 'intake' });
-      await expect(intake((await sendIntended(OLD, 'k-old-3')).message_id, OTHER, 'i-3'))
-        .rejects.toMatchObject({ code: 'intended_for_other_session' });
-    });
 
-    posixOnly('treats the new id as the same session for a session-targeted delivery to the old id', async () => {
-      // The channel host restarted and registered under the new id.
-      registerAgentSession('team-room', 'claude-implementer', { sessionId: OLD, adapterKind: 'claude-channel' });
-      registerAgentSession('team-room', 'claude-implementer', { sessionId: NEW, adapterKind: 'claude-channel' });
-      cleared();
-      const sent = await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project: 'team-room', sender: 'codex-lead', recipient: OLD, target_kind: 'session',
-        idempotency_key: 'k-session', payload: 'x', content_type: 'text/plain',
-      }, { transport: 'mcp', sourceHost: 'test-host' }, { sendRouterRequest: async () => ({ delivered: false }) })
-        .catch(() => undefined);
-      expect(sent).toBeUndefined(); // refused natively, stored durably
-      const row = getDatabase().prepare(
-        "SELECT message_id FROM agent_message_deliveries WHERE recipient = ? AND target_kind = 'session'",
-      ).get(OLD) as { message_id: string };
 
-      await expect(executeAgentMessageAction(getDatabase(), {
-        action: 'intake', project: 'team-room', recipient: OLD, message_id: row.message_id,
-        intake_state: 'ingested', idempotency_key: 'i-session',
-      }, { transport: 'cli', sourceHost: 'cli', hostSession: NEW })).resolves.toMatchObject({ receipt_kind: 'intake' });
-    });
   });
 });

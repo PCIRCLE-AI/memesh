@@ -75,8 +75,8 @@ hook. Claude Stop can block with complete pending messages; Codex also receives
 them after Bash tool calls. Delivery is recorded only after successful output.
 Memory hooks no longer publish legacy principal addresses or old inbox-action
 instructions. Private hook/MCP checks do not establish native-host, wakeup or
-model-visible acceptance. Retained HTTP routing and receipts are a separate
-legacy surface, not conversation MCP/CLI fields.
+model-visible acceptance. The retired HTTP message endpoint returns `410 Gone`;
+use the conversation MCP/CLI interface above.
 
 ## All 12 MCP tools
 

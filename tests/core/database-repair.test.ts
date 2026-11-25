@@ -10,6 +10,7 @@ import { repairDatabase, usableMemoryBackups } from '../../src/core/database-rep
 import { repairCommand } from '../../src/core/database-diagnosis.js';
 import { registerLiveHost, updateControlDir } from '../../src/core/auto-update.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 
 const fixture = useTestDatabase('memesh-database-repair-');
 const missingSqlite = () => path.join(fixture.tmpDir, 'sqlite3-not-installed');
@@ -20,6 +21,7 @@ function seed(n = 20) {
 }
 function damage(table: string) {
   const db = getDatabase();
+  if (table === 'agent_message_deliveries') installLegacyMessageSchema(db);
   const row = db.prepare('SELECT rootpage FROM sqlite_master WHERE name=?').get(table) as { rootpage: number };
   const { page_size: page } = db.prepare('PRAGMA page_size').get() as { page_size: number };
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
@@ -36,6 +38,7 @@ function inspect() {
 function pendingWal(corrupt = true): void {
   seed();
   const db = getDatabase();
+  installLegacyMessageSchema(db);
   const row = db.prepare("SELECT rootpage FROM sqlite_master WHERE name='agent_message_deliveries'").get() as { rootpage: number };
   const page = (db.prepare('PRAGMA page_size').get() as { page_size: number }).page_size;
   db.exec('PRAGMA wal_checkpoint(TRUNCATE)');

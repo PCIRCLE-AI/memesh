@@ -42,7 +42,7 @@ function withoutRoutingBackfill(source) {
   return source.replace(method, checked);
 }
 
-// The public MCP and CLI share the conversation schema. Legacy HTTP is separate.
+// The public MCP and CLI share the conversation schema. HTTP messaging is retired.
 for (const file of ['src/transports/conversation-messaging.ts', 'dist/transports/conversation-messaging.js']) {
   const source = read(file);
   const section = /ConversationMessageActionSchema = z\.discriminatedUnion\('action', \[([\s\S]*?)\]\);/.exec(source)?.[1] ?? '';
@@ -62,7 +62,9 @@ for (const file of ['src/core/schema-export.ts', 'dist/core/schema-export.js']) 
 for (const file of ['src/transports/cli/cli.ts', 'dist/transports/cli/cli.js']) {
 const cli = read(file);
 const start = cli.indexOf('conversationMessageCmd =');
-const end = cli.indexOf('legacyMessageCmd =', start);
+const program = /conversationMessageCmd =\s*([A-Za-z_][A-Za-z_0-9]*)\s*\.command\(['"]message['"]\)/.exec(cli)?.[1];
+const nextCommand = program ? new RegExp(`\\b${program}\\s*\\.command\\(['"]briefing['"]\\)`).exec(cli.slice(start)) : null;
+const end = nextCommand ? start + nextCommand.index : -1;
 const publicCli = start >= 0 && end > start ? cli.slice(start, end) : '';
 const commands = [...publicCli.matchAll(/\.command\(["']([^"']+)["']\)/g)].map(m => m[1]);
 if (commands.join(',') !== ['message', ...ACTIONS].join(',')) missing.push(`${file} (public message commands must be exactly four actions)`);
@@ -85,7 +87,14 @@ const rows = section === null ? [] : [...section.matchAll(/^\| `([^`]+)` \|/gm)]
 if (rows.join(',') !== ACTIONS.join(',')) missing.push('docs/api/API_REFERENCE.md (message action rows must be exactly four actions)');
 for (const file of ['dist/mcp/server.js', 'dist/transports/http/server.js']) read(file);
 for (const file of ['src/transports/http/server.ts', 'dist/transports/http/server.js']) {
-  tokens(file, ['MessageBody', 'executeAgentMessageAction', "transport: 'http'"]);
+  pattern(file, /import\s*\{\s*RETIRED_ROUTES\s*\}\s*from\s*'\.\/retired-routes\.js'/, 'retired HTTP route registry import');
+  pattern(file, /for\s*\(const \[retiredRoute, error\] of Object\.entries\(RETIRED_ROUTES\)\)\s*\{\s*app\.post\(retiredRoute,\s*\(_req, res\)\s*=>\s*\{\s*res\.status\(410\)\.json\(\{\s*success:\s*false,\s*errorCode:\s*'route\.retired'(?:\s+satisfies ErrorCode)?,\s*error\s*\}\);\s*\}\);\s*\}/, 'fixed HTTP 410 retired-route handler');
+  const source = read(file);
+  if (/executeAgentMessageAction|MessageBody|app\.(?:post|all|use)\(\s*['"]\/v1\/message['"]/.test(source)) missing.push(`${file} (retired HTTP message dispatcher must not exist)`);
+}
+for (const file of ['src/transports/http/retired-routes.ts', 'dist/transports/http/retired-routes.js']) {
+  pattern(file, /['"]\/v1\/message['"]:\s*'POST \/v1\/message is retired\. Use the message tool or CLI; HTTP does not identify a host conversation\.'/,
+    'explicit message route retirement');
 }
 tokens('.claude-plugin/mcp.json', ['memesh', '${CLAUDE_PLUGIN_ROOT}/dist/mcp/server.js']);
 tokens('.claude-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServers": "./.claude-plugin/mcp.json"']);
@@ -93,7 +102,10 @@ tokens('.codex-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServe
 tokens('.codex-plugin/mcp.json', ['"mcpServers"', '"memesh"', '"command": "node"', '"args": ["./dist/mcp/server.js"]', '"cwd": "."']);
 tokens('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
 if (fs.existsSync(path.join(root, '.mcp.json'))) missing.push('.mcp.json (must not exist: Claude discovers it as project-scoped)');
-tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'pre-compact.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'codex-session.js', 'startup|resume', 'SessionEnd']);
+tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'pre-compact.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'messages.js']);
+for (const file of ['hooks/hooks.json', '.codex-plugin/plugin.json']) {
+  if (read(file).includes('dist/host-runtime/codex-session.js')) missing.push(`${file} (retired Codex companion must not be wired)`);
+}
 tokens('package.json', ['"^22.23.5 || ^24.22.3 || ^26.13.1"', 'check-agent-message-sync.mjs', 'test:packaged']);
 if (missing.length) {
   process.stderr.write(`agent-message-sync: FAIL (${missing.length} drift item(s))\n`);

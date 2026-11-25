@@ -94,15 +94,14 @@ recipients are queued. `queued` is not delivery or a reply.
 Messages and audit events remain for 14 days, with one undelivered notice after
 a day. `read --message-id <id>` records delivery/read and `status --json` shows
 the CLI audit view. These facts do not prove host-native or model-visible
-delivery; verify runtime integration separately. Legacy HTTP polling, fetch and
-receipt paths remain compatibility behavior, not aliases for conversation
-actions.
+delivery; verify runtime integration separately. The old HTTP message endpoint
+is retired; use the conversation interface below.
 
-### Optional legacy local-host setup
+### Conversation messages
 
 The current conversation MCP/CLI interface needs no router setup command: use `discover`, `send`, `read`, and `status`. Send body text only with `--payload-stdin`; host identity supplies the sender and the rendered envelope is capped at 8,000 UTF-8 bytes. Known offline recipients are queued, not delivered.
 
-The source retains an older owner-operated HTTP/agent-message router and host setup for compatibility. Keep its private configuration owner-only and require explicit Channel admission. `memesh-router` is its owner diagnostic/legacy entrypoint, not a prerequisite for conversation MCP/CLI. Do not copy project, polling, fetch, intake, native-envelope, or receipt flags into new conversation calls. Host-native/Codex acceptance remains separate runtime verification.
+Messages and audit events are retained for 14 days. The retired HTTP message endpoint returns `410 Gone`; the old router and companion commands are no longer shipped. Claude Channel use requires explicit host admission.
 
 ## 3. Codex CLI
 
@@ -183,7 +182,7 @@ npm-global installs, the Claude Code plugin and the Codex plugin are all covered
   without running any install script, and applies the pinned dependency versions,
   in the way each install method allows: an npm-global install rehearses the
   pinned install first, then installs the verified package and runs `npm ci` from
-  its `npm-shrinkwrap.json`, and puts the previous version back if that fails; the
+  its verified `memesh-lock.json` copied to `package-lock.json`, and restores the previous version if that fails; the
   Claude Code plugin installs the dependencies with `npm ci` from the lockfile of
   the release commit; the Codex plugin is installed from a self-contained bundle.
 - **See what it did**: `memesh doctor` (row "Automatic updates").

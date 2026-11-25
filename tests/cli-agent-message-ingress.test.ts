@@ -7,9 +7,8 @@ import path from 'node:path';
 import { Readable } from 'node:stream';
 import { DatabaseSync } from 'node:sqlite';
 import { closeDatabase, openDatabase } from '../src/db.js';
-import { AGENT_MESSAGE_PROJECT_TABLES } from '../src/core/agent-scope-id.js';
-import { pollAgentEvents, sendAgentMessage } from '../src/core/agent-messaging.js';
-import { readCliMessagePayloadFromStdin } from '../src/transports/cli/cli.js';
+import { seedLegacyMessage } from './helpers/agent-session-fixture.js';
+import { readConversationMessageBodyFromStdin } from '../src/transports/cli/cli.js';
 
 const cliLoader = `
   import { createServer } from 'vite';
@@ -26,56 +25,36 @@ function cliArgs(...args: string[]): string[] {
   return ['--input-type=module', '--eval', cliLoader, ...args];
 }
 
-function readOwnerPrivateRegularFile(filePath: string): string {
-  const descriptor = fs.openSync(filePath, fs.constants.O_RDONLY | fs.constants.O_NOFOLLOW);
-  try {
-    const stat = fs.fstatSync(descriptor);
-    expect(stat.isFile()).toBe(true);
-    expect(stat.mode & 0o077).toBe(0);
-    return fs.readFileSync(descriptor, 'utf8');
-  } finally {
-    fs.closeSync(descriptor);
-  }
-}
-
-describe('legacy internal stdin payload parser', () => {
-  it('keeps a multi-byte character that is split across two stdin writes intact', async () => {
+describe('conversation stdin payload reader', () => {
+  it('keeps a multi-byte character split across stdin writes intact', async () => {
     const bytes = Buffer.from('hi 你好', 'utf8');
-    // 你 is three bytes starting at offset 3; cutting at 4 leaves it half in each chunk.
     const stdin = Readable.from([bytes.subarray(0, 4), bytes.subarray(4)], { objectMode: true });
-    await expect(readCliMessagePayloadFromStdin('text/plain', stdin)).resolves.toBe('hi 你好');
+    await expect(readConversationMessageBodyFromStdin(stdin)).resolves.toBe('hi 你好');
   });
 
-  it('counts the limit in bytes of what was written, whatever the chunking', async () => {
-    const stdin = Readable.from([Buffer.alloc(40_000, 'x'), Buffer.alloc(40_000, 'x')], { objectMode: true });
-    await expect(readCliMessagePayloadFromStdin('text/plain', stdin)).rejects.toThrow(/exceeds 65536 UTF-8 bytes/);
+  it('keeps leading and trailing whitespace for the message audit', async () => {
+    await expect(readConversationMessageBodyFromStdin(Readable.from([' \nbody\n ']))).resolves.toBe(' \nbody\n ');
   });
 });
 
-describe('CLI project and managed-host safety', () => {
-  it.skipIf(process.platform === 'win32')('refuses a filesystem path as --project or --principal, before writing any config', () => {
-    // `memesh agent setup` is the fourth producer of a routing identity, and
-    // the only one outside the message tool. `send` refuses a path-shaped
-    // project or recipient, so a host configured under one would register a
-    // principal nothing can address — and the failure would surface as an
-    // error about a SENDER's argument, later, somewhere else.
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
+describe('CLI project and retired host safety', () => {
+  it('rejects retired agent setup before writing config', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-retired-agent-'));
     try {
-      for (const [flag, value] of [['--project', '/Users/x/Projects/repo'], ['--principal', '/root']] as const) {
-        const args = ['agent', 'setup', 'codex', '--project', 'test', '--principal', 'reviewer', '--workspace', home];
-        args[args.indexOf(flag) + 1] = value;
-        const setup = spawnSync(process.execPath, cliArgs(...args), {
-          encoding: 'utf8',
-          env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-        });
-        expect(setup.status, setup.stdout).not.toBe(0);
-        expect(setup.stderr).toContain(`${flag}:`);
-        expect(setup.stderr).toContain('must be a stable identifier, not a filesystem path');
-      }
-      expect(fs.existsSync(path.join(home, '.memesh', 'hosts', 'codex.json'))).toBe(false);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
+      const result = spawnSync(process.execPath, cliArgs('agent', 'setup', 'codex', '--principal', 'reviewer', '--workspace', home), {
+        encoding: 'utf8',
+        env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: home, MEMESH_DB_PATH: path.join(home, 'memory.db'), MEMESH_AUTO_UPDATE: 'off', MEMESH_AUTO_CAPTURE: 'false' },
+      });
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toMatch(/unknown (?:command|option)/);
+      const help = spawnSync(process.execPath, cliArgs('--help'), {
+        encoding: 'utf8', env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_AUTO_UPDATE: 'off' },
+      });
+      expect(help.status).toBe(0);
+      expect(help.stdout).not.toMatch(/^\s+agent(?:\s|$)/m);
+      expect(fs.existsSync(path.join(home, 'hosts'))).toBe(false);
+      expect(fs.existsSync(path.join(home, 'agent-router.token'))).toBe(false);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 
   it('#519: kg rename-project --apply backs up next to the database, not in the current directory', () => {
@@ -199,217 +178,81 @@ describe('CLI project and managed-host safety', () => {
     }
   });
 
-  // A database prepared in-process (openDatabase takes a path), then driven through the CLI.
-  function seedMessageScopes(home: string, extra: (db: ReturnType<typeof openDatabase>) => void = () => {}): string {
-    const dbFile = path.join(home, 'seeded.db');
-    const db = openDatabase(dbFile);
+  // The CLI operates on memory tags; historical message audit rows stay unchanged.
+  function seedMemoryScopes(home: string, extra: (db: ReturnType<typeof openDatabase>) => void = () => {}): string {
+    const file = path.join(home, 'seeded.db');
+    const db = openDatabase(file);
     try {
-      const send = (project: string, key: string) => sendAgentMessage(db, {
-        project, sender: 'author', recipient: 'reviewer', idempotency_key: key,
-        content_type: 'text/plain', payload: `p-${key}`,
-      });
-      send('mv-old', 'shared');
-      send('mv-old', 'only-old');
-      send('mv-new', 'shared');
+      const id = db.prepare("INSERT INTO entities (name, type) VALUES ('rename-memory', 'note')").run().lastInsertRowid;
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'project:mv-old');
+      db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(id, 'retain this memory');
       extra(db);
-    } finally {
-      closeDatabase();
-    }
-    return dbFile;
+    } finally { closeDatabase(); }
+    return file;
   }
   const rename = (env: NodeJS.ProcessEnv, ...args: string[]) => spawnSync(
     process.execPath, cliArgs('kg', 'rename-project', '--from', 'mv-old', '--to', 'mv-new', ...args), { encoding: 'utf8', env });
 
-  it('#519: the preview counts the same collisions as --apply when a unique index is still to be created', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-idx-'));
+  it('#519: preview counts match applied memory merges and preserve historical audit', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-count-'));
     try {
-      const dbFile = seedMessageScopes(home, (db) => {
-        const polled = pollAgentEvents(db, { project: 'mv-old', recipient: 'reviewer' });
-        const cursor = db.prepare('SELECT * FROM agent_message_cursors WHERE cursor_token = ?').get(polled.next_cursor) as { event_sequence: number; created_at: string };
-        db.prepare('INSERT INTO agent_message_cursors VALUES (?,?,?,?,?)').run('dest-token', 'mv-new', 'reviewer', cursor.event_sequence, cursor.created_at);
-        db.exec('DROP INDEX idx_agent_message_cursors_unique_scope_sequence');
+      const file = seedMemoryScopes(home, db => {
+        db.exec("INSERT INTO tags (entity_id, tag) SELECT id, 'project:mv-new' FROM entities WHERE name = 'rename-memory'");
+        seedLegacyMessage(db, { project: 'mv-old', sender: 'author', recipient: 'reviewer', payload: 'historical audit' });
       });
-      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
-      const scopeRows = (scope: string) => {
-        const reader = new DatabaseSync(dbFile, { readOnly: true });
-        try {
-          return AGENT_MESSAGE_PROJECT_TABLES.reduce(
-            (n, t) => n + (reader.prepare(`SELECT count(*) AS n FROM ${t} WHERE project = ?`).get(scope) as { n: number }).n, 0);
-        } finally {
-          reader.close();
-        }
+      const snapshot = () => {
+        const db = new DatabaseSync(file, { readOnly: true });
+        try { return { audit: db.prepare('SELECT * FROM agent_messages').all(), observations: db.prepare('SELECT * FROM observations').all(), tags: db.prepare('SELECT * FROM tags ORDER BY id').all() }; }
+        finally { db.close(); }
       };
+      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: file };
+      const before = snapshot();
       const preview = rename(env, '--json');
       expect(preview.status, preview.stderr).toBe(0);
-      const newBefore = scopeRows('mv-new');
-      expect(scopeRows('mv-old')).toBe(JSON.parse(preview.stdout).messageRows);
+      expect(snapshot()).toEqual(before);
       const apply = rename(env, '--apply', '--json');
       expect(apply.status, apply.stderr).toBe(0);
-      const p = JSON.parse(preview.stdout);
-      const a = JSON.parse(apply.stdout);
-      expect(p.messageRowsBlocked).toBeGreaterThan(0);
-      expect(p.messageRowsBlocked).toBe(a.messageRowsBlocked);
-      expect(p.messageRows).toBe(a.messageRows);
-      // The database read back after the apply reconciles both numbers.
-      expect(scopeRows('mv-old')).toBe(a.messageRowsBlocked);
-      expect(scopeRows('mv-new') - newBefore).toBe(a.messageRows - a.messageRowsBlocked);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
+      const p = JSON.parse(preview.stdout), a = JSON.parse(apply.stdout);
+      expect(p.merged).toBe(1);
+      expect(a.merged).toBe(p.merged);
+      expect(a.affectedEntities).toBe(p.affectedEntities);
+      expect(a).not.toHaveProperty('messageRows');
+      const after = snapshot();
+      expect(after.audit).toEqual(before.audit);
+      expect(after.observations).toEqual(before.observations);
+      expect(after.tags.map(row => (row as { tag: string }).tag)).toEqual(['project:mv-new']);
+    } finally { fs.rmSync(home, { recursive: true, force: true }); }
   });
 
-  // The preview runs the real apply on a throwaway copy, so it agrees with --apply
-  // for any index the database carries: partial, collated, expression, or non-unique.
-  describe('#519: preview and apply agree on whatever constraints the database has', () => {
-    const cases: Array<[string, string, string, string]> = [
-      ['a partial UNIQUE index keeps its predicate', "CREATE UNIQUE INDEX extra_partial ON agent_message_cursors(project,event_sequence) WHERE recipient='special'", 'alpha', 'beta'],
-      ['a NOCASE UNIQUE index keeps its collation', 'DROP INDEX idx_agent_message_cursors_unique_scope_sequence; CREATE UNIQUE INDEX idx_agent_message_cursors_unique_scope_sequence ON agent_message_cursors(project,recipient COLLATE NOCASE,event_sequence)', 'Reviewer', 'reviewer'],
-      ['a same-name NON-unique index stays non-unique', 'DROP INDEX idx_agent_message_cursors_unique_scope_sequence; CREATE INDEX idx_agent_message_cursors_unique_scope_sequence ON agent_message_cursors(project,recipient,event_sequence)', 'reviewer', 'reviewer'],
-      ['an expression UNIQUE index compares its expression', 'CREATE UNIQUE INDEX extra_expression ON agent_message_cursors(project,lower(recipient),event_sequence)', 'alpha', 'beta'],
-    ];
-    for (const [name, indexSql, oldRecipient, newRecipient] of cases) {
-      it(name, () => {
-        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-constraint-'));
-        try {
-          const dbFile = path.join(home, 'seeded.db');
-          const db = openDatabase(dbFile);
-          try {
-            const insert = db.prepare('INSERT INTO agent_message_cursors VALUES (?,?,?,?,?)');
-            insert.run('old-probe', 'mv-old', oldRecipient, 42, '2026-09-30');
-            insert.run('new-probe', 'mv-new', newRecipient, 42, '2026-09-30');
-            db.exec(indexSql);
-          } finally {
-            closeDatabase();
-          }
-          const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
-          const digest = () => createHash('sha256').update(fs.readFileSync(dbFile)).digest('hex');
-          const before = digest();
-          const preview = rename(env, '--json');
-          expect(preview.status, preview.stderr).toBe(0);
-          expect(digest()).toBe(before);
-          const apply = rename(env, '--apply', '--json');
-          expect(apply.status, apply.stderr).toBe(0);
-          const p = JSON.parse(preview.stdout);
-          const a = JSON.parse(apply.stdout);
-          expect(p.messageRowsBlocked).toBe(a.messageRowsBlocked);
-          expect(p.messageRows).toBe(a.messageRows);
-          const reader = new DatabaseSync(dbFile, { readOnly: true });
-          try {
-            expect((reader.prepare("SELECT count(*) AS n FROM agent_message_cursors WHERE project = 'mv-old'").get() as { n: number }).n).toBe(a.messageRowsBlocked);
-          } finally {
-            reader.close();
-          }
-        } finally {
-          fs.rmSync(home, { recursive: true, force: true });
-        }
-      });
-    }
-
-    for (const [name, trigger, otherTag] of [
-      ['an ignored tag UPDATE', 'CREATE TRIGGER ignore_tag BEFORE UPDATE OF tag ON tags BEGIN SELECT RAISE(IGNORE); END', false],
-      ['an ignored tag DELETE (a merge)', 'CREATE TRIGGER ignore_tag_delete BEFORE DELETE ON tags BEGIN SELECT RAISE(IGNORE); END', true],
-    ] as const) {
-      it(`${name} fails and rolls back instead of splitting a memory from its messages`, () => {
-        const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-tagignore-'));
-        try {
-          const dbFile = seedMessageScopes(home, (db) => {
-            const entity = db.prepare("INSERT INTO entities (name, type) VALUES ('tag-ignore', 'note')").run();
-            const addTag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
-            addTag.run(entity.lastInsertRowid, 'project:mv-old');
-            if (otherTag) addTag.run(entity.lastInsertRowid, 'project:mv-new');
-            db.exec(trigger);
-          });
-          const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile };
-          const state = () => {
-            const reader = new DatabaseSync(dbFile, { readOnly: true });
-            try {
-              return {
-                tags: reader.prepare('SELECT tag FROM tags ORDER BY tag').all(),
-                scopes: AGENT_MESSAGE_PROJECT_TABLES.map((t) => reader.prepare(`SELECT project, count(*) AS n FROM ${t} GROUP BY project ORDER BY project`).all()),
-              };
-            } finally {
-              reader.close();
-            }
-          };
-          const before = state();
-          for (const extra of [[], ['--apply']]) {
-            const r = rename(env, ...extra);
-            expect(r.status).toBe(1);
-            expect(r.stderr.trim().split('\n')).toHaveLength(1);
-            expect(r.stderr).toContain('(a trigger or constraint changed the result)');
-            // One sentence: the reason, then what happened, not two endings.
-            expect(r.stderr).not.toMatch(/\.\s+—/);
-            expect(r.stderr).not.toContain('    at ');
-            expect(state()).toEqual(before);
-          }
-        } finally {
-          fs.rmSync(home, { recursive: true, force: true });
-        }
-      });
-    }
-
-    it('an update that a trigger silently ignores fails and rolls back, in the preview and in --apply', () => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-ignore-'));
+  for (const [name, sql] of [
+    ['ignored update', 'CREATE TRIGGER refuse_change BEFORE UPDATE OF tag ON tags BEGIN SELECT RAISE(IGNORE); END'],
+    ['ignored merge', "INSERT INTO tags (entity_id, tag) SELECT id, 'project:mv-new' FROM entities; CREATE TRIGGER refuse_change BEFORE DELETE ON tags BEGIN SELECT RAISE(IGNORE); END"],
+    ['unique trigger collision', "CREATE TABLE side (value UNIQUE); INSERT INTO side VALUES (1); CREATE TRIGGER refuse_change AFTER UPDATE OF tag ON tags BEGIN INSERT INTO side VALUES (1); END"],
+  ]) {
+    it(`#519: ${name} rejects preview and apply without changing memory`, () => {
+      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-rollback-'));
       try {
-        const dbFile = seedMessageScopes(home, (db) => {
-          db.exec("CREATE TRIGGER ignore_move BEFORE UPDATE OF project ON agent_messages BEGIN SELECT RAISE(IGNORE); END");
-        });
-        const tmp = path.join(home, 'tmp');
-        fs.mkdirSync(tmp);
-        const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile, TMPDIR: tmp };
-        const scopes = () => {
-          const reader = new DatabaseSync(dbFile, { readOnly: true });
-          try {
-            return AGENT_MESSAGE_PROJECT_TABLES.map((t) => reader.prepare(`SELECT project, count(*) AS n FROM ${t} GROUP BY project ORDER BY project`).all());
-          } finally {
-            reader.close();
-          }
+        const file = seedMemoryScopes(home, db => db.exec(sql));
+        const tmp = path.join(home, 'tmp'); fs.mkdirSync(tmp);
+        const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: file, TMPDIR: tmp };
+        const rows = () => {
+          const db = new DatabaseSync(file, { readOnly: true });
+          try { return ['tags', 'entities', 'observations'].map(table => db.prepare(`SELECT * FROM ${table} ORDER BY id`).all()); }
+          finally { db.close(); }
         };
-        const before = scopes();
+        const before = rows();
         for (const extra of [[], ['--apply']]) {
           const r = rename(env, ...extra);
           expect(r.status).toBe(1);
           expect(r.stderr.trim().split('\n')).toHaveLength(1);
           expect(r.stderr).not.toContain('    at ');
-          expect(scopes()).toEqual(before);
-          // The preview's throwaway copy is deleted on the failure path too.
-          expect(fs.readdirSync(tmp).filter((n) => n.startsWith('memesh-rename-preview-'))).toEqual([]);
+          expect(r.stderr).toMatch(/changed the result|UNIQUE constraint failed/);
+          expect(rows()).toEqual(before);
+          expect(fs.readdirSync(tmp).filter(n => n.startsWith('memesh-rename-preview-'))).toEqual([]);
         }
-      } finally {
-        fs.rmSync(home, { recursive: true, force: true });
-      }
+      } finally { fs.rmSync(home, { recursive: true, force: true }); }
     });
-  });
-
-  it('#519: the printed message counts equal what was moved and what was left', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-count-'));
-    try {
-      const dbFile = seedMessageScopes(home);
-      const tmp = path.join(home, 'tmp');
-      fs.mkdirSync(tmp);
-      const env = { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false', MEMESH_DB_PATH: dbFile, TMPDIR: tmp };
-      const p = JSON.parse(rename(env, '--json').stdout);
-      // The preview's throwaway copy is deleted when the preview succeeds.
-      expect(fs.readdirSync(tmp).filter((n) => n.startsWith('memesh-rename-preview-'))).toEqual([]);
-      expect(p.messageRowsBlocked).toBeGreaterThan(0);
-      const moved = p.messageRows - p.messageRowsBlocked;
-      const dry = rename(env);
-      expect(dry.stdout).toContain(`${moved} durable agent-message row(s) scoped to mv-old would move to mv-new, ${p.messageRowsBlocked} would be left in place`);
-      const apply = rename(env, '--apply');
-      expect(apply.status, apply.stderr).toBe(0);
-      expect(apply.stdout).toContain(`${moved} agent-message row(s) moved, ${p.messageRowsBlocked} left in place`);
-      const reader = new DatabaseSync(dbFile, { readOnly: true });
-      try {
-        const left = AGENT_MESSAGE_PROJECT_TABLES.reduce(
-          (n, t) => n + (reader.prepare(`SELECT count(*) AS n FROM ${t} WHERE project = 'mv-old'`).get() as { n: number }).n, 0);
-        expect(left).toBe(p.messageRowsBlocked);
-      } finally {
-        reader.close();
-      }
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
+  }
 
   it('#519: a refused same-name rename leaves the database untouched, even with --apply', async () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-rename-same-ro-'));
@@ -700,303 +543,6 @@ describe('CLI project and managed-host safety', () => {
       expect(rename.stderr).toContain('--to:');
       expect(rename.stderr).toContain('must be a stable identifier, not a filesystem path');
       expect(rename.stdout).not.toContain('Dry-run');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === 'win32')('creates reusable owner-private managed host config without a fabricated session identity', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex', '--project', 'test', '--principal', 'reviewer',
-        '--workspace', home, '--model', 'gpt-5.6-luna',
-        '--work-summary', 'review agent directory', '--json',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(setup.status, setup.stderr).toBe(0);
-      const result = JSON.parse(setup.stdout) as {
-        config_path: string;
-        session_identity: string;
-        ordinary_sessions: string;
-        registration_command: string | null;
-        launch_command: string;
-      };
-      expect(result).toMatchObject({
-        session_identity: 'generated-per-process',
-        ordinary_sessions: 'automatic-thread-scoped-via-codex-plugin',
-        registration_command: null,
-        launch_command: expect.stringContaining('memesh-host-codex'),
-      });
-      const config = JSON.parse(readOwnerPrivateRegularFile(result.config_path)) as Record<string, unknown>;
-      expect(config).toMatchObject({
-        project: 'test', principal_id: 'reviewer', workspace: home,
-        work_summary: 'review agent directory',
-      });
-      // --model is accepted for older scripts but never written.
-      expect(config).not.toHaveProperty('model');
-      expect(setup.stderr).toContain('--model is ignored');
-      expect(config).not.toHaveProperty('session_instance_id');
-      expect(config).not.toHaveProperty('thread_id');
-
-      const repeat = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex', '--project', 'test', '--principal', 'replacement',
-        '--workspace', home,
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(repeat.status).not.toBe(0);
-      expect(repeat.stderr).toContain('was not overwritten');
-      expect(JSON.parse(readOwnerPrivateRegularFile(result.config_path))).toMatchObject({ principal_id: 'reviewer' });
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === 'win32')('rejects an overlong agent discovery declaration before writing config', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-metadata-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex', '--project', 'test', '--principal', 'reviewer',
-        '--workspace', home, '--work-summary', 'x'.repeat(201), '--json',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(setup.status).not.toBe(0);
-      expect(setup.stderr).toContain('--work-summary must be a non-empty string of at most 200 characters');
-      expect(fs.existsSync(path.join(home, '.memesh', 'hosts', 'codex.json'))).toBe(false);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  // eg prove reported src/transports/cli/cli.ts's owner-private-directory
-  // throw as UNPROTECTED: removing it broke nothing any test checked. The
-  // guard is a security boundary — a symlinked or group-readable hosts/
-  // directory would let the managed config (which names the router socket
-  // and token file) be written somewhere another principal controls. Three
-  // ways the directory can be wrong, each must refuse and write nothing.
-  describe.skipIf(process.platform === 'win32')('refuses to write managed host config into a directory that is not owner-private', () => {
-    function attempt(home: string) {
-      return spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex', '--project', 'test', '--principal', 'reviewer', '--workspace', home, '--json',
-      ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
-    }
-    function hostsDirOf(home: string) { return path.join(home, '.memesh', 'hosts'); }
-
-    it('when hosts/ is a symlink to elsewhere', () => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-hosts-symlink-'));
-      const elsewhere = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-elsewhere-'));
-      try {
-        fs.mkdirSync(path.join(home, '.memesh'), { recursive: true, mode: 0o700 });
-        fs.symlinkSync(elsewhere, hostsDirOf(home));
-        const r = attempt(home);
-        expect(r.status, r.stdout).not.toBe(0);
-        expect(r.stderr).toContain('owner-private');
-        expect(fs.readdirSync(elsewhere), 'nothing may be written through the symlink').toEqual([]);
-      } finally {
-        fs.rmSync(home, { recursive: true, force: true });
-        fs.rmSync(elsewhere, { recursive: true, force: true });
-      }
-    });
-
-    it('when hosts/ is a regular file, not a directory', () => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-hosts-file-'));
-      try {
-        fs.mkdirSync(path.join(home, '.memesh'), { recursive: true, mode: 0o700 });
-        fs.writeFileSync(hostsDirOf(home), 'not a directory');
-        const r = attempt(home);
-        expect(r.status, r.stdout).not.toBe(0);
-        expect(fs.readFileSync(hostsDirOf(home), 'utf8'), 'the file is untouched').toBe('not a directory');
-      } finally {
-        fs.rmSync(home, { recursive: true, force: true });
-      }
-    });
-
-    it('when hosts/ is readable by group or others', () => {
-      const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-hosts-mode-'));
-      try {
-        fs.mkdirSync(hostsDirOf(home), { recursive: true, mode: 0o755 });
-        fs.chmodSync(hostsDirOf(home), 0o755); // mkdir honours umask; force it
-        const r = attempt(home);
-        expect(r.status, r.stdout).not.toBe(0);
-        expect(r.stderr).toContain('owner-private');
-        expect(fs.readdirSync(hostsDirOf(home)), 'no config written into a shared directory').toEqual([]);
-      } finally {
-        fs.rmSync(home, { recursive: true, force: true });
-      }
-    });
-  });
-
-  it.skipIf(process.platform === 'win32')('creates an optional owner-private stable-principal override for one Codex workspace', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex-session', '--project', 'test', '--principal', 'reviewer',
-        '--workspace', home, '--json',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(setup.status, setup.stderr).toBe(0);
-      const result = JSON.parse(setup.stdout) as Record<string, unknown>;
-      expect(result).toMatchObject({
-        mode: 'ordinary-session-native-queue',
-        session_identity: 'codex-thread-id-at-session-start',
-        ordinary_sessions: 'automatic-thread-scoped-with-workspace-override',
-        launch_command: null,
-        next_command: 'Restart Codex in the configured workspace to apply the identity override',
-      });
-      const configPath = String(result.config_path);
-      expect(configPath).toMatch(/hosts\/codex-session\.json$/);
-      expect(JSON.parse(readOwnerPrivateRegularFile(configPath))).toMatchObject({
-        project: 'test', principal_id: 'reviewer', workspace: fs.realpathSync(home),
-      });
-      const tokenPath = path.join(home, '.memesh', 'agent-router.token');
-      expect(fs.readFileSync(tokenPath, 'utf8').trim()).toMatch(/^[0-9a-f]{64}$/);
-      expect(fs.statSync(tokenPath).mode & 0o077).toBe(0);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === 'win32')('says an ordinary Gemini session registers nothing, since only Claude Code clients do', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'gemini', '--project', 'test', '--principal', 'gem', '--workspace', home, '--json',
-      ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
-      expect(setup.status, setup.stderr).toBe(0);
-      const result = JSON.parse(setup.stdout) as { session_identity: string; ordinary_sessions: string };
-      expect(result.session_identity).toBe('generated-per-process');
-      expect(result.ordinary_sessions).toBe('none/inbound-unavailable');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  // `agent setup` is read by scripts (`--json`) and promises to write only the
-  // host config and the router token: no background update check, so no
-  // update-check or refresh marker appears next to them.
-  it.skipIf(process.platform === 'win32')('leaves only the host config and the router token behind', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
-    try {
-      const dataDir = path.join(home, '.memesh');
-      // The built CLI, not the source loader the other tests use: the update
-      // check only starts from the bundled layout.
-      const builtCli = path.join(__dirname, '..', 'dist', 'transports', 'cli', 'cli.js');
-      const setup = spawnSync(process.execPath, [builtCli, 'agent', 'setup', 'claude', '--principal', 'claude-a', '--json'], {
-        encoding: 'utf8',
-        // A set MEMESH_UPDATE_CHECK_PATH (the suite does not set one, but a developer's shell may)
-        // would move the cache elsewhere and hide the marker this test looks for.
-        env: Object.fromEntries(Object.entries({
-          ...process.env, HOME: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_CAPTURE: 'false',
-          MEMESH_UPDATE_CHECK_PATH: undefined,
-        }).filter(([, v]) => v !== undefined)),
-      });
-      expect(setup.status, setup.stderr).toBe(0);
-      // Starting the background update check writes its `last-fresh-refresh.*.lock`
-      // marker before the child is spawned, so a check that was started has
-      // already left that file by the time the command exits: no waiting.
-      expect(fs.readdirSync(dataDir).sort()).toEqual(['agent-router.token', 'hosts']);
-      expect(fs.readdirSync(path.join(dataDir, 'hosts'))).toEqual(['claude.json']);
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it.skipIf(process.platform === 'win32')('prints both Claude one-time registration and the required development-channel launch', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'claude', '--project', 'project-a', '--principal', 'claude-a', '--json',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-      expect(setup.status, setup.stderr).toBe(0);
-      const result = JSON.parse(setup.stdout) as {
-        session_identity: string;
-        ordinary_sessions: string;
-        registration_command: string;
-        launch_command: string;
-        next_command: string;
-      };
-      // The channel host registers under the Claude Code session it runs in,
-      // and ordinary Claude MCP sessions register and get notices without it.
-      expect(result.session_identity).toBe('claude-code-session-id-or-generated-outside-claude-code');
-      expect(result.ordinary_sessions).toBe('automatic-presence-with-native-notice-when-inbox-socket-available');
-      expect(result.registration_command).toContain('claude mcp add --transport stdio --scope user memesh-channel');
-      expect(result.next_command).toBe(result.registration_command);
-      expect(result.launch_command).toBe('claude --dangerously-load-development-channels server:memesh-channel');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  // The launch and registration commands embed the config path (#520): a
-  // data folder whose name holds `$(...)` must not run it when pasted.
-  it.skipIf(process.platform === 'win32')('the printed launch and registration commands run nothing the config path holds', () => {
-    const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-quote-'));
-    try {
-      const home = path.join(root, "h$(touch m1)`touch m2`;touch m3;it's");
-      const cwd = path.join(root, 'cwd');
-      fs.mkdirSync(home);
-      fs.mkdirSync(cwd);
-      for (const host of ['codex', 'claude']) {
-        const setup = spawnSync(process.execPath, cliArgs(
-          'agent', 'setup', host, '--project', 'test', '--principal', `p-${host}`, ...(host === 'codex' ? ['--workspace', home] : []), '--json',
-        ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
-        expect(setup.status, setup.stderr).toBe(0);
-        const result = JSON.parse(setup.stdout) as { registration_command: string | null; launch_command: string | null };
-        for (const command of [result.registration_command, result.launch_command]) {
-          if (!command) continue;
-          spawnSync('/bin/sh', ['-c', command], { cwd, encoding: 'utf8', env: { PATH: '/usr/bin:/bin' } });
-          for (const marker of ['m1', 'm2', 'm3']) expect(fs.existsSync(path.join(cwd, marker)), `${marker} created by: ${command}`).toBe(false);
-        }
-      }
-    } finally {
-      fs.rmSync(root, { recursive: true, force: true });
-    }
-  });
-
-  // A declared model was a guess: the host picks the model per session (and
-  // `/model` changes it mid-session), and no host tells MeMesh which one runs.
-  // An older script may still pass --model, so it is accepted, said to be
-  // ignored, and never written.
-  it.skipIf(process.platform === 'win32')('accepts --model, says it is ignored, and writes no model', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-model-'));
-    try {
-      const setup = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'claude', '--principal', 'claude-a', '--model', 'claude-fable-5-1', '--json',
-      ), { encoding: 'utf8', env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' } });
-      expect(setup.status, setup.stderr).toBe(0);
-      expect(setup.stderr).toContain('--model is ignored');
-      const config = JSON.parse(readOwnerPrivateRegularFile(path.join(home, '.memesh', 'hosts', 'claude.json')));
-      expect(config).not.toHaveProperty('model');
-    } finally {
-      fs.rmSync(home, { recursive: true, force: true });
-    }
-  });
-
-  it.runIf(process.platform === 'win32')('rejects managed host setup before creating host files', () => {
-    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-agent-windows-'));
-    try {
-      const result = spawnSync(process.execPath, cliArgs(
-        'agent', 'setup', 'codex', '--project', 'test', '--principal', 'reviewer',
-        '--workspace', home, '--json',
-      ), {
-        encoding: 'utf8',
-        env: { ...process.env, HOME: home, MEMESH_AUTO_CAPTURE: 'false' },
-      });
-
-      expect(result.status).not.toBe(0);
-      expect(result.stderr).toMatch(/secure local host runtime is not supported on Windows/i);
-      expect(fs.existsSync(path.join(home, '.memesh'))).toBe(false);
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

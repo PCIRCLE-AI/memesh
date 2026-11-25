@@ -482,38 +482,6 @@ CREATE TABLE IF NOT EXISTS agent_network_peers (
   seen_at_ms INTEGER NOT NULL
 );
 `;
-var AGENT_NETWORK_SCHEMA_SQL = NETWORK_METADATA_SCHEMA_SQL + `
-
--- One row per delivery addressed to another machine. state: pending, delivered,
--- rejected, expired; or local when the address names no member and the delivery
--- stays an ordinary local one.
-CREATE TABLE IF NOT EXISTS agent_network_outbox (
-  delivery_id        TEXT PRIMARY KEY REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  message_id         TEXT NOT NULL,
-  machine_id         TEXT,
-  state              TEXT NOT NULL,
-  attempts           INTEGER NOT NULL DEFAULT 0,
-  next_attempt_at_ms INTEGER NOT NULL DEFAULT 0,
-  expires_at_ms      INTEGER NOT NULL,
-  last_error_code    TEXT,
-  delivered_at_ms    INTEGER,
-  path               TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_agent_network_outbox_due ON agent_network_outbox(state, next_attempt_at_ms);
-
--- Who is live on other machines, by project hash only. Expires on its own.
-CREATE TABLE IF NOT EXISTS agent_network_presence (
-  machine_id    TEXT NOT NULL,
-  project_hash  TEXT NOT NULL,
-  principal     TEXT NOT NULL,
-  handle        TEXT NOT NULL,
-  host_kind     TEXT NOT NULL,
-  connected     INTEGER NOT NULL,
-  expires_at_ms INTEGER NOT NULL,
-  PRIMARY KEY (machine_id, project_hash, handle)
-);
-
-`;
 
 // dist/storage/sqlite.js
 import { createRequire } from "node:module";
@@ -687,7 +655,7 @@ function openNetworkStore(dbPath, options = {}) {
     if (options.busyTimeoutMs !== void 0)
       db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
     db.pragma("journal_mode = WAL");
-    db.exec(options.metadataOnly ? NETWORK_METADATA_SCHEMA_SQL : AGENT_NETWORK_SCHEMA_SQL);
+    db.exec(NETWORK_METADATA_SCHEMA_SQL);
   } catch (err) {
     db.close();
     throw err;
@@ -884,7 +852,7 @@ async function runJoinClient(dataDir2, input) {
 }
 
 // dist/network/bridge-serve.js
-import fs13 from "node:fs";
+import fs12 from "node:fs";
 import path13 from "node:path";
 
 // dist/core/conversation-messages.js
@@ -1140,10 +1108,12 @@ function importLegacyConversationMessages(source, target, options) {
         "agent_message_idempotency",
         "agent_retention_facts",
         "agent_network_outbox",
-        "agent_message_expiries"
+        "agent_message_expiries",
+        "archive_log"
       ]) {
         facts[table] = rows(table, "message_id", [id]);
       }
+      facts.agent_message_expiry_runs = rows("agent_message_expiry_runs", "run_id", facts.agent_message_expiries.map((row) => row.run_id));
       const deliveries = facts.agent_message_deliveries.map((row) => row.delivery_id);
       for (const table of ["agent_dispatch_attempts", "agent_host_accepts", "agent_ack_facts", "agent_workflow_facts"]) {
         facts[table] = rows(table, "delivery_id", deliveries);
@@ -1237,6 +1207,70 @@ function importLegacyConversationMessages(source, target, options) {
     return { imported, alreadyImported };
   }).immediate();
 }
+var LEGACY_CONVERSATION_TABLES = [
+  "agent_messages",
+  "agent_message_deliveries",
+  "agent_message_events",
+  "agent_message_idempotency",
+  "agent_message_cursors",
+  "agent_message_receipts",
+  "agent_principals",
+  "agent_session_instances",
+  "agent_session_connections",
+  "agent_presence_facts",
+  "agent_dispatch_attempts",
+  "agent_host_accepts",
+  "agent_ack_facts",
+  "agent_workflow_facts",
+  "agent_retention_facts",
+  "agent_message_expiry_runs",
+  "agent_message_expiry_lease",
+  "agent_message_expiries",
+  "agent_network_outbox",
+  "agent_network_presence"
+];
+function retireLegacyConversationTables(source, target, options) {
+  if (source === target)
+    throw new Error("Legacy source and target must be different databases");
+  const file = databaseFile(target);
+  if (file)
+    assertLegacyDestinationIsDifferent(source, file);
+  const tableNames = () => source.prepare("SELECT name FROM sqlite_master WHERE type='table'").all().map((row) => row.name);
+  if (!tableNames().some((name) => LEGACY_CONVERSATION_TABLES.includes(name))) {
+    return { imported: 0, alreadyImported: 0, retired: 0 };
+  }
+  return source.transaction(() => {
+    const tables = tableNames();
+    const remaining = new Set(LEGACY_CONVERSATION_TABLES.filter((name) => tables.includes(name)));
+    const parents = new Map(tables.map((name) => [
+      name,
+      source.prepare('SELECT "table" AS parent FROM pragma_foreign_key_list(?)').all(name).map((row) => row.parent)
+    ]));
+    for (const name of tables) {
+      if (!remaining.has(name) && parents.get(name).some((parent) => remaining.has(parent))) {
+        throw new Error(`Cannot retire legacy messaging: retained table ${name} still references it`);
+      }
+    }
+    if (!remaining.has("agent_messages") && [...remaining].some((name) => source.prepare(`SELECT 1 FROM ${name} LIMIT 1`).get())) {
+      throw new Error("Cannot retire legacy messaging without its source message table");
+    }
+    const order = [];
+    while (remaining.size) {
+      const next = [...remaining].find((name) => ![...remaining].some((child) => parents.get(child).includes(name)));
+      if (!next)
+        throw new Error("Cannot retire cyclic legacy message tables");
+      order.push(next);
+      remaining.delete(next);
+    }
+    const copied = importLegacyConversationMessages(source, target, {
+      nowMs: options.nowMs,
+      localMachine: options.localMachine
+    });
+    for (const name of order)
+      source.exec(`DROP TABLE ${name}`);
+    return { ...copied, retired: order.length };
+  }).immediate();
+}
 
 // dist/core/conversation-messages.js
 var MESSAGE_MAX_BYTES = 8e3;
@@ -1309,8 +1343,14 @@ var ConversationMessages = class {
     let ownedSource;
     try {
       if (legacyFile !== void 0 && fs7.existsSync(legacyFile)) {
+        const directory = path8.dirname(fs7.realpathSync(legacyFile));
+        const stat2 = fs7.statSync(directory);
+        if (!stat2.isDirectory() || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
+          throw new Error("Legacy retirement requires an owner-private source directory");
+        }
+        fs7.accessSync(directory, fs7.constants.W_OK | fs7.constants.X_OK);
         guardDatabaseFiles(legacyFile);
-        ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });
+        ownedSource = new MemeshDatabase(legacyFile);
         if (busyTimeoutMs !== void 0)
           ownedSource.pragma(`busy_timeout = ${busyTimeoutMs}`);
         assertLegacyDestinationIsDifferent(ownedSource, file);
@@ -1346,9 +1386,8 @@ var ConversationMessages = class {
         this.upgradeRoutingSchema();
         for (const target of databaseFiles(file))
           removeGroupAndOtherAccess(target);
-        const legacySource = options.legacySource ?? ownedSource;
-        if (legacySource)
-          importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
+        if (options.legacySource)
+          importLegacyConversationMessages(options.legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
         for (const archiveFile of archiveFiles) {
           const archive = new MemeshDatabase(archiveFile, { readOnly: true });
           try {
@@ -1360,6 +1399,8 @@ var ConversationMessages = class {
             archive.close();
           }
         }
+        if (ownedSource)
+          retireLegacyConversationTables(ownedSource, this.db, { nowMs: this.clock(), localMachine: this.machine });
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error) {
         this.db.close();
@@ -1937,75 +1978,10 @@ function writeStatus(dataDir2, status) {
 }
 
 // dist/network/control-socket.js
-import { createHash as createHash4, randomBytes as randomBytes4, timingSafeEqual } from "node:crypto";
-import fs11 from "node:fs";
+import { createHash as createHash3, randomBytes as randomBytes3, timingSafeEqual } from "node:crypto";
+import fs10 from "node:fs";
 import net2 from "node:net";
 import path11 from "node:path";
-
-// dist/core/agent-messaging.js
-import { createHash as createHash3, randomBytes as randomBytes3, randomUUID as randomUUID2 } from "node:crypto";
-
-// dist/core/agent-message-storage.js
-import fs10 from "node:fs";
-
-// dist/core/agent-message-ttl.js
-var AGENT_MESSAGE_TTL_MS = 24 * 60 * 60 * 1e3;
-
-// dist/core/work-topology.js
-var LESSON_TYPES = /* @__PURE__ */ new Set(["lesson_learned", "lesson", "mistake"]);
-var LESSON_TYPE_LIST = [...LESSON_TYPES];
-var WORK_LAYER_TYPES = /* @__PURE__ */ new Set([
-  ...LESSON_TYPES,
-  "decision",
-  "milestone",
-  "pattern",
-  "technical_pattern",
-  "product_improvement",
-  "goal",
-  "plan",
-  "task-state"
-]);
-var DECISION_TYPES = /* @__PURE__ */ new Set(["decision", "architecture_decision", "design_decision"]);
-var PREFERENCE_TYPES = ["preference", "user_preference"];
-var SHARED_EXPERIENCE_TYPES = /* @__PURE__ */ new Set([
-  ...LESSON_TYPES,
-  ...DECISION_TYPES,
-  ...PREFERENCE_TYPES
-]);
-var SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
-var DECISION_LAYER_TYPES = [...WORK_LAYER_TYPES].filter((type) => !LESSON_TYPES.has(type) && type !== "task-state");
-var DEFAULT_TOPOLOGY_BUDGET = {
-  maxChars: 4e3,
-  maxLineChars: 160
-};
-var SHARED_TOPOLOGY_BUDGET = {
-  maxChars: 640,
-  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars
-};
-var GLOBAL_TOPOLOGY_BUDGET = {
-  maxChars: 640,
-  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars
-};
-var SNIPPET_FETCH_CHARS = DEFAULT_TOPOLOGY_BUDGET.maxLineChars * 4;
-
-// dist/core/agent-scope-id.js
-var HOST_CONFIG_MAX_BYTES = 64 * 1024;
-var AGENT_MESSAGE_SCOPE_COLUMNS = [
-  { table: "agent_messages", columns: ["project", "recipient"] },
-  { table: "agent_message_deliveries", columns: ["project", "recipient"] },
-  { table: "agent_message_events", columns: ["project", "recipient"] },
-  { table: "agent_message_cursors", columns: ["project", "recipient"] },
-  { table: "agent_message_receipts", columns: ["project", "recipient", "actor"] },
-  { table: "agent_message_idempotency", columns: ["project"] },
-  { table: "agent_ack_facts", columns: ["actor"] },
-  { table: "agent_workflow_facts", columns: ["actor"] },
-  { table: "agent_retention_facts", columns: ["actor"] }
-];
-var AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes("project")).map((e) => e.table);
-
-// dist/core/agent-messaging.js
-var AGENT_MESSAGE_JSON_MAX_BYTES = 64 * 1024;
-var AGENT_NATIVE_MESSAGE_MAX_BYTES = 16 * 1024;
 
 // dist/network/frames.js
 function parseConversationFrame(bytes) {
@@ -2068,7 +2044,7 @@ async function exchangeRosterStream(stream, local, accept, timeoutMs) {
   if (!local)
     await write(selected);
 }
-var FRAME_MAX_BYTES = AGENT_MESSAGE_JSON_MAX_BYTES + 8 * 1024;
+var FRAME_MAX_BYTES = 72 * 1024;
 var ACK_MAX_BYTES = 1024;
 var FIELD_MAX = 200;
 var FrameError = class extends Error {
@@ -2197,7 +2173,7 @@ var STARTUP_LOCK_STALE_MS = 3e4;
 var STARTUP_LOCK_EMPTY_STALE_MS = 1500;
 function controlPath(dataDir2) {
   if (process.platform === "win32") {
-    return `\\\\.\\pipe\\memesh-bridge-${createHash4("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
+    return `\\\\.\\pipe\\memesh-bridge-${createHash3("sha256").update(dataDir2).digest("hex").slice(0, 32)}`;
   }
   return path11.join(networkDir(dataDir2), "bridge.sock");
 }
@@ -2211,7 +2187,7 @@ function assertControlPathFits(dataDir2) {
 }
 function dataDirIdentity(dataDir2) {
   try {
-    return fs11.realpathSync.native(dataDir2);
+    return fs10.realpathSync.native(dataDir2);
   } catch {
     return dataDir2;
   }
@@ -2226,23 +2202,23 @@ function ensureControlToken(dataDir2) {
   if (existing !== null)
     return existing;
   const temporary = `${file}.tmp-${process.pid}`;
-  fs11.writeFileSync(temporary, randomBytes4(32).toString("hex"), { mode: 384 });
+  fs10.writeFileSync(temporary, randomBytes3(32).toString("hex"), { mode: 384 });
   try {
-    fs11.chmodSync(temporary, 384);
-    if (fs11.existsSync(file) && readControlToken(dataDir2) === null)
-      fs11.rmSync(file, { force: true });
-    fs11.linkSync(temporary, file);
+    fs10.chmodSync(temporary, 384);
+    if (fs10.existsSync(file) && readControlToken(dataDir2) === null)
+      fs10.rmSync(file, { force: true });
+    fs10.linkSync(temporary, file);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs11.rmSync(temporary, { force: true });
+    fs10.rmSync(temporary, { force: true });
   }
   return readControlToken(dataDir2);
 }
 function readControlToken(dataDir2) {
   try {
-    const token = fs11.readFileSync(tokenPath(dataDir2), "utf8");
+    const token = fs10.readFileSync(tokenPath(dataDir2), "utf8");
     return TOKEN_FORMAT.test(token) ? token : null;
   } catch {
     return null;
@@ -2251,8 +2227,8 @@ function readControlToken(dataDir2) {
 function tokensMatch(given, expected) {
   if (typeof given !== "string")
     return false;
-  const left = createHash4("sha256").update(given).digest();
-  return timingSafeEqual(left, createHash4("sha256").update(expected).digest());
+  const left = createHash3("sha256").update(given).digest();
+  return timingSafeEqual(left, createHash3("sha256").update(expected).digest());
 }
 function parseReply(line2, dataDir2) {
   try {
@@ -2302,7 +2278,7 @@ async function probeBridge(dataDir2, deadlineMs = PROBE_DEADLINE_MS) {
 }
 function identityOf(file) {
   try {
-    const { dev, ino } = fs11.lstatSync(file);
+    const { dev, ino } = fs10.lstatSync(file);
     return { dev, ino };
   } catch {
     return null;
@@ -2312,7 +2288,7 @@ var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino ==
 function takeOverStaleLock(lock, judged) {
   const aside = `${lock}.stale-${process.pid}`;
   try {
-    fs11.renameSync(lock, aside);
+    fs10.renameSync(lock, aside);
   } catch (err) {
     if (err.code === "ENOENT")
       return;
@@ -2321,12 +2297,12 @@ function takeOverStaleLock(lock, judged) {
   try {
     if (sameFile(identityOf(aside), judged))
       return;
-    fs11.linkSync(aside, lock);
+    fs10.linkSync(aside, lock);
   } catch (err) {
     if (err.code !== "EEXIST")
       throw err;
   } finally {
-    fs11.rmSync(aside, { force: true });
+    fs10.rmSync(aside, { force: true });
   }
 }
 async function withStartupLock(dataDir2, use) {
@@ -2335,12 +2311,12 @@ async function withStartupLock(dataDir2, use) {
   let mine;
   for (; ; ) {
     try {
-      const fd = fs11.openSync(lock, "wx", 384);
-      const { dev, ino } = fs11.fstatSync(fd);
+      const fd = fs10.openSync(lock, "wx", 384);
+      const { dev, ino } = fs10.fstatSync(fd);
       mine = { dev, ino };
-      fs11.writeSync(fd, `${process.pid}
+      fs10.writeSync(fd, `${process.pid}
 `);
-      fs11.closeSync(fd);
+      fs10.closeSync(fd);
       break;
     } catch (err) {
       if (err.code !== "EEXIST")
@@ -2359,15 +2335,15 @@ async function withStartupLock(dataDir2, use) {
     return await use(() => sameFile(identityOf(lock), mine));
   } finally {
     if (sameFile(identityOf(lock), mine))
-      fs11.rmSync(lock, { force: true });
+      fs10.rmSync(lock, { force: true });
   }
 }
 function startupLockIsStale(lock) {
   try {
-    const age = Date.now() - fs11.statSync(lock).mtimeMs;
+    const age = Date.now() - fs10.statSync(lock).mtimeMs;
     if (age >= STARTUP_LOCK_STALE_MS)
       return true;
-    const raw = fs11.readFileSync(lock, "utf8").trim();
+    const raw = fs10.readFileSync(lock, "utf8").trim();
     if (!/^[1-9][0-9]*$/.test(raw))
       return age >= STARTUP_LOCK_EMPTY_STALE_MS;
     process.kill(Number(raw), 0);
@@ -2399,10 +2375,10 @@ function removeStaleSocket(target, judged) {
     return;
   if (!sameFile(identityOf(target), judged))
     return;
-  if (!fs11.lstatSync(target).isSocket()) {
+  if (!fs10.lstatSync(target).isSocket()) {
     throw new Error(`${target} exists and is not a socket, so the network bridge cannot use it.`);
   }
-  fs11.unlinkSync(target);
+  fs10.unlinkSync(target);
 }
 function parseOp(line2, token) {
   try {
@@ -2501,7 +2477,7 @@ function heldBy(server, target) {
       return "ours";
     let current;
     try {
-      const { dev, ino } = fs11.lstatSync(target);
+      const { dev, ino } = fs10.lstatSync(target);
       current = { dev, ino };
     } catch (err) {
       return err.code === "ENOENT" ? "lost" : "unreadable";
@@ -2557,13 +2533,13 @@ async function pingRelay(relayUrl, fetchImpl = fetch) {
 }
 
 // dist/network/test-frame-log.js
-import fs12 from "node:fs";
+import fs11 from "node:fs";
 import path12 from "node:path";
 function appendTestFrameLog(file, bytes) {
   const folder = path12.dirname(path12.resolve(file));
   let folderStat;
   try {
-    folderStat = fs12.lstatSync(folder);
+    folderStat = fs11.lstatSync(folder);
   } catch {
     return `the frame log folder ${folder} does not exist`;
   }
@@ -2575,34 +2551,24 @@ function appendTestFrameLog(file, bytes) {
     return `the frame log folder ${folder} belongs to another user`;
   let fd;
   try {
-    fd = fs12.openSync(file, fs12.constants.O_WRONLY | fs12.constants.O_APPEND | fs12.constants.O_CREAT | fs12.constants.O_NOFOLLOW, 384);
+    fd = fs11.openSync(file, fs11.constants.O_WRONLY | fs11.constants.O_APPEND | fs11.constants.O_CREAT | fs11.constants.O_NOFOLLOW, 384);
   } catch (err) {
     return `the frame log ${file} could not be opened safely (${err.code ?? "error"})`;
   }
   try {
-    const stat2 = fs12.fstatSync(fd);
+    const stat2 = fs11.fstatSync(fd);
     if (!stat2.isFile())
       return `the frame log ${file} is not a regular file`;
-    fs12.fchmodSync(fd, 384);
-    fs12.writeSync(fd, `${bytes.toString("utf8")}
+    fs11.fchmodSync(fd, 384);
+    fs11.writeSync(fd, `${bytes.toString("utf8")}
 `);
     return null;
   } finally {
-    fs12.closeSync(fd);
+    fs11.closeSync(fd);
   }
 }
 
 // dist/network/courier.js
-import { createHash as createHash6 } from "node:crypto";
-
-// dist/network/address.js
-import { createHash as createHash5 } from "node:crypto";
-
-// dist/network/outbound.js
-var PRESENCE_TTL_MS = 3 * 6e4;
-
-// dist/network/courier.js
-var BACKOFF_MAX_MS = 5 * 6e4;
 function rememberPeer(db, machineId, relay, addrs, now) {
   db.prepare(`
     INSERT INTO agent_network_peers (machine_id, relay_url, addrs_json, seen_at_ms) VALUES (?, ?, ?, ?)
@@ -2637,9 +2603,9 @@ var SEND_CONNECT_DEADLINE_MS = 2e4;
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs13.existsSync(file) && fs13.statSync(file).size > LOG_MAX_BYTES)
-      fs13.renameSync(file, `${file}.1`);
-    fs13.appendFileSync(file, line(event, detail), { mode: 384 });
+    if (fs12.existsSync(file) && fs12.statSync(file).size > LOG_MAX_BYTES)
+      fs12.renameSync(file, `${file}.1`);
+    fs12.appendFileSync(file, line(event, detail), { mode: 384 });
   } catch {
     try {
       process.stderr.write(line(event, detail));
@@ -2719,7 +2685,7 @@ async function serve(dataDir2, dbPath) {
   let db;
   let config;
   try {
-    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
+    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
     config = readConfig(db);
   } catch (err) {
     return fail("exit_database", `Cannot open the database: ${errorMessage(err)}`);

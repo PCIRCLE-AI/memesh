@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, readSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
@@ -189,15 +189,6 @@ export {
   sessionStartAppendsWorkPackageNotice,
 } from './_generated/briefing-level.js';
 import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
-import { unreadInboxLinesFor, unreadMessageRefsFor } from './_generated/agent-message-inbox.js';
-import { agentScopeIdRejection, HOST_CONFIG_MAX_BYTES } from './_generated/agent-scope-id.js';
-// The Codex-session principal decision, shared with codex-session.ts (#474).
-import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal } from './_generated/codex-session-principal.js';
-// Re-exported so session-start.js can recognise its OWN automatic Codex
-// identity without recomputing the decision by hand — see its use there for
-// why (suppressing the "never been seen" hint for a fresh, machine-generated
-// thread id that could never have been typed, let alone typo'd).
-export { automaticCodexSessionPrincipal };
 
 /** SessionStart's line naming this session's exact project id and the saving
  *  default — single owner, shared with the tests that compare the hook's memory block. */
@@ -516,295 +507,6 @@ import {
  *  `readOnly`) must apply the same cap themselves. */
 export const HOOK_BUSY_TIMEOUT_MS = 2000;
 
-/**
- * Who this session says it is, for the durable message inbox: the exact
- * recipient id in `MEMESH_RECIPIENT`, an owner-private Claude channel config
- * fallback (`resolveClaudeHostFallbackRecipient`, below) when that env var is
- * unset, or `undefined` when neither names one. Without either, an ordinary
- * Claude Code session has no identity a sender could address, and is never
- * told a message is waiting.
- * The id is compared exactly (after Unicode NFC, trimmed, 1-200 characters),
- * the same rule the `message` tool applies to a recipient, so any id a sender
- * can address can be declared here. It is shown JSON-quoted, which is what
- * makes odd characters safe to print. An empty value counts as declared-but-
- * blank and resolves to no recipient WITHOUT trying the fallback — only a
- * truly unset (`undefined`) `MEMESH_RECIPIENT` does, so `MEMESH_RECIPIENT=`
- * remains a way to force "no recipient" even when the fallback would
- * otherwise have named one.
- *
- * Two shapes are rejected rather than accepted for an explicit
- * `MEMESH_RECIPIENT`: one over 200 characters, and one shaped like a
- * filesystem path (`agentScopeIdRejection`, mirrored from
- * src/core/agent-scope-id.ts — the same rule the `message` tool applies).
- * Both write one line to stderr; `onRejected(label, detail)` (`label` is
- * `'too long'` or `'filesystem path'`, `detail` is the same text written to
- * stderr) additionally lets the caller record the rejection in its own
- * outcome ledger, or show it somewhere a human or model will actually see it
- * — a hook that exits 0 has its stderr hidden from both. `onRejected`
- * throwing does not affect resolution.
- *
- * With `MEMESH_RECIPIENT` unset, the fallback names the session's own
- * registered principal: `hosts/claude.json`'s `principal_id` under Claude
- * Code (default `claude-code` when absent), or the Codex companion's
- * principal under Codex (#474).
- * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext] - the calling
- *   hook's own `session_id`/`cwd`, consulted only for a Codex run.
- */
-export function resolveMessageRecipient(env = process.env, onRejected, hostContext) {
-  const raw = env.MEMESH_RECIPIENT;
-  if (raw === undefined) return resolveHostFallbackRecipient(env, hostContext);
-  const id = String(raw).normalize('NFC').trim();
-  if (id === '') return undefined;
-  const reject = (label, detail) => {
-    try { process.stderr.write(`[memesh] MEMESH_RECIPIENT ignored: ${detail}\n`); } catch { /* stderr gone */ }
-    try { onRejected?.(label, detail); } catch { /* a caller's recorder must not break resolution */ }
-    return undefined;
-  };
-  if (id.length > 200) {
-    return reject('too long', 'a recipient id is at most 200 characters');
-  }
-  const pathRejection = agentScopeIdRejection('recipient', id);
-  if (pathRejection) {
-    return reject('filesystem path', pathRejection);
-  }
-  return id;
-}
-
-/**
- * Dispatch to whichever host fallback applies. `isClaudeCodeHost` and
- * `isCodexHost` can never both be true for the same run (`detectHookHost`
- * returns exactly one host), so at most one of these ever resolves — the `??`
- * is for the third, always-possible outcome: neither host, or the matching
- * one found nothing usable.
- */
-function resolveHostFallbackRecipient(env, hostContext) {
-  return resolveClaudeHostFallbackRecipient(env) ?? resolveCodexHostFallbackRecipient(env, hostContext);
-}
-
-/**
- * Read a small JSON object from an owner-private file, or `undefined` on ANY
- * problem — missing, a symlink, group/world-accessible, owned by someone
- * else, oversized, or not valid JSON. Never throws, and never surfaces the
- * file's own bytes anywhere (not on stderr, not to a caller): a JSON parse
- * error on some engines quotes the text it choked on, and this file can hold
- * a router auth token in a sibling field, so even a malformed-file error path
- * must stay silent rather than echo anything read from disk.
- *
- * Mirrors the O_NOFOLLOW + owner-private checks `readOwnerPrivateFile` in
- * `src/host-runtime/config.ts` applies before trusting a host config file —
- * duplicated by hand rather than imported, since that module is not a
- * runtime-leaf a hook may reach for (the F5 boundary): this uses only the
- * O_NOFOLLOW primitive `_shared.js` already relies on elsewhere in this file.
- */
-function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
-  if (typeof fsConstants.O_NOFOLLOW !== 'number') return undefined;
-  let fd;
-  try {
-    fd = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) return undefined;
-    if ((stat.mode & 0o077) !== 0) return undefined;
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return undefined;
-    if (stat.size > maxBytes) return undefined;
-    const buf = Buffer.allocUnsafe(maxBytes + 1);
-    let read = 0;
-    while (read < buf.length) {
-      const n = readSync(fd, buf, read, buf.length - read, null);
-      if (n === 0) break;
-      read += n;
-    }
-    if (read > maxBytes) return undefined;
-    const parsed = JSON.parse(buf.subarray(0, read).toString('utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    try { closeSync(fd); } catch { /* already closed */ }
-  }
-}
-
-/**
- * Fall back to the owner-private Claude channel config when no
- * `MEMESH_RECIPIENT` is declared (#468).
- *
- * `memesh agent setup claude` writes `<data dir>/hosts/claude.json` with
- * `principal_id` (plus a router token this never reads, and possibly a
- * legacy `project` field this never reads either — see below). SessionStart
- * and the prompt hook get the same reminder a declared `MEMESH_RECIPIENT`
- * would give them, without the owner repeating an id the config file already
- * names — closing the exact gap that let a live channel misconfiguration (a
- * mistyped launch flag) go unnoticed.
- *
- * The file's `project` is not compared (#474): hosts now derive their
- * project from their working directory, and a typed label never matched
- * the derived id. `principal_id` is one identity for every Claude Code
- * session on the machine, in every project.
- *
- * With no config file, basic reminders use the local `claude-code`
- * principal without configuring or starting a Channel. Existing unreadable
- * files and invalid identities still fail CLOSED to "no recipient":
- *   - Claude Code only. The Codex plugin loads the same hooks; a Codex
- *     session must never adopt Claude's principal.
- *   - `principal_id` is refused by the same length and filesystem-path rules
- *     `resolveMessageRecipient` applies to an explicit `MEMESH_RECIPIENT`
- *     (#402) — quietly here, since a malformed config is not something the
- *     env-var rejection path's "MEMESH_RECIPIENT ignored" wording describes.
- */
-export const DEFAULT_CLAUDE_RECIPIENT = 'claude-code';
-
-function resolveClaudeHostFallbackRecipient(env) {
-  if (!isClaudeCodeHost(env)) return undefined;
-  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'claude.json');
-  // Basic inbox reminders need no Channel setup. Only absence selects the
-  // default; an existing invalid/insecure config must still fail closed.
-  try {
-    lstatSync(configPath);
-  } catch (err) {
-    return err.code === 'ENOENT' ? DEFAULT_CLAUDE_RECIPIENT : undefined;
-  }
-  const parsed = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
-  if (!parsed) return undefined;
-  const principal = typeof parsed.principal_id === 'string' ? parsed.principal_id.normalize('NFC').trim() : '';
-  if (principal === '') return undefined;
-  if (principal.length > 200) return undefined;
-  if (agentScopeIdRejection('recipient', principal)) return undefined;
-  return principal;
-}
-
-/**
- * Fall back to the SAME principal a Codex session's own companion process
- * (`src/host-runtime/codex-session.ts`) registers with the router under, when
- * no `MEMESH_RECIPIENT` is declared and this run is the Codex host (#474
- * follow-up — cross-host discovery). That registration is a separate
- * process this hook has no connection to, so it recomputes the identical
- * decision from `hosts/codex-session.json` and the hook payload's own
- * `sessionId`/`cwd` (`hostContext`), through the shared leaf
- * `resolveCodexSessionPrincipal` (`src/core/codex-session-principal.ts`,
- * copied to `_generated/codex-session-principal.js` — see that file for why
- * the decision lives there instead of a second, drifting copy here).
- *
- * Fails CLOSED to "no recipient" on every problem, the same discipline
- * {@link resolveClaudeHostFallbackRecipient} above uses:
- *   - Codex only (`isCodexHost`) — a Claude Code session must never adopt a
- *     Codex principal, and vice versa (the two are mutually exclusive; see
- *     `resolveHostFallbackRecipient`).
- *   - `hostContext.sessionId` must be shaped like a Codex thread id
- *     (`isValidCodexThreadId`) — the same shape the router registration
- *     itself requires. An id of any other shape could never have been
- *     registered as `codex-thread-<id>` either.
- *   - `hostContext.cwd` must resolve, via `realpathSync`, to a real path — a
- *     `cwd` that cannot be resolved cannot be compared against a configured
- *     `workspace`, and the real registration would fail identically.
- *   - A malformed `hosts/codex-session.json` (a `workspace` of the wrong
- *     type, or one that resolves but is not a directory) makes
- *     `resolveCodexSessionPrincipal` THROW — matching `codex-session.ts`'s
- *     own behaviour, where that same malformed field fails the WHOLE
- *     companion registration rather than falling back to the automatic
- *     identity. This function must never crash on that, but it also must
- *     not assert an identity nothing actually registered, so it reports no
- *     recipient rather than guessing "automatic".
- *   - A configured `principal_id` that is not a usable id (the same length
- *     and filesystem-path rules `resolveMessageRecipient` applies) is the
- *     one other case `codex-session.ts` fails the WHOLE registration on
- *     (`requiredString` throws there) — reported here as no recipient too,
- *     for the same reason.
- *   - No config file at all, or one that cannot even be read, is NOT an
- *     error: it is `codex-session.ts`'s own `config === undefined` branch,
- *     and `resolveCodexSessionPrincipal` returns the automatic
- *     `codex-thread-<id>` identity for it without throwing — the common
- *     case, an ordinary Codex session with no `codex-session` setup at all.
- *
- * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext]
- */
-function resolveCodexHostFallbackRecipient(env, hostContext) {
-  if (!isCodexHost(env)) return undefined;
-  // `src/host-runtime/codex-session.ts` registers NOTHING with the router on
-  // Windows — `assertSecureLocalHostRuntimeSupported()` throws unconditionally,
-  // on both the automatic path (directly) and the configured path (through
-  // `readTokenFile`/`readOwnerPrivateFile`), with or without a config file.
-  // Unlike the Claude fallback above (which degrades to "no recipient" on its
-  // own, since `readOwnerPrivateJsonQuiet` already returns `undefined` when
-  // `O_NOFOLLOW` is unavailable), the automatic Codex identity is pure string
-  // formatting with no file read to fail — so it needs this explicit guard,
-  // or it would assert an identity the router can never actually hold there.
-  if (process.platform === 'win32') return undefined;
-  const sessionId = hostContext?.sessionId;
-  if (!isValidCodexThreadId(sessionId)) return undefined;
-  const cwd = hostContext?.cwd;
-  if (typeof cwd !== 'string' || cwd === '') return undefined;
-  let workspace;
-  try {
-    workspace = realpathSync(cwd);
-  } catch {
-    return undefined;
-  }
-  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-  // Existence and readability are two DIFFERENT facts, and only one of them
-  // means "no config" — `codex-session.ts`'s own `readCodexSessionConfigIfPresent`
-  // draws the same line, with the same primitive (`lstatSync`, not `existsSync`,
-  // so a dangling symlink at this path counts as "exists" here exactly like it
-  // does there): ENOENT is `config === undefined` (the ordinary, unconfigured
-  // case — the automatic identity applies). Anything else at that path that
-  // cannot be read as owner-private JSON (bad permissions, a symlink, a
-  // corrupt document) is a file that DOES exist and, over there, makes
-  // `readHostConfigFile` throw and the WHOLE companion registration fail —
-  // this function's own no-false-identity rule (see its doc comment) means
-  // that must resolve to no recipient, never a silent promotion to automatic.
-  let configFileExists;
-  try {
-    lstatSync(configPath);
-    configFileExists = true;
-  } catch (err) {
-    if (err?.code === 'ENOENT') configFileExists = false;
-    else return undefined;
-  }
-  let config;
-  if (configFileExists) {
-    config = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
-    if (config === undefined) return undefined;
-  }
-  let resolution;
-  try {
-    resolution = resolveCodexSessionPrincipal(config, { threadId: sessionId, workspace }, realpathSync);
-  } catch {
-    return undefined;
-  }
-  if (resolution.source === 'automatic') return resolution.principalId;
-  const principal = typeof resolution.principalId === 'string' ? resolution.principalId.normalize('NFC').trim() : '';
-  if (principal === '') return undefined;
-  if (principal.length > 200) return undefined;
-  if (agentScopeIdRejection('recipient', principal)) return undefined;
-  return principal;
-}
-
-/**
- * A failed inbox read is said twice: the full text on stderr, and one `error`
- * outcome in the ledger through the calling hook's own recorder. Without the
- * second, the ledger reads as a clean run and nothing afterwards can tell
- * "no message was waiting" from "the inbox could not be read". The recorder
- * gets the exception; it should persist a label, never the message (the
- * ledger is permanent and exportable, see `hookErrorReason`).
- */
-function inboxReadFailed(err, recordFailure) {
-  try { process.stderr.write(`[memesh] could not check for waiting messages: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-  recordFailure?.(err);
-  return [];
-}
-
-/**
- * The line a hook gives the model when the inbox read failed: stderr and the
- * ledger are not what the model reads, and no line at all reads exactly like
- * "no message waiting". One line, bounded, JSON-quoted (the reason is an error
- * string), as `memesh briefing` says it.
- */
-export function inboxUnreadableHookLine(recipient, err) {
-  const reason = JSON.stringify(String(err?.message || err).replace(/\s+/g, ' ').trim().slice(0, 200));
-  return `MeMesh could not check for messages waiting for ${JSON.stringify(recipient)}: ${reason} — that is not the same as no messages waiting; run memesh doctor.`;
-}
 
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
@@ -825,80 +527,6 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
   const thread = typeof env.CODEX_THREAD_ID === 'string' ? env.CODEX_THREAD_ID.trim() : '';
   if (payload && thread && payload !== thread) return { sessionId: undefined, mismatch: true };
   return { sessionId: payload || undefined, mismatch: false };
-}
-
-/**
- * The reminder lines for `recipient` from an open database. Never throws
- * itself: a reminder must not be the reason a prompt or a session start fails,
- * and a failure that is not "nothing waiting" is said on stderr and handed to
- * `recordFailure`, not swallowed. `recordFailure` must not throw either; both
- * hooks pass one built on `recordHookOutcome`, which cannot.
- *
- * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
- * for another session of the same principal is left out, and with no
- * `sessionId` only messages meant for no session in particular are counted —
- * except a `target_kind: "session"` delivery, which then counts for any live
- * session of the principal (#490; with a `sessionId`, only its own, #566).
- * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
- * router already pushed into the thread.
- */
-export function waitingMessageLines(db, recipient, sessionId, recordFailure, excludeHostAccepted = false) {
-  if (!recipient) return [];
-  try {
-    return unreadInboxLinesFor(db, recipient, sessionId, excludeHostAccepted);
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
-  }
-}
-
-/**
- * The waiting message REFS behind those same lines — see
- * {@link unreadMessageRefsFor}'s own doc for what "waiting" means and why it
- * is not project-capped. Same never-throws contract as
- * {@link waitingMessageLines}, and the same `sessionId`, `recordFailure` and
- * `excludeHostAccepted`.
- */
-export function waitingMessageRefs(db, recipient, sessionId, recordFailure, excludeHostAccepted = false, excludeMessageIds = []) {
-  if (!recipient) return [];
-  try {
-    return unreadMessageRefsFor(db, recipient, sessionId, undefined, excludeHostAccepted, excludeMessageIds);
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
-  }
-}
-
-/**
- * The reminder lines for messages waiting for this session's declared
- * recipient. No `MEMESH_RECIPIENT` (and no owner-private Claude or Codex
- * fallback, see `resolveMessageRecipient`) or no database: no lines, and the
- * database is not opened. Read-only, and it never throws (given a
- * `recordFailure` that does not, see `waitingMessageLines`).
- * `onRecipientRejected`, if given, is `resolveMessageRecipient`'s own
- * rejection callback — see there. `hostContext` is passed straight through
- * to `resolveMessageRecipient`'s Codex fallback — see its own doc — and its
- * `sessionId` also narrows the count to this session (#497), through
- * {@link hookMessageSessionId}; `onSessionMismatch` is called when that
- * reports a mismatch, so the caller can record it. Under Codex a delivery
- * the router already pushed into the thread is not reminded again.
- */
-export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext, onSessionMismatch) {
-  const recipient = resolveMessageRecipient(env, onRecipientRejected, hostContext);
-  if (!recipient) return [];
-  const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
-  if (!existsSync(dbPath)) return [];
-  let db;
-  try {
-    // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
-    db = openMemeshDb(dbPath, { readOnly: true });
-    db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-    const session = hookMessageSessionId(hostContext?.sessionId, env);
-    if (session.mismatch) onSessionMismatch?.();
-    return waitingMessageLines(db, recipient, session.sessionId, recordFailure, isCodexHost(env));
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
-  } finally {
-    try { db?.close(); } catch { /* already closed */ }
-  }
 }
 
 /** The outcome reason every hook records when this Node cannot run MeMesh (same label `hookErrorReason` makes from the error). */
@@ -1153,12 +781,6 @@ function writeConversation(db, event) {
 }
 
 function writeConversationLocked(db, event) {
-  if (event.tags.includes('role:user')) {
-    const ids = event.observations[0].match(/[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}/gi) ?? [];
-    const project = event.tags.find(t => t.startsWith('project:'))?.slice(8);
-    const knownMessage = db.prepare('SELECT 1 FROM agent_messages WHERE message_id = ? AND project = ?');
-    if (ids.some(id => knownMessage.get(id, project))) return { skipped: true, reason: 'known MeMesh message, not user speech' };
-  }
   const previous = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(event.name);
   const priorTime = parseEntityMetadata(previous?.metadata)?.conversationCapturedAt;
   if (typeof priorTime === 'number' && typeof event.capturedAt === 'number' && priorTime > event.capturedAt) {
@@ -1370,28 +992,16 @@ export function pluginRootIsHookRoot(env) {
 /**
  * Is this hook run Claude Code, and only Claude Code?
  *
- * The Codex plugin loads the same `hooks/hooks.json` (README: "Codex is
- * allowed to run the plugin's hooks"), so every hook in this directory can
- * execute under either host on one machine. Two features gated on this —
- * the `hosts/claude.json` recipient fallback and the Stop message gate — read
- * an owner-private file that names a Claude-channel principal; without this
- * guard, a Codex session in the SAME project would silently adopt that
- * principal's identity and could record `intake` receipts on messages meant
- * for Claude. Uses the same host classifier `recordHookOutcome` does
- * (env-only: no payload is available at either call site before the
- * decision to even open a file), so this can never disagree with what
- * `memesh doctor` already reports the run as.
+ * Shared hooks use the same env-only classifier as outcome reporting.
+ * SessionStart and the Claude Stop message gate retain this host boundary.
  */
 export function isClaudeCodeHost(env = process.env) {
   return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'claude-code';
 }
 
 /**
- * Is this hook run Codex, and only Codex? The mirror of
- * {@link isClaudeCodeHost} above, for the same reason: `resolveMessageRecipient`'s
- * Codex fallback (`resolveCodexHostFallbackRecipient`) must never fire for a
- * Claude Code session, and vice versa. Same host classifier, so this can
- * never disagree with `isClaudeCodeHost` or with what `memesh doctor` reports.
+ * Is this hook run Codex, and only Codex? Plan capture and the busy message
+ * notice use the same classifier as {@link isClaudeCodeHost} and outcomes.
  */
 export function isCodexHost(env = process.env) {
   return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'codex';

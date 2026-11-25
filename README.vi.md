@@ -101,7 +101,7 @@ Từ MeMesh 4.11.0, Claude Code có thêm `/memesh-memories` để xem và sửa
 
 ---
 
-Plugin Claude Code có **12 hook**; plugin Codex có thêm 2 hook dành riêng cho Codex. MeMesh không quét từ khóa trong tin nhắn của bạn; trợ lý tự quyết định dựa trên lời bạn nói. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
+Plugin Claude Code có **11 hook**; plugin Codex có thêm 2 hook dành riêng cho Codex. MeMesh không quét từ khóa trong tin nhắn của bạn; trợ lý tự quyết định dựa trên lời bạn nói. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
 
 **Xếp hạng theo điểm** — mức liên quan (30%) + độ mới (25%) + tần suất (18%) + độ tin cậy (17%) + tác động của việc truy xuất (10%). Xem [kiến trúc](docs/ARCHITECTURE.md).
 

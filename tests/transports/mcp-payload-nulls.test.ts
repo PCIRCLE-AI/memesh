@@ -1,17 +1,13 @@
-/** Public conversation bodies are text; retained legacy internal JSON is data. */
+/** Public conversation bodies are text. */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import os from 'node:os';
 import { handleTool } from '../../src/transports/mcp/handlers.js';
-import { executeAgentMessageAction } from '../../src/transports/agent-messaging.js';
 import { executeConversationMessageAction } from '../../src/transports/conversation-messaging.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
-import { getDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 const db = useTestDatabase('memesh-mcp-payload-nulls-');
 const PAYLOAD = { a: null, b: 1, nested: { c: null, d: 2 }, arr: [null, 3] };
-const context = { transport: 'http', sourceHost: 'http' } as const;
-const legacy = { project: 'proj-517', sender: 'agent-a', recipient: 'agent-b', content_type: 'application/json' };
 const textOf = (result: { content: Array<{ text?: string }> }) => result.content[0]?.text ?? '';
 const call = (args: Record<string, unknown>, session: string) => handleTool('message', args, 'codex-mcp-client', undefined, { hostSession: session });
 
@@ -24,20 +20,6 @@ beforeEach(() => {
   } finally { store.close(); }
 });
 afterEach(() => vi.unstubAllEnvs());
-
-describe('#517 retained legacy internal JSON payload', () => {
-  it('preserves null at every depth through internal send and fetch', async () => {
-    const sent = await executeAgentMessageAction(getDatabase(), { action: 'send', ...legacy, idempotency_key: 'nested', payload: PAYLOAD }, context) as { message_id: string };
-    const fetched = await executeAgentMessageAction(getDatabase(), { action: 'fetch', project: legacy.project, recipient: legacy.recipient, message_id: sent.message_id }, context) as { payload: unknown };
-    expect(fetched.payload).toEqual(PAYLOAD);
-  });
-  it('#553 preserves an explicit null payload and rejects an omitted payload', async () => {
-    const sent = await executeAgentMessageAction(getDatabase(), { action: 'send', ...legacy, idempotency_key: 'null', payload: null }, context) as { message_id: string };
-    const fetched = await executeAgentMessageAction(getDatabase(), { action: 'fetch', project: legacy.project, recipient: legacy.recipient, message_id: sent.message_id }, context) as Record<string, unknown>;
-    expect(fetched).toHaveProperty('payload', null);
-    await expect(executeAgentMessageAction(getDatabase(), { action: 'send', ...legacy, idempotency_key: 'missing' }, context)).rejects.toThrow(/payload/i);
-  });
-});
 
 describe('public MCP conversation text and null validation', () => {
   it('round-trips JSON-looking text unchanged, like the shared conversation executor, and isolates the receiver', async () => {

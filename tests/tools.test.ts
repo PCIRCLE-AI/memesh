@@ -11,7 +11,6 @@ import { getProjectName } from '../src/core/paths.js';
 import { projectTranscriptSlug } from '../src/core/transcript-source.js';
 import { createHash } from 'node:crypto';
 import { applyProposal, executeWorkPackage, getProposalDetail, listProposals } from '../src/core/dreamer.js';
-import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { normalizeClientHost, resolveTranscriptWorkspace } from '../src/transports/mcp/handlers.js';
 import { ConversationMessages } from '../src/core/conversation-messages.js';
@@ -289,7 +288,7 @@ describe('work_package', () => {
     seed();
     const forbidden = () => { throw new Error('forbidden external path'); };
     const spies = [
-      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden),
+      vi.spyOn(ConversationMessages.prototype, 'send').mockImplementation(forbidden),
       vi.fn(forbidden),
     ];
     vi.stubGlobal('fetch', spies[spies.length - 1]);
@@ -566,7 +565,7 @@ describe('transcript work_package', () => {
 
 
 
-      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden), vi.fn(forbidden)];
+      vi.spyOn(ConversationMessages.prototype, 'send').mockImplementation(forbidden), vi.fn(forbidden)];
     vi.stubGlobal('fetch', spies[spies.length - 1]);
     const transaction = vi.spyOn(db, 'transaction').mockImplementation(forbidden);
     const before = db.prepare('SELECT total_changes() AS n').get();

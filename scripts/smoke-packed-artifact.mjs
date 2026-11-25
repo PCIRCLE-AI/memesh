@@ -7,7 +7,7 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { binTargets, hookCommands, mcpEntry, mcpManifestPath } from './lib/executable-targets.mjs';
 import { buildIsolatedRuntimeEnv } from './lib/isolated-env.mjs';
-import { npmSync } from './lib/npm-bin.mjs';
+import { npmSync, parsePackResult } from './lib/npm-bin.mjs';
 
 const repoRoot = process.cwd();
 
@@ -39,7 +39,7 @@ const packJson = npmSync(['pack', '--json', '--pack-destination', smokeDir], {
   },
 });
 
-const [{ filename }] = JSON.parse(packJson);
+const { filename } = parsePackResult(packJson);
 const tarballPath = path.join(smokeDir, filename);
 const extractDir = path.join(smokeDir, 'extract');
 
@@ -74,6 +74,7 @@ for (const retired of ['dashboard', 'dist/cli/view-live.js']) {
 const requiredFiles = [
   // Core
   'package.json',
+  'memesh-lock.json',
   '.claude-plugin/plugin.json',
   '.codex-plugin/plugin.json',
   '.claude-plugin/mcp.json',
@@ -92,28 +93,24 @@ const requiredFiles = [
   'dist/core/serializer.js',
   'dist/core/patterns.js',
   'dist/core/product-improvements.js',
-  'dist/core/agent-messaging.js',
-  'dist/core/agent-router.js',
   // Dist — transports
   'dist/transports/schemas.js',
-  'dist/transports/agent-messaging.js',
   'dist/mcp/server.js',
   'dist/mcp/server.js.map',
   'dist/mcp/THIRD_PARTY_NOTICES.txt',
   'dist/transports/mcp/handlers.js',
   'dist/transports/http/server.js',
   'dist/transports/cli/cli.js',
-  // Host-native delivery is a separately installed runtime surface. The
-  // router binary alone is not enough: its private client/config helpers and
-  // each supported host runner must make the tarball too.
-  'dist/host-runtime/router.js',
-  'dist/host-runtime/router-client.js',
-  'dist/host-runtime/config.js',
-  'dist/host-runtime/package-version.js',
-  'dist/host-runtime/codex.js',
-  'dist/host-runtime/codex-session.js',
+  // Conversation storage and native wake paths must ship with the entry.
+  'dist/core/conversation-messages.js',
+  'dist/core/conversation-message-migration.js',
+  'dist/host-adapters/conversation-wake.js',
+  'dist/transports/conversation-messaging.js',
+  'dist/host-adapters/claude-channel.js',
   'dist/host-runtime/claude.js',
-  'dist/host-runtime/acp.js',
+  'dist/host-runtime/conversation-channel.js',
+  'dist/host-runtime/entry.js',
+  'dist/core/export-signature.js',
   // Hook support: hooks cannot import from dist/, so these are the whole of
   // their dependency surface. Missing, every hook throws on first require.
   // The hooks themselves are not listed here — they are derived from
@@ -284,12 +281,8 @@ assert.equal(
   false,
   'raw plugin cache inherited a credential or agent-socket variable',
 );
-const clientModuleUrl = pathToFileURL(
-  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'index.js'),
-).href;
-const transportModuleUrl = pathToFileURL(
-  path.join(repoRoot, 'node_modules', '@modelcontextprotocol', 'sdk', 'dist', 'esm', 'client', 'stdio.js'),
-).href;
+const clientModuleUrl = import.meta.resolve('@modelcontextprotocol/sdk/client/index.js');
+const transportModuleUrl = import.meta.resolve('@modelcontextprotocol/sdk/client/stdio.js');
 execFileSync(
   process.execPath,
   [

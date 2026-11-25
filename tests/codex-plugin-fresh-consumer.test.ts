@@ -6,45 +6,19 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { afterEach, describe, expect, it } from 'vitest';
 import { MemeshDatabase } from '../src/storage/sqlite.js';
+import { buildIsolatedRuntimeEnv } from '../scripts/lib/isolated-env.mjs';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const packageVersion = (JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8')) as { version: string }).version;
 const temporaryDirectories: string[] = [];
 const children: ChildProcess[] = [];
-const routerSockets: string[] = [];
-const companionStates: string[] = [];
 
 afterEach(async () => {
   for (const child of children.splice(0)) await stop(child);
-  for (const statePath of companionStates.splice(0)) await terminateCompanionAt(statePath);
-  for (const socketPath of routerSockets.splice(0)) await stopRouterAt(socketPath);
   for (const directory of temporaryDirectories.splice(0)) {
     fs.rmSync(directory, { recursive: true, force: true });
   }
 });
-
-async function terminateCompanionAt(statePath: string): Promise<void> {
-  if (!fs.existsSync(statePath)) return;
-  const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as {
-    token: string;
-    control_socket: string;
-  };
-  await new Promise<void>((resolve, reject) => {
-    const socket = net.createConnection(state.control_socket);
-    let response = '';
-    socket.setEncoding('utf8');
-    socket.setTimeout(2_000, () => socket.destroy(new Error('Timed out stopping packaged Codex companion.')));
-    socket.on('data', chunk => { response += chunk; });
-    socket.once('error', reject);
-    socket.once('close', hadError => {
-      if (hadError) return;
-      if (response.trim() !== 'terminated') return reject(new Error(`Packaged Codex companion rejected termination: ${response.trim()}`));
-      resolve();
-    });
-    socket.once('connect', () => socket.end(`${JSON.stringify({ action: 'terminate', token: state.token })}\n`));
-  });
-  await waitFor(() => !fs.existsSync(statePath), 'the packaged Codex companion lifecycle state to disappear');
-}
 
 function waitFor(predicate: () => boolean | Promise<boolean>, description: string): Promise<void> {
   const deadline = Date.now() + 10_000;
@@ -73,25 +47,6 @@ function stop(child: ChildProcess): Promise<void> {
   });
 }
 
-async function stopRouterAt(socketPath: string): Promise<void> {
-  for (const value of routerOwners(socketPath)) {
-    const pid = Number(value);
-    if (!Number.isSafeInteger(pid) || pid <= 1) continue;
-    try {
-      process.kill(pid, 'SIGTERM');
-    } catch (error) {
-      if ((error as NodeJS.ErrnoException).code !== 'ESRCH') throw error;
-    }
-  }
-  await waitFor(() => routerOwners(socketPath).length === 0, 'the task-owned packaged router to stop');
-}
-
-function routerOwners(socketPath: string): string[] {
-  const result = spawnSync('lsof', ['-t', '--', socketPath], { encoding: 'utf8' });
-  if (result.error) throw result.error;
-  return result.stdout.trim().split(/\s+/).filter(Boolean);
-}
-
 function tcpPortOpen(port: number): Promise<boolean> {
   return new Promise(resolve => {
     const socket = net.createConnection({ host: '127.0.0.1', port });
@@ -115,127 +70,72 @@ async function freeTcpPort(): Promise<number> {
 }
 
 function packagedPluginWithoutNodeModules(): string {
-  // AF_UNIX socket paths are capped at 103 bytes; keep this root short enough
-  // for the automatic `<MEMESH_DIR>/agent-router-v2.sock` path on macOS.
-  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'm-'));
+  const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'm-')));
   temporaryDirectories.push(root);
   fs.cpSync(path.join(repoRoot, 'dist'), path.join(root, 'dist'), { recursive: true });
   fs.cpSync(path.join(repoRoot, '.codex-plugin'), path.join(root, '.codex-plugin'), { recursive: true });
   fs.copyFileSync(path.join(repoRoot, 'package.json'), path.join(root, 'package.json'));
+  fs.cpSync(path.join(repoRoot, 'scripts/hooks'), path.join(root, 'scripts/hooks'), { recursive: true });
+  fs.cpSync(path.join(repoRoot, 'hooks'), path.join(root, 'hooks'), { recursive: true });
   expect(fs.existsSync(path.join(root, 'node_modules'))).toBe(false);
   return root;
 }
 
 describe('Codex plugin fresh consumer', () => {
-  it.skipIf(process.platform === 'win32')('starts and registers SessionStart without third-party runtime modules', async () => {
-    const pluginRoot = packagedPluginWithoutNodeModules();
-    const dataDirectory = path.join(pluginRoot, 'data');
-    const dbPath = path.join(dataDirectory, 'knowledge-graph.db');
-    const socketPath = path.join(dataDirectory, 'agent-router-v2.sock');
-    const tokenPath = path.join(dataDirectory, 'agent-router.token');
-    const statePath = path.join(dataDirectory, 'runtime', 'codex-session', '01a041b4-5c67-75b3-9505-4e33d7942b8e.json');
-    const environment: NodeJS.ProcessEnv = {
-      PATH: process.env.PATH,
-      HOME: path.join(pluginRoot, 'home'),
-      TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
-      MEMESH_DIR: dataDirectory,
-      MEMESH_DB_PATH: dbPath,
-      MEMESH_ROUTER_SOCKET: socketPath,
-      MEMESH_ROUTER_TOKEN_FILE: tokenPath,
-      MEMESH_AUTO_UPDATE: '0',
-      PLUGIN_ROOT: pluginRoot,
-    };
+  it('declares only conversation hooks, never a retired companion launcher', () => {
+    for (const filename of ['hooks/hooks.json', '.codex-plugin/plugin.json']) {
+      const manifest = JSON.parse(fs.readFileSync(path.join(repoRoot, filename), 'utf8'));
+      const events = filename.startsWith('.codex-plugin') ? manifest.hooks.hooks : manifest.hooks;
+      const commands = (groups: Array<{ hooks: Array<{ command: string }> }> = []) => groups.flatMap(group => group.hooks.map(hook => hook.command));
+      expect(Object.values(events).flatMap(groups => commands(groups as never))).not.toContain('${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js');
+      expect(commands(events.SessionStart)).toEqual([
+        '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js',
+        '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js',
+      ]);
+      expect(commands(events.UserPromptSubmit)).toContain('${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js');
+    }
+  });
 
+  it('runs packaged SessionStart hooks with synthetic Codex identity, without a companion or router', () => {
+    const pluginRoot = packagedPluginWithoutNodeModules();
     const packed = JSON.parse(fs.readFileSync(path.join(pluginRoot, 'package.json'), 'utf8'));
     expect(packed.dependencies ?? {}).not.toHaveProperty('sqlite-vec');
     expect(fs.existsSync(path.join(pluginRoot, 'dist/core/embedder.js'))).toBe(false);
-
-    const companion = spawn(process.execPath, [path.join(pluginRoot, 'dist/host-runtime/codex-session.js')], {
-      env: environment,
-      stdio: ['pipe', 'pipe', 'pipe'],
-    });
-    children.push(companion);
-    companionStates.push(statePath);
-    routerSockets.push(socketPath);
-    let companionStderr = '';
-    companion.stderr!.setEncoding('utf8');
-    companion.stderr!.on('data', (chunk: string) => { companionStderr += chunk; });
-    companion.stdin!.end(JSON.stringify({
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-      session_id: '01a041b4-5c67-75b3-9505-4e33d7942b8e',
-      cwd: pluginRoot,
-    }));
-
-    await waitFor(() => companion.exitCode !== null, 'the short SessionStart launcher to exit');
-    expect(companion.exitCode, companionStderr).toBe(0);
-    await waitFor(() => fs.existsSync(socketPath) && fs.existsSync(statePath), 'the detached companion lifecycle state and router socket');
-    const state = JSON.parse(fs.readFileSync(statePath, 'utf8')) as { pid: number };
-    expect(state.pid).not.toBe(companion.pid);
-    await waitFor(() => {
-      if (!fs.existsSync(dbPath)) return false;
-      const database = new MemeshDatabase(dbPath);
-      try {
-        const row = database.prepare(
-          "SELECT count(*) AS count FROM agent_session_connections WHERE principal_id = 'codex-thread-01a041b4-5c67-75b3-9505-4e33d7942b8e'",
-        ).get() as { count: number };
-        return row.count === 1;
-      } catch {
-        return false;
-      } finally {
-        database.close();
-      }
-    }, 'the packaged SessionStart companion to register with the router');
-    expect(companion.exitCode).toBe(0);
-    expect(companionStderr).toBe('');
-    expect(fs.existsSync(path.join(dataDirectory, 'hosts', 'codex-session.json'))).toBe(false);
-    await terminateCompanionAt(statePath);
-    companionStates.splice(companionStates.indexOf(statePath), 1);
-  });
-
-  it.skipIf(process.platform === 'win32')('#518: SessionStart against a router from before versions were reported says why and how to stop it', async () => {
-    const pluginRoot = packagedPluginWithoutNodeModules();
     const dataDirectory = path.join(pluginRoot, 'data');
-    fs.mkdirSync(dataDirectory, { recursive: true, mode: 0o700 });
-    const socketPath = path.join(dataDirectory, 'agent-router-v2.sock');
-    const tokenPath = path.join(dataDirectory, 'agent-router.token');
-    fs.writeFileSync(tokenPath, 'x'.repeat(64), { mode: 0o600 });
-    // A router from 4.10.11 or earlier: it rejects the host's memesh_version field.
-    const legacy = net.createServer(socket => {
-      socket.on('error', () => undefined);
-      socket.once('data', () => {
-        socket.write(`${JSON.stringify({
-          version: 2, request_id: '', ok: false,
-          error: { code: 'unexpected_field', message: 'Router frame contains unsupported field memesh_version.' },
-        })}\n`);
-      });
-    });
-    await new Promise<void>((resolve, reject) => { legacy.once('error', reject); legacy.listen(socketPath, resolve); });
-    fs.chmodSync(socketPath, 0o600);
-    try {
-      const launcher = spawn(process.execPath, [path.join(pluginRoot, 'dist/host-runtime/codex-session.js')], {
-        env: {
-          PATH: process.env.PATH, HOME: path.join(pluginRoot, 'home'), TMPDIR: process.env.TMPDIR ?? os.tmpdir(),
-          MEMESH_DIR: dataDirectory, MEMESH_DB_PATH: path.join(dataDirectory, 'knowledge-graph.db'),
-          MEMESH_ROUTER_SOCKET: socketPath, MEMESH_ROUTER_TOKEN_FILE: tokenPath, MEMESH_AUTO_UPDATE: '0', PLUGIN_ROOT: pluginRoot,
-        },
-        stdio: ['pipe', 'pipe', 'pipe'],
-      });
-      children.push(launcher);
-      let stderr = '';
-      launcher.stderr!.setEncoding('utf8');
-      launcher.stderr!.on('data', (chunk: string) => { stderr += chunk; });
-      launcher.stdin!.end(JSON.stringify({
-        hook_event_name: 'SessionStart', source: 'startup',
-        session_id: '01a041b4-5c67-75b3-9505-4e33d7942b8f', cwd: pluginRoot,
-      }));
-      await waitFor(() => launcher.exitCode !== null, 'the SessionStart launcher to exit');
-      expect(launcher.exitCode).toBe(1);
-      expect(stderr).toContain('router_outdated');
-      expect(stderr).toContain('pkill -f dist/host-runtime/router.js');
-    } finally {
-      await new Promise<void>(resolve => legacy.close(() => resolve()));
+    const runtimeHome = path.join(pluginRoot, 'home');
+    fs.mkdirSync(runtimeHome, { mode: 0o700 });
+    fs.mkdirSync(dataDirectory, { mode: 0o700 });
+    const dbPath = path.join(dataDirectory, 'knowledge-graph.db');
+    fs.writeFileSync(path.join(dataDirectory, 'config.json'), JSON.stringify({ autoUpdate: 'off', updateCheck: false, autoCapture: false }), { mode: 0o600 });
+    const environment = buildIsolatedRuntimeEnv({ PATH: path.dirname(process.execPath),
+      TMPDIR: pluginRoot, MEMESH_AUTO_UPDATE: 'off', MEMESH_AUTO_CAPTURE: 'false', MEMESH_SKIP_UPDATE_CHECK: '1',
+      MEMESH_HOOK_HOST: 'codex', CODEX_PLUGIN_ROOT: pluginRoot }, { runtimeHome, memeshDir: dataDirectory, dbPath });
+    const manifest = JSON.parse(fs.readFileSync(path.join(pluginRoot, '.codex-plugin/plugin.json'), 'utf8'));
+    const session = '01a041b4-5c67-75b3-9505-4e33d7942b8e';
+    const commands = manifest.hooks.hooks.SessionStart.flatMap((group: { hooks: Array<{ command: string }> }) => group.hooks.map(hook => hook.command));
+    expect(commands).toHaveLength(2); // Refuse stale wiring before executing it.
+    for (const command of commands) {
+      const entry = command.replace('${CLAUDE_PLUGIN_ROOT}', pluginRoot);
+      expect(entry.startsWith(path.join(pluginRoot, 'scripts/hooks/'))).toBe(true);
+      const result = spawnSync(process.execPath, [entry], { cwd: pluginRoot, env: environment,
+        input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: session, cwd: pluginRoot }),
+        encoding: 'utf8', timeout: 10_000 });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
     }
+    const database = new MemeshDatabase(path.join(dataDirectory, 'messages.db'), { readOnly: true });
+    try {
+      const row = database.prepare('SELECT id,host,pid,wake,is_local FROM conversations WHERE id=?').get(session) as { id: string; host: string; pid: number; wake: string; is_local: number };
+      expect(row).toMatchObject({ id: session, host: 'codex', pid: process.pid, is_local: 1 });
+      expect(JSON.parse(row.wake)).toEqual({ thread: session });
+      expect(database.prepare('SELECT count(*) AS count FROM messages').get()).toEqual({ count: 0 });
+    } finally { database.close(); }
+    for (const relative of ['agent-router-v2.sock', 'agent-router.sock', 'agent-router.token', 'runtime/codex-session', 'hosts/codex-session.json']) {
+      expect(fs.existsSync(path.join(dataDirectory, relative)), relative).toBe(false);
+    }
+    const outcomes = fs.readFileSync(path.join(dataDirectory, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(outcomes.some(row => row.hook === 'messages' && row.outcome === 'skipped')).toBe(true);
+    expect(outcomes.some(row => row.hook === 'messages' && row.outcome === 'error')).toBe(false);
   });
 
   it('declares the bundled MCP server for a zero-config Codex plugin install', () => {

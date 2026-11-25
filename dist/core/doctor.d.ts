@@ -49,9 +49,6 @@ interface DoctorOptions {
     statSyncImpl?: typeof fs.statSync;
     envImpl?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
-    agentMessageStoragePolicy?: {
-        storage_quota_bytes?: number;
-    };
     nativeBindingProbeImpl?: (packageRoot: string) => NativeBindingProbeResult;
     resolveShellMemeshImpl?: () => string | null;
     probeMessageCapability?: boolean;
@@ -61,8 +58,6 @@ interface DoctorOptions {
         ok: false;
         message: string;
     };
-    probeMessageRouterStatus?: boolean;
-    messageRouterStatusProbeImpl?: () => Promise<MessageRouterStatusProbe>;
 }
 interface PluginCacheDiscovery {
     host: import('./install-channel.js').PluginHost;
@@ -70,12 +65,6 @@ interface PluginCacheDiscovery {
     installedPluginsPath?: string;
     unverifiableReason?: string;
 }
-type MessageRouterStatusProbe = {
-    socket_path: string;
-    socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
-    active_registrations?: number;
-    detail?: string;
-};
 export declare class NoDatabaseYetError extends Error {
     readonly databasePath: string;
     constructor(databasePath: string);

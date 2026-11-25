@@ -79,6 +79,16 @@ describe('Feature: User Prompt Intent Hook', () => {
   });
 
   describe('full prompt capture', () => {
+    it('captures an ordinary user prompt containing a message-shaped UUID', () => {
+      const text = 'Please investigate 2b1844ca-f026-47c5-9316-d82242464e37';
+      expectNoOp(runHook({ session_id: 'user-uuid', cwd: tmpHome, prompt: text }));
+      const db = new DatabaseSync(path.join(tmpHome, '.memesh', 'knowledge-graph.db'), { readOnly: true });
+      try {
+        expect(db.prepare("SELECT o.content FROM entities e JOIN observations o ON o.entity_id=e.id WHERE e.type='conversation'").all()).toEqual([{ content: text }]);
+      } finally { db.close(); }
+      expect(recordedReasons()).toEqual([undefined]);
+    });
+
     it('stores repeated prompts independently, including text above the former size limit', () => {
       const text = 'x'.repeat(256 * 1024 + 1) + ' END';
       for (let i = 0; i < 2; i++) expectNoOp(runHook({ session_id: 'full', cwd: tmpHome, prompt: text }));

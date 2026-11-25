@@ -4,14 +4,13 @@ import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
 import { isIP } from 'net';
-import { openDatabase, closeDatabase, getDatabase, failureMessage, isDatabaseOpen, } from '../../db.js';
+import { openDatabase, closeDatabase, getDatabase, failureMessage, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
 import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
-import { startAgentMessageExpiryScheduler } from '../../core/agent-message-expiry.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
 import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
@@ -21,9 +20,7 @@ import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
-import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, UserPatternsSchema, } from '../schemas.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
-import { startRouterIfDown } from '../../host-runtime/router-client.js';
+import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, UserPatternsSchema, } from '../schemas.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
@@ -421,34 +418,6 @@ for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
 app.post('/v1/export', (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import', (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn', (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
-app.post('/v1/message', (req, res) => {
-    const controller = new AbortController();
-    function cleanupListeners() {
-        req.removeListener('aborted', abortIfOpen);
-        res.removeListener('close', abortIfOpen);
-        res.removeListener('finish', cleanupListeners);
-    }
-    function abortIfOpen() {
-        if (!res.writableEnded)
-            controller.abort();
-        cleanupListeners();
-    }
-    req.once('aborted', abortIfOpen);
-    res.once('close', abortIfOpen);
-    res.once('finish', cleanupListeners);
-    handlePost(MessageBody, req, res, async (data) => {
-        try {
-            return await executeAgentMessageAction(getDatabase(), data, {
-                transport: 'http',
-                sourceHost: 'http',
-                signal: controller.signal,
-            }, { startRouterIfDown });
-        }
-        finally {
-            cleanupListeners();
-        }
-    });
-});
 app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => {
     const { explainCommits } = await import('../../core/why.js');
     return explainCommits(getDatabase(), {
@@ -776,14 +745,6 @@ export function startServer(host = HOST, port = PORT, opts) {
         process.exit(1);
     });
     serverAuthRequired.set(server, isRemote);
-    if (opts?.agentMessageExpiry === true) {
-        const stopExpiry = startAgentMessageExpiryScheduler(() => (isDatabaseOpen() ? getDatabase() : null), { trigger: 'http-serve' });
-        process.once('exit', stopExpiry);
-        server.on('close', () => {
-            process.removeListener('exit', stopExpiry);
-            stopExpiry();
-        });
-    }
     return server;
 }
 export function __setRemoteTokenForTest(value) {
@@ -795,7 +756,7 @@ const isMain = process.env.MEMESH_CLI_SERVE !== '1'
 if (isMain || process.argv[1]?.endsWith('memesh-http')) {
     let server;
     try {
-        server = startServer(undefined, undefined, { agentMessageExpiry: true });
+        server = startServer();
     }
     catch (err) {
         console.error(`MeMesh: ${err instanceof Error ? err.message : String(err)}`);

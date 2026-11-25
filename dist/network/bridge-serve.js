@@ -117,7 +117,7 @@ export async function serve(dataDir, dbPath) {
     let db;
     let config;
     try {
-        db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
+        db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
         config = readConfig(db);
     }
     catch (err) {

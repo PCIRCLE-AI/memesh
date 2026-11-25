@@ -141,7 +141,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   let db: MemeshDatabase;
   let config: NetworkConfig | null;
   try {
-    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS, metadataOnly: true });
+    db = openNetworkStore(dbPath, { busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS });
     config = readConfig(db);
   } catch (err) {
     return fail('exit_database', `Cannot open the database: ${errorMessage(err)}`);

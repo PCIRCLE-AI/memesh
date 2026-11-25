@@ -6,7 +6,7 @@ import { MemeshDatabase } from '../storage/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, requirePrivateWritableDirectory, removeGroupAndOtherAccess } from './file-mode.js';
 import { getDbPath, getMemeshDirFromDbPath } from './paths.js';
 import { readPublicNetworkContext } from './public-network-context.js';
-import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
+import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, retireLegacyConversationTables, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
 
 export const MESSAGE_MAX_BYTES = 8_000;
 const DAY = 86_400_000;
@@ -149,8 +149,15 @@ export class ConversationMessages {
     let ownedSource: MemeshDatabase | undefined;
     try {
       if (legacyFile !== undefined && fs.existsSync(legacyFile)) {
+        const directory = path.dirname(fs.realpathSync(legacyFile));
+        const stat = fs.statSync(directory);
+        if (!stat.isDirectory() || (process.platform !== 'win32' && ((stat.mode & 0o077) !== 0
+          || (typeof process.getuid === 'function' && stat.uid !== process.getuid())))) {
+          throw new Error('Legacy retirement requires an owner-private source directory');
+        }
+        fs.accessSync(directory, fs.constants.W_OK | fs.constants.X_OK);
         guardDatabaseFiles(legacyFile);
-        ownedSource = new MemeshDatabase(legacyFile, { readOnly: true });
+        ownedSource = new MemeshDatabase(legacyFile);
         if (busyTimeoutMs !== undefined) ownedSource.pragma(`busy_timeout = ${busyTimeoutMs}`);
         assertLegacyDestinationIsDifferent(ownedSource, file);
       }
@@ -184,8 +191,7 @@ export class ConversationMessages {
         `);
         this.upgradeRoutingSchema();
         for (const target of databaseFiles(file)) removeGroupAndOtherAccess(target);
-        const legacySource = options.legacySource ?? ownedSource;
-        if (legacySource) importLegacyConversationMessages(legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
+        if (options.legacySource) importLegacyConversationMessages(options.legacySource, this.db, { nowMs: this.clock(), localMachine: this.machine, messageIds: options.legacyMessageIds });
         for (const archiveFile of archiveFiles) {
           const archive = new MemeshDatabase(archiveFile, { readOnly: true });
           try {
@@ -194,6 +200,7 @@ export class ConversationMessages {
             importLegacyConversationMessages(archive, this.db, { nowMs: this.clock(), localMachine: this.machine });
           } finally { archive.close(); }
         }
+        if (ownedSource) retireLegacyConversationTables(ownedSource, this.db, { nowMs: this.clock(), localMachine: this.machine });
         this.db.transaction(() => this.maintain()).immediate();
       } catch (error) {
         this.db.close();

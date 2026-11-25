@@ -652,6 +652,10 @@ describe('isDistStale', () => {
   it('compares only generated build artefacts, not directly executed hook or QA sources', () => {
     expect(REQUIRED_BUILD_ARTIFACTS.length).toBeGreaterThan(0);
     expect(REQUIRED_BUILD_ARTIFACTS.every((file) => file.startsWith('dist/'))).toBe(true);
+    expect(REQUIRED_BUILD_ARTIFACTS).toContain('dist/transports/cli/cli.js');
+    expect(REQUIRED_BUILD_ARTIFACTS).toContain('dist/host-runtime/claude.js');
+    expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('dist/host-runtime/router.js');
+    expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('dist/host-runtime/codex-session.js');
     expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('scripts/hooks/post-commit.js');
     expect(REQUIRED_BUILD_ARTIFACTS).not.toContain('scripts/qa/core-live-journeys.mjs');
   });
@@ -682,13 +686,14 @@ describe('isDistStale', () => {
 
 describe('assertDistPresent', () => {
   it('names every missing artefact rather than the first one', () => {
-    expect(() => assertDistPresent('/repo', () => false))
-      .toThrow(/router\.js.*cli\.js.*codex-session\.js/s);
+    for (const artefact of REQUIRED_DIST) {
+      expect(() => assertDistPresent('/repo', () => false)).toThrow(artefact);
+    }
   });
 
   it('passes when every required artefact exists', () => {
     expect(() => assertDistPresent('/repo', () => true)).not.toThrow();
-    expect(REQUIRED_DIST).toContain('dist/host-runtime/router.js');
+    expect(REQUIRED_DIST).toContain('dist/host-runtime/claude.js');
   });
 });
 
@@ -2244,6 +2249,8 @@ describe('Codex proof turn configuration', () => {
   it('verifies the server entry file in the cache like the other plugin files', () => {
     expect(CODEX_PLUGIN_CANDIDATE_FILES).toContain('dist/mcp/server.js');
     expect(CODEX_PLUGIN_CANDIDATE_FILES).toContain('.codex-plugin/mcp.json');
+    expect(CODEX_PLUGIN_CANDIDATE_FILES).not.toContain('dist/host-runtime/router.js');
+    expect(CODEX_PLUGIN_CANDIDATE_FILES).not.toContain('dist/host-runtime/codex-session.js');
   });
 
   it.skipIf(process.platform === 'win32' || !fs.existsSync(path.join(__dirname, '..', '..', 'dist', 'mcp', 'server.js')))(

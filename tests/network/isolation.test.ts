@@ -140,7 +140,7 @@ describe('native isolation', () => {
       .map((reached) => `${relative(file)} -> ${relative(reached)}`));
     expect(crossing).toEqual([]);
     // The guard sees the entry points, so it is not passing on an empty list.
-    expect(outside).toEqual(expect.arrayContaining(['transports/cli/cli.ts', 'mcp/server.ts', 'transports/http/server.ts', 'host-runtime/router.ts'].map((entry) => path.join(srcRoot, entry))));
+    expect(outside).toEqual(expect.arrayContaining(['transports/cli/cli.ts', 'mcp/server.ts', 'transports/http/server.ts'].map((entry) => path.join(srcRoot, entry))));
   });
 
   it('outside the network module, exactly these files import it', () => {
@@ -150,8 +150,7 @@ describe('native isolation', () => {
       .map(relative)
       .sort();
     // The public snapshot reads signed metadata without loading keys or the bridge.
-    // Legacy messaging and expiry remain callable until their S6 retirement.
-    expect(importers).toEqual(['src/core/agent-message-expiry.ts', 'src/core/public-network-context.ts', 'src/host-runtime/router.ts', 'src/transports/agent-messaging.ts', 'src/transports/cli/cli.ts']);
+    expect(importers).toEqual(['src/core/public-network-context.ts', 'src/transports/cli/cli.ts']);
   });
 
   it('nothing in src/network loads a module whose name is not in the code, except the native loader', () => {
@@ -170,12 +169,6 @@ describe('memory stays out of the network path', () => {
     const reached = new Set(networkSources.flatMap((file) => [...reachableFrom(file)]));
     const outside = [...reached].filter((file) => !file.startsWith(networkRoot + path.sep)).map(relative).sort();
     expect(outside).toEqual([
-      'src/core/agent-message-inbox.ts',
-      'src/core/agent-message-storage.ts',
-      // The retention constant (reached through the courier and agent-messaging): no imports, no SQL.
-      'src/core/agent-message-ttl.ts',
-      'src/core/agent-messaging.ts',
-      'src/core/agent-scope-id.ts',
       'src/core/conversation-message-migration.ts',
       'src/core/conversation-messages.ts',
       'src/core/file-mode.ts',
@@ -185,7 +178,6 @@ describe('memory stays out of the network path', () => {
       'src/core/public-network-context.ts',
       'src/core/time-utils.ts',
       // Reached only for jsonStringLiteral, through the inbox: it has no imports and no SQL.
-      'src/core/work-topology.ts',
       'src/host-adapters/conversation-wake.ts',
       'src/storage/agent-network-schema.ts',
       'src/storage/sqlite.ts',
@@ -232,7 +224,7 @@ describe('memory stays out of the network path', () => {
     expect(memoryTables).not.toContain('IF');
     expect(tablesIn('CREATE TABLE IF NOT EXISTS x (a)')).toEqual(['x']);
     const networkTables = tablesIn(code(fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8')));
-    expect(networkTables.length).toBeGreaterThan(3);
+    expect(networkTables).toHaveLength(3);
     expect(networkTables.every((name) => name.startsWith('agent_'))).toBe(true);
     for (const sql of ['SELECT name FROM entities', 'SELECT name FROM "entities"', 'SELECT name FROM main.entities', 'select * from main."entities"', 'SELECT * FROM `entities`', 'SELECT * FROM [entities]']) {
       expect(touchesMemoryTable(sql)).toEqual(['entities']);
@@ -247,7 +239,8 @@ describe('memory stays out of the network path', () => {
   const reachedSources = [...new Set(networkSources.flatMap((file) => [...reachableFrom(file)]))];
 
   it('reachable SQL touches only messaging/network tables and the throwaway SQLite probe', () => {
-    expect(reachedSources).toContain(path.join(srcRoot, 'core/agent-messaging.ts'));
+    expect(reachedSources).toContain(path.join(srcRoot, 'core/conversation-messages.ts'));
+    expect(reachedSources).not.toContain(path.join(srcRoot, 'core/agent-messaging.ts'));
     const hits = reachedSources.flatMap((file) => touchesMemoryTable(code(fs.readFileSync(file, 'utf8'))).map((table) => `${relative(file)}: ${table}`)).sort();
     // The three messages.db tables have no agent_ prefix. Keep their exact callers
     // bounded rather than exempting those names throughout the reachable graph.
@@ -291,10 +284,9 @@ describe('memory stays out of the network path', () => {
 
   it('the schema the bridge opens with names only network tables', () => {
     const text = fs.readFileSync(path.join(srcRoot, 'storage/agent-network-schema.ts'), 'utf8');
-    // Physical metadata is three tables; the legacy composed schema retains all
-    // five until S6, with no reliance on their declaration order.
+    // Physical metadata retains only config, invites and peers after S6.
     expect(tablesIn(NETWORK_METADATA_SCHEMA_SQL)).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_peers']);
-    expect(tablesIn(text).sort()).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_outbox', 'agent_network_peers', 'agent_network_presence']);
+    expect(tablesIn(text).sort()).toEqual(['agent_network_config', 'agent_network_invites', 'agent_network_peers']);
     expect(loadsIn(text)).toEqual({ literal: [], computed: [] });
   });
 });
@@ -320,7 +312,7 @@ describe('what the bundles really contain', () => {
     }
   });
 
-  it.each(['transports/cli/cli.ts', 'mcp/server.ts', 'transports/http/server.ts', 'host-runtime/router.ts'])('%s does not carry the native package', async (entry) => {
+  it.each(['transports/cli/cli.ts', 'mcp/server.ts', 'transports/http/server.ts', 'host-runtime/claude.ts'])('%s does not carry the native package', async (entry) => {
     const text = await bundle(entry, 'external');
     expect(text.length).toBeGreaterThan(1000);
     expect(text).not.toContain('@number0');

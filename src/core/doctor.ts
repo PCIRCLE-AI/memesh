@@ -1,7 +1,6 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'node:net';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
@@ -21,21 +20,19 @@ import {
 import { readInstallRecordState } from './install-id.js';
 import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
 import { whyFailed } from './safe-write.js';
-import { unreadDeliveryCount } from './agent-message-inbox.js';
 import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
 import { withoutFinalPeriod } from './sentence.js';
 import { AutoArchiveRecordUnreadable, readLastAutoArchiveRun } from './lifecycle.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
-import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
-import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
 import { manifestScope } from './manifest-scope.js';
 import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
 import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
-import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
+import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
@@ -43,15 +40,7 @@ import {
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
-import { getAgentMessageStorageReport } from './agent-message-storage.js';
-import { HANDLED_RECEIPT_KINDS_SQL } from './agent-messaging.js';
-import {
-  AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES, AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES, AGENT_MESSAGE_EXPIRY_INTERVAL_MS, databaseFile, inspectAgentMessageArchive,
-  lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive,
-} from './agent-message-expiry.js';
-import { readHostConfigFile } from '../host-runtime/config.js';
 import { journeyEnv, journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
-import { readRouterIdleExit } from '../host-runtime/router-idle.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
@@ -176,14 +165,6 @@ interface DoctorOptions {
   envImpl?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   /**
-   * Optional owner-supplied message-storage quota. Doctor reports it but
-   * never enables it or changes the database. (Retention is not a policy: a
-   * message is always kept one day.)
-   */
-  agentMessageStoragePolicy?: {
-    storage_quota_bytes?: number;
-  };
-  /**
    * Test seam: probe that the built-in SQLite runtime can open a database.
    */
   nativeBindingProbeImpl?: (packageRoot: string) => NativeBindingProbeResult;
@@ -195,17 +176,11 @@ interface DoctorOptions {
   resolveShellMemeshImpl?: () => string | null;
   /**
    * Opt-in installed-artifact probe for the durable-message MCP surface.
-   * It starts the packaged stdio server in an isolated HOME and imports the
-   * bundled host adapters; it is intentionally unrelated to the skills hash.
+   * It starts the packaged stdio server in an isolated HOME; it is intentionally unrelated to the skills hash.
    */
   probeMessageCapability?: boolean;
   messageCapabilityProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
-  /**
-   * Opt-in read-only probe of the actual Local router endpoint. It does not
-   * start a router, register a synthetic host, send content, or wake a session.
-   */
-  probeMessageRouterStatus?: boolean;
-  messageRouterStatusProbeImpl?: () => Promise<MessageRouterStatusProbe>;
+
 }
 
 interface PluginCacheDiscovery {
@@ -223,15 +198,7 @@ interface ClaudePluginEntries {
   entries: Array<Record<string, unknown>>;
 }
 
-type MessageRouterStatusProbe = {
-  socket_path: string;
-  socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
-  active_registrations?: number;
-  detail?: string;
-};
-
 const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
-const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
 
 // Locale READMEs that MUST stay in lockstep with README.md. Order matters
 // only for the doctor output — alphabetised for readability.
@@ -397,7 +364,7 @@ function openDatabaseForDoctor(dbPath?: string, opts: { busyTimeoutMs?: number }
 
 /** Read-only, a database whose schema is older than this version cannot be read by every check: it is behind, not broken. */
 function isSchemaBehind(err: unknown): boolean {
-  // An error that carries its own fix was raised on purpose by a check that already read the damage (the inbox's
+  // An error that carries its own fix was raised on purpose by a check that already read the damage (a diagnostic's
   // missing column, a failed integrity check): that is broken, not behind, and keeps its own advice.
   if (typeof (err as { fix?: unknown } | null)?.fix === 'string') return false;
   return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
@@ -492,362 +459,6 @@ function createInfo(id: string, label: string, summary: string, fix?: string): D
 }
 
 /**
- * A deliberately read-only operator row. The table probe keeps old databases
- * and narrow doctor-test doubles on their established output contract.
- */
-function inspectAgentMessageStorage(
-  db: MemeshDatabase,
-  databasePath: string,
-  policy: DoctorOptions['agentMessageStoragePolicy'],
-): DoctorCheck | undefined {
-  try {
-    const present = db.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_messages'",
-    ).get() as { present?: number } | undefined;
-    if (!present?.present) return undefined;
-
-    const report = getAgentMessageStorageReport(db, { databasePath });
-    const quota = policy?.storage_quota_bytes;
-    const invalidQuota = quota !== undefined && (!Number.isSafeInteger(quota) || quota < 0);
-    const quotaText = quota === undefined
-      ? 'quota not configured'
-      : !invalidQuota
-        ? `quota ${formatStorageBytes(quota)} (${formatStorageBytes(report.payload_bytes)} logical payload used)`
-        : 'configured quota is invalid';
-    const retentionText = report.expired_pending_message_count === 0
-      ? 'messages are kept one day, then deleted'
-      : `messages are kept one day, then deleted; ${report.expired_pending_message_count} past that are waiting for the next expiry pass`;
-    const walText = report.wal_file_bytes === null
-      ? 'WAL size unavailable'
-      : `WAL ${formatStorageBytes(report.wal_file_bytes)}`;
-    const databaseText = report.database_file_bytes === null
-      ? 'database file size unavailable'
-      : `database file ${formatStorageBytes(report.database_file_bytes)}`;
-
-    const summary =
-      `${report.message_count} message(s), ${formatStorageBytes(report.payload_bytes)} logical payload `
-      + `(${report.protected_unresolved_message_count} unresolved/protected); ${formatStorageBytes(report.reusable_freelist_bytes)} `
-      + `SQLite freelist reusable; ${databaseText}; ${walText}; ${quotaText}; ${retentionText}. `
-      + 'Doctor only read this state: it did not delete messages, checkpoint WAL, or run VACUUM.';
-
-    if (invalidQuota) {
-      return createCheck(
-        'agent_message_storage',
-        'Agent message storage',
-        'warn',
-        `${summary} Send enforcement rejects this quota configuration; use a canonical non-negative safe decimal integer.`,
-        `Set ${AGENT_MESSAGE_STORAGE_QUOTA_ENV} to 0 or a positive decimal integer within the safe integer range, then re-run memesh doctor.`,
-      );
-    }
-
-    return createInfo(
-      'agent_message_storage',
-      'Agent message storage',
-      summary,
-    );
-  } catch {
-    // This diagnostic must not turn a healthy database row into a duplicate
-    // database failure merely because a pre-message schema cannot report it.
-    return undefined;
-  }
-}
-
-/**
- * The one-day message expiry (core/agent-message-expiry.ts): when the last pass
- * ran, what it did, and whether it is keeping up. Read-only. A pass records
- * itself even when it deletes nothing, so "no row" means none has run on this
- * database, not that one ran and said nothing.
- */
-function inspectAgentMessageExpiry(db: MemeshDatabase, nowMs: number = Date.now()): DoctorCheck | undefined {
-  try {
-    const present = db.prepare(
-      "SELECT COUNT(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN ('agent_messages', 'agent_message_expiry_runs')",
-    ).get() as { n?: number } | undefined;
-    if (present?.n !== 2) return undefined;
-    const warn = (summary: string, fix: string): DoctorCheck => createCheck('agent_message_expiry', 'Agent message expiry', 'warn', summary, fix);
-    const info = (summary: string): DoctorCheck => createInfo('agent_message_expiry', 'Agent message expiry', summary);
-
-    const waiting = getAgentMessageStorageReport(db, {}).expired_pending_message_count;
-    const how = 'It runs by itself while the MeMesh router, MCP server or memesh serve is running; start a MeMesh session and re-run memesh doctor.';
-    const locked = 'another program may be keeping the database locked, so each pass gave up rather than wait. '
-      + 'Close other programs that hold the database open (a sqlite3 shell, a sync or backup tool); if messages still wait five minutes later, re-run memesh doctor.';
-    // The pass records itself, and a database file this user cannot write cannot even record that:
-    // so doctor looks at the file itself rather than wait for a row that can never be written.
-    const file = databaseFile(db);
-    if (file !== '') {
-      try {
-        fs.accessSync(file, fs.constants.W_OK);
-      } catch {
-        // The same command the database check gives: quoted, and covering a -wal/-shm that lost its write bit too.
-        // None when every write bit is already set: a chmod would change nothing.
-        const writeBack = ownerWriteCommand(file)
-          ?? 'its write bit is already set, so something else refuses the write: an ACL, a read-only mount or a locked file';
-        return warn(
-          `The database file ${file} cannot be written by this user, so the one-day expiry cannot delete anything (messages past their day are hidden but stay on disk).`,
-          `Make the database writable (${writeBack}), then re-run memesh doctor.`);
-      }
-    }
-    // A pass that wrote its row ("started") and has not finished: still working, or stopped.
-    const stuck = db.prepare(
-      "SELECT started_at_ms, expired_message_count, backup_path FROM agent_message_expiry_runs WHERE outcome = 'started' ORDER BY run_id DESC LIMIT 1",
-    ).get() as { started_at_ms: number; expired_message_count: number; backup_path: string | null } | undefined;
-    const ago = (ms: number): string => (ms < 90_000 ? 'under a minute ago'
-      : ms < 90 * 60_000 ? `${Math.round(ms / 60_000)} minute(s) ago`
-        : `${Math.round(ms / 3_600_000 * 10) / 10} hour(s) ago`);
-    const last = lastAgentMessageExpiryRun(db);
-    const finishedCheck = (): DoctorCheck => {
-      if (!last) {
-        // A pass that meets a lock gives up rather than hold its process, and when even its row cannot be
-        // written there is no row: so "none on record" also means a database some other program keeps locked.
-        const noRun = `Either no MeMesh router, MCP server or memesh serve has run while messages were waiting, or ${locked}`;
-        return waiting > 0
-          ? warn(
-            `No expiry pass has run on this database, and ${waiting} message(s) are past their one day. ${noRun}`, noRun)
-          : info(`No expiry pass has run yet. Messages are kept one day, then deleted. ${how}`);
-      }
-      const did = `${last.expired_message_count} message(s) deleted (${last.unread_message_count} with no intake, acknowledgement, disposition or reply; ${last.notice_count} sender notice(s)), `
-        + `${last.presence_fact_count} presence fact(s) and ${last.connection_count} connection(s) cleared`;
-      const latestArchive = latestAgentMessageExpiryArchive(db);
-      const archive = latestArchive ? inspectAgentMessageArchive(db, latestArchive) : undefined;
-      const backup = !latestArchive || !archive ? ''
-        : archive.kind === 'missing' ? ` The archive of deleted messages, ${latestArchive}, is not there any more.`
-          : archive.kind === 'unusable' ? ` The archive of deleted messages, ${latestArchive}, cannot be used: ${archive.reason}.`
-            : archive.kind === 'busy' ? ` The archive of deleted messages, ${latestArchive}, is in use by another process right now, so what it holds is not shown.`
-            : archive.messages > 0 ? ` Deleted messages are kept one more day in ${latestArchive} (${archive.messages} there now).`
-              : ` The archive ${latestArchive} holds no deleted message now (each is kept there one more day after it is deleted).`;
-      const summary = `Last pass ${ago(nowMs - last.finished_at_ms)} (${last.outcome}, started by ${last.trigger_source}): ${did}.${backup}${last.detail ? ` ${last.detail}.` : ''}`;
-      const archiveFix = latestArchive
-        ? `for the archive ${latestArchive}: free disk space, give the owner read and write access to it and to its folder, or move it away if it is not a MeMesh archive`
-        : 'for the archive: free disk space or permissions on the backups folder next to the database';
-      if (AGENT_MESSAGE_EXPIRY_FAILED_OUTCOMES.has(last.outcome)) {
-        return warn(summary,
-          `Nothing more is deleted while this fails. Read the detail above, fix it (${archiveFix}; for a read-only database: make it writable), then re-run memesh doctor.`);
-      }
-      if (archive?.kind === 'unusable') {
-        return warn(summary,
-          `The next pass that has messages to delete cannot copy them, so it deletes nothing. Fix it (${archiveFix}), then re-run memesh doctor.`);
-      }
-      // Behind means no pass has done its work for a while. A pass that met a lock did no work, so a run
-      // of them, or of passes that left no row at all, does not count as keeping up.
-      const lastSuccess = (db.prepare(`
-        SELECT MAX(finished_at_ms) AS at FROM agent_message_expiry_runs
-        WHERE outcome IN (${[...AGENT_MESSAGE_EXPIRY_DONE_OUTCOMES].map((o) => `'${o}'`).join(', ')})
-      `).get() as { at: number | null }).at;
-      if (waiting > 0 && (lastSuccess === null || nowMs - lastSuccess > 2 * AGENT_MESSAGE_EXPIRY_INTERVAL_MS)) {
-        const since = lastSuccess === null ? 'no pass has done its work yet' : `the last pass that did its work finished ${ago(nowMs - lastSuccess)}`;
-        const why = last.outcome === 'database_busy' ? `The last pass met a lock: ${locked}` : how;
-        return warn(
-          `${summary} ${waiting} message(s) are past their one day and ${since}. ${why}`, why);
-      }
-      return info(summary);
-    };
-    if (!stuck) return finishedCheck();
-    const sinceMs = nowMs - stuck.started_at_ms;
-    const old = sinceMs > 10 * 60_000;
-    const unfinished = `A pass started ${ago(sinceMs)} and has not finished`
-      + (old ? ' (the process running it was probably stopped)' : ' (it is still working, or it was stopped a moment ago)')
-      + `; it had deleted ${stuck.expired_message_count} message(s) when it last saved its count`
-      + (stuck.backup_path && fs.existsSync(stuck.backup_path) ? `, and those are in ${stuck.backup_path}` : '')
-      + '. If it was stopped, the next pass takes over once its lease runs out (at most three minutes after its last batch), closes it as interrupted and carries on.';
-    // Whatever the last finished pass said still counts: a stopped pass must not hide a failure behind it.
-    if (!last) {
-      return old
-        ? warn(unfinished, how)
-        : info(unfinished);
-    }
-    const before = finishedCheck();
-    return old || before.status !== 'pass'
-      ? warn(`${unfinished} ${before.summary}`, before.fix ?? how)
-      : info(`${unfinished} ${before.summary}`);
-  } catch {
-    return undefined;
-  }
-}
-
-/** Does this release receipt's detail say the app-server daemon was missing? */
-function noDaemonReason(detailJson: string): boolean {
-  try {
-    return (JSON.parse(detailJson) as { detail?: { reason?: unknown } } | null)?.detail?.reason === 'no_daemon';
-  } catch {
-    return false; // Malformed detail_json is not this check's problem to diagnose.
-  }
-}
-
-/**
- * The Codex stuck-message release (#468, `watchCodexQueueRelease` in
- * codex-cli-queue.ts) only works when Codex is running its app-server
- * daemon. An ordinary `codex` CLI session — or any session started with
- * `--no-daemon` — has no daemon for the router to ask, so the release
- * records a `host_activation` receipt with `host_activation: 'unsupported'`
- * and `detail.reason: 'no_daemon'` instead of starting the queued message.
- * A message left in that thread's queue after an interrupted turn then
- * stays queued until the next prompt, and nothing else surfaces that (#491).
- *
- * Read-only, same shape as `inspectAgentMessageStorage` immediately above:
- * a raw `db.prepare` probe, `undefined` (not a row) when the table predates
- * the message schema, and no `code:` — `inspectAgentMessageStorage`'s own
- * `'warn'` branch a few lines up ships the same way, and adding one here
- * would need a translated catalogue entry in all 11 dashboard locales for a
- * server-diagnostic sentence (see DoctorBanner's sanctioned English
- * fallback for an uncoded row).
- */
-function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
-  try {
-    const present = db.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'",
-    ).get() as { present?: number } | undefined;
-    if (!present?.present) return undefined;
-
-    // Only the receipts the Codex release itself writes: any agent can record
-    // a host_activation receipt through the public `activation` action, and an
-    // `unsupported` from one of those says nothing about Codex's daemon.
-    const rows = db.prepare(`
-      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
-      WHERE receipt_kind = 'host_activation'
-        AND actor = 'memesh-router'
-        AND idempotency_key LIKE 'codex-queue-release-%'
-        AND created_at > datetime('now', '-7 days')
-      ORDER BY created_at DESC, rowid DESC
-    `).all() as Array<{ project: string; recipient: string; detail_json: string; created_at: string }>;
-
-    if (rows.length === 0) {
-      return createInfo(
-        'codex-queue-daemon',
-        'Codex stuck-message release',
-        'No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.',
-      );
-    }
-
-    // The newest receipt per thread decides: a thread whose daemon has come
-    // back since, and whose release then ran, has nothing stuck.
-    const latestPerThread = new Map<string, (typeof rows)[number]>();
-    for (const row of rows) {
-      const key = `${row.project}\u0000${row.recipient}`;
-      if (!latestPerThread.has(key)) latestPerThread.set(key, row);
-    }
-    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
-
-    if (stuck.length === 0) {
-      return createInfo(
-        'codex-queue-daemon',
-        'Codex stuck-message release',
-        `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`,
-      );
-    }
-
-    // Every stuck thread is named: the fix below asks for a prompt in each.
-    const named = stuck
-      .map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`)
-      .join(', ');
-    return createCheck(
-      'codex-queue-daemon',
-      'Codex stuck-message release',
-      'warn',
-      `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`,
-      'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).',
-    );
-  } catch (err) {
-    // A failure here, the table probe included, is a real one: say so rather
-    // than leave the row out, which would read as "fine".
-    return createCheck(
-      'codex-queue-daemon',
-      'Codex stuck-message release',
-      'warn',
-      `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`,
-      'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.',
-    );
-  }
-}
-
-/**
- * Messages whose latest notice attempt (the one with the highest attempt number for its delivery) ended with
- * one of `codes` and that nothing has since settled: no host accept, and no intake, ack or disposition from
- * the agent. A message whose earlier attempt failed one way and whose latest failed another is counted only
- * under the latest. Counts messages, not attempts, and only those whose latest attempt is from the newest
- * seven days. A message has exactly one delivery, which is why the receipt join matches on the delivery's
- * own message, project and recipient. Undefined when the table does not exist yet.
- */
-function countUnsettledNotices(db: MemeshDatabase, codes: readonly string[]): number | undefined {
-  const present = db.prepare(
-    "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_dispatch_attempts'",
-  ).get() as { present?: number } | undefined;
-  if (!present?.present) return undefined;
-  const row = db.prepare(`
-    SELECT COUNT(DISTINCT a.delivery_id) AS unsettled
-    FROM agent_dispatch_attempts a
-    WHERE a.failure_code IN (${codes.map(() => '?').join(', ')})
-      AND a.created_at > datetime('now', '-7 days')
-      AND a.attempt_number = (
-        SELECT MAX(l.attempt_number) FROM agent_dispatch_attempts l WHERE l.delivery_id = a.delivery_id
-      )
-      AND NOT EXISTS (SELECT 1 FROM agent_host_accepts h WHERE h.delivery_id = a.delivery_id)
-      AND NOT EXISTS (
-        SELECT 1 FROM agent_message_deliveries d JOIN agent_message_receipts r
-          ON r.message_id = d.message_id AND r.project = d.project AND r.recipient = d.recipient
-        WHERE d.delivery_id = a.delivery_id AND r.receipt_kind IN ${HANDLED_RECEIPT_KINDS_SQL}
-      )
-  `).get(...codes) as { unsettled?: number } | undefined;
-  const count = Number(row?.unsettled);
-  return count > 0 ? count : undefined;
-}
-
-/**
- * The notice reached a Claude Code session's socket but not its conversation: Claude Code holds a peer
- * message for its user in several cases (for example when the sender does not state its permission mode
- * and the receiving session bypasses permission prompts), recorded as `notice_held` when its "Held peer
- * message" line was seen and as `notice_not_confirmed` when nothing was. The message itself stays in the
- * inbox and is raised at the session's next prompt or turn end; this row says why the live notice did not
- * arrive. A notice held for a message the agent never answers is sent again each time the host is started
- * afresh (a new MCP process), since the record of the hold lives only in the process that saw it. Names no
- * project: doctor rows are copied into public issues.
- */
-function inspectHeldNotices(db: MemeshDatabase): DoctorCheck | undefined {
-  const found = countNoticeFailures(db, ['notice_not_confirmed', 'notice_held']);
-  if (found === undefined) return undefined;
-  if (typeof found !== 'number') {
-    return createCheck('held-notices', 'Message notices not shown to Claude', 'warn', found.unreadable, UNREADABLE_ATTEMPTS_FIX);
-  }
-  return createCheck(
-    'held-notices',
-    'Message notices not shown to Claude',
-    'warn',
-    `${found} message(s) in the last 7 days reached a Claude Code session's socket but their notice never showed up in its conversation. Possible causes: Claude Code is holding the notice for its user to approve or deny (for example when the sender does not state a permission mode and that session bypasses permission prompts, or when the two sessions' permission modes differ), the session was busy or has stopped, or it dropped the notice. MeMesh cannot tell these apart, and cannot see whether the user denied a held notice. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`,
-    'To get the live notice, set "crossSessionInbound" to "accept" in that Claude Code session\'s settings, or install the MeMesh Channel. Otherwise the message appears at the next prompt.',
-  );
-}
-
-/**
- * MeMesh could not read the Claude Code session's conversation record (`transcript_unavailable`: there is no
- * project folder to look in or the record is not readable; `transcript_not_found`: the session wrote none), so
- * it could not tell whether a notice arrived. Without this row such a failure would show nothing at all.
- */
-function inspectUnreadableTranscripts(db: MemeshDatabase): DoctorCheck | undefined {
-  const found = countNoticeFailures(db, ['transcript_unavailable', 'transcript_not_found']);
-  if (found === undefined) return undefined;
-  if (typeof found !== 'number') {
-    return createCheck('unreadable-transcripts', 'Claude Code conversation record not readable', 'warn', found.unreadable, UNREADABLE_ATTEMPTS_FIX);
-  }
-  return createCheck(
-    'unreadable-transcripts',
-    'Claude Code conversation record not readable',
-    'warn',
-    `${found} message(s) in the last 7 days could not be checked: MeMesh could not read the Claude Code session's conversation record, so it could not tell whether the notice arrived. The messages are safe in the inbox and are raised at the session's next prompt or turn end.`,
-    'Check that CLAUDE_CONFIG_DIR (when you set it) points at the folder Claude Code writes its conversation records to, and that the MeMesh MCP server is started from the project (MEMESH_PROJECT_ROOT or CLAUDE_PROJECT_DIR set, or a single workspace root). Then start a new Claude Code session.',
-  );
-}
-
-const UNREADABLE_ATTEMPTS_FIX = 'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.';
-
-/** The number of messages to report, undefined when there is nothing to say, or the reason the attempts could not be read. */
-function countNoticeFailures(db: MemeshDatabase, codes: readonly string[]): number | { unreadable: string } | undefined {
-  try {
-    return countUnsettledNotices(db, codes);
-  } catch (err) {
-    return { unreadable: `Could not read the message dispatch attempts: ${err instanceof Error ? err.message : String(err)}` };
-  }
-}
-
-/**
  * #408: memories under a plain project name that shares its readable name
  * with a project id in the same graph. Sessions resolve the id, so those
  * memories never reach them. Absent when there is no split.
@@ -914,29 +525,6 @@ function inspectCodexSessionSetup(
     'Codex ordinary-session notifications',
     'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
   );
-}
-
-function configuredAgentMessageStoragePolicy(
-  explicit: DoctorOptions['agentMessageStoragePolicy'],
-): DoctorOptions['agentMessageStoragePolicy'] {
-  if (explicit !== undefined) return explicit;
-  const quotaRaw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
-  if (quotaRaw === undefined || quotaRaw === '') return undefined;
-  // Keep this predicate byte-for-byte aligned with send enforcement in
-  // transports/agent-messaging.ts. Number(raw) alone accepts exponent notation,
-  // whitespace, signs, decimals, and values outside Number's safe range.
-  if (!/^(0|[1-9][0-9]*)$/.test(quotaRaw)) {
-    return { storage_quota_bytes: Number.NaN };
-  }
-  const parsed = Number(quotaRaw);
-  return { storage_quota_bytes: Number.isSafeInteger(parsed) ? parsed : Number.NaN };
-}
-
-function formatStorageBytes(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return 'unknown size';
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function parseJsonFile(
@@ -2984,7 +2572,7 @@ function isClaudeChannelCommand(command: unknown): boolean {
  * Inspect Claude's user-scoped MCP registration without treating transport
  * initialization or router state as channel admission. The user-scope
  * registry lives in ~/.claude.json; only the memesh-channel entry and the
- * config file it names are read.
+ * registration command is inspected; no legacy host config or token is read.
  */
 function inspectClaudeChannelRegistration(
   existsSyncImpl: typeof fs.existsSync,
@@ -3003,7 +2591,7 @@ function inspectClaudeChannelRegistration(
         'Claude Channel registration',
         'warn',
         'The canonical Claude user config could not be read as JSON, so the memesh-channel registration is malformed or unverifiable.',
-        'Repair the owner-controlled Claude config with `claude mcp remove memesh-channel` and re-run `memesh agent setup claude` to obtain a fresh registration command.',
+        'Repair the owner-controlled Claude registration with `claude mcp add --scope user memesh-channel -- memesh-host-claude` (no --config).',
       );
     }
   }
@@ -3017,8 +2605,8 @@ function inspectClaudeChannelRegistration(
       'claude-channel',
       'Claude Channel registration',
       'warn',
-      'No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.',
-      'If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.',
+      'No user-scoped memesh-channel registration was found. Conversation messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.',
+      'For the opt-in channel, register `claude mcp add --scope user memesh-channel -- memesh-host-claude` and enable the host Channel flag. The actual host session ID is required at runtime.',
       { code: 'claude-channel.unregistered' },
     );
   }
@@ -3028,54 +2616,24 @@ function inspectClaudeChannelRegistration(
     : null;
   const command = record?.command;
   const rawArgs = record?.args;
-  const args = Array.isArray(rawArgs) ? rawArgs : null;
-  const configIndex = args?.indexOf('--config') ?? -1;
-  const target = args && configIndex >= 0 && typeof args[configIndex + 1] === 'string'
-    ? args[configIndex + 1] as string
-    : null;
-  let targetConfigValid = false;
-  if (target) {
-    try {
-      const config = readHostConfigFile<JsonObject>(target);
-      // #474: `project` is deliberately absent — the Claude channel host no
-      // longer reads it (it derives its routing project from its own
-      // working directory), so a config missing it is coherent, not broken.
-      const required = ['router_socket', 'token_file', 'principal_id'];
-      targetConfigValid = config.server_name === 'memesh-channel'
-        && required.every((key) => {
-          const value = config[key];
-          return typeof value === 'string'
-            && value.length > 0
-            && Buffer.byteLength(value) <= 4096;
-        });
-    } catch {
-      targetConfigValid = false;
-    }
-  }
+  const args = rawArgs === undefined ? [] : rawArgs;
   const commandValid = isClaudeChannelCommand(command);
-  const coherent = commandValid
-    && args !== null
-    && args.length === 2
-    && configIndex === 0
-    && target !== null
-    && targetConfigValid;
+  const coherent = commandValid && Array.isArray(args) && args.length === 0;
   if (!coherent) {
-    const reason = !commandValid || args === null || configIndex !== 0 || target === null
-      ? 'the command or --config declaration is malformed'
-      : 'the declared owner config target is missing, insecure, malformed, or incomplete';
+    const reason = 'the command or arguments are malformed; the conversation Channel requires no legacy --config';
     return createCheck(
       'claude-channel',
       'Claude Channel registration',
       'warn',
       `The user-scoped memesh-channel registration is present but ${reason}. Live Claude Channel notification is not established.`,
-      'Remove and re-register the owner-controlled memesh-channel entry with `memesh agent setup claude`; keep its generated config file owner-private.',
+      'Register the normal `memesh-host-claude` command without arguments. The host supplies its actual session ID; no router config or token is needed.',
     );
   }
 
   return createInfo(
     'claude-channel',
     'Claude Channel registration',
-    'The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.',
+    'The user-scoped memesh-channel command is coherent (CONFIGURED). Runtime session identity, Channel admission and native model reception are not verified; conversation read/status remain separate actions.',
   );
 }
 
@@ -3660,9 +3218,6 @@ function probeInstalledMessageCapability(packageRoot: string): { ok: true } | { 
     'dist/transports/cli/doctor-message-probe.js',
     'dist/mcp/server.js',
     'dist/transports/mcp/handlers.js',
-    'dist/host-adapters/codex-app-server.js',
-    'dist/host-adapters/claude-channel.js',
-    'dist/host-adapters/acp-client.js',
   ];
   const absent = required.filter((relative) => !fs.existsSync(path.join(packageRoot, relative)));
   if (absent.length > 0) return { ok: false, message: `installed runtime is missing ${absent.join(', ')}` };
@@ -3681,7 +3236,7 @@ function probeInstalledMessageCapability(packageRoot: string): { ok: true } | { 
     });
     return { ok: true };
   } catch {
-    return { ok: false, message: 'installed MCP or bundled host adapters did not complete the message capability probe' };
+    return { ok: false, message: 'installed MCP did not complete the message capability probe' };
   } finally {
     fs.rmSync(probeHome, { recursive: true, force: true });
   }
@@ -3695,20 +3250,20 @@ function inspectMessageCapability(
   if (!enabled) {
     return createInfo(
       'message-capability',
-      'Message adapter imports',
-      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its four-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.',
+      'Message MCP schema',
+      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its four-action message schema. This does not verify host registration or native model reception.',
     );
   }
   const result = probe(packageRoot);
   if (result.ok) return createCheck(
     'message-capability',
-    'Message adapter imports',
+    'Message MCP schema',
     'pass',
-    'This installed MCP advertised the four-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.',
+    'This installed MCP advertised the four-action message schema. Host registration and native model reception were not verified.',
   );
   return createCheck(
     'message-capability',
-    'Message adapter imports',
+    'Message MCP schema',
     'fail',
     `Installed message capability probe failed: ${withoutFinalPeriod(result.message)}.`,
     'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.',
@@ -3760,109 +3315,6 @@ function inspectInstallJourney(packageVersion: string): DoctorCheck {
   );
 }
 
-async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
-  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
-  // A path over the limit is why `memesh-router` never created the socket —
-  // reporting it as plain "missing" sent the owner to restart a router that
-  // will fail again on the exact same path, a dead-end (#404). Checked before
-  // `lstatSync` so this cause is never masked by an ENOENT for the same path.
-  const socketPathBytes = Buffer.byteLength(socketPath);
-  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
-    return { socket_path: socketPath, socket: 'path-too-long', detail: `${socketPathBytes} bytes` };
-  }
-  let stat: fs.Stats;
-  try {
-    stat = fs.lstatSync(socketPath);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return { socket_path: socketPath, socket: 'missing', detail };
-  }
-  if (!stat.isSocket() || (stat.mode & 0o077) !== 0) {
-    return { socket_path: socketPath, socket: 'insecure' };
-  }
-
-  const reachable = await new Promise<boolean>((resolve) => {
-    const socket = net.createConnection({ path: socketPath });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve(false);
-    }, 1_500);
-    timer.unref();
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
-  return { socket_path: socketPath, socket: reachable ? 'reachable' : 'unreachable' };
-}
-
-async function inspectMessageRouterStatus(
-  enabled: boolean,
-  probe: () => Promise<MessageRouterStatusProbe>,
-  lastIdleExit?: string,
-): Promise<DoctorCheck> {
-  if (!enabled) {
-    return createInfo(
-      'message-router-status',
-      'Live message router / host registration',
-      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.',
-    );
-  }
-  const result = await probe();
-  switch (result.socket) {
-    case 'reachable':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'pass',
-        `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`,
-      );
-    case 'missing':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'warn',
-        `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.${lastIdleExit ? ` The router last ended itself for idleness at ${lastIdleExit}.` : ' No idle exit of the router is recorded, so if a session was open a moment ago the router may have stopped for another reason.'}`,
-        'The router ends itself after 10 minutes (MEMESH_ROUTER_IDLE_MS) with no host connected and nothing being delivered, so a missing socket is normal while no session is open; a host session or a message send starts it again. To check it now, start a session or the owner-configured router with `memesh-router`, then run this opt-in probe again.',
-        { code: 'message-router.socket-missing', params: { path: result.socket_path } },
-      );
-    case 'path-too-long':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'fail',
-        `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`,
-        process.env.MEMESH_ROUTER_SOCKET !== undefined
-          ? 'Set MEMESH_ROUTER_SOCKET to a shorter absolute path in a folder only you can access (owner-private), then start `memesh-router` again. It reaches `memesh-router`, `memesh doctor`, senders and ordinary Claude MCP sessions. Host configs written by `memesh agent setup` (`hosts/codex-session.json` included) keep the default path, and ordinary Codex sessions use the default path, so shorten HOME / MEMESH_DIR instead if they must reach this router.'
-          : 'Move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again. With MEMESH_DB_PATH set, the default socket sits in that database\'s folder, so move the database; the socket\'s folder must be owner-private. Setting MEMESH_ROUTER_SOCKET alone is not enough: it does not reach host configs written by `memesh agent setup` (`hosts/codex-session.json` included) or ordinary Codex sessions, which use the default path.',
-        { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } },
-      );
-    case 'insecure':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'fail',
-        `Router socket at ${result.socket_path} is not an owner-private Unix socket.`,
-        'Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.',
-        { code: 'message-router.socket-insecure', params: { path: result.socket_path } },
-      );
-    case 'unreachable':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'warn',
-        `An owner-private router socket exists at ${result.socket_path}, but it did not accept a local connection. No host registration or native delivery is verified.`,
-        'Check the owner-configured `memesh-router` process, then run this opt-in probe again.',
-        { code: 'message-router.socket-unreachable', params: { path: result.socket_path } },
-      );
-  }
-}
-
 function summarizeOverallStatus(checks: DoctorCheck[]): DoctorOverallStatus {
   // Informational rows describe state and cannot fail — counting them would
   // pad the verdict with rows that verified nothing. See DoctorCheck.informational.
@@ -3894,13 +3346,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     readFileSyncImpl = fs.readFileSync,
     statSyncImpl = fs.statSync,
     fetchImpl = fetch,
-    agentMessageStoragePolicy,
     nativeBindingProbeImpl,
     resolveShellMemeshImpl = defaultResolveShellMemesh,
     probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1',
     messageCapabilityProbeImpl = probeInstalledMessageCapability,
-    probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1',
-    messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe,
   } = options;
 
   // F16: If the database is already open before doctor runs (e.g., the
@@ -3944,11 +3393,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Staging here means the block emits exactly one `database` row, whichever
   // way it ends.
   const dbChecks: DoctorCheck[] = [];
-  let lastRouterIdleExit: string | undefined;
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
     // A file can open and count its entities while another table's pages are
-    // damaged; briefing, recall and the message inbox then fail on those pages
+    // damaged; briefing and recall then fail on those pages
     // and tell the user to run doctor. quick_check(1) stops at the first
     // problem; it still reads the whole file on a healthy database (about 0.2 s
     // for 470 MB measured) and names the damage on a broken one. Anything but
@@ -3963,22 +3411,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
         },
       );
     }
-    // The pages can be intact while a table lacks a column this version reads
-    // (changed outside memesh, or by a newer version): briefing then says the
-    // inbox cannot be read and sends the reader here, so run its query.
-    try {
-      unreadDeliveryCount(db as unknown as MemeshDatabase, '', 'memesh-doctor');
-    } catch (err) {
-      const reason = (err instanceof Error ? err.message : String(err)).replace(/\s+/g, ' ').slice(0, 200);
-      throw Object.assign(
-        new Error(`Database at ${databasePath} opened, but its message inbox cannot be read: ${reason}`),
-        {
-          fix: 'This memesh cannot read the message tables, and briefing says the same. If a newer memesh version also uses this database, update this one to match it; otherwise the tables were changed outside memesh: restore a backup you trust, or report the error quoted above.',
-        },
-      );
-    }
-    // Only wording in the router row: when it cannot be read the row says no idle exit is recorded.
-    try { lastRouterIdleExit = readRouterIdleExit(db as unknown as MemeshDatabase); } catch { lastRouterIdleExit = undefined; }
     const count =
       (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c?: number } | undefined)?.c ?? 0;
     // #520: a database the owner made read-only opens for reads, so say it
@@ -4010,24 +3442,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           `Database opened successfully at ${databasePath} (${count} entities).`,
         ),
     );
-
-    const messageStorage = inspectAgentMessageStorage(
-      db as unknown as MemeshDatabase,
-      databasePath,
-      configuredAgentMessageStoragePolicy(agentMessageStoragePolicy),
-    );
-    if (messageStorage) dbChecks.push(messageStorage);
-
-    const messageExpiry = inspectAgentMessageExpiry(db as unknown as MemeshDatabase);
-    if (messageExpiry) dbChecks.push(messageExpiry);
-
-    const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
-    if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);
-
-    const heldNotices = inspectHeldNotices(db as unknown as MemeshDatabase);
-    if (heldNotices) dbChecks.push(heldNotices);
-    const unreadableTranscripts = inspectUnreadableTranscripts(db as unknown as MemeshDatabase);
-    if (unreadableTranscripts) dbChecks.push(unreadableTranscripts);
 
     const projectSplit = inspectProjectIdentitySplit(db as unknown as MemeshDatabase);
     if (projectSplit) dbChecks.push(projectSplit);
@@ -4402,7 +3816,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(inspectShellCli(install, packageRoot, packageVersion, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
   checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl, lastRouterIdleExit));
   checks.push(inspectInstallJourney(packageVersion));
 
   checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));

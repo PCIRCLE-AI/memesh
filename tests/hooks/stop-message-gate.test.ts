@@ -6,7 +6,7 @@ import path from 'node:path';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { SCHEMA_SQL } from '../../src/storage/schema.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
+import { seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 
 describe('Claude Stop whole conversation message gate', () => {
   let dir: string, store: ConversationMessages;
@@ -92,7 +92,7 @@ describe('Claude Stop whole conversation message gate', () => {
   });
   it('autoimports an explicit legacy session target without allowing an unrelated principal to claim it', () => {
     const db = new MemeshDatabase(path.join(dir, 'graph.db')); db.exec(SCHEMA_SQL);
-    const message = sendAgentMessage(db, { project: 'legacy', sender: 'legacy-sender', recipient: 'legacy-principal', intended_session: session, idempotency_key: 'legacy', content_type: 'text/plain', payload: 'LEGACY_HEAD\nLEGACY_MID\nLEGACY_TAIL' });
+    const message = seedLegacyMessage(db, { project: 'legacy', sender: 'legacy-sender', recipient: 'legacy-principal', intended_session: session, idempotency_key: 'legacy', content_type: 'text/plain', payload: 'LEGACY_HEAD\nLEGACY_MID\nLEGACY_TAIL' });
     db.prepare("INSERT OR IGNORE INTO agent_principals(project,principal_id,activation_event_sequence) VALUES ('legacy','legacy-principal',0)").run();
     db.prepare("INSERT INTO agent_session_instances(project,session_instance_id,principal_id,adapter_kind) VALUES ('legacy',?,'legacy-principal','claude-inbox')").run(session);
     db.prepare("INSERT INTO agent_session_connections(connection_id,project,principal_id,session_instance_id,generation,adapter_kind,router_instance_id,lease_expires_at_ms) VALUES ('conn','legacy','legacy-principal',?,1,'claude-inbox','router',?)").run(session, Date.now() + 60000);
@@ -101,8 +101,14 @@ describe('Claude Stop whole conversation message gate', () => {
     const acceptance = db.prepare('SELECT * FROM agent_host_accepts').all();
     const before = db.prepare('SELECT * FROM agent_messages').all();
     expect(run({ session_id: other }).stdout).toBe(''); expect(run().stdout).toContain('LEGACY_HEAD');
-    expect(state(message.message_id)).toBe('delivered'); expect(db.prepare('SELECT * FROM agent_messages').all()).toEqual(before);
-    expect(db.prepare('SELECT * FROM agent_host_accepts').all()).toEqual(acceptance); db.close();
+    expect(state(message.message_id)).toBe('delivered');
+    const imported = store.status(undefined, message.message_id)[0].events.filter(event => event.event === 'legacy_imported');
+    expect(imported).toHaveLength(1);
+    const source = JSON.parse(imported[0].detail).source;
+    expect(source.message).toEqual(before[0]);
+    expect(source.facts.agent_host_accepts).toEqual(acceptance);
+    expect(db.prepare("SELECT name FROM sqlite_master WHERE type='table' AND name IN ('agent_messages','agent_host_accepts')").all()).toEqual([]);
+    db.close();
   });
   it.skipIf(process.platform === 'win32')('rolls back the ledger on EPIPE and leaves the body pending for a later Stop', async () => {
     const id = send();

@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-import { Command, Option } from 'commander';
+import { Command } from 'commander';
 import { createHash } from 'crypto';
 import fs from 'fs';
 import path from 'path';
@@ -20,7 +20,7 @@ import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { findPackageRoot } from '../../core/package-root.js';
 import { isOnPath } from '../../core/host-presence.js';
-import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -39,21 +39,9 @@ import { formatJourney, refreshExistingJourneyRecord, runInstallJourney, runPost
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
 import { executeConversationMessageAction } from '../conversation-messaging.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
-import {
-  getAgentMessageStorageReport,
-} from '../../core/agent-message-storage.js';
-import { lastAgentMessageExpiryRun, latestAgentMessageExpiryArchive } from '../../core/agent-message-expiry.js';
-import {
-  assertSecureLocalHostRuntimeSupported,
-  ensureRouterTokenFile,
-  exportSigningKey,
-} from '../../host-runtime/config.js';
-import { signExport, verifyExport } from '../../core/export-signature.js';
-import { startRouterIfDown } from '../../host-runtime/router-client.js';
+import { exportSigningKey, signExport, verifyExport } from '../../core/export-signature.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
 import { belongsToAnotherUser, databaseFiles, isWritable, shellQuote } from '../../core/file-mode.js';
 import { registerNetworkCommand } from '../../network/command.js';
@@ -394,10 +382,8 @@ program
 // First-use update notice at the terminal (#308: any door). One stderr line,
 // once a day per installed version, from the same resolver the hooks use —
 // so turning updates off (`updateCheck` false) also silences the CLI.
-// stderr, never stdout: commands that print JSON stay parseable. Commands
-// that ARE about updates or setup speak for themselves and are skipped, and so
-// is `agent setup`: a script reads its `--json`, and it promises to write only
-// the host config and the router token, not a background update check's files.
+// stderr, never stdout: commands that print JSON stay parseable. Update and
+// setup commands already provide their own status and are skipped.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
   'status', 'update', 'doctor', 'repair', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
   // Called by the Hermes plugin, not typed by a person: nobody reads its stderr.
@@ -411,7 +397,6 @@ function topLevelCommandName(command: Command): string {
 }
 program.hook('preAction', (_thisCommand, actionCommand) => {
   if (UPDATE_NOTICE_SILENT_COMMANDS.has(topLevelCommandName(actionCommand))) return;
-  if (actionCommand.name() === 'setup' && actionCommand.parent?.name() === 'agent') return;
   const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: 'cli' });
   if (line) process.stderr.write(`${line}\n`);
 });
@@ -1271,6 +1256,13 @@ program
     });
   });
 
+function cliErrorText(error: unknown): string {
+  if (error instanceof ZodError) {
+    return error.issues.map(issue => `${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`).join('; ');
+  }
+  return error instanceof Error ? error.message : String(error);
+}
+
 // --- local agent messages ---
 //
 // Conversation messages use messages.db, not the knowledge graph.
@@ -1278,7 +1270,7 @@ const conversationMessageCmd = program
   .command("message")
   .description("Send, discover, read, and audit local conversation messages");
 
-async function readConversationMessageBodyFromStdin(
+export async function readConversationMessageBodyFromStdin(
   input: AsyncIterable<string | Uint8Array> = process.stdin,
 ): Promise<string> {
   const chunks: Buffer[] = [];
@@ -1352,444 +1344,6 @@ conversationMessageCmd
     { session: hostSessionFromEnv(), owner: true },
     Boolean(opts.json),
   ));
-
-// A host-neutral process boundary for runners that cannot keep an MCP tool
-// call open.  `watch` emits JSONL and returns after one bounded poll batch;
-// the host owns restart/retry with the returned opaque cursor.  No subcommand
-// executes payload content, and read commands never write an ACK.
-const legacyMessageCmd = new Command('message')
-  .description('Legacy agent messaging actions retained temporarily for S6; not registered on the CLI.');
-
-function parseCliMessagePayload(raw: string, contentType: string): unknown {
-  if (contentType !== 'application/json') return raw;
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error('stdin must contain valid JSON when --content-type is application/json.');
-  }
-}
-
-function boundedCliDeclaration(value: string, option: string, maxCharacters: number): string {
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > maxCharacters) {
-    throw new Error(`${option} must be a non-empty string of at most ${maxCharacters} characters.`);
-  }
-  return normalized;
-}
-
-/** `input` is stdin; a parameter only so a test can choose where the chunks end. */
-export async function readCliMessagePayloadFromStdin(
-  contentType: string,
-  input: AsyncIterable<string | Uint8Array> = process.stdin,
-): Promise<unknown> {
-  // Bytes are joined first and decoded once: a chunk boundary can fall inside a
-  // multi-byte character, and decoding each chunk alone would turn it into U+FFFD.
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of input) {
-    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
-    bytes += buffer.length;
-    if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-      throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
-    }
-    chunks.push(buffer);
-  }
-  if (bytes === 0) {
-    throw new Error('stdin payload is empty.');
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  const payload = parseCliMessagePayload(raw, contentType);
-  const encodedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
-  if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-    throw new Error(`payload must be at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes when encoded as JSON.`);
-  }
-  return payload;
-}
-
-function cliErrorText(error: unknown): string {
-  if (error instanceof ZodError) {
-    return error.issues.map(issue => `${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`).join('; ');
-  }
-  return error instanceof Error ? error.message : String(error);
-}
-
-async function runCliMessage(input: unknown): Promise<void> {
-  await withDatabase(async () => {
-    try {
-      const result = await executeAgentMessageAction(getDatabase(), input, {
-        transport: 'cli',
-        sourceHost: 'cli',
-        hostSession: hostSessionFromEnv(),
-      }, { startRouterIfDown });
-      console.log(JSON.stringify(result));
-    } catch (error) {
-      console.error(`Error: ${cliErrorText(error)}`);
-      process.exitCode = 1;
-    }
-  });
-}
-
-function isAgentPollResult(value: unknown): value is { events: unknown[]; next_cursor: string } {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return Array.isArray(candidate.events) && typeof candidate.next_cursor === 'string';
-}
-
-legacyMessageCmd
-  .command('discover')
-  .description('Discover active leased agents in one project without sending or acknowledging messages')
-  .requiredOption('--project <name>', 'Project scope')
-  .option('--limit <n>', 'Maximum live agents, 1-100', wholeNumber('--limit'), 50)
-  .action((opts) => runCliMessage({
-    action: 'discover', project: opts.project, limit: opts.limit,
-  }));
-
-legacyMessageCmd
-  .command('send')
-  .description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`)
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--sender <id>', 'Stable sender agent/host ID')
-  .option('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--recipient-handle <handle>', 'Discover handle for a registered session')
-  .option('--target-kind <kind>', 'principal | session')
-  .option('--intended-session <id>', 'Principal target only: the one session of that principal this message is meant for')
-  .option('--fallback-to-principal', 'Session target only: if that session refuses it, send it to its principal, meant for that session')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption(
-    '--payload-stdin',
-    `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`,
-  )
-  .option('--content-type <type>', 'text/plain | application/json', 'text/plain')
-  .option('--privacy <scope>', 'private | team', 'private')
-  .option('--correlation-id <id>', 'Conversation or task correlation ID')
-  .option('--reply-to <message-id>', 'Message ID this replies to')
-  .action(async (opts) => {
-    requireOneOf(opts.contentType, ['text/plain', 'application/json'], '--content-type');
-    requireOneOf(opts.privacy, ['private', 'team'], '--privacy');
-    if (opts.targetKind !== undefined) requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
-    try {
-      await runCliMessage({
-        action: 'send',
-        project: opts.project,
-        sender: opts.sender,
-        recipient: opts.recipient,
-        recipient_handle: opts.recipientHandle,
-        target_kind: opts.targetKind,
-        intended_session: opts.intendedSession,
-        fallback_to_principal: opts.fallbackToPrincipal,
-        idempotency_key: opts.idempotencyKey,
-        payload: await readCliMessagePayloadFromStdin(opts.contentType),
-        content_type: opts.contentType,
-        privacy: opts.privacy,
-        correlation_id: opts.correlationId,
-        reply_to: opts.replyTo,
-      });
-    } catch (error) {
-      console.error(`Error: ${failureMessage(error)}`);
-      process.exitCode = 1;
-    }
-  });
-
-legacyMessageCmd
-  .command('watch')
-  .description('Wait once for an exact-recipient event batch and emit privacy-minimized JSONL')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--cursor <token>', 'Opaque cursor returned by an earlier watch/poll')
-  .option('--wait-ms <ms>', 'Bounded wait, 0-30000 milliseconds', wholeNumber('--wait-ms', 0), 30_000)
-  .option('--limit <n>', 'Maximum events, 1-100', wholeNumber('--limit'), 20)
-  .action(async (opts) => {
-    await withDatabase(async () => {
-      console.log(JSON.stringify({
-        type: 'ready',
-        project: opts.project,
-        recipient: opts.recipient,
-        cursor: opts.cursor ?? null,
-      }));
-      try {
-        const result = await executeAgentMessageAction(getDatabase(), {
-          action: 'poll',
-          project: opts.project,
-          recipient: opts.recipient,
-          cursor: opts.cursor,
-          wait_ms: opts.waitMs,
-          limit: opts.limit,
-        }, {
-          transport: 'cli',
-          sourceHost: 'cli',
-          hostSession: hostSessionFromEnv(),
-        });
-        if (!isAgentPollResult(result)) {
-          throw new Error('Message watch returned an invalid poll result.');
-        }
-        console.log(JSON.stringify({
-          type: result.events.length > 0 ? 'events' : 'timeout',
-          ...result,
-        }));
-      } catch (error) {
-        console.error(JSON.stringify({
-          type: 'error',
-          error: cliErrorText(error),
-        }));
-        process.exitCode = 1;
-      }
-    });
-  });
-
-legacyMessageCmd
-  .command('fetch')
-  .description('Fetch one payload routed to the exact principal or session without acknowledging it')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--target-kind <kind>', 'principal | session', 'principal')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .action((opts) => {
-    requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
-    return runCliMessage({
-      action: 'fetch', project: opts.project, recipient: opts.recipient,
-      target_kind: opts.targetKind, message_id: opts.messageId,
-    });
-  });
-
-legacyMessageCmd
-  .command('intake')
-  .description('Record fetched/ingested state without implying ACK')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--state <state>', 'fetched | ingested')
-  .action(async (opts) => {
-    requireOneOf(opts.state, ['fetched', 'ingested'], '--state');
-    await runCliMessage({
-      action: 'intake', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey, intake_state: opts.state,
-    });
-  });
-
-legacyMessageCmd
-  .command('ack')
-  .description('Optional: record explicit recipient acknowledgement (an agent only needs to record intake)')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .action((opts) => runCliMessage({
-    action: 'ack', project: opts.project, recipient: opts.recipient,
-    message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-  }));
-
-legacyMessageCmd
-  .command('disposition')
-  .description('Optional: record a workflow disposition independently from ACK; only a message with a terminal one (completed, cancelled, rejected) can have its payload removed by `message storage prune --apply`')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--value <state>', 'accepted | rejected | completed | cancelled | deferred')
-  .option('--detail <text>', 'Optional bounded explanation')
-  .action(async (opts) => {
-    requireOneOf(opts.value, ['accepted', 'rejected', 'completed', 'cancelled', 'deferred'], '--value');
-    await runCliMessage({
-      action: 'disposition', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-      disposition: opts.value, detail: opts.detail,
-    });
-  });
-
-legacyMessageCmd
-  .command('activation')
-  .description('Record host activation outcome independently from ACK/disposition')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--value <state>', 'woken | manual_resume_required | unsupported | failed')
-  .option('--detail <text>', 'Optional bounded explanation')
-  .action(async (opts) => {
-    requireOneOf(opts.value, ['woken', 'manual_resume_required', 'unsupported', 'failed'], '--value');
-    await runCliMessage({
-      action: 'activation', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-      activation: opts.value, detail: opts.detail,
-    });
-  });
-
-legacyMessageCmd
-  .command('receipts')
-  .description('Read receipt facts for one message routed to the logical recipient')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .action((opts) => runCliMessage({
-    action: 'receipts', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
-  }));
-
-legacyMessageCmd
-  .command('status')
-  .description('Show where one message stands: queued, accepted, handed to the agent, replied, or for another computer, its network delivery')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .action((opts) => runCliMessage({
-    action: 'status', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
-  }));
-
-/** What `message storage prune` and `report --cutoff` now say: they used to bound storage by hand. */
-const REMOVED_RETENTION_CONTROL = '`memesh message storage prune` and `report --cutoff` were removed: MeMesh now keeps a message for one day and deletes it by itself, so there is nothing to run. '
-  + '`memesh message storage report` shows what is stored and where the archive of deleted messages is.';
-
-const messageStorageCmd = legacyMessageCmd
-  .command('storage')
-  .description('Inspect durable agent-message storage. Messages are kept one day, then deleted by MeMesh itself');
-
-messageStorageCmd
-  .command('report')
-  .description('Report stored messages, what is waiting to expire, reusable pages, SQLite/WAL size, the last expiry pass and where the archive of deleted messages is')
-  .addOption(new Option('--cutoff <iso-time>').hideHelp())
-  .action(async (opts) => {
-    if (opts.cutoff !== undefined) {
-      console.error(REMOVED_RETENTION_CONTROL);
-      process.exit(1);
-    }
-    await withDatabase(() => {
-      const report = getAgentMessageStorageReport(getDatabase(), { databasePath: getDbPath() });
-      console.log(JSON.stringify({
-        policy: {
-          retention: 'one day from creation, then deleted',
-          quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
-        },
-        last_expiry_pass: lastAgentMessageExpiryRun(getDatabase()),
-        last_expiry_archive: latestAgentMessageExpiryArchive(getDatabase()),
-        ...report,
-      }));
-    });
-  });
-
-messageStorageCmd
-  .command('prune', { hidden: true })
-  .allowUnknownOption()
-  .allowExcessArguments()
-  .action(() => {
-    console.error(REMOVED_RETENTION_CONTROL);
-    process.exit(1);
-  });
-
-// --- local agent hosts ---
-//
-// This writes reusable owner-private configuration only. Managed hosts create
-// a fresh exact session after their native input boundary is ready. The
-// ordinary Codex path instead binds only the thread ID supplied by its own
-// SessionStart hook. Its explicit config is an optional stable-principal
-// override for one real workspace; plugin sessions auto-register without it.
-const agentCmd = program
-  .command('agent')
-  .description('Set up reusable owner-private local host configuration');
-
-agentCmd
-  .command('setup')
-  .description('Write this host\'s local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner — also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host\'s own working directory (claude) or its --workspace (codex, codex-session, gemini) — no flag decides it. See docs/platforms/agent-messaging.md.')
-  .argument('<host>', 'codex-session | codex | claude | gemini')
-  .option('--project <name>', 'Ignored for routing (#474) — the project always comes from the host\'s own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.')
-  .requiredOption('--principal <id>', 'Stable logical recipient ID')
-  .option('--workspace <path>', 'Managed Codex/Gemini workspace', process.cwd())
-  .option('--model <id>', 'Ignored — no host tells MeMesh which model a session runs, so none is declared. Accepted only so an older script that still passes it does not fail; the value is not written.')
-  .option('--work-summary <text>', 'Optional declared current work summary')
-  .option('--json', 'Output machine-readable setup result')
-  .action((host, opts) => {
-    requireOneOf(host, ['codex-session', 'codex', 'claude', 'gemini'], '<host>');
-    assertSecureLocalHostRuntimeSupported();
-    if (opts.model !== undefined) {
-      process.stderr.write('--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n');
-    }
-    const messageDir = path.dirname(getDbPath());
-    const hostsDir = path.join(messageDir, 'hosts');
-    fs.mkdirSync(hostsDir, { recursive: true, mode: 0o700 });
-    const hostsStat = fs.lstatSync(hostsDir);
-    if (!hostsStat.isDirectory() || hostsStat.isSymbolicLink() || (hostsStat.mode & 0o077) !== 0) {
-      throw new Error('The managed host config directory must be a real owner-private directory.');
-    }
-
-    const filename = host === 'gemini' ? 'gemini-acp.json' : `${host}.json`;
-    const configPath = path.join(hostsDir, filename);
-    const routerTokenFile = path.join(messageDir, 'agent-router.token');
-    ensureRouterTokenFile(routerTokenFile);
-    const common = {
-      router_socket: getAgentRouterSocketPath(),
-      token_file: routerTokenFile,
-      // `send` refuses a path-shaped recipient, so a host configured under
-      // one would register a principal that nothing can address: the
-      // failure would surface as an error about the SENDER's argument, hours
-      // later, rather than about this config. Refuse it here, with the same
-      // message, at the moment the config is written.
-      principal_id: requireAgentScopeArg(opts.principal, 'recipient', '--principal'),
-      // #474: --project no longer decides routing for any host (see the
-      // flag's own help text above). Validate and keep it only when
-      // explicitly given, so an older script that still passes it does not
-      // fail, and the written config never claims a project value nobody
-      // asked for.
-      ...(opts.project === undefined ? {} : { project: requireAgentScopeArg(opts.project, 'project', '--project') }),
-      ...(opts.workSummary === undefined ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, '--work-summary', 200) }),
-    };
-    let sessionWorkspace: string | undefined;
-    if (host === 'codex-session') {
-      try {
-        sessionWorkspace = fs.realpathSync(path.resolve(opts.workspace));
-      } catch (error) {
-        if (error instanceof Error) error.message = `--workspace: ${error.message}`;
-        throw error;
-      }
-    }
-    const config = host === 'codex-session'
-      ? { ...common, workspace: sessionWorkspace }
-      : host === 'codex'
-        ? { ...common, control_socket: path.join(hostsDir, 'codex-app-server.sock'), workspace: path.resolve(opts.workspace) }
-        : host === 'claude'
-          ? { ...common, server_name: 'memesh-channel' }
-          : { ...common, workspace: path.resolve(opts.workspace), command: 'gemini', args: [] };
-    createHostConfigAtomically(host, configPath, config);
-
-    const launchCommand = host === 'codex-session'
-      ? null
-      : host === 'codex'
-        ? `memesh-host-codex --config ${shellQuote(configPath)}`
-        : host === 'claude'
-          ? 'claude --dangerously-load-development-channels server:memesh-channel'
-          : `memesh-host-acp --config ${shellQuote(configPath)}`;
-    const registrationCommand = host === 'claude'
-      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}`
-      : null;
-    const result = {
-      host,
-      config_path: configPath,
-      mode: host === 'codex-session'
-        ? 'ordinary-session-native-queue'
-        : host === 'claude' ? 'session-owned-channel' : 'memesh-managed-session',
-      session_identity: host === 'codex-session'
-        ? 'codex-thread-id-at-session-start'
-        : host === 'claude' ? 'claude-code-session-id-or-generated-outside-claude-code' : 'generated-per-process',
-      ordinary_sessions: host === 'codex-session'
-        ? 'automatic-thread-scoped-with-workspace-override'
-        : host === 'claude'
-          ? 'automatic-presence-with-native-notice-when-inbox-socket-available'
-          : host === 'codex'
-            ? 'automatic-thread-scoped-via-codex-plugin'
-            // Gemini: src/mcp/server.ts registers presence only for Claude Code clients.
-            : 'none/inbound-unavailable',
-      registration_command: registrationCommand,
-      launch_command: launchCommand,
-      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace to apply the identity override',
-    };
-    console.log(opts.json ? JSON.stringify(result) : [
-      `Created owner-private ${host} config: ${configPath}`,
-      'No active or stopped ordinary session was attached.',
-      ...(registrationCommand ? [`Register once: ${registrationCommand}`] : []),
-      ...(launchCommand ? [`Launch: ${launchCommand}`] : [
-        'This optional override gives that workspace a stable named principal.',
-        'Restart Codex in the configured workspace to apply it.',
-      ]),
-    ].join('\n'));
-  });
 
 // --- briefing ---
 // The shell-reachable half of A1c. Claude Code gets this block pushed by the
@@ -2466,7 +2020,7 @@ program
     try {
       // autoUpdateCheck: a user-launched serve is online by definition, so it
       // fills the npm update cache itself instead of nagging the user to.
-      startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true, agentMessageExpiry: true });
+      startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });
       // A signal's default action skips the 'exit' listeners, which close a running message-expiry pass.
       process.once('SIGINT', () => process.exit(130));
       process.once('SIGTERM', () => process.exit(143));
@@ -2818,7 +2372,6 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`  ${preview.proposalRows} proposal row(s) would move to ${to}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
@@ -2859,7 +2412,6 @@ kgCmd
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-      console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  ${result.proposalRows} proposal row(s) moved`);
       console.log(`  Backup: ${backupPath}`);
       console.log(`  Restore if needed (stop every memesh process first): ${repairCommand(dbPath, backupPath)}`);

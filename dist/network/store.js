@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from '../core/file-mode.js';
-import { AGENT_NETWORK_SCHEMA_SQL, NETWORK_METADATA_SCHEMA_SQL } from '../storage/agent-network-schema.js';
+import { NETWORK_METADATA_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { acceptRoster, findMember, verifyRoster } from './roster.js';
 export function openNetworkStore(dbPath, options = {}) {
@@ -18,7 +18,7 @@ export function openNetworkStore(dbPath, options = {}) {
         if (options.busyTimeoutMs !== undefined)
             db.pragma(`busy_timeout = ${options.busyTimeoutMs}`);
         db.pragma('journal_mode = WAL');
-        db.exec(options.metadataOnly ? NETWORK_METADATA_SCHEMA_SQL : AGENT_NETWORK_SCHEMA_SQL);
+        db.exec(NETWORK_METADATA_SCHEMA_SQL);
     }
     catch (err) {
         db.close();

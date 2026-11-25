@@ -182,7 +182,3 @@ export const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
   { table: 'agent_workflow_facts', columns: ['actor'] },
   { table: 'agent_retention_facts', columns: ['actor'] },
 ];
-
-/** The tables carrying a `project` scope column, for a project rename. */
-export const AGENT_MESSAGE_PROJECT_TABLES: readonly string[] =
-  AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes('project')).map((e) => e.table);

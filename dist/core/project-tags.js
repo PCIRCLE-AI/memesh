@@ -3,7 +3,6 @@ import os from 'node:os';
 import path from 'node:path';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
-import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
 import { guardDatabaseFiles, hasPagesWaiting, immutableAddress } from './file-mode.js';
 export function listProjectTags(db) {
     const conn = db ?? getDatabase();
@@ -24,36 +23,17 @@ export function renameProjectTag(from, to, opts) {
         throw new Error(refusal);
     if (!opts?.apply)
         return previewOnCopy(conn, from, to);
-    const { affected, plan, merged, renamed, messagePlan, messageRows } = planRename(conn, from, to);
+    const { affected, plan, merged, renamed } = planRename(conn, from, to);
     const proposalIds = proposalRowsForProject(conn, from);
-    let messageRowsBlocked = 0;
-    if (affected.length > 0 || messageRows > 0 || proposalIds.length > 0) {
+    if (affected.length > 0 || proposalIds.length > 0) {
         const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
         const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
-        const movedRows = [];
         const tx = conn.transaction(() => {
             for (const p of plan) {
                 if (p.action === 'merge')
                     del.run(p.id, fromTag);
                 else
                     upd.run(toTag, p.id, fromTag);
-            }
-            for (const { table, rowIds } of messagePlan) {
-                if (rowIds.length === 0)
-                    continue;
-                const move = conn.prepare(`UPDATE ${table} SET project = ? WHERE rowid = ?`);
-                for (const rid of rowIds) {
-                    try {
-                        move.run(to, rid);
-                        movedRows.push({ table, rid });
-                    }
-                    catch (err) {
-                        const code = err?.errcode;
-                        if ((code !== 2067 && code !== 1555) || !destinationHolds(conn, table, rid, to))
-                            throw err;
-                        messageRowsBlocked += 1;
-                    }
-                }
             }
             if (proposalIds.length > 0) {
                 const move = conn.prepare('UPDATE dream_proposals SET project = ? WHERE id = ?');
@@ -64,12 +44,6 @@ export function renameProjectTag(from, to, opts) {
             for (const p of plan) {
                 if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
                     throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result)`);
-                }
-            }
-            for (const { table, rid } of movedRows) {
-                const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid);
-                if (row?.project !== to) {
-                    throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
                 }
             }
             if (proposalIds.length > 0) {
@@ -91,8 +65,6 @@ export function renameProjectTag(from, to, opts) {
         renamed,
         applied: !!opts?.apply,
         affectedNames: affected.map((e) => e.name),
-        messageRows,
-        messageRowsBlocked,
         proposalRows: proposalIds.length,
     };
 }
@@ -117,41 +89,12 @@ function planRename(conn, from, to) {
     }));
     const merged = plan.filter((p) => p.action === 'merge').length;
     const renamed = plan.filter((p) => p.action === 'rename').length;
-    const messagePlan = AGENT_MESSAGE_PROJECT_TABLES.map((table) => {
-        try {
-            const rows = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE project = ?`)
-                .all(from);
-            return { table, rowIds: rows.map((r) => r.rid) };
-        }
-        catch (err) {
-            if (!/no such table/i.test(err instanceof Error ? err.message : String(err)))
-                throw err;
-            return { table, rowIds: [] };
-        }
-    });
-    const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-    return { affected, plan, merged, renamed, messagePlan, messageRows };
+    return { affected, plan, merged, renamed };
 }
 export function hasRenameWork(from, db) {
-    const { affected, messageRows } = planRename(db ?? getDatabase(), from, from);
-    return affected.length > 0 || messageRows > 0 || proposalRowsForProject(db ?? getDatabase(), from).length > 0;
-}
-function destinationHolds(conn, table, rid, to) {
-    const quote = (name) => `"${name.replace(/"/g, '""')}"`;
-    const indexes = conn.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND partial = 0')
-        .all(table);
-    for (const { name } of indexes) {
-        const cols = conn.prepare('SELECT name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno')
-            .all(name);
-        if (!cols.some((c) => c.name === 'project') || cols.some((c) => c.name === null || !/^\w+$/.test(c.coll)))
-            continue;
-        const match = cols.map((c) => (c.name === 'project'
-            ? `d.project = ? COLLATE ${c.coll}`
-            : `d.${quote(c.name)} = s.${quote(c.name)} COLLATE ${c.coll}`)).join(' AND ');
-        if (conn.prepare(`SELECT 1 FROM ${table} s, ${table} d WHERE s.rowid = ? AND d.rowid <> s.rowid AND ${match} LIMIT 1`).get(rid, to))
-            return true;
-    }
-    return false;
+    const conn = db ?? getDatabase();
+    const { affected } = planRename(conn, from, from);
+    return affected.length > 0 || proposalRowsForProject(conn, from).length > 0;
 }
 function previewOnCopy(source, from, to) {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-rename-preview-'));

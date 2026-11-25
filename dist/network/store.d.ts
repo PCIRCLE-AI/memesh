@@ -12,7 +12,6 @@ export interface NetworkConfig {
 }
 export declare function openNetworkStore(dbPath: string, options?: {
     busyTimeoutMs?: number;
-    metadataOnly?: boolean;
 }): MemeshDatabase;
 export declare function databaseExists(dbPath: string): boolean;
 export declare function readConfig(db: MemeshDatabase): NetworkConfig | null;

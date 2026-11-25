@@ -3,7 +3,6 @@ import {
   handoffLines, handoffView, HANDOFF_MAX_BYTES, HANDOFF_SESSION_LIMIT,
   agentMessageTexts, CHANNEL_SCAN_MAX_CHARS, lastAssistantText, omitAgentMessageText,
 } from '../../src/core/session-handoff.js';
-import { AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
 
 const line = (entry: object) => JSON.stringify(entry);
 const asst = (content: unknown, extra: object = {}) =>
@@ -215,7 +214,7 @@ describe('a handoff does not carry text quoted from another agent\'s message (#4
   });
 
   it('stays fast on a hostile transcript: many unterminated channel tags and many closing tags', () => {
-    expect(CHANNEL_SCAN_MAX_CHARS).toBeGreaterThanOrEqual(AGENT_NATIVE_MESSAGE_MAX_BYTES);
+    expect(CHANNEL_SCAN_MAX_CHARS).toBeGreaterThanOrEqual(16 * 1024);
     const openings = '<channel source="memesh-channel">{'.repeat(Math.ceil((240 * 1024) / 34));
     const closings = channelLine(`${'<channel source="memesh-channel">'.repeat(180)}${'</channel>'.repeat(600)}`);
     const started = Date.now();

@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 import { createExplicitLesson } from '../../src/core/lesson-engine.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import {
@@ -1321,6 +1322,7 @@ describe('#451 — lesson, mistake and lesson_learned become one type', () => {
  */
 describe('historical message scope identities spelled as paths', () => {
   function message(db: Db, id: string, project: string, recipient: string): void {
+    installLegacyMessageSchema(db);
     db.prepare(
       `INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json)
        VALUES (?, ?, 'author', ?, 'text/plain', 'private', '"x"', '{}')`,

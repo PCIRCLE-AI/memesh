@@ -6,7 +6,7 @@ import { remember } from '../../src/core/operations.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { getDatabase } from '../../src/db.js';
 import { hasRenameWork, listProjectTags, openReadOnlyForPreview, renameProjectTag } from '../../src/core/project-tags.js';
-import { sendAgentMessage, pollAgentEvents } from '../../src/core/agent-messaging.js';
+import { seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
@@ -135,50 +135,16 @@ describe('project-tags: renameProjectTag', () => {
   });
 });
 
-/**
- * A project identity lives in two places: `project:<name>` tags on entities,
- * and the `project` column of the durable-message tables — half the key of an
- * inbox. Renaming only the tags left the messages in a scope nobody polls,
- * which is how `memesh` and `memesh-llm-memory` (one repository, renamed on
- * GitHub) came to hold 38 and 28 messages in two separate inboxes on the
- * maintainer's graph. This is the owner-driven half of that fix: the one-shot
- * repair deliberately will not merge two project NAMES, because only a network
- * call proves they are the same repo. This command can, because a person asked.
- */
-describe('project-tags: renameProjectTag moves durable message scopes too', () => {
-  function send(project: string, key: string): void {
-    sendAgentMessage(getDatabase(), {
-      project, sender: 'author', recipient: 'reviewer', idempotency_key: key,
-      content_type: 'text/plain', payload: 'x',
-    });
-  }
-
-  it('dry-run counts the message rows and writes nothing', () => {
-    send('memesh-llm-memory', 'k1');
-    const r = renameProjectTag('memesh-llm-memory', 'memesh', { apply: false });
-    expect(r.messageRows).toBeGreaterThan(0);
-    expect(r.applied).toBe(false);
-    expect(pollAgentEvents(getDatabase(), { project: 'memesh-llm-memory', recipient: 'reviewer' }).events).toHaveLength(1);
-    expect(pollAgentEvents(getDatabase(), { project: 'memesh', recipient: 'reviewer' }).events).toHaveLength(0);
-  });
-
-  it('apply moves the message rows, so the destination inbox holds both', () => {
-    send('memesh-llm-memory', 'k1');
-    send('memesh', 'k2');
-    const r = renameProjectTag('memesh-llm-memory', 'memesh', { apply: true });
-    expect(r.messageRowsBlocked).toBe(0);
-    expect(pollAgentEvents(getDatabase(), { project: 'memesh-llm-memory', recipient: 'reviewer' }).events).toHaveLength(0);
-    expect(pollAgentEvents(getDatabase(), { project: 'memesh', recipient: 'reviewer' }).events).toHaveLength(2);
-  });
-
-  it('a project with messages but no tagged entities is still renameable', () => {
-    // The CLI used to stop at "no entities carry project:<x>", which would
-    // have refused exactly the case this fix exists for.
-    send('memesh-llm-memory', 'k1');
-    const r = renameProjectTag('memesh-llm-memory', 'memesh', { apply: false });
-    expect(r.affectedEntities).toBe(0);
-    expect(r.messageRows).toBeGreaterThan(0);
-  });
+it('renames memory tags without rewriting historical message audit scopes', () => {
+  remember({ name: 'current-memory', type: 'note', tags: ['project:old'] });
+  seedLegacyMessage(getDatabase(), { project: 'old', sender: 'author', recipient: 'reviewer', payload: 'historical audit' });
+  const rows = () => getDatabase().prepare('SELECT * FROM agent_messages').all();
+  const before = rows();
+  expect(renameProjectTag('old', 'new', { apply: false }).affectedEntities).toBe(1);
+  expect(rows()).toEqual(before);
+  renameProjectTag('old', 'new', { apply: true });
+  expect(projectTagsOf('current-memory')).toEqual(['project:new']);
+  expect(rows()).toEqual(before);
 });
 
 describe('Feature: #519 renaming a project cannot remove it by accident', () => {
@@ -191,78 +157,84 @@ describe('Feature: #519 renaming a project cannot remove it by accident', () => 
     expect(projectTagsOf('b')).toEqual(['project:acme']);
   });
 
-  it('the dry run reports the same blocked message rows the apply will refuse', () => {
-    const send = (project: string, key: string) => sendAgentMessage(getDatabase(), {
-      project, sender: 'author', recipient: 'reviewer', idempotency_key: key,
-      content_type: 'text/plain', payload: 'x',
-    });
-    // Same sender and key in both scopes: moving the old row collides.
-    send('old-scope', 'shared-key');
-    send('new-scope', 'shared-key');
+  it('preview and apply agree when the destination tag already exists', () => {
+    const db = getDatabase();
+    const id = db.prepare("INSERT INTO entities (name, type) VALUES ('merge', 'note')").run().lastInsertRowid;
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    tag.run(id, 'project:old-scope');
+    tag.run(id, 'project:new-scope');
     const preview = renameProjectTag('old-scope', 'new-scope', { apply: false });
     const applied = renameProjectTag('old-scope', 'new-scope', { apply: true });
-    expect(applied.messageRowsBlocked).toBeGreaterThan(0);
-    expect(preview.messageRowsBlocked).toBe(applied.messageRowsBlocked);
+    expect(preview.merged).toBe(1);
+    expect(preview.merged).toBe(applied.merged);
+    expect(projectTagsOf('merge')).toEqual(['project:new-scope']);
   });
 });
 
-describe('Feature: #519 the dry run never writes, and only a real collision is "left in place"', () => {
-  it('a dry run on a read-only database still reports the preview, with nothing blocked', () => {
-    sendAgentMessage(getDatabase(), {
-      project: 'ro-old', sender: 'author', recipient: 'reviewer', idempotency_key: 'ro-k',
-      content_type: 'text/plain', payload: 'x',
+describe('Feature: #519 previews preserve memory constraints without writing the source', () => {
+  for (const [label, index, collides] of [
+    ['partial unique', "CREATE UNIQUE INDEX extra_tags ON tags(tag) WHERE tag LIKE 'project:%'", true],
+    ['collated unique', 'CREATE UNIQUE INDEX extra_tags ON tags(tag COLLATE NOCASE)', true],
+    ['expression unique', 'CREATE UNIQUE INDEX extra_tags ON tags(lower(tag))', true],
+    ['non-unique', 'CREATE INDEX extra_tags ON tags(tag)', false],
+  ] as const) {
+    it(`preview preserves the ${label} memory constraint and agrees with apply`, () => {
+      remember({ name: 'index-old', type: 'note', tags: ['project:idx-old'] });
+      remember({ name: 'index-new', type: 'note', tags: ['project:idx-new'] });
+      const db = getDatabase();
+      db.exec(index);
+      const rows = () => db.prepare('SELECT * FROM tags ORDER BY id').all();
+      const before = rows();
+      if (collides) {
+        expect(() => renameProjectTag('idx-old', 'idx-new')).toThrow(/UNIQUE constraint failed/);
+        expect(rows()).toEqual(before);
+        expect(() => renameProjectTag('idx-old', 'idx-new', { apply: true })).toThrow(/UNIQUE constraint failed/);
+        expect(rows()).toEqual(before);
+      } else {
+        const preview = renameProjectTag('idx-old', 'idx-new');
+        expect(rows()).toEqual(before);
+        const applied = renameProjectTag('idx-old', 'idx-new', { apply: true });
+        expect(applied.renamed).toBe(preview.renamed);
+        expect(applied.renamed).toBe(1);
+        expect(projectTagsOf('index-old')).toEqual(['project:idx-new']);
+      }
     });
+  }
+
+  it('a dry run on a read-only database still reports the memory preview', () => {
+    remember({ name: 'readonly', type: 'note', tags: ['project:ro-old'] });
     const readOnly = new MemeshDatabase(fixture.dbPath, { readOnly: true });
     try {
       const r = renameProjectTag('ro-old', 'ro-new', { apply: false, db: readOnly });
-      expect(r.messageRows).toBeGreaterThan(0);
-      expect(r.messageRowsBlocked).toBe(0);
+      expect(r.affectedEntities).toBe(1);
       expect(r.applied).toBe(false);
     } finally {
       readOnly.close();
     }
-    expect(pollAgentEvents(getDatabase(), { project: 'ro-old', recipient: 'reviewer' }).events).toHaveLength(1);
+    expect(projectTagsOf('readonly')).toEqual(['project:ro-old']);
   });
 
-  it('an apply that cannot write fails instead of reporting every row as left in place', () => {
-    sendAgentMessage(getDatabase(), {
-      project: 'ro-old2', sender: 'author', recipient: 'reviewer', idempotency_key: 'ro-k2',
-      content_type: 'text/plain', payload: 'x',
-    });
+  it('an apply that cannot write fails instead of reporting a successful rename', () => {
+    remember({ name: 'readonly-write', type: 'note', tags: ['project:ro-old2'] });
     getDatabase().exec('PRAGMA query_only = ON');
     try {
       expect(() => renameProjectTag('ro-old2', 'ro-new2', { apply: true })).toThrow(/readonly|read-only|query_only/i);
     } finally {
       getDatabase().exec('PRAGMA query_only = OFF');
     }
-    expect(pollAgentEvents(getDatabase(), { project: 'ro-old2', recipient: 'reviewer' }).events).toHaveLength(1);
-  });
-
-  it('a collision on the composite primary key of the idempotency table counts as left in place', () => {
-    const send = (project: string) => sendAgentMessage(getDatabase(), {
-      project, sender: 'author', recipient: 'reviewer', idempotency_key: 'pk-shared',
-      content_type: 'text/plain', payload: project,
-    });
-    send('pk-old');
-    send('pk-new');
-    const r = renameProjectTag('pk-old', 'pk-new', { apply: true });
-    expect(r.messageRowsBlocked).toBeGreaterThan(0);
+    expect(projectTagsOf('readonly-write')).toEqual(['project:ro-old2']);
   });
 });
 
 describe('Feature: #519 only a missing table means "nothing to move"', () => {
-  it('a read error on a message table aborts the rename instead of moving half of a message', () => {
+  it('a proposal read error aborts before moving memory tags', () => {
     remember({ name: 'half-move', type: 'note', tags: ['project:io-old'] });
-    const sent = sendAgentMessage(getDatabase(), {
-      project: 'io-old', sender: 'author', recipient: 'reviewer', idempotency_key: 'io-k',
-      content_type: 'text/plain', payload: 'x',
-    });
     const real = getDatabase();
     const faulty = new Proxy(real, {
       get(target, prop) {
         if (prop === 'prepare') {
           return (sql: string) => {
-            if (sql === 'SELECT rowid AS rid FROM agent_message_deliveries WHERE project = ?') {
+            if (sql === 'SELECT id FROM dream_proposals WHERE project = ?') {
               throw Object.assign(new Error('disk I/O error'), { errcode: 10 });
             }
             return target.prepare(sql);
@@ -273,9 +245,6 @@ describe('Feature: #519 only a missing table means "nothing to move"', () => {
       },
     });
     expect(() => renameProjectTag('io-old', 'io-new', { apply: true, db: faulty })).toThrow('disk I/O error');
-    const scope = (table: string) => (real.prepare(`SELECT project FROM ${table} WHERE message_id = ?`).get(sent.message_id) as { project: string }).project;
-    expect(scope('agent_messages')).toBe('io-old');
-    expect(scope('agent_message_deliveries')).toBe('io-old');
     expect(projectTagsOf('half-move')).toEqual(['project:io-old']);
   });
 });
@@ -321,11 +290,8 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
   };
   const state = () => ({
     tags: getDatabase().prepare('SELECT tag FROM tags ORDER BY tag').all(),
-    messages: getDatabase().prepare('SELECT project FROM agent_messages ORDER BY project').all(),
-  });
-  const send = (project: string) => sendAgentMessage(getDatabase(), {
-    project, sender: 'author', recipient: 'reviewer', idempotency_key: `v-${project}`,
-    content_type: 'text/plain', payload: 'x',
+    entities: getDatabase().prepare('SELECT * FROM entities ORDER BY id').all(),
+    observations: getDatabase().prepare('SELECT * FROM observations ORDER BY id').all(),
   });
 
   for (const [name, trigger, tags] of [
@@ -334,7 +300,6 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
   ] as const) {
     it(`${name} fails and rolls back`, () => {
       carrier('vf', [...tags]);
-      send('vf-old');
       getDatabase().exec(trigger);
       const before = state();
       expect(() => renameProjectTag('vf-old', 'vf-new', { apply: true })).toThrow(/changed the result\)$/);
@@ -344,74 +309,44 @@ describe('Feature: #519 the rename verifies what it did, not what a statement re
 
   it('an update a trigger ABORTs is not counted as a unique collision, whatever the error text says', () => {
     carrier('h1', ['project:h1-old']);
-    send('h1-old');
-    getDatabase().exec("CREATE TRIGGER refuse_move BEFORE UPDATE OF project ON agent_messages BEGIN SELECT RAISE(ABORT, 'refused ' || NEW.project); END");
+    getDatabase().exec("CREATE TRIGGER refuse_move BEFORE UPDATE OF tag ON tags BEGIN SELECT RAISE(ABORT, 'refused ' || NEW.tag); END");
     const before = state();
     expect(() => renameProjectTag('h1-old', 'UNIQUE constraint failed', { apply: true })).toThrow(/refused/);
     expect(state()).toEqual(before);
   });
 
-  it('a message row that a trigger moves back is refused and rolled back', () => {
-    carrier('h2', ['project:h2-old']);
-    send('h2-old');
-    getDatabase().exec('CREATE TRIGGER undo_move AFTER UPDATE OF project ON agent_messages BEGIN UPDATE agent_messages SET project = OLD.project WHERE rowid = NEW.rowid; END');
-    const before = state();
-    expect(() => renameProjectTag('h2-old', 'h2-new', { apply: true })).toThrow(/is not scoped to h2-new.*changed the result\)$/);
-    expect(state()).toEqual(before);
-  });
-
   it('a renamed tag that a trigger then deletes is refused and rolled back', () => {
     carrier('h3', ['project:h3-old']);
-    send('h3-old');
     getDatabase().exec('CREATE TRIGGER drop_renamed AFTER UPDATE OF tag ON tags BEGIN DELETE FROM tags WHERE id = NEW.id; END');
     const before = state();
     expect(() => renameProjectTag('h3-old', 'h3-new', { apply: true })).toThrow(/changed the result\)$/);
     expect(state()).toEqual(before);
   });
 
-  it('a real collision on a unique index is counted as left in place, and the other rows move', () => {
-    const cursor = getDatabase().prepare('INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES (?, ?, ?, ?)');
-    cursor.run('c-old', 'cur-old', 'reviewer', 7);
-    cursor.run('c-new', 'cur-new', 'reviewer', 7);
-    cursor.run('c-other', 'cur-old', 'reviewer', 8);
-    const r = renameProjectTag('cur-old', 'cur-new', { apply: true });
-    expect(r.messageRowsBlocked).toBe(1);
-    expect(getDatabase().prepare('SELECT cursor_token, project FROM agent_message_cursors ORDER BY cursor_token').all()).toEqual([
-      { cursor_token: 'c-new', project: 'cur-new' },
-      { cursor_token: 'c-old', project: 'cur-old' },
-      { cursor_token: 'c-other', project: 'cur-new' },
-    ]);
-  });
-
-  it('a collision a trigger hits in the same table is not taken for the destination holding the row', () => {
+  it('a collision a trigger hits in tags aborts and preserves all memory data', () => {
     const db = getDatabase();
-    const cursor = db.prepare('INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES (?, ?, ?, ?)');
-    cursor.run('c-1', 'same-old', 'reviewer', 1);
-    cursor.run('c-9', 'same-new', 'reviewer', 99);
-    // Moving c-1 collides with nothing; the trigger's own insert collides with c-9.
-    db.exec("CREATE TRIGGER same_write AFTER UPDATE OF project ON agent_message_cursors BEGIN INSERT INTO agent_message_cursors (cursor_token, project, recipient, event_sequence) VALUES ('x', NEW.project, 'reviewer', 99); END");
-    const rows = () => db.prepare('SELECT cursor_token, project FROM agent_message_cursors ORDER BY cursor_token').all();
-    const before = rows();
+    carrier('same', ['project:same-old', 'other']);
+    db.exec("CREATE TRIGGER same_write AFTER UPDATE OF tag ON tags BEGIN INSERT INTO tags (entity_id, tag) VALUES (NEW.entity_id, 'other'); END");
+    const before = state();
     // The dry run runs the same rename on a copy, so it refuses the same way.
     expect(() => renameProjectTag('same-old', 'same-new', { apply: false })).toThrow(/UNIQUE constraint failed/);
     expect(() => renameProjectTag('same-old', 'same-new', { apply: true })).toThrow(/UNIQUE constraint failed/);
-    expect(rows()).toEqual(before);
+    expect(state()).toEqual(before);
   });
 
   it('a collision a trigger hits in another table is not taken for the destination holding the row', () => {
     carrier('t3', ['project:t3-old']);
-    send('t3-old');
-    getDatabase().exec('CREATE TABLE side (a UNIQUE); INSERT INTO side VALUES (1); CREATE TRIGGER side_write AFTER UPDATE OF project ON agent_messages BEGIN INSERT INTO side VALUES (1); END');
+    getDatabase().exec('CREATE TABLE side (a UNIQUE); INSERT INTO side VALUES (1); CREATE TRIGGER side_write AFTER UPDATE OF tag ON tags BEGIN INSERT INTO side VALUES (1); END');
     const before = state();
     expect(() => renameProjectTag('t3-old', 't3-new', { apply: true })).toThrow(/UNIQUE constraint failed: side\.a/);
     expect(state()).toEqual(before);
   });
 
-  it('an ignored message update is refused even when the destination name looks like a unique-constraint error', () => {
-    send('uq-old');
-    getDatabase().exec('CREATE TRIGGER ignore_move BEFORE UPDATE OF project ON agent_messages BEGIN SELECT RAISE(IGNORE); END');
+  it('an ignored tag update is refused even when the destination name looks like a unique-constraint error', () => {
+    carrier('uq', ['project:uq-old']);
+    getDatabase().exec('CREATE TRIGGER ignore_move BEFORE UPDATE OF tag ON tags BEGIN SELECT RAISE(IGNORE); END');
     const before = state();
-    expect(() => renameProjectTag('uq-old', 'UNIQUE constraint failed', { apply: true })).toThrow(/is not scoped to/);
+    expect(() => renameProjectTag('uq-old', 'UNIQUE constraint failed', { apply: true })).toThrow(/changed the result/);
     expect(state()).toEqual(before);
   });
 });

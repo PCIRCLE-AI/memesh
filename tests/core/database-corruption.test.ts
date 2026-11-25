@@ -1,6 +1,6 @@
 /**
  * A database whose file opens fine but whose message-table pages are damaged.
- * The direct legacy inbox reader and doctor must expose the damage.
+ * SQLite integrity checks and doctor must expose physical damage.
  * Briefing reads project memory independently of the retired inbox integration.
  * These checks use a real damaged file, not a stub.
  */
@@ -10,8 +10,7 @@ import { damagedDatabaseFix, repairCommand, diagnoseDatabaseFailure } from '../.
 import { remember } from '../../src/core/operations.js';
 import { describe, expect, it } from 'vitest';
 import { runDoctor } from '../../src/core/doctor.js';
-import { sendAgentMessage } from '../../src/core/agent-messaging.js';
-import { unreadDeliveryCount } from '../../src/core/agent-message-inbox.js';
+import { seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 import { assembleBriefing } from '../../src/core/briefing.js';
 import { closeDatabase, getDatabase, openDatabase } from '../../src/db.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
@@ -67,18 +66,18 @@ function seedProjectMemory() {
     observations: ['Keep project memory'], tags: ['project:proj-c'] });
 }
 
-const send = () => sendAgentMessage(getDatabase(), {
+const send = () => seedLegacyMessage(getDatabase(), {
   project: 'proj-c', sender: 'sender', recipient: 'reader', idempotency_key: 'c-1',
   content_type: 'application/json', payload: { text: 'hello' },
 });
 
 describe('a database with damaged pages', () => {
 
-  it('is healthy: doctor passes, the direct inbox counts, and briefing retains project memory', async () => {
+  it('is healthy: doctor passes and briefing retains project memory independently of legacy rows', async () => {
     send();
     const report = await doctor();
     expect(report.checks.find((c) => c.id === 'database')?.status).toBe('pass');
-    expect(unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toBe(1);
+    expect(getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_message_deliveries').get()).toEqual({ n: 1 });
     seedProjectMemory();
     const text = assembleBriefing('proj-c', 'reader').text;
     expect(text).toContain('Keep project memory');
@@ -102,31 +101,30 @@ describe('a database with damaged pages', () => {
     expect(report.status).toBe('FAIL');
   });
 
-  it('raises SQLite damage from the direct inbox while briefing retains project memory', () => {
+  it('raises SQLite damage from a damaged historical table while briefing retains project memory', () => {
     send();
     seedProjectMemory();
     const before = assembleBriefing('proj-c', 'reader').text;
     expect(before).toContain('Keep project memory');
     damageDeliveriesTable();
-    expect(() => unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toThrow(/malformed/i);
+    expect(() => getDatabase().prepare('SELECT * FROM agent_message_deliveries').all()).toThrow(/malformed/i);
     expect(assembleBriefing('proj-c', 'reader').text).toBe(before);
   });
 });
 
 describe('a database whose message table lacks a column this version reads', () => {
-  it('fails the direct inbox and doctor database row without consuming it in briefing', async () => {
+  it('does not query retired columns in doctor or briefing', async () => {
     send();
     seedProjectMemory();
     const before = assembleBriefing('proj-c', 'reader').text;
     expect(before).toContain('Keep project memory');
     getDatabase().exec('ALTER TABLE agent_message_receipts RENAME COLUMN receipt_kind TO renamed_kind');
-    expect(() => unreadDeliveryCount(getDatabase(), 'proj-c', 'reader')).toThrow(/no such column/);
+    const legacy = getDatabase().prepare('SELECT * FROM agent_message_receipts').all();
     expect(assembleBriefing('proj-c', 'reader').text).toBe(before);
     const rows = (await doctor()).checks.filter((c) => c.id === 'database');
     expect(rows).toHaveLength(1);
-    expect(rows[0].status).toBe('fail');
-    expect(rows[0].summary).toContain('message inbox cannot be read: no such column');
-    expect(rows[0].fix).toMatch(/cannot read the message tables/);
+    expect(rows[0].status).toBe('pass');
+    expect(getDatabase().prepare('SELECT * FROM agent_message_receipts').all()).toEqual(legacy);
   });
 });
 

@@ -24,6 +24,7 @@ async function session(runtime: string, root: string) {
     HOME: runtime, USERPROFILE: runtime, MEMESH_DIR: runtime,
     MEMESH_DB_PATH: path.join(runtime, 'memory.db'),
     MEMESH_AUTO_UPDATE: '0',
+    NODE_OPTIONS: `--import=${fileURLToPath(new URL('../../scripts/lib/account-home-preload.mjs', import.meta.url))}`,
     MEMESH_PROJECT_ROOT: root,
     // `minimal` (the default) leaves the task state out of the briefing.
     MEMESH_BRIEFING: 'standard',

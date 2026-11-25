@@ -437,6 +437,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       'src/transports/cli/cli.ts', 'dist/transports/cli/cli.js',
       'src/core/conversation-messages.ts', 'dist/core/conversation-messages.js',
       'docs/api/API_REFERENCE.md', 'dist/mcp/server.js', 'src/transports/http/server.ts', 'dist/transports/http/server.js', 'hooks/hooks.json',
+      'src/transports/http/retired-routes.ts', 'dist/transports/http/retired-routes.js',
       '.claude-plugin/mcp.json', '.claude-plugin/plugin.json', '.claude-plugin/marketplace.json',
       '.codex-plugin/mcp.json', '.codex-plugin/plugin.json', 'package.json',
     ];
@@ -463,6 +464,21 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       }
       mutate('src/transports/cli/cli.ts', 'action: "read", message_id: opts.messageId', 'action: "send", message_id: opts.messageId', 'CLI command "read" mapped to action "read"');
       mutate('dist/transports/cli/cli.js', 'action: "read", message_id: opts.messageId', 'action: "send", message_id: opts.messageId', 'CLI command "read" mapped to action "read"');
+      for (const file of ['src/transports/cli/cli.ts', 'dist/transports/cli/cli.js']) {
+        const briefing = fs.readFileSync(path.join(root, file), 'utf8').match(/\.command\(['"]briefing['"]\)/)?.[0];
+        expect(briefing).toBeDefined();
+        mutate(file, briefing!, ".command('wrong-boundary')", 'public message commands must be exactly four actions');
+      }
+      for (const file of ['src/transports/http/server.ts', 'dist/transports/http/server.js']) {
+        mutate(file, 'res.status(410).json', 'res.status(200).json', 'fixed HTTP 410 retired-route handler');
+        mutate(file, 'Object.entries(RETIRED_ROUTES)', 'Object.entries({})', 'fixed HTTP 410 retired-route handler');
+        mutate(file, 'app.post(retiredRoute', "app.post('/v1/other'", 'fixed HTTP 410 retired-route handler');
+        mutate(file, 'app.post(retiredRoute', "executeAgentMessageAction(); app.post(retiredRoute", 'retired HTTP message dispatcher must not exist');
+      }
+      for (const file of ['src/transports/http/retired-routes.ts', 'dist/transports/http/retired-routes.js']) {
+        mutate(file, "'/v1/message':", "'/v1/other':", 'explicit message route retirement');
+      }
+      mutate('hooks/hooks.json', 'messages.js', 'dist/host-runtime/codex-session.js', 'retired Codex companion must not be wired');
       mutate('src/core/conversation-messages.ts', 'MESSAGE_MAX_BYTES = 8_000', 'MESSAGE_MAX_BYTES = 80_000', 'MESSAGE_MAX_BYTES');
       mutate('dist/core/conversation-messages.js', "reason ? 'rejected' : 'queued'", "'queued'", 'rejected');
       for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {

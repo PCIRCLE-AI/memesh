@@ -6,6 +6,7 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { RECALL_RESPONSE_MAX_BYTES } from '../../src/core/recall-agent-view.js';
 import { seedOversizedEntity } from '../helpers/recall-size-fixture.js';
+import { installLegacyMessageSchema, seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 
 // Import the Express app (not startServer, which opens its own DB and binds a port).
 // We open our own isolated DB and start the app on a random port.
@@ -859,66 +860,35 @@ describe('HTTP Transport: POST /v1/learn', () => {
   });
 });
 
-describe('HTTP Transport: POST /v1/message', () => {
-  it('wakes one waiting recipient and keeps the notification payload-free', async () => {
-    const project = 'http-message-live';
-    const waiting = req('POST', '/v1/message', {
-      action: 'poll', project, recipient: 'receiver-http', wait_ms: 500, limit: 20,
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const sent = await req('POST', '/v1/message', {
-      action: 'send',
-      project,
-      sender: 'sender-http',
-      recipient: 'receiver-http',
-      idempotency_key: 'http-send-1',
-      payload: { text: 'wake up', payload_only: 'not-in-header' },
-      content_type: 'application/json',
-      privacy: 'private',
-    });
-    expect(sent.status).toBe(200);
-
-    const delivered = await waiting;
-    expect(delivered.status).toBe(200);
-    expect(delivered.body.data.events).toHaveLength(1);
-    expect(delivered.body.data.events[0].message_id).toBe(sent.body.data.message_id);
-    expect(JSON.stringify(delivered.body.data.events[0])).not.toContain('not-in-header');
-
-    const control = await req('POST', '/v1/message', {
-      action: 'poll', project, recipient: 'control-http', wait_ms: 0,
-    });
-    expect(control.body.data.events).toEqual([]);
+describe('HTTP Transport: retired POST /v1/message', () => {
+  it('retires messaging actions without trusting a supplied conversation identity', async () => {
+    installLegacyMessageSchema(getDatabase());
+    const before = getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_messages').get();
+    for (const action of ['poll', 'send', 'discover', 'read', 'status', 'fetch', 'intake', 'update', 'delete']) {
+      const result = await req('POST', '/v1/message', {
+        action, project: 'retired-http-message', recipient: 'recipient', sender: 'sender',
+        idempotency_key: 'retired', payload: 'PAYLOAD_MUST_NOT_BE_STORED', wait_ms: 0,
+        _meta: { session_id: 'untrusted-session' },
+      });
+      expect(result.status).toBe(410);
+      expect(result.body.errorCode).toBe('route.retired');
+      expect(JSON.stringify(result.body)).not.toContain('PAYLOAD_MUST_NOT_BE_STORED');
+    }
+    expect(getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_messages').get()).toEqual(before);
   });
 
-  it('fetch does not imply ACK and foreign recipients get no payload', async () => {
-    const project = 'http-message-fetch';
-    const sent = await req('POST', '/v1/message', {
-      action: 'send',
-      project,
-      sender: 'sender-http',
-      recipient: 'receiver-http',
-      idempotency_key: 'http-send-1',
-      payload: 'private body',
-    });
-    const messageId = sent.body.data.message_id;
-
-    const fetched = await req('POST', '/v1/message', {
-      action: 'fetch', project, recipient: 'receiver-http', message_id: messageId,
-    });
-    expect(fetched.body.data.payload).toBe('private body');
-
-    const receipts = await req('POST', '/v1/message', {
-      action: 'receipts', project, recipient: 'receiver-http', message_id: messageId,
-    });
-    expect(receipts.body.data).toEqual([]);
-
-    const foreign = await req('POST', '/v1/message', {
-      action: 'fetch', project, recipient: 'control-http', message_id: messageId,
-    });
-    expect(foreign.status).toBe(400);
-    expect(foreign.body.success).toBe(false);
-    expect(JSON.stringify(foreign.body)).not.toContain('private body');
+  it('ordinary startup leaves legacy history untouched instead of running the retired timer', async () => {
+    const db = getDatabase();
+    const row = seedLegacyMessage(db, { project: 'legacy-http', sender: 'sender', recipient: 'recipient', payload: 'keep history' });
+    db.prepare('UPDATE agent_messages SET created_at=? WHERE message_id=?').run(new Date(Date.now() - 2 * 86400000).toISOString(), row.message_id);
+    const before = db.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(row.message_id);
+    const { startServer } = await import('../../src/transports/http/server.js');
+    const listener = startServer('127.0.0.1', 0, { autoUpdateCheck: false });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(db.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(row.message_id)).toEqual(before);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM agent_message_expiry_runs').get()?.n).toBe(0);
+    } finally { await new Promise<void>(resolve => listener.close(() => resolve())); }
   });
 });
 

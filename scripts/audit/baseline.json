@@ -81,11 +81,6 @@
       "reason": "The detector's `.toBe(0)` matches the exit status of the child process that runs the driver script (it must exit 0 so its JSON can be read), not an empty collection. Every test then asserts the content of that JSON: the cause (`kind`), the sentence, the fix, the error code, and whether a second open works. Mutating each guarded line (the version-first order, the switched-off branch, the probe's error wrapping, its cache and its close) turned a test red.",
       "triaged": "2026-11-11 Node floor causes"
     },
-    "C1 tests/codex-plugin-fresh-consumer.test.ts": {
-      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
-      "reason": "The detector's `.toBe(0)` matches the short SessionStart launcher's successful process exit status, not an empty collection. The same test separately waits for the detached lifecycle state and router socket, asserts a distinct companion PID, reads back exactly one registered session from SQLite, and performs authenticated exact-companion cleanup.",
-      "triaged": "2026-09-08 Codex detached companion release audit"
-    },
     "C1 tests/mcp-native-memory-runtime.test.ts": {
       "class": "SAFE",
       "reason": "The empty refresh-marker list verifies that the owned native-form fixture starts no unrelated detached updater. The same test requires two form requests, saved title and exact nonempty observations, plus recall readback. Controlled red without updateCheck:false produced a refresh marker; green retained every functional assertion.",
@@ -291,11 +286,6 @@
       "reason": "`input.commits ?? []` — WhySchema documents commits as optional (a caller without a working tree resolves none); the result carries commits: [] visibly, and every real gap in the chain is a typed abstention, never a default.",
       "triaged": "2026-08-16 (UX-3 memesh why); re-keyed 2026-08-24 (M-07: file_not_found abstention + why.ts imports added above; statements byte-identical, classification unchanged)"
     },
-    "C5 src/core/agent-router.ts#424802cf": {
-      "class": "SAFE-BY-CONSTRUCTION",
-      "reason": "A host adapter may accept a delivery without optional transport metadata. The empty receipt is still validated and persisted as an explicit host_accept fact; accepted itself is required and no ACK, read, or workflow state is inferred from the missing receipt.",
-      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-08-28 after bounded backlog drain and the Windows fail-closed guard moved the unchanged statement; re-keyed 2026-09-01 after live-directory code shifted the unchanged statement; re-keyed 2026-09-06 after router protocol constants shifted the unchanged statement; re-keyed 2026-09-26 843→848 after AGENT_ROUTER_SOCKET_PATH_MAX_BYTES was added above (#402/#404); re-keyed 2026-09-28 848→850 after the card model field gained a doc comment above; statement byte-identical, classification unchanged; re-keyed 2026-09-28 850→851 (#497: DeliveryRow gained intended_session above; statement byte-identical, classification unchanged); re-keyed 2026-09-30 851→899 (#518: memesh_version option, register step-aside and the superseded hold were added above; statement byte-identical, classification unchanged); re-keyed 2026-11-08 970→990 (cross-machine messages: the on_host_connected option and its field were added above; statement byte-identical, classification unchanged); re-keyed 2026-11-11 990→997 (message status truth: session alias and caller checks were added above; statement byte-identical, classification unchanged); re-keyed 2026-11-11 997→1007 (the message-expiry skip of a delivery that ran out its day was added above; statement byte-identical, classification unchanged)"
-    },
     "C5 src/network/bridge-serve.ts#02b2f4f5": {
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`route?.addrs ?? []` means no known direct addresses; the configured relay may still resolve the peer. A failed or timed-out connect throws before a copy ACK; the courier records an error and leaves the message queued, never delivered. Actual delivery still requires the recipient's hook/read/reply.",
@@ -315,11 +305,6 @@
       "class": "SAFE-BY-CONSTRUCTION",
       "reason": "`link.addrs ?? []` — an invite made without --include-addresses carries no direct addresses by design (relay only); the empty list is the truthful route, and the owner's real addresses arrive with its first presence frame.",
       "triaged": "2026-11-08 (cross-machine messages)"
-    },
-    "C5 src/host-adapters/acp-client.ts#b76c5faa": {
-      "class": "SAFE-BY-CONSTRUCTION",
-      "reason": "ACP child argv is optional by API contract; absence truthfully means launch the configured executable with zero arguments. Every supplied argument and the aggregate argv are independently bounded before spawn.",
-      "triaged": "2026-08-27 host-native push release audit; re-keyed 2026-10-06 after merging main (statement unchanged)"
     },
     "C1 tests/cli/briefing-recipient.test.ts": {
       "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
@@ -626,11 +611,6 @@
       "reason": "`line.match(/`+/g) ?? []` in buildReferenceContext, moved verbatim from scripts/hooks/_shared.js (which the C5 scan does not cover) so the MCP briefing surface shares the hook's fence. match() returns null when a line contains no backtick run; the empty list truthfully means 'no backticks', and the fence floor Math.max(3, longestRun + 1) still applies. Pinned by tests/hooks/reference-context-fence.test.ts, which feeds lines WITH backtick runs and asserts the fence outruns them.",
       "triaged": "2026-08-16 (A1c briefing); re-keyed 2026-09-20 386→468 (#360: assembleTopologyBlock/budget consts, citation-handle additions, issue-242 global-section additions, and hasBriefingContent all added above buildReferenceContext across several commits; statement byte-identical, classification unchanged); re-keyed 2026-09-24 468→473 (session-handoff: lines added above shifted the unchanged statement); re-keyed 2026-09-24 473→598 (#434 step 3: decision/budget helpers added above; statement byte-identical); re-keyed 2026-09-25 598→604 (LESSON_TYPE_LIST export, #443); re-keyed 2026-09-26 604→626 (#451: canonicalEntityType added above LESSON_TYPE_LIST; statement byte-identical); re-keyed 2026-09-27 626→631 (#374: the control-character strip (stripControlChars) and its call sites added above longestRun; statement byte-identical); re-keyed 2026-09-27 631→633 (#409: the routing-hash strip added above in topologyLine; statement byte-identical); re-keyed 2026-10-04 633→641 (M2-a: the noProject entity flag, pool flag and section added above; statement byte-identical) Re-keyed 2026-10-06: decision `why` lines added above; statement byte-identical. Re-keyed 2026-10-06 679→734 (decision reason: utcEpoch, unconfirmedDaysSince, restatesWhy and the reason-first line budget added above; statement byte-identical). Re-keyed 2026-10-07 734→736 (section heading budget fix above; statement byte-identical, detector and classification unchanged).; re-keyed 2026-11-02 after recall data notice addition; statement byte-identical; re-keyed 2026-11-08 738→744 (tag neutralization added above; statement byte-identical); re-keyed 2026-11-11 742→819 (the project-boundary merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 819→820 (the docs-source-fixes merge moved the unchanged statement; statement byte-identical, classification unchanged); re-keyed 2026-11-11 820 to 827 (project-boundary round 2 changed lines above; same statement); W2 2026-11-12: re-keyed from C5 src/core/work-topology.ts:827; statement unchanged."
     },
-    "C5 src/core/agent-message-expiry.ts#9f5c149a": {
-      "class": "SAFE-MAP-ABSENCE",
-      "reason": "`unrecorded.get(file) ?? []` in recordRun: a database with no pass waiting to be recorded late has nothing to write before this pass's own row.",
-      "triaged": "2026-11-11 message-expiry round 3 (a pass that meets a lock is recorded late by the next pass); new statement; re-keyed 2026-11-11 1118 to 1117 (import line merged; same statement)"
-    },
     "C5 src/core/capture-liveness.ts#b6ed43f7": {
       "class": "SAFE-MAP-ABSENCE",
       "reason": "`file.hooks[hook] ?? []` in summarizeHookOutcomes: a hook with no recorded outcomes correctly summarises to an empty window (0 runs, 0 writes), the honest reading — absence of records is reported as no runs, not masked as success.",
@@ -715,6 +695,26 @@
       "class": "SAFE",
       "reason": "tags is an optional write field. An absent list supplies no tag-derived scope; explicit args.project still takes priority and later ownership/unfiled-write checks remain. This defaults input shape only, not database reads or write success.",
       "triaged": "2026-11-15"
+    },
+    "C1 tests/cli/message-router-autostart.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Each real HTTP request must return 410/route.retired; empty spawn/state assertions verify that retirement has no router side effects.",
+      "triaged": "2026-11-17"
+    },
+    "C1 tests/core/conversation-message-retirement.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Exact imported IDs, original bodies, audit facts and retained memory rows pin nonempty input; empty old-table assertions verify retirement and rollback.",
+      "triaged": "2026-11-17"
+    },
+    "C1 tests/core/export-signing-key.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Golden key bytes and real private-file state pin successful export-key creation; zero mode bits are required permission assertions.",
+      "triaged": "2026-11-17"
+    },
+    "C1 tests/host-runtime/claude.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Explicit one-call Channel assertions pin startup; no-call and zero-exit assertions cover import-only behavior and startup success.",
+      "triaged": "2026-11-17"
     }
   }
 }

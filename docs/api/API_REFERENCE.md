@@ -1026,7 +1026,7 @@ The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown and oversized sen
 
 Messages/events are maintained for 14 days when the store next opens; maintenance creates one undelivered notice after a day. No update/delete actions exist. CLI owner status can list its complete retained audit via `--json`; MCP does not grant owner-wide status.
 
-`POST /v1/message` retains a separate legacy HTTP agent-message lifecycle. Its project routing, polling, fetching, receipts, limits, and host adapters are not aliases for this MCP schema; see `src/transports/agent-messaging.ts` and the HTTP section.
+`POST /v1/message` is retired and returns `410 Gone`; use this MCP interface or the CLI.
 
 ## Data Model
 
@@ -1084,68 +1084,8 @@ Read-only data folder: if the folder that holds the database cannot be written (
 
 ### Legacy HTTP agent messages
 
-`POST /v1/message` remains a legacy HTTP compatibility API, distinct from the
-four-action MCP/CLI conversation schema. Its request is project-scoped and
-uses legacy agent-message fields: `send` includes project, sender, recipient,
-an idempotency key and payload; `poll` reads recipient events; `fetch` returns
-an authorized payload; and `intake`, `ack`, `disposition`, `activation`,
-`status`, and `receipts` record or read legacy lifecycle facts. HTTP responses
-wrap its result as `{ success: true, data }`.
-
-Legacy routing is cooperative rather than a per-agent ACL: HTTP bearer
-authentication protects the instance, but it does not prove a caller identity.
-Its data and lifecycle scopes are the legacy project/recipient fields, not the
-conversation host identity. Legacy messages are retained for one day by its
-maintenance path; that retention and its payload/native limits do not apply to
-the 14-day conversation store. Do not put legacy fields into a conversation
-MCP or CLI call.
-
-
-| Legacy HTTP action | Required request fields in addition to `action` |
-| --- | --- |
-| `discover` | `project`; optional `limit` (1–100) |
-| `send` | `project`, `sender`, `recipient` or `recipient_handle`, `idempotency_key`, `payload` |
-| `poll` | `project`, `recipient`; optional scoped `cursor`, `wait_ms` (0–30000), `limit` (1–100) |
-| `fetch` | `project`, `recipient`, `message_id`; optional `target_kind` |
-| `intake` | Receipt base plus `intake_state` (`fetched` or `ingested`) |
-| `ack` | Receipt base |
-| `disposition` | Receipt base plus `disposition` (`accepted`, `rejected`, `completed`, `cancelled`, `deferred`) |
-| `activation` | Receipt base plus `activation` (`woken`, `manual_resume_required`, `unsupported`, `failed`) |
-| `status` | `project`, `recipient`, `message_id` |
-| `receipts` | `project`, `recipient`, `message_id` |
-
-The receipt base is `project`, `recipient`, `message_id`, and a stable
-`idempotency_key`. HTTP supplies no native host-session identity, so intake
-for a message bound to an `intended_session` is refused with
-`intended_for_other_session`; preserve the message rather than asserting
-another session's receipt. Optional `privacy` in this legacy schema is
-retained routing metadata, not a memory refusal or automatic clearing mode.
-
-
-The legacy `send` request requires `action`, `project`, `sender`, an exact
-`recipient` (or a resolvable `recipient_handle`), `idempotency_key`, and
-`payload`. Additional legacy send fields are listed below. A receipt write
-uses project, recipient, message_id and its own stable idempotency_key;
-intake also names intake_state. Fetch/read operations do not themselves
-record intake. Caller-supplied legacy identifiers are cooperative scope, not
-cryptographic authorization.
-
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `recipient_handle` | string | One of this or `recipient` | A project-scoped session handle from discover, also resolvable for an offline registered session. Claude and Codex CLI sessions route to their principal with `intended_session`; other hosts route to the exact session. A missing or ambiguous handle returns `handle_not_found` or `handle_ambiguous` before writing; use an available handle or an exact session ID. A literal `recipient` is never interpreted as a handle. |
-| `target_kind` | `principal` \| `session` | No | Defaults to `principal`. A `session` target is bound to that exact active session, waits for native acceptance, and never reroutes to a replacement. |
-| `intended_session` | string | No | Only with `target_kind: "principal"`. The one session of that principal the message is meant for: a Claude Code session id or an ordinary Codex CLI thread id (the `session_id` its hooks receive). A session the router registered through any other host (`acp`, `codex-app-server`) is refused, since nothing there could say which session it is when it records intake; an id the router never registered is allowed. Only that session is reminded of it (hooks, Stop gate, `briefing`), only it can record `intake` or a `disposition` (anyone else, including an HTTP caller, gets `intended_for_other_session`), and the router pushes it only to that session's connection. Part of the idempotency request. |
-| `fallback_to_principal` | boolean | No | Only with `target_kind: "session"`. If that session refuses the message (`recipient_unavailable`), send it to the principal the session registered under, with `intended_session` set to it, and return that message with a `fallback` field naming the refused one; `fallback.intended_session_connected` says whether that session is connected now, and when it is not, `fallback.note` says only it can take the message in when it next runs (#518). A session that never registered has no known principal, and a refused session registered through a host that cannot be named is refused, so in both cases the send still fails with `recipient_unavailable`, saying so. `router_unreachable` does not trigger it. |
-| `content_type` | `text/plain` \| `application/json` | No | Defaults to `text/plain`; text payloads must be strings. |
-| `privacy` | `private` \| `team` | No | Retained message metadata; defaults to `private`. Delivery remains exact-recipient in both cases. |
-| `correlation_id` | string | No | Conversation or task correlation without changing routing. |
-| `reply_to` | message ID | No | Links this message to another message without changing delivery. |
-
-Legacy JSON payloads are limited to 65,536 UTF-8 bytes. The older native
-transport separately caps its full envelope at 16,384 bytes; these bounds
-do not replace the new conversation envelope's 8,000-byte cap. Poll cursors
-belong to their exact legacy project and recipient. Retired CLI commands
-are not a way to call this HTTP schema.
+`POST /v1/message` is retired and returns `410 Gone` (`route.retired`).
+Use the four-action MCP or CLI conversation interface above.
 
 ### Authentication
 
@@ -1330,7 +1270,7 @@ One entry (`runAutoUpdate`) decides for every install channel. A stable install
 follows the `latest` release, never `next`; a trial install follows `next`. Before
 anything is installed the package is downloaded to a throwaway directory and its
 npm provenance is checked (the attested digest must be that of the downloaded tarball, the signing certificate must name this repository's release workflow at that version's tag, and the statement must say it was built by this project's release workflow at that
-version's tag); the commit the provenance names must be part of `main` in the official repository, which the updater asks the host's compare service itself (the attested commit as the base, `refs/heads/main` as the head, so a tag or other ref of that name cannot stand in for the branch; behind a proxy, `HTTPS_PROXY` / `HTTP_PROXY` is used where this Node can read it for `fetch` (24 and newer, 22.21 and newer), and a lookup that fails behind a proxy this Node cannot use says so), because the release workflow's own check of that sits in a file anybody who can push a branch could change (an answer of "not on main", an unknown commit, or no clear answer at all stops the update, and a lookup that did not answer is tried again by a later run); the release must carry an `npm-shrinkwrap.json` that pins every dependency with a full sha512 hash and its own address on the npm registry (`scripts/shrinkwrap.mjs` writes it while the package is packed); the database is backed up first; and the swap waits until every
+version's tag); the commit the provenance names must be part of `main` in the official repository, which the updater asks the host's compare service itself (the attested commit as the base, `refs/heads/main` as the head, so a tag or other ref of that name cannot stand in for the branch; behind a proxy, `HTTPS_PROXY` / `HTTP_PROXY` is used where this Node can read it for `fetch` (24 and newer, 22.21 and newer), and a lookup that fails behind a proxy this Node cannot use says so), because the release workflow's own check of that sits in a file anybody who can push a branch could change (an answer of "not on main", an unknown commit, or no clear answer at all stops the update, and a lookup that did not answer is tried again by a later run); the release must carry a `memesh-lock.json` that pins every dependency with a full sha512 hash and its own address on the npm registry (`scripts/shrinkwrap.mjs` writes it while packing; the updater copies it to `package-lock.json` before `npm ci`); the database is backed up first; and the swap waits until every
 running session has ended, so the new version starts with the next session. A
 session that stays open delays it for at most 3 days; after that MeMesh installs
 anyway and records that sessions still open may use the new files before they
@@ -1787,7 +1727,7 @@ printf '%s' 'Please review this change.' | memesh message send \
   --recipient reviewer --kind review_request --payload-stdin
 ```
 
-Do not use legacy project, sender, target-kind, privacy, idempotency, payload, or receipt flags. The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends are rejected and audited, known offline recipients are queued. Queued is not delivered, read, replied, or completed. Legacy HTTP `POST /v1/message` is separate compatibility behavior.
+Do not use legacy project, sender, target-kind, privacy, idempotency, payload, or receipt flags. The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends are rejected and audited, known offline recipients are queued. Queued is not delivered, read, replied, or completed. The retired HTTP `POST /v1/message` returns `410 Gone`.
 
 ### memesh feedback
 
@@ -1852,7 +1792,7 @@ you reclassify a memory. An append to an existing name can also omit `--type`; a
 
 **Project.** Like `memesh learn`, `memesh remember` files a new memory under the current directory's project. `--project <name>` names another one, and `--no-project` stores it with no project. A `project:` tag in `--tags` decides by itself, as it does over MCP. An append to an existing unfiled memory with neither an explicit project nor project tag stays unfiled.
 
-Scoped names resolve first to a same-project original name, then to its qualified name using the full project ID and matching checkout aliases. When another project owns the original name, creation returns `<name>@<full-project-id>` (with a numeric suffix if occupied). Subsequent scoped append, replace, forget, relation and native-editor operations resolve the original name to this project's memory; they never overwrite the foreign row. Without a declared project, names stay literal, including the unbound legacy HTTP path. Existing unfiled memories retain their append policy.
+Scoped names resolve first to a same-project original name, then to its qualified name using the full project ID and matching checkout aliases. When another project owns the original name, creation returns `<name>@<full-project-id>` (with a numeric suffix if occupied). Subsequent scoped append, replace, forget, relation and native-editor operations resolve the original name to this project's memory; they never overwrite the foreign row. Without a declared project, names stay literal, including the unbound HTTP memory API. Existing unfiled memories retain their append policy.
 
 For user-requested `forget`, a same-project namesake takes priority. When none exists, ordinary forgetting uses the supplied actual name; project membership is not an additional refusal to forget that explicit memory.
 
@@ -2130,9 +2070,7 @@ identity; neither uses your actual Claude or Codex identity.
 What it proves, and what it does not: the message steps queue a message
 between two synthetic registrations in a scratch conversation store and read
 its body and routing fields back through the real CLI. They do not prove
-delivery to a running host, native wakeup or a model. The router diagnostic
-(`MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1`) inspects the separate legacy transport;
-it does not validate new conversation delivery.
+delivery to a running host, native wakeup or a model.
 
 Output: one line per step (what was done, what came back, how long it took).
 A failed step also prints `Why:` and `Fix:` and stops the journey. If the temp

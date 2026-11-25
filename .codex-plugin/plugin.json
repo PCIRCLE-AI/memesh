@@ -39,34 +39,12 @@
           ]
         },
         {
-          "matcher": "startup|resume",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-              "timeout": 10
-            }
-          ]
-        },
-        {
           "matcher": "*",
           "hooks": [
             {
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js",
               "timeout": 10
-            }
-          ]
-        }
-      ],
-      "SessionEnd": [
-        {
-          "matcher": "*",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-              "timeout": 3
             }
           ]
         }

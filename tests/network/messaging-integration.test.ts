@@ -36,7 +36,7 @@ function messageDb<T>(ctx: NetworkContext, use: (db: MemeshDatabase) => T): T {
 }
 
 function metadata<T>(ctx: NetworkContext, use: (db: MemeshDatabase) => T): T {
-  const db = openNetworkStore(networkMetadataPath(ctx.dataDir), { metadataOnly: true });
+  const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
   try { return use(db); } finally { db.close(); }
 }
 

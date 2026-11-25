@@ -52,13 +52,6 @@ describe('every declared hook states its own budget', () => {
     expect(untimed, 'a hook with no timeout can hold up the user for the harness default').toEqual([]);
   });
 
-  it('keeps Codex SessionEnd within its host timeout ceiling', () => {
-    const sessionEnd = declaredHooks().filter((hook) => hook.event === 'SessionEnd');
-    expect(sessionEnd.length, 'fixture: SessionEnd is not declared').toBeGreaterThan(0);
-    for (const hook of sessionEnd) {
-      expect(hook.timeout, 'Codex clamps SessionEnd hooks above 3 seconds').toBeLessThanOrEqual(3);
-    }
-  });
 });
 
 describe('the SQLite lock wait fits inside the smallest budget', () => {
