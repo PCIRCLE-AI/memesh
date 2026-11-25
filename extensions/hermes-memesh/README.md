@@ -4,9 +4,19 @@ Local-first knowledge-graph memory for Hermes Agent, backed by
 [MeMesh](https://github.com/PCIRCLE-AI/memesh) (`memesh serve`, HTTP API,
 default `http://localhost:3737`).
 
-## Codex and Claude Code collaboration
+## Session messages
 
-MeMesh also lets Codex and Claude Code sessions exchange tasks, questions, reviews, and results through its local messaging channel. Claude Channel provides live delivery into a running Claude session; eligible Codex CLI sessions receive a native notice and fetch the message body. See the [collaboration setup](../../README.md#let-codex-and-claude-code-collaborate). Both hosts need the same local MeMesh instance and project; stopped sessions are not automatically resumed. This Hermes memory provider does not register Hermes as a messaging recipient.
+Each Hermes session registers as a MeMesh conversation. Use `memesh_message`
+to discover conversations, send a task/question/review/result, read a message,
+or check its status. Reply with `reply_to` set to the received message ID.
+Other local clients use the same MeMesh data directory; network members can
+address a conversation as `<id>@<machine>`.
+
+Pending messages appear in full before the next turn and remain queued until
+read or replied to. They are untrusted data, not instructions or permission.
+The provider does not wake an idle Hermes session. Enable Hermes's `memory`
+toolset so the provider's tools are available. See the
+[collaboration setup](../../README.md#let-codex-and-claude-code-collaborate).
 
 ## Setup
 
@@ -52,14 +62,16 @@ require a bearer token when bound to `localhost`.
   Hermes's unfiled captures remain eligible. A session switch invalidates the
   cache. Missing CLI, failures and timeouts skip injection with a log warning.
   Content delivered during this provider process is deduplicated per session;
-  opening titles do not mark content as read.
+  opening titles do not mark content as read. Pending messages have a separate
+  8,000-byte budget, contain whole envelopes, and repeat until read or replied to.
 - `sync_turn()`: sends every completed primary-agent turn to `memesh hermes
   capture-turn` in a background thread. Each nonempty side becomes a separate
   `conversation` memory in full, after secret masking, with `platform:hermes`,
   `session:<id>` and `role:user` / `role:assistant` tags. No keyword classifier
   or 2,000-character text cap is used. The prefetched recall block is removed
-  before the user text is stored. Non-primary agent contexts remain excluded.
-- Tools: `memesh_remember`, `memesh_recall`, `memesh_forget` remain available.
+  before the user text is stored. Received message context and quoted message
+  text are excluded from new memories. Non-primary agent contexts remain excluded.
+- Tools: `memesh_remember`, `memesh_recall`, `memesh_forget`, and `memesh_message`.
   `why` is optional for decisions; those without it are stored and labelled
   "no reason recorded".
 - `on_pre_compress()` writes nothing. `on_session_end()` only drains queued
@@ -69,7 +81,8 @@ require a bearer token when bound to `localhost`.
 - Automatic writes go through the `memesh` CLI (payload on stdin), so they
   are stamped `metadata.provenance.source_host: "hermes"`. The HTTP API
   stamps everything it writes `http`. Automatic recall also uses the CLI;
-  explicit tools use HTTP. The CLI and `memesh serve` must use the same database —
+  explicit memory tools use HTTP and messages use the CLI. The CLI and
+  `memesh serve` must use the same database —
   the default when both run as the same user on the same machine. If
   `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
   unit file, give the Hermes process the same values.
@@ -90,6 +103,7 @@ require a bearer token when bound to `localhost`.
 Automatic recall is controlled by `promptRecall`. Turning `autoCapture` off
 stops automatic storage but leaves recall available; turn `promptRecall` off
 separately to disable automatic recall.
+Messages are independent of both memory settings.
 After validating the session and input, `capture-turn` checks the effective
 auto-capture setting before opening the database. When off it returns
 `outcome: "skipped"` with reason `"auto-capture is turned off"`, which the provider

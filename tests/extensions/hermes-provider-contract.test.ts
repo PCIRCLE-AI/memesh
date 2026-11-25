@@ -131,8 +131,18 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(queue.explicit_session_prefetch).toBe('new:explicit-new');
   });
 
+  it('invalidates cached inbox context after a read or a reply', () => {
+    expect(queue.read_invalidates_prefetch).toEqual([1, null, null]);
+    expect(queue.reply_invalidates_prefetch).toEqual([2, null, null]);
+  });
+
   it('skips unavailable, failed, malformed, oversized or timed-out automatic recall', () => {
     expect(queue.recall_failures).toEqual(Array(7).fill(''));
+  });
+
+  it('keeps readable memory and reports an unavailable inbox separately', () => {
+    expect(queue.recall_without_inbox).toEqual({ text: 'memory remains readable', ids: [7] });
+    expect(queue.inbox_failure_warnings).toBe(1);
   });
 
   it('non-primary skips and non-object CLI output leave a log line (F5)', () => {
@@ -153,6 +163,16 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     return JSON.parse(r.stdout) as T[];
   }
 
+  function queryMessages<T>(sql: string, ...params: unknown[]): T[] {
+    const r = spawnSync('node', ['-e', `
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(process.argv[1], { readOnly: true });
+      console.log(JSON.stringify(db.prepare(process.argv[2]).all(...JSON.parse(process.argv[3]))));
+    `, path.join(home, '.memesh', 'messages.db'), sql, JSON.stringify(params)], { encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(r.stderr);
+    return JSON.parse(r.stdout) as T[];
+  }
+
   it('is available once memesh is on PATH, and the system prompt block tells the model to save by default', () => {
     expect(result.available).toBe(true);
     expect(result.system_prompt_block).toContain('MeMesh auto-recalls relevant memory each turn');
@@ -161,12 +181,31 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(result.system_prompt_block).not.toMatch(/only exception|not to save|current_turn/);
   });
 
+  it('registers the long-lived Hermes SDK session and exposes only the canonical four message actions', () => {
+    expect(result.message_discover.conversations).toContainEqual(expect.objectContaining({ address: 'contract-session', host: 'hermes' }));
+    const rows = queryMessages<{ id: string; host: string; pid: number }>('SELECT id,host,pid FROM conversations WHERE id=?', 'contract-session');
+    expect(rows).toEqual([{ id: 'contract-session', host: 'hermes', pid: result.provider_pid }]);
+    expect(queryMessages<{ id: string }>('SELECT id FROM conversations WHERE id IN (?,?) ORDER BY id', 'switched-session', 'kwargs-session'))
+      .toEqual([{ id: 'kwargs-session' }, { id: 'switched-session' }]);
+    const schema = result.tool_schemas.find((entry: { name: string }) => entry.name === 'memesh_message');
+    expect(schema.parameters.oneOf).toHaveLength(4);
+    expect(schema.parameters.oneOf.map((branch: { properties: { action: { const: string } } }) => branch.properties.action.const))
+      .toEqual(['discover', 'send', 'read', 'status']);
+    expect(schema.parameters.oneOf.every((branch: { additionalProperties: boolean }) => branch.additionalProperties === false)).toBe(true);
+  });
+
   it('explicit tools round-trip the HTTP envelope (remember, recall, forget)', () => {
     expect(result.remember.success).toBe(true);
     expect(result.recall_tool.success).toBe(true);
     expect(Array.isArray(result.recall_tool.data.entities)).toBe(true);
     expect(result.recall_tool.data.entities.map((e: { name: string }) => e.name)).toContain('contract-fact');
     expect(result.forget.success).toBe(true);
+  });
+
+  it('returns the actual message rejection reason to the model', () => {
+    expect(result.message_rejected.success).toBe(false);
+    expect(result.message_rejected.error).toContain('unknown_recipient');
+    expect(result.message_rejected.error).toContain('contract-session');
   });
 
   it('a decision without a reason is stored; a later call with one adds the reason', () => {

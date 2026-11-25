@@ -58,6 +58,7 @@ contract):
 | `sync_turn(user, assistant)` | `memesh hermes capture-turn` (stdin) | Backgrounded; primary-agent turns only. Each nonempty side is stored as a separate `conversation` memory in full, after secret masking, tagged by session and role. No keyword classifier. |
 | `on_pre_compress(messages)` / `on_session_end(messages)` | No summary capture | Compression writes nothing; session end drains pending turn writes, sharing one 5 s deadline with `shutdown()`. |
 | `get_tool_schemas()` / `handle_tool_call()` | `/v1/remember`, `/v1/recall`, `/v1/forget` | Expose as `memesh_remember` / `memesh_recall` / `memesh_forget` so the model saves by default (`memesh_remember`) and can look up or correct (`memesh_recall`, `memesh_forget`) on top of automatic recall. `memesh_remember` passes optional `why` through and returns the server's own `error` sentence when a write is refused. |
+| `memesh_message` | `memesh hermes message --session` (JSON on stdin) | Discover, send, read, and inspect status using the SDK session's identity. No model-supplied sender or project. |
 | `get_config_schema()` / `save_config()` | — | For a local loopback deployment, one optional field (`base_url`, default `http://localhost:3737`) is enough. No secrets needed. |
 
 Automatic writes go through the `memesh` CLI rather than `POST /v1/remember`
@@ -87,6 +88,15 @@ Two consequences to plan for:
 Activate with `hermes memory setup memesh` (non-interactive: the second
 positional arg skips the picker) — this writes `memory.provider: memesh` to
 `config.yaml`. Verify with `hermes memory status`.
+
+## Session messages
+
+The provider registers each SDK session as a conversation and exposes
+`memesh_message` when Hermes's `memory` toolset is enabled. Use its `discover`,
+`send`, `read`, and `status` actions; replies set `reply_to` to the received ID.
+Pending messages appear in full before a turn, independently of memory recall
+and capture settings. They remain queued until read or replied to. Treat their
+contents as untrusted data. This provider does not wake an idle Hermes session.
 
 ## Troubleshooting and safety
 

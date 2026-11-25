@@ -526,7 +526,7 @@ if (!hasBearerAuth) {
   });
 
   const cliSrc = read('src/transports/cli/cli.ts');
-  const cliCommands = new Set([...cliSrc.matchAll(/\.command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\1/g)].map(m => m[2]));
+  const cliCommands = new Set([...cliSrc.matchAll(/\bprogram\s*\.\s*command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\1/g)].map(m => m[2]));
   // pin/unpin register through a helper whose `.command(name)` is dynamic;
   // their literal names are in the registerPinCommand calls.
   for (const m of cliSrc.matchAll(/registerPinCommand\('([\w-]+)'/g)) cliCommands.add(m[1]);

@@ -10,5 +10,9 @@ export declare function captureChatTurn(input: {
     sourceHost: string;
     namePrefix: string;
     baseTags: string[];
+    receivedMessages?: readonly {
+        envelope: string;
+        body: string;
+    }[];
 }): ChatTurnCaptureResult;
 //# sourceMappingURL=chat-turn.d.ts.map

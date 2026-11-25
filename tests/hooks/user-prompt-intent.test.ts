@@ -182,6 +182,7 @@ describe('Feature: User Prompt Intent Hook', () => {
         const source = new DatabaseSync(messagePath());
         try { source.prepare('UPDATE messages SET recipient_machine=? WHERE id=?').run('other-machine', message.id); }
         finally { source.close(); }
+        message.recipient_machine = 'other-machine';
       }
       const prompt = renderConversationMessage(message);
       expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));

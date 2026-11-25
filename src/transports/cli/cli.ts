@@ -40,11 +40,13 @@ import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
 import { executeConversationMessageAction } from '../conversation-messaging.js';
+import { ConversationMessages, renderConversationMessage } from '../../core/conversation-messages.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
 import { exportSigningKey, signExport, verifyExport } from '../../core/export-signature.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
 import { belongsToAnotherUser, databaseFiles, isWritable, shellQuote } from '../../core/file-mode.js';
 import { registerNetworkCommand } from '../../network/command.js';
+import { bootstrapNetworkBridge } from '../../network/auto-start.js';
 import { ZodError } from 'zod';
 
 /** What the kg previews print when the database cannot be opened read-only. */
@@ -3100,6 +3102,19 @@ async function hermesInput(session: unknown): Promise<Record<string, unknown>> {
 
 const HERMES_BASE_TAGS = ['platform:hermes'];
 
+function bootstrapHermesNetworkBridge(): void {
+  const assetsDir = fileURLToPath(new URL('../../network/', import.meta.url));
+  const cliEntry = process.argv[1] ?? fileURLToPath(import.meta.url);
+  // This is deliberately detached from the action: an unavailable bridge must
+  // never make a local message action or memory prefetch unavailable.
+  void bootstrapNetworkBridge({
+    dataDir: path.resolve(getMemeshDirFromDbPath()), dbPath: getDbPath(),
+    bridgeEntry: path.join(assetsDir, 'bridge.js'), assetsDir,
+  }, cliEntry).catch(error => {
+    console.error(`MeMesh Hermes network bridge bootstrap failed: ${cliErrorText(error)}`);
+  });
+}
+
 const hermesCmd = program
   .command('hermes')
   .description('The Hermes Agent memory plugin: install it, recall context and capture turns (JSON on stdin and stdout)');
@@ -3118,9 +3133,27 @@ hermesCmd
       console.error('Error: exclude must be an array of positive memory IDs');
       process.exit(1);
     }
+    if (body.messages !== undefined && typeof body.messages !== 'boolean') {
+      console.error('Error: messages must be a boolean');
+      process.exit(1);
+    }
+    const inbox: { messages?: string; messages_error?: string } = {};
+    if (body.messages === true) {
+      inbox.messages = '';
+      try {
+        const store = new ConversationMessages();
+        try {
+          store.register({ id: opts.session, host: 'hermes', machine: store.machine, pid: process.ppid, wake: {} });
+          inbox.messages = store.hookBatch(opts.session).text;
+        } finally { store.close(); }
+      } catch (error) {
+        // Inbox registration needs writes; existing memory recall can still be read-only.
+        inbox.messages_error = cliErrorText(error);
+      }
+    }
     const config = readConfig();
     if (config.promptRecall === false || !fs.existsSync(getDbPath())) {
-      console.log(JSON.stringify({ text: '', ids: [] }));
+      console.log(JSON.stringify({ text: '', ids: [], ...inbox }));
       return;
     }
     const { openReadOnlyForPreview } = await import('../../core/project-tags.js');
@@ -3134,9 +3167,30 @@ hermesCmd
         project: null, platform: 'hermes', excludeConversationSession: opts.session,
         exclude: new Set(body.exclude as number[] | undefined),
       });
-      console.log(JSON.stringify({ text, ids }));
+      console.log(JSON.stringify({ text, ids, ...inbox }));
     } finally {
       db.close();
+    }
+  });
+
+hermesCmd
+  .command('message')
+  .description('Run one Hermes conversation-message action (JSON on stdin and stdout)')
+  .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
+  .action(async (opts) => {
+    const body = await hermesInput(opts.session);
+    try {
+      const store = new ConversationMessages();
+      try {
+        // This process is short-lived; its Python SDK parent is the host whose
+        // registration must remain discoverable between tool calls.
+        store.register({ id: opts.session, host: 'hermes', machine: store.machine, pid: process.ppid, wake: {} });
+      } finally { store.close(); }
+      bootstrapHermesNetworkBridge();
+      await runConversationMessageAction(body, { session: opts.session });
+    } catch (error) {
+      console.error(`Error: ${cliErrorText(error)}`);
+      process.exitCode = 1;
     }
   });
 
@@ -3205,6 +3259,23 @@ hermesCmd
       return;
     }
     await withDatabase(() => {
+      const messagePath = path.join(getMemeshDirFromDbPath(), 'messages.db');
+      let receivedMessages: Array<{ envelope: string; body: string }> = [];
+      if (fs.existsSync(messagePath)) {
+        try {
+          const messages = new ConversationMessages();
+          try {
+            receivedMessages = messages.status(opts.session)
+              .filter(message => message.recipient === opts.session && message.recipient_machine === messages.machine
+                && message.state !== 'rejected' && typeof message.body === 'string')
+              .map(message => ({ envelope: renderConversationMessage(message), body: message.body! }));
+          } finally { messages.close(); }
+        } catch (error) {
+          // A pre-inbox Hermes session is still a valid capture caller. Other
+          // message-store failures must not silently turn injected data into user text.
+          if (!(error instanceof Error) || error.message !== 'Caller conversation is not registered') throw error;
+        }
+      }
       const result = captureChatTurn({
         sessionId: opts.session,
         userText: body.user as string,
@@ -3212,6 +3283,7 @@ hermesCmd
         sourceHost: 'hermes',
         namePrefix: 'hermes-turn',
         baseTags: HERMES_BASE_TAGS,
+        receivedMessages,
       });
       console.log(JSON.stringify(result));
     });

@@ -1,6 +1,11 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
+    "C1 tests/cli/hermes-message.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Real CLI success exits are paired with exact message bodies, queued states, session registration and nonempty recalled details. Empty inbox and foreign-read assertions verify isolation; removing pending text makes the test fail.",
+      "triaged": "2026-11-26"
+    },
     "C4 .github/workflows/ci.yml#82b86371": {
       "class": "SAFE-CAPTURED-EXIT",
       "reason": "The doctor exit code is captured and rejected before this grep; the grep is an additional content assertion, not the verdict owner.",
@@ -20,6 +25,11 @@
       "class": "SAFE-PIPEFAIL",
       "reason": "The script enables pipefail, so grep cannot hide a failed feedback draft command.",
       "triaged": "2026-09-06 provider-vector retirement audit; re-keyed 2026-10-05 160->165 (--skip-suite flag lines added above; statement byte-identical)"
+    },
+    "C5 src/core/chat-turn.ts#504be651": {
+      "class": "SAFE-OPTIONAL-COLLECTION",
+      "reason": "receivedMessages is an optional caller-supplied quote list; absence means no message context was supplied. The CLI resolves inbox provenance before capture and propagates message-store failures rather than converting them to an empty list.",
+      "triaged": "2026-11-26"
     },
     "C5 src/core/demo.ts#dc78e970": {
       "class": "SAFE-OPTIONAL-COLLECTION",

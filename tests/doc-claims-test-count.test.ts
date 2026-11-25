@@ -54,13 +54,13 @@ describe('the READMEs-state-no-test-count rule', () => {
       const originalCli = fs.readFileSync(cliPath, 'utf8');
       const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
 
-      fs.appendFileSync(readmePath, '\n`memesh message discover`\n`memesh dream show`\n`memesh dream accept`\n`memesh delegation verify`\n');
+      fs.appendFileSync(readmePath, '\n`memesh message discover`\n`memesh hermes message`\n`memesh dream show`\n`memesh dream accept`\n`memesh delegation verify`\n');
       fs.appendFileSync(agentsPath, '\n`memesh message discover`\n');
       const baseline = run();
       expect([0, 1]).toContain(baseline.status);
       expect(baseline.stdout, `${baseline.stdout}\n${baseline.stderr}`).toContain('`memesh <subcommand>` mentions in agent docs all resolve');
       if (baseline.status === 1) expect(baseline.stderr).toContain('documents name nested subcommands that do not exist');
-      for (const valid of ['memesh message discover', 'memesh dream show', 'memesh dream accept', 'memesh delegation verify']) {
+      for (const valid of ['memesh message discover', 'memesh hermes message', 'memesh dream show', 'memesh dream accept', 'memesh delegation verify']) {
         expect(baseline.stderr).not.toContain(`README.md -> ${valid}`);
       }
 

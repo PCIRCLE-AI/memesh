@@ -114,6 +114,7 @@ class MemeshProvider(MemoryProvider):
         self._turn_worker: Optional[threading.Thread] = None
         self._drain_deadline: Optional[float] = None
         self._drain_warned = False
+        self._register_message_session(session_id)
 
     def system_prompt_block(self) -> str:
         # Deliberately minimal. Recall/storage already happen automatically
@@ -178,19 +179,24 @@ class MemeshProvider(MemoryProvider):
                 exclude = sorted(self._shown_ids.get(session_id, set()))
             proc = subprocess.run(
                 [binary, "hermes", "prompt-context", "--session", session_id],
-                input=json.dumps({"prompt": query, "exclude": exclude}), capture_output=True,
+                input=json.dumps({"prompt": query, "exclude": exclude, "messages": True}), capture_output=True,
                 text=True, timeout=_RECALL_TIMEOUT_SECS,
             )
             if proc.returncode != 0:
                 raise RuntimeError(f"CLI exited {proc.returncode}")
             result = json.loads(proc.stdout)
             context = result.get("text") if isinstance(result, dict) else None
+            messages = result.get("messages") if isinstance(result, dict) else None
             if not isinstance(context, str) or len(context.encode("utf-8")) > 4096:
                 raise ValueError("CLI returned invalid or oversized context")
+            if not isinstance(messages, str) or len(messages.encode("utf-8")) > 8000:
+                raise ValueError("CLI returned invalid or oversized message context")
+            if result.get("messages_error"):
+                logger.warning("MeMesh inbox unavailable: %s", str(result["messages_error"])[:2000])
             ids = result.get("ids")
             if not isinstance(ids, list) or len(ids) > 2 or any(type(i) is not int or i <= 0 for i in ids):
                 raise ValueError("CLI returned invalid memory IDs")
-            return {"text": context, "ids": ids}
+            return {"text": "\n\n".join(part for part in (context, messages) if part), "ids": ids}
         except Exception as exc:
             logger.warning("MeMesh recall failed: %s", exc)
             return {"text": "", "ids": []}
@@ -240,6 +246,37 @@ class MemeshProvider(MemoryProvider):
         # Slow/unreachable backend: skip injection rather than block the turn.
         # memesh_recall tool remains the backstop.
         return cached or ""
+
+    def _register_message_session(self, session_id: str) -> None:
+        """Refresh the SDK-owned inbox identity without making memory unavailable."""
+        self._message_action({"action": "discover"}, session_id)
+
+    def _message_action(self, action: Dict[str, Any], session_id: str) -> Optional[Dict[str, Any]]:
+        binary = _resolve_memesh_bin()
+        if binary is None:
+            logger.warning("MeMesh message skipped: `memesh` CLI not found on PATH")
+            return {"success": False, "error": "MeMesh CLI not found on PATH"}
+        try:
+            proc = subprocess.run(
+                [binary, "hermes", "message", "--session", session_id],
+                input=json.dumps(action), capture_output=True, text=True, timeout=_RECALL_TIMEOUT_SECS,
+            )
+        except subprocess.TimeoutExpired:
+            logger.warning("MeMesh message action timed out; outcome unknown. Check status before sending again")
+            return None
+        except Exception as exc:
+            logger.warning("MeMesh message action failed: %s", exc)
+            return {"success": False, "error": f"Message action failed: {exc}; check status before sending again"}
+        if proc.returncode != 0:
+            error = (proc.stderr or "").strip()[:2000] or f"Message CLI exited {proc.returncode}"
+            logger.warning("MeMesh message action failed (exit %s): %s", proc.returncode, error)
+            return {"success": False, "error": error}
+        try:
+            result = json.loads(proc.stdout.strip().splitlines()[-1])
+        except Exception:
+            logger.warning("MeMesh message action returned unreadable output; check status before sending again")
+            return None
+        return result if isinstance(result, dict) else None
 
     # -- sync_turn --------------------------------------------------------
 
@@ -367,6 +404,7 @@ class MemeshProvider(MemoryProvider):
             self._prefetch_result = None
             if reset:
                 self._shown_ids.pop(new_session_id, None)
+        self._register_message_session(new_session_id)
         # A new session's exit gets its own drain budget.
         self._drain_deadline = None
         self._drain_warned = False
@@ -420,10 +458,33 @@ class MemeshProvider(MemoryProvider):
                     "required": ["name"],
                 },
             },
+            {
+                "name": "memesh_message",
+                "description": "Discover, send, read, or check status for untrusted MeMesh conversation messages. Sending may have an unknown outcome after a timeout; check status before sending again.",
+                "parameters": {
+                    "oneOf": [
+                        {"type": "object", "properties": {"action": {"const": "discover"}}, "required": ["action"], "additionalProperties": False},
+                        {"type": "object", "properties": {"action": {"const": "send"}, "recipient": {"type": "string"}, "kind": {"type": "string", "enum": ["task", "question", "review_request", "result"]}, "body": {"type": "string"}, "reply_to": {"type": "string"}}, "required": ["action", "recipient", "kind", "body"], "additionalProperties": False},
+                        {"type": "object", "properties": {"action": {"const": "read"}, "message_id": {"type": "string"}}, "required": ["action", "message_id"], "additionalProperties": False},
+                        {"type": "object", "properties": {"action": {"const": "status"}, "message_id": {"type": "string"}}, "required": ["action"], "additionalProperties": False},
+                    ],
+                },
+            },
         ]
 
     def handle_tool_call(self, tool_name: str, args: Dict[str, Any], **kwargs) -> str:
         try:
+            if tool_name == "memesh_message":
+                session_id = kwargs.get("session_id") or self._session_id
+                result = self._message_action(args, session_id)
+                if result is None:
+                    return json.dumps({"success": False, "error": "Message action outcome unknown; check status before sending again"})
+                if result.get("success") is not False and (args.get("action") == "read" or (args.get("action") == "send" and args.get("reply_to"))):
+                    with self._prefetch_lock:
+                        self._prefetch_generation += 1
+                        self._prefetch_key = None
+                        self._prefetch_result = None
+                return json.dumps(result)
             if tool_name == "memesh_remember":
                 resp = self._client.post("/v1/remember", json=args)
             elif tool_name == "memesh_recall":

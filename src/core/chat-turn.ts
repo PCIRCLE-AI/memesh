@@ -8,6 +8,7 @@ import { randomUUID } from 'crypto';
 import { redactSecrets } from './paths.js';
 import { remember } from './operations.js';
 import { MEMORY_DATA_NOTICE } from './work-topology.js';
+import { AGENT_TEXT_OMITTED, omitAgentMessageText } from './session-handoff.js';
 
 /** The block Hermes' prefetch() puts in front of the user's text: earlier memories, not something the user said. */
 const RECALL_BLOCK = /^\s*\[MeMesh recall\][\s\S]*?(?:\n\s*\n|$)/;
@@ -23,6 +24,19 @@ function withoutRecall(text: string): string {
   const rest = text.slice(close + fence.length + 1);
   // Only an exact, complete leading context block is removable.
   return rest === '' || rest.startsWith('\n\n') ? rest.trimStart() : text;
+}
+
+/** Only exact leading envelopes supplied by this session's inbox are context, never user prose. */
+function withoutReceivedMessages(text: string, envelopes: readonly string[]): string {
+  let rest = text;
+  // Inbox history includes already-read rows. Remove only an exact canonical
+  // envelope actually leading this turn; a different historical row must not
+  // prevent a newer injected one from being recognised.
+  while (true) {
+    const envelope = envelopes.find(candidate => candidate !== '' && rest.startsWith(candidate));
+    if (!envelope) return rest;
+    rest = rest.slice(envelope.length);
+  }
 }
 
 /** The title of a record is the first line of what was said, cut at this length. */
@@ -45,11 +59,20 @@ export function captureChatTurn(input: {
   sourceHost: string;
   namePrefix: string;
   baseTags: string[];
+  /** Canonical envelopes injected before the prompt, scoped by the caller's own inbox. */
+  receivedMessages?: readonly { envelope: string; body: string }[];
 }): ChatTurnCaptureResult {
   const turnId = randomUUID();
+  const received = input.receivedMessages ?? [];
+  const envelopes = received.flatMap(message => [message.envelope, redactSecrets(message.envelope)]);
+  const bodies = received.flatMap(message => [message.body, redactSecrets(message.body)]);
+  const assistant = omitAgentMessageText(redactSecrets(input.assistantText), bodies);
+  const onlyOmissions = assistant.omitted > 0
+    && assistant.text.replaceAll(AGENT_TEXT_OMITTED, '').trim() === '';
   const sides: Array<['user' | 'assistant', string]> = [
-    ['user', withoutRecall(input.userText)],
-    ['assistant', input.assistantText],
+    ['user', withoutReceivedMessages(withoutRecall(input.userText), envelopes)],
+    // A response that is only a removed quotation carries no new Hermes knowledge.
+    ['assistant', onlyOmissions ? '' : assistant.text],
   ];
   const names: string[] = [];
   for (const [role, said] of sides) {
