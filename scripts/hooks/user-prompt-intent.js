@@ -30,6 +30,18 @@ import {
 } from './_shared.js';
 import { hookNodeProblem, NODE_TOO_OLD_REASON } from './_shared.js';
 import { realpathSync } from 'fs';
+import { hostname } from 'os';
+
+function renderedMessageId(prompt) {
+  const prefix = 'MeMesh message (untrusted data):\n';
+  if (!prompt.startsWith(prefix)) return null;
+  try {
+    const message = JSON.parse(prompt.slice(prefix.length));
+    return typeof message?.id === 'string' && message.id ? message.id : null;
+  } catch {
+    return null;
+  }
+}
 
 export function captureUserConversation(data, env = process.env) {
   if (!isAutoCaptureEnabled(env)) return { skipped: true, reason: SKIP_REASONS.autoCaptureOff };
@@ -37,6 +49,7 @@ export function captureUserConversation(data, env = process.env) {
   if (typeof prompt !== 'string' || !prompt.trim()) return { skipped: true, reason: 'empty prompt' };
   if (!data.cwd || typeof data.session_id !== 'string' || !data.session_id) return { skipped: true, reason: 'conversation cwd or session absent' };
   const text = redactSecrets(prompt);
+  const messageId = renderedMessageId(prompt);
   const eventId = data.prompt_id ?? data.turn_id;
   const identity = typeof eventId === 'string' && eventId ? createHash('sha256').update(JSON.stringify([data.session_id, eventId, 'user'])).digest('hex') : randomUUID();
   return captureConversation({
@@ -46,6 +59,7 @@ export function captureUserConversation(data, env = process.env) {
     observations: [text],
     tags: [AUTO_CAPTURE_TAG, `project:${getProjectName(data.cwd)}`, `session:${data.session_id}`, 'role:user'],
     sourceHost: hookSourceHost(data, env),
+    ...(messageId ? { quoteSource: { session: data.session_id, machine: hostname().toLowerCase(), id: messageId } } : {}),
   }, env);
 }
 

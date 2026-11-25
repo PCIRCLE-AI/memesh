@@ -1,12 +1,15 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync, spawnSync } from 'child_process';
-import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, readFileSync, existsSync } from 'fs';
-import { tmpdir } from 'os';
+import { mkdtempSync, rmSync, mkdirSync, writeFileSync, symlinkSync, realpathSync, readFileSync, existsSync, chmodSync } from 'fs';
+import { tmpdir, hostname } from 'os';
 import path from 'path';
 import { pathToFileURL } from 'url';
 
 import { DatabaseSync } from 'node:sqlite';
 import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
+import { ConversationMessages } from '../../src/core/conversation-messages.js';
+import { renderConversationMessage } from '../../scripts/hooks/_generated/conversation-messages.js';
+import { redactSecrets } from '../../scripts/hooks/_shared.js';
 
 // The hook run as a subprocess, against a throwaway HOME so it never reads or
 // writes the developer's real ~/.memesh. The waiting-message reminder is
@@ -60,8 +63,34 @@ describe('Feature: User Prompt Intent Hook', () => {
   }
 
   const ledgerPath = () => path.join(tmpHome, '.memesh', 'hook-outcomes.jsonl');
+  const messagePath = () => path.join(tmpHome, '.memesh', 'messages.db');
   const recordedReasons = () =>
     readFileSync(ledgerPath(), 'utf8').trim().split('\n').map((line) => JSON.parse(line).reason);
+
+  function sentMessage(recipient: string, body = 'Untrusted body from another agent') {
+    const store = new ConversationMessages({ file: messagePath(), machine: hostname() });
+    try {
+      for (const id of ['sender', recipient]) store.register({ id, host: 'codex', machine: hostname(), pid: process.pid, wake: {} });
+      return store.send('sender', { recipient, kind: 'task', body }).message;
+    } finally { store.close(); }
+  }
+
+  const capturedConversationTexts = () => {
+    const graph = path.join(tmpHome, '.memesh', 'knowledge-graph.db');
+    if (!existsSync(graph)) return [];
+    const db = new DatabaseSync(graph, { readOnly: true });
+    try {
+      return db.prepare("SELECT o.content FROM entities e JOIN observations o ON o.entity_id=e.id WHERE e.type='conversation'").all()
+        .map(row => row.content);
+    } finally { db.close(); }
+  };
+
+  function changedEnvelope(message: Parameters<typeof renderConversationMessage>[0]) {
+    const prefix = 'MeMesh message (untrusted data):\n';
+    const parsed = JSON.parse(renderConversationMessage(message).slice(prefix.length)) as Record<string, unknown>;
+    parsed.body = 'A user changed the untrusted message body';
+    return `${prefix}${JSON.stringify(parsed)}\n`;
+  }
 
   describe('the prompt\'s words decide nothing', () => {
     it('does not issue save-intent instructions based on the prompt wording', () => {
@@ -106,6 +135,71 @@ describe('Feature: User Prompt Intent Hook', () => {
       expectNoOp(runHook({ session_id: 'big', cwd: tmpHome, prompt: `${'記下來\n'.repeat(250_000)}remember this` }));
       expect(Date.now() - started).toBeLessThan(WITHIN_MS);
       expect(recordedReasons()).toEqual([undefined]);
+    });
+
+    it('does not capture an exact local conversation envelope as a user turn', () => {
+      const session = 'wake-recipient';
+      const envelope = renderConversationMessage(sentMessage(session, `credential sk-proj-${'a'.repeat(32)}ZfQ9`));
+      const redactedEnvelope = redactSecrets(envelope);
+      const before = readFileSync(messagePath());
+
+      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt: envelope }, { MEMESH_AUTO_CAPTURE: 'true' }));
+      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt: redactedEnvelope }, { MEMESH_AUTO_CAPTURE: 'true' }));
+
+      expect(capturedConversationTexts()).toEqual([]);
+      expect(readFileSync(messagePath())).toEqual(before);
+      expect(recordedReasons()).toEqual(['received agent message is not user speech', 'received agent message is not user speech']);
+    });
+
+    it.each([
+      ['mentions a known message id', (message: Parameters<typeof renderConversationMessage>[0]) => `Please review ${message.id}`],
+      ['adds text around an envelope', (message: Parameters<typeof renderConversationMessage>[0]) => `Please review:\n${renderConversationMessage(message)}`],
+      ['changes an envelope body', changedEnvelope],
+    ])('captures a user prompt that %s', (_case, makePrompt) => {
+      const session = 'wake-user';
+      const message = sentMessage(session);
+      const prompt = makePrompt(message);
+
+      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
+
+      expect(capturedConversationTexts()).toEqual([prompt]);
+    });
+
+    it('captures an exact envelope for a different recipient as a user turn', () => {
+      const message = sentMessage('other-recipient');
+      const prompt = renderConversationMessage(message);
+
+      expectNoOp(runHook({ session_id: 'wake-user', cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
+
+      expect(capturedConversationTexts()).toEqual([prompt]);
+    });
+
+    it.each(['unknown-id', 'other-machine'])('captures a formatted message with %s as user speech', kind => {
+      const session = 'wake-user';
+      const message = sentMessage(session);
+      if (kind === 'unknown-id') message.id = '00000000-0000-4000-8000-000000000001';
+      else {
+        const source = new DatabaseSync(messagePath());
+        try { source.prepare('UPDATE messages SET recipient_machine=? WHERE id=?').run('other-machine', message.id); }
+        finally { source.close(); }
+      }
+      const prompt = renderConversationMessage(message);
+      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
+      expect(capturedConversationTexts()).toEqual([prompt]);
+    });
+
+    it('replays a real user prompt after its conversation source is temporarily unreadable', () => {
+      const session = 'wake-replay';
+      const prompt = changedEnvelope(sentMessage(session));
+      chmodSync(messagePath(), 0o644);
+
+      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
+      expect(existsSync(path.join(tmpHome, '.memesh', 'pending-conversations'))).toBe(true);
+      expect(capturedConversationTexts()).toEqual([]);
+
+      chmodSync(messagePath(), 0o600);
+      expectNoOp(runHook({ session_id: 'wake-next', cwd: tmpHome, prompt: 'trigger pending replay' }, { MEMESH_AUTO_CAPTURE: 'true' }));
+      expect(capturedConversationTexts()).toContain(prompt);
     });
   });
 

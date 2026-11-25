@@ -5,6 +5,7 @@ import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, i
 import { dirname, join } from 'path';
 import { hostname } from 'os';
 import { AGENT_TEXT_OMITTED, omitAgentMessageText } from './_generated/session-handoff.js';
+import { renderConversationMessage } from './_generated/conversation-messages.js';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 // =============================================================================
@@ -718,10 +719,13 @@ function checkedConversationQuotes(event, env) {
   const { quoteSource, ...clean } = event;
   let fd, source;
   try {
+    const assistantReply = event.tags.includes('role:assistant');
+    const userPrompt = event.tags.includes('role:user');
     if (quoteSource.machine !== hostname().toLowerCase()
       || typeof quoteSource.session !== 'string' || !quoteSource.session
       || !event.tags.includes(`session:${quoteSource.session}`)
-      || !event.tags.includes('role:assistant') || !Number.isSafeInteger(event.capturedAt)) {
+      || (assistantReply === userPrompt) || !Number.isSafeInteger(event.capturedAt)
+      || (userPrompt && (typeof quoteSource.id !== 'string' || !quoteSource.id))) {
       throw new Error('invalid quote source identity');
     }
     const file = join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'messages.db');
@@ -757,6 +761,16 @@ function checkedConversationQuotes(event, env) {
     source.pragma(`busy_timeout = ${Math.min(HOOK_BUSY_TIMEOUT_MS, remaining)}`);
     const current = lstatSync(file);
     if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('quote source changed');
+    if (userPrompt) {
+      const message = source.prepare(`SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at
+        FROM messages WHERE id = ? AND recipient = ? AND recipient_machine = ? AND body IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=messages.id AND e.event='rejected')`)
+        .get(quoteSource.id, quoteSource.session, quoteSource.machine);
+      if (!message) return clean;
+      const rendered = renderConversationMessage(message);
+      const texts = [rendered, redactSecrets(rendered)];
+      return clean.observations.every(text => texts.includes(text)) ? null : clean;
+    }
     const bodies = source.prepare(`SELECT m.body FROM messages m
       WHERE m.recipient = ? AND m.recipient_machine = ? AND m.body IS NOT NULL
       AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='rejected')
@@ -837,7 +851,8 @@ export function captureConversation(event, env = process.env) {
   let writing = false;
   try {
     const checked = checkedConversationQuotes(safe, env);
-    if (!checked) return { skipped: true, reason: 'assistant reply contains only quoted agent text' };
+    if (!checked) return { skipped: true, reason: safe.tags.includes('role:user')
+      ? 'received agent message is not user speech' : 'assistant reply contains only quoted agent text' };
     ({ db } = openHookDb(env, { fts: true, conversation: true }));
     writing = true;
     return writeConversation(db, checked);
