@@ -143,6 +143,18 @@ function withFailureTrace<T>(action: () => T): T {
 }
 
 describe('Windows permission diagnostic projection', () => {
+  it('instruments the separate protection persist and reread phases', () => {
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue('{"ok":true}');
+    makeWindowsPathsPrivate([directory()]);
+    const encoded = (exec.mock.calls[0][1] as string[])[4];
+    const traced = traceScript(encoded);
+    expect(traced).not.toBeNull();
+    const script = Buffer.from(traced!, 'base64').toString('utf16le');
+    expect(script).toContain("Trace-Phase 'ps-acl-protect-set'");
+    expect(script).toContain("Trace-Phase 'ps-acl-protect-read-done'");
+  });
+
   it('keeps only bounded reason and ACL-shape fields', () => {
     expect(parseTraceLine('ps-reason-rights-changed 12')).toEqual({ phase: 'ps-reason-rights-changed', elapsedMs: 12 });
     expect(parseTraceLine('shape 12 expected,1,other,allow,-2147483648,3,0')).toEqual({ phase: 'ps-acl-shape', elapsedMs: 12, side: 'expected', total: 1, rules: [{ subject: 'other', type: 'allow', rights: -2147483648, inherit: 3, propagation: 0 }] });
@@ -199,7 +211,7 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
     try {
       const before = fixture(dir, 'read').rules.filter(rule => rule.type === 'Deny');
       expect(before.length).toBeGreaterThan(0);
-      expect(() => requirePrivateWritableDirectory(dir, 'messages must remain owner-private')).toThrow(/Cannot verify private Windows permissions/);
+      expect(() => withFailureTrace(() => requirePrivateWritableDirectory(dir, 'messages must remain owner-private'))).toThrow(/Cannot verify private Windows permissions/);
       expect(fixture(dir, 'read').rules.filter(rule => rule.type === 'Deny')).toEqual(before);
       expect(fs.readdirSync(dir)).toEqual([]);
     } finally { fixture(dir, 'restore'); }
@@ -219,12 +231,20 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
   });
 
   it('protects a fresh inherited message-store directory', () => {
-    const dir = directory();
+    const parent = directory();
+    fixture(parent, 'public');
+    const dir = path.join(parent, 'inherited');
+    fs.mkdirSync(dir);
     let store: ConversationMessages | undefined;
     try {
+      const before = fixture(dir, 'read');
+      expect(before.protected).toBe(false);
+      expect(before.rules).toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
       withFailureTrace(() => {
         store = new ConversationMessages({ file: path.join(dir, 'messages.db') });
-        expect(fixture(dir, 'read').protected).toBe(true);
+        const acl = fixture(dir, 'read');
+        expect(acl.protected).toBe(true);
+        expect(acl.rules).not.toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
       });
     } finally { store?.close(); }
   });

@@ -33312,8 +33312,19 @@ try {
     $acl = Read-Acl $file
     Check-Acl $acl
     $owner = $acl.GetOwner($sidType).Value
-    $changed = -not $acl.AreAccessRulesProtected
-    if ($changed) { $acl.SetAccessRuleProtection($true, $true) }
+    $needsProtection = -not $acl.AreAccessRulesProtected
+    if ($needsProtection) {
+      $originalKeys = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+      $acl.SetAccessRuleProtection($true, $true)
+      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
+      else { [IO.File]::SetAccessControl($file, $acl) }
+      $acl = Read-Acl $file
+      Check-Acl $acl
+      if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
+      $protectedKeys = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+      if ($protectedKeys -ne $originalKeys) { throw 'rights changed' }
+    }
+    $changed = $false
     foreach ($rule in @($acl.GetAccessRules($true, $true, $sidType))) {
       if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) {
         $acl.RemoveAccessRuleSpecific($rule)
