@@ -38949,8 +38949,8 @@ function alive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error62) {
+    return error62.code === "EPERM";
   }
 }
 function privateSocket(socketPath) {

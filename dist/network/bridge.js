@@ -2063,8 +2063,8 @@ function alive(pid) {
   try {
     process.kill(pid, 0);
     return true;
-  } catch {
-    return false;
+  } catch (error) {
+    return error.code === "EPERM";
   }
 }
 function privateSocket(socketPath) {

@@ -40,6 +40,22 @@ describe('registered conversation wake', () => {
     expect(execFile).toHaveBeenCalledWith('codex', ['queue', '--thread', 'B', '--message', renderConversationMessage(message)],
       expect.objectContaining({ shell: false, timeout: 2000, killSignal: 'SIGKILL', maxBuffer: 16384 }), expect.any(Function));
   });
+  it.each([['EPERM', true], ['ESRCH', false], ['EINVAL', false]] as const)(
+    'treats signal-zero %s consistently with the conversation directory', async (code, exists) => {
+      const probe = vi.spyOn(process, 'kill').mockImplementation(() => {
+        throw Object.assign(new Error('process probe'), { code });
+      });
+      vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
+        (args.at(-1) as (error: Error | null) => void)(null);
+        return {} as ReturnType<typeof execFile>;
+      });
+      expect(await wakeConversationMessage(message, target)).toEqual(exists
+        ? { pushed: true, route: 'codex-queue' }
+        : { pushed: false, reason: 'unavailable' });
+      expect(probe).toHaveBeenCalledWith(target.pid, 0);
+      expect(execFile).toHaveBeenCalledTimes(exists ? 1 : 0);
+    },
+  );
   it.each(['exit', 'timeout', 'output cap'])('leaves %s failures unpushed', async reason => {
     vi.mocked(execFile).mockImplementation((...args: unknown[]) => {
       (args.at(-1) as (error: Error) => void)(new Error(reason));

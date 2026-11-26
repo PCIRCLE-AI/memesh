@@ -14,7 +14,11 @@ export type ConversationWakeResult =
 
 function alive(pid: number): boolean {
   if (!Number.isSafeInteger(pid) || pid <= 1) return false;
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try { process.kill(pid, 0); return true; }
+  catch (error) {
+    // Signal zero can report an existing process that this host cannot signal.
+    return (error as NodeJS.ErrnoException).code === 'EPERM';
+  }
 }
 
 function privateSocket(socketPath: string): fs.Stats {
