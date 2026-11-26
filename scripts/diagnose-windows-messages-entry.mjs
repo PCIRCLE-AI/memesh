@@ -46,9 +46,8 @@ function controlScript(kind) {
   let body;
   if (kind === 'literal') body = "$request = ConvertFrom-Json -InputObject '{\"value\":\"a\"}'";
   else if (kind === 'decode') body = `${open}\n  ${decode}\n  if ($json -ne '{"value":"a"}') { throw 'unexpected data' }\n  $request = [PSCustomObject]@{ value = 'a' }`;
-  else if (kind === 'automatic-input') body = "$frames = @($input)\n  if ($frames.Count -ne 1) { throw 'unexpected frame count' }\n  $frame = $frames[0]\n  " + decode + "\n  " + parsed;
-  else if (kind === 'input-object') body = `${open}\n  ${decode}\n  $request = ConvertFrom-Json -InputObject $json`;
-  else if (kind === 'dispose') body = `${open}\n  $reader.Dispose()\n  ${decode}\n  ${parsed}`;
+  else if (kind === 'core') body = "$request = [PSCustomObject]@{ value = (Write-Output 'a') }";
+  else if (kind === 'explicit-import') body = "$null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop\n  $request = ConvertFrom-Json -InputObject '{\"value\":\"a\"}'";
   else body = `${open}\n  ${decode}\n  ${parsed}`;
   return `$ErrorActionPreference = 'Stop'\ntry {\n  ${body}\n  if ($request.value -ne 'a') { throw 'unexpected value' }\n  [Console]::Out.Write('OK')\n} catch {\n  [Console]::Out.Write('ERR:' + $_.Exception.GetType().Name)\n  exit 1\n}`;
 }
@@ -57,8 +56,7 @@ function runControls() {
   if (process.platform !== 'win32') return;
   const cases = [
     ['A-literal-input-object', 'literal'], ['B-framed-dotnet-decode', 'decode'], ['C-framed-pipeline', 'pipeline'],
-    ['D-framed-input-object', 'input-object'], ['E-framed-dispose-reader', 'dispose'], ['F-framed-private-appdata', 'pipeline'], ['G-framed-system-modules', 'pipeline'],
-    ['H-framed-automatic-input', 'automatic-input'],
+    ['I-core-write-output', 'core'], ['J-literal-private-analysis-cache', 'literal'], ['K-literal-explicit-utility-import', 'explicit-import'],
   ];
   for (const [name, kind] of cases) {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-ps-control-'));
@@ -70,11 +68,10 @@ function runControls() {
         process.stdout.write(`${JSON.stringify({ case: name, exit: null, timeout: false, ms: 0, result: 'exception:SystemRootUnavailable' })}\n`);
         continue;
       }
-      if (name.startsWith('F-')) Object.assign(env, { APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local') });
-      if (name.startsWith('G-')) env.PSModulePath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+      if (name.startsWith('J-')) env.PSModuleAnalysisCachePath = path.join(home, 'ModuleAnalysisCache');
       const script = controlScript(kind);
       const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
-      const input = kind === 'literal' ? undefined : `${Buffer.from(JSON.stringify({ value: 'a' })).toString('base64')}\n`;
+      const input = ['literal', 'core', 'explicit-import'].includes(kind) ? undefined : `${Buffer.from(JSON.stringify({ value: 'a' })).toString('base64')}\n`;
       const started = Date.now();
       const result = childProcess.spawnSync(path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), args, { env, input, encoding: 'utf8', timeout: 2500, windowsHide: true });
       const timeout = result.error?.code === 'ETIMEDOUT';

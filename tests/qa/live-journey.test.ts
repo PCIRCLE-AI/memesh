@@ -1969,9 +1969,13 @@ describe('Codex proof turn configuration', () => {
         const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'codex-dir-'));
         let cleanupSafe = true;
         try {
+          const controlDir = withEnv ? dir : path.join(home, '.memesh');
+          // This server fixture does not need a detached update lookup during cleanup.
+          fs.mkdirSync(controlDir, { recursive: true, mode: 0o700 });
+          fs.writeFileSync(path.join(controlDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
           const env = {
             ...buildIsolatedSuiteEnv({ PATH: process.env.PATH ?? '' }, { runtimeHome: home }),
-            MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1',
+            MEMESH_AUTO_UPDATE: 'off',
             ...(withEnv ? { MEMESH_DIR: dir, MEMESH_DB_PATH: path.join(dir, 'k.db') } : {}),
           };
           const account = spawnSync(process.execPath, ['-e', "process.stdout.write(require('node:os').userInfo().homedir)"], { env, encoding: 'utf8' });

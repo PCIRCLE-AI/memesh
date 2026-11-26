@@ -101,6 +101,8 @@ it.skipIf(process.platform === 'win32')('refuses mismatched empty quote sidecars
   const message = store.send('sender', { recipient: 's1', kind: 'task', body: peer }).message;
   store.recordHookDelivery('s1', [message.id], 'UserPromptSubmit');
   store.close();
+  // SessionStart replays after repair; keep its detached update refresh out of this strict fixture cleanup.
+  fs.writeFileSync(path.join(home, '.memesh/config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
   expect(fs.statSync(file).mode & 0o777).toBe(0o600);
   for (const suffix of ['-wal', '-shm']) {
     expect(fs.existsSync(file + suffix)).toBe(false);
