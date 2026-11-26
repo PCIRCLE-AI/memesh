@@ -243,8 +243,8 @@
     },
     {
       "path": "scripts/hooks/_generated/windows-permissions.js",
-      "sha256": "2ea738e713c18a2c82077840d3683645d1659f2c68785dee13c966f95f7fe850",
-      "bytes": 6172
+      "sha256": "b63efacdc36fd0e4bd6181c50442652c35870bf651844a21cda262df0fd635d1",
+      "bytes": 6324
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",

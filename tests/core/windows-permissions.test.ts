@@ -30,7 +30,9 @@ describe('Windows permissions bridge', () => {
     const [command, args, options] = exec.mock.calls[0];
     expect(command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(args).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', expect.any(String)]);
-    expect(Buffer.from((args as string[])[4], 'base64').toString('utf16le')).not.toContain('not-a-command');
+    const script = Buffer.from((args as string[])[4], 'base64').toString('utf16le');
+    expect(script).not.toContain('not-a-command');
+    expect(script).toContain("Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop");
     const frame = String((options as { input: string }).input);
     expect(frame).toMatch(/^[A-Za-z0-9+/=]+\n$/);
     expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], writableDirectory: dir });
@@ -61,6 +63,7 @@ describe('Windows permissions bridge', () => {
 // the real DACL. These cases run on Windows; a mocked bridge is not ACL proof.
 const FIXTURE = String.raw`
 $ErrorActionPreference = 'Stop'
+$null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
 $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
 $frame = $reader.ReadLine()
 if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }

@@ -6586,6 +6586,7 @@ var init_windows_permissions = __esm({
     SCRIPT = String.raw`
 $ErrorActionPreference = 'Stop'
 try {
+  $null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
   $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
   $frame = $reader.ReadLine()
   if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
