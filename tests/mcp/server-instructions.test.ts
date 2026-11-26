@@ -10,7 +10,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { DEFAULT_SAVE_INSTRUCTION } from '../../src/core/citation-rule.js';
+import { DEFAULT_CITATION_INSTRUCTION, DEFAULT_SAVE_INSTRUCTION } from '../../src/core/citation-rule.js';
 
 const dirs: string[] = [];
 const children: ChildProcess[] = [];
@@ -48,9 +48,9 @@ function initializeInstructions(): Promise<unknown> {
   });
 }
 
-describe.skipIf(process.platform === 'win32')('the MCP server tells the model that saving is the default', () => {
-  it('its initialize answer carries the default-save instruction, word for word', async () => {
-    expect(await initializeInstructions()).toBe(DEFAULT_SAVE_INSTRUCTION);
+describe.skipIf(process.platform === 'win32')('the MCP server tells the model how to use memory', () => {
+  it('its initialize answer carries the save and citation instructions, word for word', async () => {
+    expect(await initializeInstructions()).toBe(`${DEFAULT_SAVE_INSTRUCTION}\n\n${DEFAULT_CITATION_INSTRUCTION}`);
   }, 60_000);
 
   it('the instruction explains selected-memory forget without conditioning default saving', () => {
@@ -62,5 +62,12 @@ describe.skipIf(process.platform === 'win32')('the MCP server tells the model th
     expect(DEFAULT_SAVE_INSTRUCTION).toMatch(/preferences/);
     expect(DEFAULT_SAVE_INSTRUCTION, 'names no private-session tool').not.toMatch(/private/i);
     expect(DEFAULT_SAVE_INSTRUCTION).not.toMatch(/\b(worth|important|durable|significant|later session|would need|if (it|you|the))\b/i);
+  });
+
+  it('the instruction requires truthful citations for injected memories', () => {
+    expect(DEFAULT_CITATION_INSTRUCTION).toContain('`[mem:42]`');
+    expect(DEFAULT_CITATION_INSTRUCTION).toMatch(/genuinely informs your work/);
+    expect(DEFAULT_CITATION_INSTRUCTION).toMatch(/only read past/);
+    expect(DEFAULT_CITATION_INSTRUCTION).toMatch(/never invent an id/);
   });
 });

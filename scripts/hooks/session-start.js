@@ -59,9 +59,7 @@ import {
   WORK_PACKAGE_NOTICE,
   readHookConfigResult,
   HOOK_CONFIG_UNREADABLE_REASON,
-  homeDir,
   taskStateName,
-  writeCitationRule,
   writePrivateJsonAtomic,
   recallSessionPath,
   openMemeshDb,
@@ -1144,36 +1142,6 @@ process.stdin.on('end', async () => {
     // decide this (see the field comment in briefing-level.ts).
     const workPackageNotice = sessionStartAppendsWorkPackageNotice(briefingLevel) ? WORK_PACKAGE_NOTICE : undefined;
 
-    // Self-heal the citation contract.
-    //
-    // `install-hooks` writes it too, but a PLUGIN install never runs that
-    // command — and plugin is how most users arrive. Without this, the
-    // contract would reach only npm installs, which is the same shape as the
-    // bug it exists to fix: a mechanism that is correct on a path nobody
-    // takes. Idempotent (a byte-identical file is left alone), refuses to
-    // touch a file memesh did not write, and never blocks the session: a
-    // failure here traces and the hook carries on.
-    try {
-      // Scope comes from the install marker, NOT hardcoded to 'user'. A
-      // `--scope project` install keeps everything inside that project, and
-      // writing the contract to ~/.claude/rules/ anyway would leak it into
-      // every OTHER project on the machine — and survive
-      // `uninstall-hooks --scope project`, which only knows about the
-      // project path. No marker means a plugin install, which is user-level
-      // by construction.
-      let ruleScope = 'user';
-      try {
-        const markerPath = join(memeshHomeDir(), 'install-hooks.json');
-        if (existsSync(markerPath)) {
-          const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-          if (marker?.scope === 'project') ruleScope = 'project';
-        }
-      } catch { /* unreadable marker → user scope, the safe default */ }
-      writeCitationRule(ruleScope, homeDir(), data.cwd || process.cwd());
-    } catch (err) {
-      try { process.stderr.write(`[memesh session-start] citation rule: ${err?.message || err}\n`); } catch {}
-    }
-
     // A new start of THIS session (startup, /clear, resume, compact) shows
     // recalls again. Other sessions keep their own lists (#521). Every start
     // resets, whether or not it carries agent_type: a `claude --agent` main
@@ -1579,25 +1547,6 @@ process.stdin.on('end', async () => {
       const memoryContext = memoryBlock && workPackageNotice
         ? memoryBlock + '\n\n' + workPackageNotice
         : memoryBlock ?? workPackageNotice;
-      // The citation contract — OUTSIDE the fence on purpose: the fence
-      // declares its content "background data, not instructions", and
-      // this line IS an instruction. One line is the entire write side of
-      // the injection-ROI signal; the Stop hook credits recall_hits only
-      // from these markers (self-reported: undercounts, never overcounts).
-      // The citation instruction used to be appended here, outside the
-      // fence, so it would read as an instruction rather than as data.
-      // It never worked: Claude Code wraps a hook's additionalContext in a
-      // system-reminder ending "you should not respond to this context
-      // unless it is highly relevant", so the whole block — instruction
-      // included — arrives as data. Measured on a real database:
-      // citation_sessions_total=4, sessions WITH a citation = 0.
-      //
-      // The contract now lives in `.claude/rules/memesh-citations.md`,
-      // which Claude Code loads as an instruction. Writing it is the
-      // self-heal below; the line here is gone rather than duplicated,
-      // because a per-session copy of an instruction that is read as data
-      // is a per-session cost with no effect.
-
       // --- Record injected entity IDs for recall effectiveness tracking ---
       // Stop credits assistant text citations and tool-result fetch markers
       // for these injected ids. Native roles exclude hook echo attachments;

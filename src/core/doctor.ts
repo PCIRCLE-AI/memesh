@@ -3573,8 +3573,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       // try/catch — so an unreadable rule file (wrong permissions, or a
       // directory at that path) would be reported to the user as
       // `database.broken`, sending them to debug a database that is fine.
-      // The scope comes from the install marker, exactly as both WRITERS
-      // resolve it (`session-start.js` and `installHooks`). Hardcoding
+      // The scope comes from the install marker, exactly as the explicit
+      // writer `installHooks` resolves it. Hardcoding
       // 'user' here made doctor look in `~/.claude/rules/` on a
       // `--scope project` install, where the file is inside the project —
       // so it reported the contract missing on every project install, and
@@ -3611,7 +3611,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           + `learn which memories are worth injecting.`,
           rule.state === 'current'
             ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens — consider narrowing what is injected.`
-            : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`,
+            : `The citation contract is ${rule.state} at ${rule.path}. MCP sessions receive citation guidance from the server. For hook-only setups, run 'memesh install-hooks'; then re-check after a few sessions.`,
           { code: 'citation.none', params: { total: citationTotal } },
         ));
       } else {

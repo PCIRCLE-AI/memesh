@@ -1,6 +1,11 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
+    "C1 tests/hooks/citation-rule-self-heal.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "C1 matches hook exit codes, not empty collections. Tests verify absent rule paths and exact existing bytes; restoring the baseline hook makes the no-write case fail.",
+      "triaged": "2026-11-26"
+    },
     "C1 tests/cli/hermes-message.test.ts": {
       "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
       "reason": "Real CLI success exits are paired with exact message bodies, queued states, session registration and nonempty recalled details. Empty inbox and foreign-read assertions verify isolation; removing pending text makes the test fail.",

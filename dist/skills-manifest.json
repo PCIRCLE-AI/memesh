@@ -88,8 +88,8 @@
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
-      "sha256": "6ae6bd1579675608af2f6154098d38b635a7e754d19108a9f857e8c9942f4a1f",
-      "bytes": 4188
+      "sha256": "e0a8583ab4cae058a309e58960f9a73e4b656fb86f8c1fe063d20fb356cabd8d",
+      "bytes": 4119
     },
     {
       "path": "scripts/hooks/_generated/codex-session-principal.js",
@@ -313,8 +313,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "4c90885410293913d5492e20f6ecd809f4d7135522dcf0434f2c73fe90ae9d98",
-      "bytes": 101402
+      "sha256": "a6ac836b949833ac3893708f3028f7453d92ee49bbdb7d614d84b425d721c657",
+      "bytes": 98547
     },
     {
       "path": "scripts/hooks/session-summary.js",

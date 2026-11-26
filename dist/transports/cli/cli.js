@@ -34460,26 +34460,24 @@ function citationRuleState(scope, home, cwd, fsImpl = fs22) {
     return { path: filePath, state: "foreign-file" };
   return { path: filePath, state: existing.text === CITATION_RULE_BODY ? "current" : "stale" };
 }
-var CITATION_RULE_MARKER, CITATION_RULE_FILENAME, DEFAULT_SAVE_INSTRUCTION, CITATION_RULE_BODY;
+var CITATION_RULE_MARKER, CITATION_RULE_FILENAME, DEFAULT_SAVE_INSTRUCTION, DEFAULT_CITATION_INSTRUCTION, CITATION_RULE_BODY;
 var init_citation_rule = __esm({
   "dist/core/citation-rule.js"() {
     "use strict";
     CITATION_RULE_MARKER = "<!-- managed-by: memesh -->";
     CITATION_RULE_FILENAME = "memesh-citations.md";
     DEFAULT_SAVE_INSTRUCTION = "Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. When the user asks to remove a specific stored memory, use `recall` to identify it and `forget` to archive that memory or remove the selected observation.";
+    DEFAULT_CITATION_INSTRUCTION = "When an injected memory genuinely informs your work, cite it inline once as `[mem:42]`; do not cite a memory you only read past, and never invent an id.";
     CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
 # MeMesh memory citations
 
 MeMesh injects relevant memories at session start and before file edits. Every
 injected line ends with a handle: \`[mem:42]\`.
 
-When an injected memory genuinely informs your work \u2014 you used the fact, the
-lesson changed what you did, the decision answered a question you were about to
-re-ask \u2014 cite it inline once as \`[mem:42]\`, in the sentence it affected.
+${DEFAULT_CITATION_INSTRUCTION}
 
-Do not cite a memory you only read past, and never invent an id. An uncited
-memory is recorded as unused: that is how MeMesh learns which memories are
-worth the tokens they cost you.
+An uncited memory is recorded as unused: that is how MeMesh learns which
+memories are worth the tokens they cost you.
 
 # MeMesh saving
 
@@ -68883,7 +68881,7 @@ async function runDoctor(options) {
       if (rate === null) {
         dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${citationTotal} session(s) received injected memories; how many cited or retrieved one is not recorded (this database predates the counter that would say). The rate will be measurable from the next session on.`));
       } else if (rate === 0) {
-        dbChecks.push(createCheck("citation_compliance", "Memory use rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations or ID retrievals, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
+        dbChecks.push(createCheck("citation_compliance", "Memory use rate", "warn", `${citationTotal} session(s) received injected memories and NONE cited or retrieved one. Every injection is costing tokens with no evidence any of it was used \u2014 and with no citations or ID retrievals, ranking cannot learn which memories are worth injecting.`, rule.state === "current" ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens \u2014 consider narrowing what is injected.` : `The citation contract is ${rule.state} at ${rule.path}. MCP sessions receive citation guidance from the server. For hook-only setups, run 'memesh install-hooks'; then re-check after a few sessions.`, { code: "citation.none", params: { total: citationTotal } }));
       } else {
         dbChecks.push(createInfo("citation_compliance", "Memory use rate", `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));
       }

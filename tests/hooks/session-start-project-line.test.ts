@@ -18,7 +18,6 @@ import { remember } from '../../src/core/operations.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
 import { withAccountHomePreload } from '../../scripts/lib/isolated-env.mjs';
-import { CITATION_RULE_BODY } from '../../src/core/citation-rule.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName: mirrorProjectName, projectLabel, sessionProjectLine } = require('../../scripts/hooks/_shared.js');
@@ -64,7 +63,7 @@ const outcomes = () => {
 describe('the project line', () => {
   it('appears with no database yet, and with no messaging recipient', () => {
     const out = runHook({ cwd: dirA });
-    expect(fs.readFileSync(path.join(root, '.claude', 'rules', 'memesh-citations.md'), 'utf8')).toBe(CITATION_RULE_BODY);
+    expect(fs.existsSync(path.join(root, '.claude', 'rules', 'memesh-citations.md'))).toBe(false);
     expect(out.context.startsWith(lineFor(dirA))).toBe(true);
     expect(out.context).toContain('project: false for a memory that belongs to no project');
     expect(out.context).not.toContain('messaging address');

@@ -246,7 +246,9 @@ describe('doctor: the memory-citation rate is reported, not left to be found', (
     seedDatabase();
     seedCounters('4', '0');
     const check = row({ CLAUDE_CONFIG_DIR: claudeHome() });
-    expect(check?.fix).toContain("Run 'memesh install-hooks' (or start a new session) to write it");
+    expect(check?.fix).toContain('MCP sessions receive citation guidance from the server');
+    expect(check?.fix).toContain("For hook-only setups, run 'memesh install-hooks'");
+    expect(check?.fix).not.toContain('start a new session');
   });
 
   it('reads the citation contract from a relocated CLAUDE_CONFIG_DIR', () => {

@@ -80,9 +80,8 @@ const SOURCES = [
   // is available", "just upgraded" and "check failed" mean.
   { from: 'dist/core/update-notice.js', to: 'update-notice.js', src: 'src/core/update-notice.ts' },
   { from: 'dist/core/semver.js', to: 'semver.js', src: 'src/core/semver.ts' },
-  // The citation contract. Mirrored because a PLUGIN install never runs
-  // `install-hooks` — the npm-only path — so the hooks are the only place
-  // that can put the rule on disk for those users, and they are the majority.
+  // The citation contract remains mirrored with the installed hook modules.
+  // Explicit `install-hooks`, not SessionStart, owns writes to Claude rules.
   { from: 'dist/core/citation-rule.js', to: 'citation-rule.js', src: 'src/core/citation-rule.ts' },
   // The durable-memory index (#323): SessionStart and `briefing` must render
   // the same index under the same frozen caps, so the builder is mirrored.

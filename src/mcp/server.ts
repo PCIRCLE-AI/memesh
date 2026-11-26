@@ -16,7 +16,7 @@ import { configureVersionSource, normalizeClientHost } from '../transports/mcp/h
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
 import { updateControlDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
 import { findPackageRoot } from '../core/package-root.js';
-import { DEFAULT_SAVE_INSTRUCTION } from '../core/citation-rule.js';
+import { DEFAULT_CITATION_INSTRUCTION, DEFAULT_SAVE_INSTRUCTION } from '../core/citation-rule.js';
 import { getDbPath } from '../core/paths.js';
 import { mcpConversationSession } from '../core/conversation-host.js';
 
@@ -36,7 +36,7 @@ configureVersionSource(packageVersion, packageJsonPath);
 
 const server = new Server(
   { name: 'memesh', version: packageVersion },
-  { capabilities: { tools: {} }, instructions: DEFAULT_SAVE_INSTRUCTION }
+  { capabilities: { tools: {} }, instructions: `${DEFAULT_SAVE_INSTRUCTION}\n\n${DEFAULT_CITATION_INSTRUCTION}` }
 );
 
 let closing = false;

@@ -1687,7 +1687,7 @@ export async function runDoctor(options) {
                     + `costing tokens with no evidence any of it was used — and with no citations or ID retrievals, ranking cannot `
                     + `learn which memories are worth injecting.`, rule.state === 'current'
                     ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens — consider narrowing what is injected.`
-                    : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`, { code: 'citation.none', params: { total: citationTotal } }));
+                    : `The citation contract is ${rule.state} at ${rule.path}. MCP sessions receive citation guidance from the server. For hook-only setups, run 'memesh install-hooks'; then re-check after a few sessions.`, { code: 'citation.none', params: { total: citationTotal } }));
             }
             else {
                 dbChecks.push(createInfo('citation_compliance', 'Memory use rate', `${cited} of ${citationTotal} session(s) with injected memories cited or retrieved at least one (${rate}%).`));

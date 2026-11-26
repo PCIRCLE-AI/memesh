@@ -41353,19 +41353,17 @@ function resolveMcpProject(launchRoot, rootUris) {
 // dist/core/citation-rule.js
 var CITATION_RULE_MARKER = "<!-- managed-by: memesh -->";
 var DEFAULT_SAVE_INSTRUCTION = "Saving is on by default: store the decisions, preferences, lessons and facts that come up in the work with the memesh `remember` tool, without waiting to be asked; give a decision its reason as `why`. When the user asks to remove a specific stored memory, use `recall` to identify it and `forget` to archive that memory or remove the selected observation.";
+var DEFAULT_CITATION_INSTRUCTION = "When an injected memory genuinely informs your work, cite it inline once as `[mem:42]`; do not cite a memory you only read past, and never invent an id.";
 var CITATION_RULE_BODY = `${CITATION_RULE_MARKER}
 # MeMesh memory citations
 
 MeMesh injects relevant memories at session start and before file edits. Every
 injected line ends with a handle: \`[mem:42]\`.
 
-When an injected memory genuinely informs your work \u2014 you used the fact, the
-lesson changed what you did, the decision answered a question you were about to
-re-ask \u2014 cite it inline once as \`[mem:42]\`, in the sentence it affected.
+${DEFAULT_CITATION_INSTRUCTION}
 
-Do not cite a memory you only read past, and never invent an id. An uncited
-memory is recorded as unused: that is how MeMesh learns which memories are
-worth the tokens they cost you.
+An uncited memory is recorded as unused: that is how MeMesh learns which
+memories are worth the tokens they cost you.
 
 # MeMesh saving
 
@@ -41388,7 +41386,9 @@ function mcpConversationSession(host, meta3, env = process.env) {
 var packageJsonPath2 = path23.resolve(path23.dirname(fileURLToPath5(import.meta.url)), "../../package.json");
 var packageVersion2 = JSON.parse(fs25.readFileSync(packageJsonPath2, "utf8")).version ?? "0.0.0";
 configureVersionSource(packageVersion2, packageJsonPath2);
-var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} }, instructions: DEFAULT_SAVE_INSTRUCTION });
+var server = new Server({ name: "memesh", version: packageVersion2 }, { capabilities: { tools: {} }, instructions: `${DEFAULT_SAVE_INSTRUCTION}
+
+${DEFAULT_CITATION_INSTRUCTION}` });
 var closing = false;
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: TOOL_DEFINITIONS.map((t) => ({
