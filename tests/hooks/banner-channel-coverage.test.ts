@@ -92,7 +92,8 @@ describe('session-start banners cover every install channel', () => {
       const plugin = path.join(home, host, 'plugins/cache/pcircle-memesh/memesh/4.13.0');
       const data = path.join(home, '.memesh');
       for (const dir of [plugin, bin, data]) fs.mkdirSync(dir, { recursive: true });
-      fs.symlinkSync(process.execPath, path.join(bin, 'node'));
+      const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
+      fs.symlinkSync(process.execPath, path.join(bin, nodeName));
       for (const name of ['dist', 'scripts']) fs.cpSync(path.resolve(name), path.join(plugin, name), { recursive: true });
       fs.copyFileSync(path.resolve('package.json'), path.join(plugin, 'package.json'));
       fs.symlinkSync(path.resolve('node_modules'), path.join(plugin, 'node_modules'));
@@ -102,15 +103,19 @@ describe('session-start banners cover every install channel', () => {
       fs.writeFileSync(cache, JSON.stringify({ currentVersion: version, latestVersion: '99.0.0', lastAttemptAt: new Date().toISOString(), lastSuccessfulCheckAt: new Date().toISOString(), checkSucceeded: true, currentVersionDeprecation: 'synthetic plugin-only hint fixture' }));
       const deny = path.join(root, 'deny.mjs');
       fs.writeFileSync(deny, "import net from 'node:net'; net.Socket.prototype.connect = function(){throw Error('fixture network denied')}; globalThis.fetch=async()=>{throw Error('fixture network denied')};");
-      const env = buildIsolatedSuiteEnv({ PATH: bin }, { runtimeHome: home });
+      const windowsEnv = { PATH: bin, SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
+        ComSpec: process.env.ComSpec ?? process.env.COMSPEC, PATHEXT: process.env.PATHEXT };
+      const env = buildIsolatedSuiteEnv(process.platform === 'win32' ? windowsEnv : { PATH: bin }, { runtimeHome: home });
       Object.assign(env, { MEMESH_SKIP_UPDATE_CHECK: '1', MEMESH_UPDATE_CHECK_PATH: cache, NODE_OPTIONS: `${env.NODE_OPTIONS} --import=${pathToFileURL(deny).href}` });
       const hook = spawnSync(process.execPath, [path.join(plugin, 'scripts/hooks/session-start.js')], { env, input: JSON.stringify({ cwd: root, session_id: 't5-hint' }), encoding: 'utf8', timeout: 20_000 });
       expect(hook.status, hook.stderr).toBe(0);
       const messages = hook.stdout.trim().split('\n').map((line) => JSON.parse(line).systemMessage ?? '').join('\n');
       const command = messages.match(/no memesh command on your PATH\? run (node .+ update)\)/)?.[1];
       expect(command, messages).toBeTruthy();
-      expect(fs.readdirSync(bin)).toEqual(['node']);
-      const invoked = spawnSync('/bin/sh', ['-c', command!], { env, encoding: 'utf8', timeout: 20_000 });
+      expect(fs.readdirSync(bin)).toEqual([nodeName]);
+      const invoked = process.platform === 'win32'
+        ? spawnSync(command!, { shell: env.ComSpec ?? 'cmd.exe', env, encoding: 'utf8', timeout: 20_000 })
+        : spawnSync('/bin/sh', ['-c', command!], { env, encoding: 'utf8', timeout: 20_000 });
       expect(invoked.status, invoked.stderr).toBe(1);
       const state = JSON.parse(fs.readFileSync(path.join(data, 'auto-update-state.json'), 'utf8'));
       expect(state).toMatchObject({ channel: 'plugin-marketplace', outcome: 'failed', reason: 'could not start npm' });

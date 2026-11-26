@@ -14,7 +14,7 @@ const gate = path.join(here, 'check-entry-points-start.mjs');
 const messages = path.join(here, 'hooks', 'messages.js');
 const childFlag = 'MEMESH_WINDOWS_MESSAGES_ENTRY_DIAG';
 const prefix = 'MEMESH_WINDOWS_MESSAGES_PHASE ';
-const phases = new Set(['stdin-read-begin', 'stdin-read-end', 'stdin-read-error', 'powershell-begin', 'powershell-end', 'powershell-error', 'powershell-instrumentation-missing', 'ps-entry', 'ps-stdin-open', 'ps-stdin-reader', 'ps-stdin-read', 'ps-stdin-read-done', 'ps-decode', 'ps-decode-done', 'ps-identity', 'ps-identity-done', 'ps-acl-get', 'ps-acl-get-done', 'ps-acl-set', 'ps-acl-set-done', 'ps-acl-readback', 'ps-acl-readback-done', 'ps-probe', 'ps-probe-done', 'ps-done', 'ps-error', 'register-begin', 'register-end', 'register-error', 'hook-batch-begin', 'hook-batch-end', 'hook-batch-error', 'close-begin', 'close-end', 'close-error']);
+const phases = new Set(['stdin-read-begin', 'stdin-read-end', 'stdin-read-error', 'powershell-begin', 'powershell-end', 'powershell-error', 'powershell-instrumentation-missing', 'ps-entry', 'ps-stdin-open', 'ps-stdin-reader', 'ps-stdin-read', 'ps-stdin-read-done', 'ps-decode', 'ps-decode-done', 'ps-identity', 'ps-identity-done', 'ps-acl-get', 'ps-acl-get-done', 'ps-acl-set', 'ps-acl-set-done', 'ps-acl-readback', 'ps-acl-readback-done', 'ps-probe', 'ps-probe-done', 'ps-done', 'ps-error', 'ps-acl-shape', 'ps-reason-missing-stdin-frame', 'ps-reason-path-changed', 'ps-reason-foreign-owner', 'ps-reason-null-dacl', 'ps-reason-unsupported-ace', 'ps-reason-acl-changed', 'ps-reason-public-allow-remains', 'ps-reason-rights-changed', 'ps-reason-native-exception', 'register-begin', 'register-end', 'register-error', 'hook-batch-begin', 'hook-batch-end', 'hook-batch-error', 'close-begin', 'close-end', 'close-error']);
 const same = (value, expected) => typeof value === 'string' && path.resolve(value) === expected;
 const emit = (phase, started) => process.stderr.write(`${prefix}${JSON.stringify({ phase, elapsedMs: Date.now() - started })}\n`);
 export const traceScript = (encoded) => {
@@ -23,7 +23,27 @@ export const traceScript = (encoded) => {
   try { script = Buffer.from(encoded, 'base64').toString('utf16le'); } catch { return null; }
   const anchors = ["$ErrorActionPreference = 'Stop'", '$frame = $reader.ReadLine()', "$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json", '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()', 'foreach ($file in $request.paths) {', '$acl = Read-Acl $file', 'if ($changed) {', '$actual = Read-Acl $file', 'if ($request.writableDirectory) {', "[Console]::Out.Write('{\"ok\":true}')"];
   if (!anchors.every(anchor => script.includes(anchor))) return null;
-  const trace = "$script:TraceClock = [Diagnostics.Stopwatch]::StartNew()\nfunction Trace-Phase($phase) { try { if ($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE) { [IO.File]::AppendAllText($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE, $phase + ' ' + $script:TraceClock.ElapsedMilliseconds + [Environment]::NewLine, [Text.Encoding]::ASCII) } } catch {} }\n";
+  const trace = String.raw`$script:TraceClock = [Diagnostics.Stopwatch]::StartNew()
+function Trace-Phase($phase) { try { if ($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE) { [IO.File]::AppendAllText($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE, $phase + ' ' + $script:TraceClock.ElapsedMilliseconds + [Environment]::NewLine, [Text.Encoding]::ASCII) } } catch {} }
+function Trace-Reason($reason) { Trace-Phase ('ps-reason-' + $reason) }
+function Trace-AclShape($side, $keys) {
+  try {
+    $total = 0; $parts = [Collections.Generic.List[string]]::new()
+    foreach ($key in @($keys -split ';')) {
+      $rule = $key -split '\|', 5
+      if ($rule.Count -ne 5) { continue }
+      $total++
+      if ($parts.Count -lt 16) {
+        $sid = $rule[0]
+        $class = if ($sid -eq $self) { 'self' } elseif ($sid -eq 'S-1-5-18') { 'system' } elseif ($sid -eq 'S-1-5-32-544') { 'admin' } elseif ($sid -eq 'S-1-3-0') { 'creator-owner' } elseif ($sid -eq 'S-1-3-4') { 'owner-rights' } else { 'other' }
+        $type = if ($rule[1] -eq 'Allow') { 'allow' } elseif ($rule[1] -eq 'Deny') { 'deny' } else { continue }
+        $parts.Add(($class + ',' + $type + ',' + $rule[2] + ',' + $rule[3] + ',' + $rule[4]))
+      }
+    }
+    if ($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE) { [IO.File]::AppendAllText($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE, ('shape ' + $script:TraceClock.ElapsedMilliseconds + ' ' + $side + ',' + $total + ',' + ($parts -join '|') + [Environment]::NewLine), [Text.Encoding]::ASCII) }
+  } catch {}
+}
+`;
   script = trace + script.replace('try {', "try {\n  Trace-Phase 'ps-entry'")
     .replace('$reader = [IO.StreamReader]::new', "Trace-Phase 'ps-stdin-open'\n  $reader = [IO.StreamReader]::new")
     .replace('$frame = $reader.ReadLine()', "Trace-Phase 'ps-stdin-reader'\n  Trace-Phase 'ps-stdin-read'\n  $frame = $reader.ReadLine()\n  Trace-Phase 'ps-stdin-read-done'")
@@ -35,9 +55,23 @@ export const traceScript = (encoded) => {
     .replace('$actual = Read-Acl $file', "Trace-Phase 'ps-acl-readback'\n    $actual = Read-Acl $file\n    Trace-Phase 'ps-acl-readback-done'")
     .replace('$probe = [IO.Path]::Combine', "Trace-Phase 'ps-probe'\n    $probe = [IO.Path]::Combine")
     .replace("} finally { if ($null -ne $stream) { $stream.Dispose() } }\n  }\n  [Console]", "} finally { if ($null -ne $stream) { $stream.Dispose() } }\n    Trace-Phase 'ps-probe-done'\n  }\n  Trace-Phase 'ps-done'\n  [Console]")
-    .replace("} catch {\n  [Console]", "} catch {\n  Trace-Phase 'ps-error'\n  [Console]");
+    .replace("if ($keys -ne $expected) { throw 'rights changed' }", "if ($keys -ne $expected) { Trace-AclShape 'expected' $expected; Trace-AclShape 'actual' $keys; throw 'rights changed' }")
+    .replace("} catch {\n  [Console]", "} catch {\n  $message = $_.Exception.Message\n  Trace-Phase 'ps-error'\n  $reason = switch ($message) { 'missing stdin frame' { 'missing-stdin-frame'; break } 'path changed' { 'path-changed'; break } 'foreign owner' { 'foreign-owner'; break } 'null DACL' { 'null-dacl'; break } 'unsupported ACE' { 'unsupported-ace'; break } 'ACL changed' { 'acl-changed'; break } 'public allow remains' { 'public-allow-remains'; break } 'rights changed' { 'rights-changed'; break } default { 'native-exception' } }\n  Trace-Reason $reason\n  [Console]");
   return Buffer.from(script, 'utf16le').toString('base64');
 };
+
+export function parseTraceLine(line) {
+  const phase = /^([a-z-]+) ([0-9]{1,8})$/.exec(line);
+  if (phase && phases.has(phase[1])) return { phase: phase[1], elapsedMs: Number(phase[2]) };
+  const shape = /^shape ([0-9]{1,8}) (expected|actual),([0-9]{1,4}),(.*)$/.exec(line);
+  if (!shape) return null;
+  const rules = shape[4] === '' ? [] : shape[4].split('|').map(rule => {
+    const match = /^(self|system|admin|creator-owner|owner-rights|other),(allow|deny),(-?(?:0|[1-9][0-9]{0,9})),([0-3]),([0-3])$/.exec(rule);
+    return match && { subject: match[1], type: match[2], rights: Number(match[3]), inherit: Number(match[4]), propagation: Number(match[5]) };
+  });
+  if (rules.length !== Math.min(Number(shape[3]), 16) || rules.some(rule => !rule || rule.rights < -2147483648 || rule.rights > 2147483647)) return null;
+  return { phase: 'ps-acl-shape', elapsedMs: Number(shape[1]), side: shape[2], total: Number(shape[3]), rules };
+}
 
 function controlScript(kind) {
   const open = "$reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)\n  $frame = $reader.ReadLine()";
@@ -153,8 +187,8 @@ if (same(process.argv[1], selfFile)) {
     child.once('exit', () => {
       try {
         for (const line of fs.readFileSync(traceFile, 'utf8').split(/\r?\n/)) {
-          const match = /^([a-z-]+) ([0-9]{1,8})$/.exec(line);
-          if (match && phases.has(match[1])) process.stderr.write(`${prefix}${JSON.stringify({ phase: match[1], elapsedMs: Number(match[2]) })}\n`);
+          const value = parseTraceLine(line);
+          if (value) process.stderr.write(`${prefix}${JSON.stringify(value)}\n`);
         }
       } catch { /* trace must not change the gate */ }
       finally { if (traceFile) try { fs.rmSync(traceFile, { force: true }); } catch {} }

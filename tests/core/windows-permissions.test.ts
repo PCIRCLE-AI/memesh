@@ -7,6 +7,7 @@ import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { databaseFiles, requirePrivateWritableDirectory } from '../../src/core/file-mode.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { parseTraceLine, traceScript } from '../../scripts/diagnose-windows-messages-entry.mjs';
 
 const roots: string[] = [];
 function directory(): string {
@@ -106,6 +107,63 @@ function fixture(file: string, action: 'public' | 'deny' | 'restore' | 'read'): 
     { input: Buffer.from(JSON.stringify({ file, action })).toString('base64') + '\n', encoding: 'utf8', windowsHide: true, timeout: 15000 }));
 }
 
+function withFailureTrace<T>(action: () => T): T {
+  let traceFile: string | undefined;
+  let exec: ReturnType<typeof vi.spyOn> | undefined;
+  const inherited = process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE;
+  try {
+    traceFile = path.join(directory(), '.windows-acl-trace');
+    fs.writeFileSync(traceFile, '', { mode: 0o600, flag: 'wx' });
+    process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE = traceFile;
+    const original = childProcess.execFileSync;
+    exec = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command, args, options) => {
+      const argv = Array.isArray(args) ? args : [];
+      const index = argv.indexOf('-EncodedCommand');
+      let traced: string | null = null;
+      try { traced = index >= 0 ? traceScript(String(argv[index + 1])) : null; } catch {}
+      return original(command, traced ? [...argv.slice(0, index + 1), traced, ...argv.slice(index + 2)] : argv, options);
+    }) as typeof childProcess.execFileSync);
+  } catch { /* observation setup must leave an already-created trace cleanable */ }
+  try {
+    return action();
+  } catch (error) {
+    try {
+      if (traceFile) {
+        const events = fs.readFileSync(traceFile, 'utf8').split(/\r?\n/).map(parseTraceLine).filter(Boolean).slice(-40);
+        process.stderr.write(`MEMESH_WINDOWS_ACL_TRACE ${JSON.stringify(events)}\n`);
+      }
+    } catch { /* observation cannot replace the original failure */ }
+    throw error;
+  } finally {
+    try { exec?.mockRestore(); } catch {}
+    try { if (traceFile) fs.rmSync(traceFile, { force: true }); } catch {}
+    if (inherited === undefined) delete process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE;
+    else process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE = inherited;
+  }
+}
+
+describe('Windows permission diagnostic projection', () => {
+  it('keeps only bounded reason and ACL-shape fields', () => {
+    expect(parseTraceLine('ps-reason-rights-changed 12')).toEqual({ phase: 'ps-reason-rights-changed', elapsedMs: 12 });
+    expect(parseTraceLine('shape 12 expected,1,other,allow,-2147483648,3,0')).toEqual({ phase: 'ps-acl-shape', elapsedMs: 12, side: 'expected', total: 1, rules: [{ subject: 'other', type: 'allow', rights: -2147483648, inherit: 3, propagation: 0 }] });
+    expect(parseTraceLine('shape 12 expected,1,other,allow,7,3,0 secret')).toBeNull();
+    expect(parseTraceLine('shape 12 expected,1,unknown,allow,7,4,0')).toBeNull();
+  });
+
+  it.each(['setup', 'cleanup'])('keeps the original error when trace %s fails', fault => {
+    const prior = process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE;
+    const error = new Error('original failure');
+    if (fault === 'setup') vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => { throw new Error('trace setup failed'); });
+    else vi.spyOn(fs, 'rmSync').mockImplementationOnce(() => { throw new Error('trace cleanup failed'); });
+    let caught: unknown;
+    try { withFailureTrace(() => { throw error; }); } catch (failure) { caught = failure; }
+    expect(caught).toBe(error);
+    expect(process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE).toBe(prior);
+    expect(vi.isMockFunction(childProcess.execFileSync)).toBe(false);
+  });
+
+});
+
 describe.runIf(process.platform === 'win32')('actual Windows private paths', () => {
   it('protects new message sidecars and repairs explicitly public existing message files', () => {
     const dir = path.join(directory(), "空 白 ' $(literal); path");
@@ -153,8 +211,21 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
     fs.writeFileSync(db, 'fixture');
     fs.chmodSync(db, 0o444);
     try {
-      makeWindowsPathsPrivate([db]);
-      expect(fs.statSync(db).mode & 0o200).toBe(0);
+      withFailureTrace(() => {
+        makeWindowsPathsPrivate([db]);
+        expect(fs.statSync(db).mode & 0o200).toBe(0);
+      });
     } finally { fs.chmodSync(db, 0o600); }
+  });
+
+  it('protects a fresh inherited message-store directory', () => {
+    const dir = directory();
+    let store: ConversationMessages | undefined;
+    try {
+      withFailureTrace(() => {
+        store = new ConversationMessages({ file: path.join(dir, 'messages.db') });
+        expect(fixture(dir, 'read').protected).toBe(true);
+      });
+    } finally { store?.close(); }
   });
 });
