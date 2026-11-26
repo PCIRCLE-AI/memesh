@@ -5,7 +5,8 @@ import { createHash, randomBytes } from 'crypto';
 import { chmodSync, readFileSync, realpathSync, renameSync, unlinkSync, writeFileSync } from 'fs';
 import { MemeshDatabase } from './_generated/sqlite.js';
 import { isAbsolute, join, resolve } from 'path';
-import { AUTO_CAPTURE_TAG, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookCaughtReason, hookSourceHost, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
+import { retryWhileLocked } from './_generated/schema.js';
+import { AUTO_CAPTURE_TAG, HOOK_BUSY_TIMEOUT_MS, SKIP_REASONS, captureEntity, ensurePrivateDir, getMemeshDirFromDbPath, getProjectName, isAutoCaptureEnabled, isGitCommitCommand, openHookDb, hookErrorReason, hookCaughtReason, hookSourceHost, recordHookOutcome, recordHookRun, redactSecrets, truncateTitle } from './_shared.js';
 
 const HEAD_MARKER_DIR = 'post-commit-heads';
 const FULL_SHA = /^[a-f0-9]{40,64}$/;
@@ -182,7 +183,7 @@ function captureCommit(db, data, projectName, commit) {
     // File names are best-effort metadata, like diff stats.
   }
 
-  const written = captureEntity(db, {
+  const entity = {
     name: entityName,
     type: 'commit',
     observations,
@@ -192,7 +193,15 @@ function captureCommit(db, data, projectName, commit) {
     title: truncateTitle(redactSecrets(commit.message)),
     metadata: whyMetadata,
     sourceHost: hookSourceHost(data, process.env),
-  });
+  };
+  // Native SQLite sleeps must not consume the hook's wall-clock retry budget.
+  db.pragma('busy_timeout = 0');
+  let written;
+  try {
+    written = retryWhileLocked(() => captureEntity(db, entity), HOOK_BUSY_TIMEOUT_MS, 'post-commit capture');
+  } finally {
+    db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
+  }
   return { entityName, written };
 }
 

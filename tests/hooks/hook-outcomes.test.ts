@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync, execFile } from 'child_process';
+import { execFileSync, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
@@ -392,6 +392,50 @@ DatabaseSync.prototype.prepare = function(sql) {
     expect(commitNames()).toEqual([base.name, ...pending.map(c => c.name)].sort());
     expect(Object.values(marker().heads)).toContain(pending.at(-1)!.full);
   }, A13_TIMEOUT_MS);
+
+  it('A-13 captures after a native lock releases only after the first failed run', async () => {
+    const base = emptyCommit('base'); postCommit();
+    const pending = emptyCommit('release-after-error');
+    const recorder = gitCallRecorder();
+    const ready = path.join(testDir, 'native-holder-ready');
+    const released = path.join(testDir, 'native-holder-released');
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+      const db = new DatabaseSync(${JSON.stringify(graphPath())});
+      db.exec('BEGIN IMMEDIATE');
+      writeFileSync(${JSON.stringify(ready)}, 'ready');
+      const deadline = Date.now() + 4000;
+      const timer = setInterval(() => {
+        const seen = existsSync(${JSON.stringify(recorder.env.MEMESH_A13_PHASE)}) && readFileSync(${JSON.stringify(recorder.env.MEMESH_A13_PHASE)}, 'utf8').includes('sqlite-run-error');
+        if (!seen && Date.now() < deadline) return;
+        if (!seen) process.exitCode = 2;
+        else writeFileSync(${JSON.stringify(released)}, 'released-after-run-error');
+        try { db.exec('ROLLBACK'); } finally { db.close(); clearInterval(timer); }
+      }, 5);
+    `], { stdio: 'ignore' });
+    const holderDone = new Promise<number | null>((resolve) => {
+      holder.once('error', () => resolve(null));
+      holder.once('exit', resolve);
+    });
+    const until = async (check: () => boolean, label: string) => {
+      const deadline = Date.now() + 5000;
+      while (!check() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!check()) throw new Error(`timed out waiting for ${label}`);
+    };
+    try {
+      await until(() => fs.existsSync(ready), 'native holder');
+      postCommit(recorder.env, POST_COMMIT_HOOK_TIMEOUT_MS);
+      expect(await holderDone).toBe(0);
+      expect(fs.readFileSync(released, 'utf8')).toBe('released-after-run-error');
+      expect(fs.readFileSync(recorder.env.MEMESH_A13_PHASE!, 'utf8')).toContain('sqlite-run-error');
+      expect(commitNames()).toEqual([base.name, pending.name].sort());
+      expect(marker().failures).toEqual({});
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGTERM');
+      await holderDone;
+    }
+  }, 15000);
 
   it('A-13 continues after a write error and persists full-SHA failure counts through three attempts', () => {
     const base = emptyCommit('base'); postCommit();
