@@ -141,6 +141,7 @@ jobs:
         run: npm run build
 
       - name: Release gates (the same ones the publish path runs)
+        id: release_gates
         # `npm run verify:release`, not a hand-listed copy of what it contains.
         #
         # This used to enumerate typecheck + version coherence + mirror drift as
@@ -159,6 +160,11 @@ jobs:
         # Its first command is `npm run lint` (zero warnings), so lint is not a
         # separate step: that ran the same script twice in every leg.
         run: npm run verify:release
+
+      - name: Diagnose Windows messages entry timeout
+        if: ${{ failure() && runner.os == 'Windows' && steps.release_gates.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: node --import ./scripts/diagnose-windows-messages-entry.mjs scripts/check-entry-points-start.mjs
 
       - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
         # Temp folders on the runner's own temp disk. On Windows, TEMP points
