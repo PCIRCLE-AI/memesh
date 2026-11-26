@@ -1,12 +1,15 @@
 // Diagnostic preload for the Windows entry-point gate. It keeps gate assertions and timeouts unchanged.
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { syncBuiltinESMExports } from 'node:module';
+import { buildIsolatedSuiteEnv } from './lib/isolated-env.mjs';
 
 const self = import.meta.url;
 const here = path.dirname(fileURLToPath(self));
+const selfFile = fileURLToPath(self);
 const gate = path.join(here, 'check-entry-points-start.mjs');
 const messages = path.join(here, 'hooks', 'messages.js');
 const childFlag = 'MEMESH_WINDOWS_MESSAGES_ENTRY_DIAG';
@@ -36,7 +39,67 @@ export const traceScript = (encoded) => {
   return Buffer.from(script, 'utf16le').toString('base64');
 };
 
-if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
+function controlScript(kind) {
+  const open = "$reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)\n  $frame = $reader.ReadLine()";
+  const decode = "$json = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame))";
+  const parsed = "$request = $json | ConvertFrom-Json";
+  let body;
+  if (kind === 'literal') body = "$request = ConvertFrom-Json -InputObject '{\"value\":\"a\"}'";
+  else if (kind === 'decode') body = `${open}\n  ${decode}\n  if ($json -ne '{"value":"a"}') { throw 'unexpected data' }\n  $request = [PSCustomObject]@{ value = 'a' }`;
+  else if (kind === 'automatic-input') body = "$frames = @($input)\n  if ($frames.Count -ne 1) { throw 'unexpected frame count' }\n  $frame = $frames[0]\n  " + decode + "\n  " + parsed;
+  else if (kind === 'input-object') body = `${open}\n  ${decode}\n  $request = ConvertFrom-Json -InputObject $json`;
+  else if (kind === 'dispose') body = `${open}\n  $reader.Dispose()\n  ${decode}\n  ${parsed}`;
+  else body = `${open}\n  ${decode}\n  ${parsed}`;
+  return `$ErrorActionPreference = 'Stop'\ntry {\n  ${body}\n  if ($request.value -ne 'a') { throw 'unexpected value' }\n  [Console]::Out.Write('OK')\n} catch {\n  [Console]::Out.Write('ERR:' + $_.Exception.GetType().Name)\n  exit 1\n}`;
+}
+
+function runControls() {
+  if (process.platform !== 'win32') return;
+  const cases = [
+    ['A-literal-input-object', 'literal'], ['B-framed-dotnet-decode', 'decode'], ['C-framed-pipeline', 'pipeline'],
+    ['D-framed-input-object', 'input-object'], ['E-framed-dispose-reader', 'dispose'], ['F-framed-private-appdata', 'pipeline'], ['G-framed-system-modules', 'pipeline'],
+    ['H-framed-automatic-input', 'automatic-input'],
+  ];
+  for (const [name, kind] of cases) {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-ps-control-'));
+    try {
+      try { fs.chmodSync(home, 0o700); } catch {}
+      const env = buildIsolatedSuiteEnv(process.env, { runtimeHome: home });
+      const systemRoot = env.SystemRoot ?? env.SYSTEMROOT;
+      if (!systemRoot) {
+        process.stdout.write(`${JSON.stringify({ case: name, exit: null, timeout: false, ms: 0, result: 'exception:SystemRootUnavailable' })}\n`);
+        continue;
+      }
+      if (name.startsWith('F-')) Object.assign(env, { APPDATA: path.join(home, 'AppData', 'Roaming'), LOCALAPPDATA: path.join(home, 'AppData', 'Local') });
+      if (name.startsWith('G-')) env.PSModulePath = path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'Modules');
+      const script = controlScript(kind);
+      const args = ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')];
+      const input = kind === 'literal' ? undefined : `${Buffer.from(JSON.stringify({ value: 'a' })).toString('base64')}\n`;
+      const started = Date.now();
+      const result = childProcess.spawnSync(path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), args, { env, input, encoding: 'utf8', timeout: 2500, windowsHide: true });
+      const timeout = result.error?.code === 'ETIMEDOUT';
+      const output = typeof result.stdout === 'string' ? result.stdout.trim() : '';
+      const ok = !timeout && result.status === 0 && output === 'OK';
+      const exception = /^ERR:([A-Za-z][A-Za-z0-9]{0,79})$/.exec(output)?.[1] ?? 'Unknown';
+      const detail = ok ? 'ok' : timeout ? 'timeout' : `exception:${exception}`;
+      process.stdout.write(`${JSON.stringify({ case: name, exit: result.status ?? null, timeout, ms: Date.now() - started, result: detail })}\n`);
+    } finally {
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 2, retryDelay: 50 }); } catch {}
+    }
+  }
+}
+
+function runDirectController() {
+  const result = childProcess.spawnSync(process.execPath, ['--import', self, gate], { encoding: 'utf8', timeout: 90000 });
+  if (result.stdout) process.stdout.write(result.stdout);
+  if (result.stderr) process.stderr.write(result.stderr);
+  runControls();
+  process.exitCode = result.status ?? 1;
+}
+
+if (same(process.argv[1], selfFile)) {
+  runDirectController();
+} else if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
   const started = Date.now();
   const read = fs.readFileSync;
   fs.readFileSync = function tracedRead(file, ...args) {

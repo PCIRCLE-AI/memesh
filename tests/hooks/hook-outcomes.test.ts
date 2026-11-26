@@ -177,25 +177,56 @@ describe('hook outcome records', () => {
     tool_response: { stdout: '', stderr: '', isError: false, interrupted: false } });
   const graphPath = () => path.join(memeshDir, 'knowledge-graph.db');
   function postCommit(extraEnv: Record<string, string> = {}, timeout = 20000) {
-    runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv }, timeout);
+    try {
+      runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv }, timeout);
+    } catch (error) {
+      const phaseFile = extraEnv.MEMESH_A13_PHASE;
+      if (phaseFile) try {
+        const permitted = new Set(['git-begin', 'git-end', 'git-error', 'sqlite-prepare-begin', 'sqlite-prepare-end', 'sqlite-prepare-error', 'sqlite-exec-begin', 'sqlite-exec-end', 'sqlite-exec-error', 'sqlite-close-begin', 'sqlite-close-end', 'sqlite-close-error', 'sqlite-run-begin', 'sqlite-run-end', 'sqlite-run-error', 'sqlite-get-begin', 'sqlite-get-end', 'sqlite-get-error', 'sqlite-all-begin', 'sqlite-all-end', 'sqlite-all-error', 'marker-wx-begin', 'marker-wx-end', 'marker-wx-error']);
+        const phases = fs.existsSync(phaseFile) ? fs.readFileSync(phaseFile, 'utf8').trim().split('\n').flatMap((line) => {
+          try {
+            const value = JSON.parse(line);
+            return Array.isArray(value) && value.length === 2 && permitted.has(value[0]) && Number.isSafeInteger(value[1]) && value[1] >= 0 ? [value] : [];
+          } catch { return []; }
+        }).slice(-80) : [];
+        process.stderr.write(`[test] A13 child phases ${JSON.stringify(phases)}\n`);
+      } catch { /* phase evidence must not replace the child error */ }
+      throw error;
+    }
   }
   function gitCallRecorder() {
     const log = path.join(testDir, `git-calls-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+    const phases = path.join(testDir, `a13-phases-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
     const recorder = path.join(testDir, `git-recorder-${Date.now()}-${Math.random().toString(16).slice(2)}.cjs`);
     fs.writeFileSync(recorder, `const fs = require('node:fs');
 const cp = require('node:child_process');
+const { DatabaseSync, StatementSync } = require('node:sqlite');
+const started = process.hrtime.bigint();
+const permitted = new Set(['git-begin', 'git-end', 'git-error', 'sqlite-prepare-begin', 'sqlite-prepare-end', 'sqlite-prepare-error', 'sqlite-exec-begin', 'sqlite-exec-end', 'sqlite-exec-error', 'sqlite-close-begin', 'sqlite-close-end', 'sqlite-close-error', 'sqlite-run-begin', 'sqlite-run-end', 'sqlite-run-error', 'sqlite-get-begin', 'sqlite-get-end', 'sqlite-get-error', 'sqlite-all-begin', 'sqlite-all-end', 'sqlite-all-error', 'marker-wx-begin', 'marker-wx-end', 'marker-wx-error']);
+function phase(name) { try { if (permitted.has(name)) fs.appendFileSync(process.env.MEMESH_A13_PHASE, JSON.stringify([name, Number((process.hrtime.bigint() - started) / 1000000n)]) + '\\n'); } catch {} }
 const original = cp.execFileSync;
 cp.execFileSync = function (command, args, ...rest) {
   // [WORKAROUND: Test records only; Git still executes.]
   if (command === 'git') fs.appendFileSync(process.env.MEMESH_GIT_CALLS, JSON.stringify(args ?? []) + '\\n');
-  return original.call(this, command, args, ...rest);
+  if (command !== 'git') return original.call(this, command, args, ...rest);
+  phase('git-begin'); try { const result = original.call(this, command, args, ...rest); phase('git-end'); return result; } catch (error) { phase('git-error'); throw error; }
 };
+for (const method of ['prepare', 'exec', 'close']) {
+  const original = DatabaseSync.prototype[method];
+  DatabaseSync.prototype[method] = function (...args) { phase('sqlite-' + method + '-begin'); try { const result = original.apply(this, args); phase('sqlite-' + method + '-end'); return result; } catch (error) { phase('sqlite-' + method + '-error'); throw error; } };
+}
+for (const method of ['run', 'get', 'all']) {
+  const original = StatementSync.prototype[method];
+  StatementSync.prototype[method] = function (...args) { phase('sqlite-' + method + '-begin'); try { const result = original.apply(this, args); phase('sqlite-' + method + '-end'); return result; } catch (error) { phase('sqlite-' + method + '-error'); throw error; } };
+}
+const write = fs.writeFileSync;
+fs.writeFileSync = function (file, data, options) { if (options?.flag !== 'wx') return write.call(this, file, data, options); phase('marker-wx-begin'); try { const result = write.call(this, file, data, options); phase('marker-wx-end'); return result; } catch (error) { phase('marker-wx-error'); throw error; } };
 require('node:module').syncBuiltinESMExports();
 `);
     const calls = () => fs.existsSync(log)
       ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as string[])
       : [];
-    return { env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(recorder)}`, MEMESH_GIT_CALLS: log }, calls };
+    return { env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(recorder)}`, MEMESH_GIT_CALLS: log, MEMESH_A13_PHASE: phases }, calls };
   }
   function emptyCommit(label: string, seconds?: number) {
     execFileSync('git', ['-C', repoDir, '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-qm', label], {
