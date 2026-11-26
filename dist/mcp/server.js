@@ -33308,20 +33308,40 @@ try {
     return '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value, $rule.AccessControlType,
       [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags
   }
+  function Ace-Key($ace) {
+    return '{0}|Allow|{1}|{2}|{3}' -f $ace.SecurityIdentifier.Value, [int]$ace.AccessMask,
+      [int]$ace.InheritanceFlags, [int]$ace.PropagationFlags
+  }
+  function Rule-Keys($acl, $isContainer) {
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    $allows = [Security.AccessControl.RawAcl]::new($raw.DiscretionaryAcl.Revision, 0)
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
+      $copy = $ace.Copy()
+      $copy.AceFlags = [Security.AccessControl.AceFlags](([int]$copy.AceFlags) -band (-bnot [int][Security.AccessControl.AceFlags]::Inherited))
+      $allows.InsertAce($allows.Count, $copy)
+    }
+    $canonical = [Security.AccessControl.DiscretionaryAcl]::new($isContainer, $false, $allows)
+    if (-not $canonical.IsCanonical) { throw 'rights changed' }
+    $allowKeys = (@($canonical | ForEach-Object { Ace-Key $_ } | Sort-Object) -join ';')
+    $denyKeys = (@($acl.GetAccessRules($true, $true, $sidType) | Where-Object { $_.AccessControlType -ne $allow } | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'
+  }
   foreach ($file in $request.paths) {
     $acl = Read-Acl $file
     Check-Acl $acl
     $owner = $acl.GetOwner($sidType).Value
+    $isContainer = [IO.Directory]::Exists($file)
     $needsProtection = -not $acl.AreAccessRulesProtected
     if ($needsProtection) {
-      $originalKeys = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+      $originalKeys = Rule-Keys $acl $isContainer
       $acl.SetAccessRuleProtection($true, $true)
       if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
       else { [IO.File]::SetAccessControl($file, $acl) }
       $acl = Read-Acl $file
       Check-Acl $acl
       if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
-      $protectedKeys = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+      $protectedKeys = Rule-Keys $acl $isContainer
       if ($protectedKeys -ne $originalKeys) { throw 'rights changed' }
     }
     $changed = $false
@@ -33331,7 +33351,7 @@ try {
         $changed = $true
       }
     }
-    $expected = (@($acl.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    $expected = Rule-Keys $acl $isContainer
     if ($changed) {
       if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
       else { [IO.File]::SetAccessControl($file, $acl) }
@@ -33342,7 +33362,7 @@ try {
     foreach ($rule in $actual.GetAccessRules($true, $true, $sidType)) {
       if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
     }
-    $keys = (@($actual.GetAccessRules($true, $true, $sidType) | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    $keys = Rule-Keys $actual $isContainer
     if ($keys -ne $expected) { throw 'rights changed' }
   }
   if ($request.writableDirectory) {

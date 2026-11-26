@@ -120,7 +120,7 @@ describe('session-start banners cover every install channel', () => {
       const state = JSON.parse(fs.readFileSync(path.join(data, 'auto-update-state.json'), 'utf8'));
       expect(state).toMatchObject({ channel: 'plugin-marketplace', outcome: 'failed', reason: 'could not start npm' });
       expect(invoked.stdout + invoked.stderr).toContain('could not start npm');
-      expect(state.detail).toContain('ENOENT');
+      expect(state.detail).toContain(process.platform === 'win32' ? 'npm-cli.js was not found beside Node' : 'ENOENT');
       expect(fs.existsSync(path.join(data, 'auto-update.lock'))).toBe(false);
       console.log(JSON.stringify({ host, command, invocationExit: invoked.status, outcome: state.outcome, reason: state.reason, detail: state.detail }));
     } finally { fs.rmSync(root, { recursive: true, force: true }); }

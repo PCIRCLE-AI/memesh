@@ -1,1 +1,1 @@
-{"version":3,"file":"windows-permissions.d.ts","sourceRoot":"","sources":["../../src/core/windows-permissions.ts"],"names":[],"mappings":"AAmGA,wBAAgB,uBAAuB,CAAC,OAAO,EAAE,MAAM,EAAE,EAAE,iBAAiB,CAAC,EAAE,MAAM,GAAG,IAAI,CAsB3F"}
+{"version":3,"file":"windows-permissions.d.ts","sourceRoot":"","sources":["../../src/core/windows-permissions.ts"],"names":[],"mappings":"AAuHA,wBAAgB,uBAAuB,CAAC,OAAO,EAAE,MAAM,EAAE,EAAE,iBAAiB,CAAC,EAAE,MAAM,GAAG,IAAI,CAsB3F"}
