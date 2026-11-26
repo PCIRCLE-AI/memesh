@@ -404,6 +404,8 @@ describe('Feature: prompt-time recall hook', () => {
       } finally {
         closeDatabase();
       }
+      // Keep the detached update checker from racing this scope fixture's cleanup.
+      fs.writeFileSync(path.join(memeshDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
       const start = spawnSync('node', [path.resolve('scripts/hooks/session-start.js')], {
         input: JSON.stringify({ cwd: project, session_id: 'sess-a' }),
         env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DB_PATH: dbPath },

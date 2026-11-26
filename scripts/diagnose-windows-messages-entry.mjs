@@ -1,4 +1,4 @@
-// Diagnostic preload for the Windows entry-point gate. It changes no hook result.
+// Diagnostic preload for the Windows entry-point gate. It keeps gate assertions and timeouts unchanged.
 import childProcess from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
@@ -11,9 +11,30 @@ const gate = path.join(here, 'check-entry-points-start.mjs');
 const messages = path.join(here, 'hooks', 'messages.js');
 const childFlag = 'MEMESH_WINDOWS_MESSAGES_ENTRY_DIAG';
 const prefix = 'MEMESH_WINDOWS_MESSAGES_PHASE ';
-const phases = new Set(['stdin-read-begin', 'stdin-read-end', 'stdin-read-error', 'powershell-begin', 'powershell-end', 'powershell-error', 'register-begin', 'register-end', 'register-error', 'hook-batch-begin', 'hook-batch-end', 'hook-batch-error', 'close-begin', 'close-end', 'close-error']);
+const phases = new Set(['stdin-read-begin', 'stdin-read-end', 'stdin-read-error', 'powershell-begin', 'powershell-end', 'powershell-error', 'powershell-instrumentation-missing', 'ps-entry', 'ps-stdin-open', 'ps-stdin-reader', 'ps-stdin-read', 'ps-stdin-read-done', 'ps-decode', 'ps-decode-done', 'ps-identity', 'ps-identity-done', 'ps-acl-get', 'ps-acl-get-done', 'ps-acl-set', 'ps-acl-set-done', 'ps-acl-readback', 'ps-acl-readback-done', 'ps-probe', 'ps-probe-done', 'ps-done', 'ps-error', 'register-begin', 'register-end', 'register-error', 'hook-batch-begin', 'hook-batch-end', 'hook-batch-error', 'close-begin', 'close-end', 'close-error']);
 const same = (value, expected) => typeof value === 'string' && path.resolve(value) === expected;
 const emit = (phase, started) => process.stderr.write(`${prefix}${JSON.stringify({ phase, elapsedMs: Date.now() - started })}\n`);
+export const traceScript = (encoded) => {
+  if (typeof encoded !== 'string') return null;
+  let script;
+  try { script = Buffer.from(encoded, 'base64').toString('utf16le'); } catch { return null; }
+  const anchors = ["$ErrorActionPreference = 'Stop'", '$frame = $reader.ReadLine()', "$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json", '$identity = [Security.Principal.WindowsIdentity]::GetCurrent()', 'foreach ($file in $request.paths) {', '$acl = Read-Acl $file', 'if ($changed) {', '$actual = Read-Acl $file', 'if ($request.writableDirectory) {', "[Console]::Out.Write('{\"ok\":true}')"];
+  if (!anchors.every(anchor => script.includes(anchor))) return null;
+  const trace = "$script:TraceClock = [Diagnostics.Stopwatch]::StartNew()\nfunction Trace-Phase($phase) { try { if ($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE) { [IO.File]::AppendAllText($env:MEMESH_WINDOWS_MESSAGES_PHASE_FILE, $phase + ' ' + $script:TraceClock.ElapsedMilliseconds + [Environment]::NewLine, [Text.Encoding]::ASCII) } } catch {} }\n";
+  script = trace + script.replace('try {', "try {\n  Trace-Phase 'ps-entry'")
+    .replace('$reader = [IO.StreamReader]::new', "Trace-Phase 'ps-stdin-open'\n  $reader = [IO.StreamReader]::new")
+    .replace('$frame = $reader.ReadLine()', "Trace-Phase 'ps-stdin-reader'\n  Trace-Phase 'ps-stdin-read'\n  $frame = $reader.ReadLine()\n  Trace-Phase 'ps-stdin-read-done'")
+    .replace('$request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json', "Trace-Phase 'ps-decode'\n  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json\n  Trace-Phase 'ps-decode-done'")
+    .replace('$identity = [Security.Principal.WindowsIdentity]::GetCurrent()', "Trace-Phase 'ps-identity'\n  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()\n  Trace-Phase 'ps-identity-done'")
+    .replace('$acl = Read-Acl $file', "Trace-Phase 'ps-acl-get'\n    $acl = Read-Acl $file\n    Trace-Phase 'ps-acl-get-done'")
+    .replace('if ($changed) {\n      if ([IO.Directory]::Exists($file))', "if ($changed) {\n      Trace-Phase 'ps-acl-set'\n      if ([IO.Directory]::Exists($file))")
+    .replace("else { [IO.File]::SetAccessControl($file, $acl) }\n    }", "else { [IO.File]::SetAccessControl($file, $acl) }\n      Trace-Phase 'ps-acl-set-done'\n    }")
+    .replace('$actual = Read-Acl $file', "Trace-Phase 'ps-acl-readback'\n    $actual = Read-Acl $file\n    Trace-Phase 'ps-acl-readback-done'")
+    .replace('$probe = [IO.Path]::Combine', "Trace-Phase 'ps-probe'\n    $probe = [IO.Path]::Combine")
+    .replace("} finally { if ($null -ne $stream) { $stream.Dispose() } }\n  }\n  [Console]", "} finally { if ($null -ne $stream) { $stream.Dispose() } }\n    Trace-Phase 'ps-probe-done'\n  }\n  Trace-Phase 'ps-done'\n  [Console]")
+    .replace("} catch {\n  [Console]", "} catch {\n  Trace-Phase 'ps-error'\n  [Console]");
+  return Buffer.from(script, 'utf16le').toString('base64');
+};
 
 if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
   const started = Date.now();
@@ -28,7 +49,11 @@ if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
   childProcess.execFileSync = function tracedExec(command, ...args) {
     if (path.win32.basename(String(command)).toLowerCase() !== 'powershell.exe') return exec.call(this, command, ...args);
     emit('powershell-begin', started);
-    try { const result = exec.call(this, command, ...args); emit('powershell-end', started); return result; }
+    const [argv, ...rest] = args;
+    const index = Array.isArray(argv) ? argv.indexOf('-EncodedCommand') : -1;
+    const traced = index >= 0 ? traceScript(argv[index + 1]) : null;
+    if (!traced) emit('powershell-instrumentation-missing', started);
+    try { const result = exec.call(this, command, ...(traced ? [[...argv.slice(0, index + 1), traced, ...argv.slice(index + 2)], ...rest] : args)); emit('powershell-end', started); return result; }
     catch (error) { emit('powershell-error', started); throw error; }
   };
   syncBuiltinESMExports();
@@ -45,8 +70,16 @@ if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
   const spawn = childProcess.spawn;
   childProcess.spawn = function tracedSpawn(command, args, options) {
     if (command !== process.execPath || !Array.isArray(args) || !same(args[0], messages)) return spawn.call(this, command, args, options);
-    const env = { ...(options?.env ?? process.env), [childFlag]: 'child', NODE_OPTIONS: `${options?.env?.NODE_OPTIONS ?? process.env.NODE_OPTIONS ?? ''} --import=${self}`.trim() };
-    const child = spawn.call(this, command, args, { ...options, env });
+    const baseEnv = options?.env ?? process.env;
+    let traceFile;
+    try {
+      const candidatePath = path.join(baseEnv.HOME, `.memesh-windows-phase-${process.pid}-${Date.now()}`);
+      fs.writeFileSync(candidatePath, '', { mode: 0o600, flag: 'wx' });
+      traceFile = candidatePath;
+    } catch { /* trace must not change the gate */ }
+    const env = { ...baseEnv, [childFlag]: 'child', ...(traceFile ? { MEMESH_WINDOWS_MESSAGES_PHASE_FILE: traceFile } : {}), NODE_OPTIONS: `${baseEnv.NODE_OPTIONS ?? ''} --import=${self}`.trim() };
+    let child;
+    try { child = spawn.call(this, command, args, { ...options, env }); } catch (error) { if (traceFile) try { fs.rmSync(traceFile, { force: true }); } catch {} throw error; }
     let pending = '';
     const forward = (line) => {
       if (!line.startsWith(prefix)) return;
@@ -57,6 +90,15 @@ if (process.env[childFlag] === 'child' && same(process.argv[1], messages)) {
     };
     child.stderr?.on('data', chunk => { pending += chunk; let newline; while ((newline = pending.indexOf('\n')) >= 0) { forward(pending.slice(0, newline)); pending = pending.slice(newline + 1); } });
     child.stderr?.once('end', () => forward(pending));
+    child.once('exit', () => {
+      try {
+        for (const line of fs.readFileSync(traceFile, 'utf8').split(/\r?\n/)) {
+          const match = /^([a-z-]+) ([0-9]{1,8})$/.exec(line);
+          if (match && phases.has(match[1])) process.stderr.write(`${prefix}${JSON.stringify({ phase: match[1], elapsedMs: Number(match[2]) })}\n`);
+        }
+      } catch { /* trace must not change the gate */ }
+      finally { if (traceFile) try { fs.rmSync(traceFile, { force: true }); } catch {} }
+    });
     return child;
   };
   syncBuiltinESMExports();
