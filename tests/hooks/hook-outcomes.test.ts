@@ -179,6 +179,24 @@ describe('hook outcome records', () => {
   function postCommit(extraEnv: Record<string, string> = {}, timeout = 20000) {
     runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv }, timeout);
   }
+  function gitCallRecorder() {
+    const log = path.join(testDir, `git-calls-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+    const recorder = path.join(testDir, `git-recorder-${Date.now()}-${Math.random().toString(16).slice(2)}.cjs`);
+    fs.writeFileSync(recorder, `const fs = require('node:fs');
+const cp = require('node:child_process');
+const original = cp.execFileSync;
+cp.execFileSync = function (command, args, ...rest) {
+  // [WORKAROUND: Test records only; Git still executes.]
+  if (command === 'git') fs.appendFileSync(process.env.MEMESH_GIT_CALLS, JSON.stringify(args ?? []) + '\\n');
+  return original.call(this, command, args, ...rest);
+};
+require('node:module').syncBuiltinESMExports();
+`);
+    const calls = () => fs.existsSync(log)
+      ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as string[])
+      : [];
+    return { env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(recorder)}`, MEMESH_GIT_CALLS: log }, calls };
+  }
   function emptyCommit(label: string, seconds?: number) {
     execFileSync('git', ['-C', repoDir, '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-qm', label], {
       env: { ...process.env, ...(seconds === undefined ? {} : { GIT_AUTHOR_DATE: `${seconds} +0000`, GIT_COMMITTER_DATE: `${seconds} +0000` }) },
@@ -322,7 +340,9 @@ DatabaseSync.prototype.prepare = function(sql) {
         pending.push(emptyCommit(`blocked-${i}`));
         const ledger = () => fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8').trim().split('\n').map(line => JSON.parse(line));
         const before = ledger().length;
-        postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
+        const recorder = gitCallRecorder();
+        postCommit(recorder.env, POST_COMMIT_HOOK_TIMEOUT_MS);
+        expect(recorder.calls().filter(args => args.includes('show') && args.includes('-s') && args.includes('--format=%s'))).toHaveLength(1);
         const fresh = ledger().slice(before).filter(row => row.hook === 'post-commit');
         expect(fresh).toHaveLength(2);
         expect(new Set(fresh.map(row => row.run)).size).toBe(1);

@@ -5889,7 +5889,9 @@ describe('doctor: automatic updates', () => {
 
   it('does not crash where the system has no passwd entry and reports the default on policy', async () => {
     const savedPolicy = process.env.MEMESH_AUTO_UPDATE;
-    const savedCi = process.env.CI;
+    // autoUpdatePolicy treats each of these as CI, not only CI itself.
+    const ciKeys = ['CI', 'GITHUB_ACTIONS', 'GITLAB_CI', 'BUILDKITE', 'CIRCLECI', 'JENKINS_URL', 'TF_BUILD', 'TRAVIS', 'APPVEYOR', 'CODEBUILD_BUILD_ID', 'TEAMCITY_VERSION', 'DRONE', 'BITBUCKET_BUILD_NUMBER', 'CIRRUS_CI', 'SEMAPHORE'] as const;
+    const savedCi = Object.fromEntries(ciKeys.map((key) => [key, process.env[key]]));
     const spy = vi.spyOn(os, 'userInfo').mockImplementation(() => { throw new Error('ENOENT: no passwd entry for this uid'); });
     try {
       const root = createPackageRoot();
@@ -5899,7 +5901,7 @@ describe('doctor: automatic updates', () => {
       const savedDb = process.env.MEMESH_DB_PATH;
       process.env.MEMESH_DB_PATH = path.join(dataDir, 'knowledge-graph.db');
       delete process.env.MEMESH_AUTO_UPDATE;
-      delete process.env.CI;
+      for (const key of ciKeys) delete process.env[key];
       try {
         const result = await runDoctor({
           packageRoot: root, packageVersion: '4.0.3',
@@ -5921,7 +5923,9 @@ describe('doctor: automatic updates', () => {
     } finally {
       spy.mockRestore();
       if (savedPolicy === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = savedPolicy;
-      if (savedCi === undefined) delete process.env.CI; else process.env.CI = savedCi;
+      for (const key of ciKeys) {
+        if (savedCi[key] === undefined) delete process.env[key]; else process.env[key] = savedCi[key];
+      }
     }
   });
 });

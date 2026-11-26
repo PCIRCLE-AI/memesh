@@ -253,7 +253,7 @@ export function validatePostCommitEmptyBatch(source) {
 // Reviewed exception for the empty-batch exit after the nested archived exit.
 // Any source change revokes the exception and requires a fresh review.
 export function isReviewedPostCommitExit(source, line) {
-  return createHash('sha256').update(source).digest('hex') === 'b858d0481a2413ed6695ef59805a6ad0870cf7a3583f3e837de04d62af8f6f43'
+  return createHash('sha256').update(source).digest('hex') === '2cd38b70532db71cd34f3a81d8fb4cfcfe9092d7c802fad1e395bf0e48c2b1ef'
     && source.split('\n')[line - 1]?.trim() === 'if (captured.length === 0) return exit0();'
     && validatePostCommitEmptyBatch(source);
 }

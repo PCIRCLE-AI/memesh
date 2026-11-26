@@ -31,7 +31,9 @@ describe('Windows permissions bridge', () => {
     expect(command).toBe('C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe');
     expect(args).toEqual(['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', expect.any(String)]);
     expect(Buffer.from((args as string[])[4], 'base64').toString('utf16le')).not.toContain('not-a-command');
-    expect(JSON.parse(Buffer.from(String((options as { input: string }).input), 'base64').toString('utf8'))).toEqual({ paths: [dir], writableDirectory: dir });
+    const frame = String((options as { input: string }).input);
+    expect(frame).toMatch(/^[A-Za-z0-9+/=]+\n$/);
+    expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], writableDirectory: dir });
     expect(options).toMatchObject({ timeout: 15000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   });
 
@@ -59,7 +61,10 @@ describe('Windows permissions bridge', () => {
 // the real DACL. These cases run on Windows; a mocked bridge is not ACL proof.
 const FIXTURE = String.raw`
 $ErrorActionPreference = 'Stop'
-$r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())) | ConvertFrom-Json
+$reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
+$frame = $reader.ReadLine()
+if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
+$r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json
 $self = [Security.Principal.WindowsIdentity]::GetCurrent().User
 $acl = if ([IO.Directory]::Exists($r.file)) { [IO.Directory]::GetAccessControl($r.file) } else { [IO.File]::GetAccessControl($r.file) }
 switch ($r.action) {
@@ -95,7 +100,7 @@ $rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentif
 function fixture(file: string, action: 'public' | 'deny' | 'restore' | 'read'): { protected: boolean; rules: { sid: string; type: string; rights: number }[] } {
   return JSON.parse(childProcess.execFileSync(path.win32.join(process.env.SystemRoot ?? process.env.SYSTEMROOT!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(FIXTURE, 'utf16le').toString('base64')],
-    { input: Buffer.from(JSON.stringify({ file, action })).toString('base64'), encoding: 'utf8', windowsHide: true, timeout: 15000 }));
+    { input: Buffer.from(JSON.stringify({ file, action })).toString('base64') + '\n', encoding: 'utf8', windowsHide: true, timeout: 15000 }));
 }
 
 describe.runIf(process.platform === 'win32')('actual Windows private paths', () => {

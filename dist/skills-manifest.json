@@ -243,8 +243,8 @@
     },
     {
       "path": "scripts/hooks/_generated/windows-permissions.js",
-      "sha256": "1f048434de1d87d10e21e2289bb4500f27078dc1f6a0bae01f5b137d21011fd5",
-      "bytes": 5965
+      "sha256": "2ea738e713c18a2c82077840d3683645d1659f2c68785dee13c966f95f7fe850",
+      "bytes": 6172
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
@@ -293,8 +293,8 @@
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "b858d0481a2413ed6695ef59805a6ad0870cf7a3583f3e837de04d62af8f6f43",
-      "bytes": 21122
+      "sha256": "2cd38b70532db71cd34f3a81d8fb4cfcfe9092d7c802fad1e395bf0e48c2b1ef",
+      "bytes": 21415
     },
     {
       "path": "scripts/hooks/pre-compact.js",

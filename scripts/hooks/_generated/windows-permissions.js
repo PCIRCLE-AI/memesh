@@ -12,7 +12,10 @@ import childProcess from 'node:child_process';
 const SCRIPT = String.raw `
 $ErrorActionPreference = 'Stop'
 try {
-  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::In.ReadToEnd())) | ConvertFrom-Json
+  $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
+  $frame = $reader.ReadLine()
+  if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
+  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json
   $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
   $self = $identity.User.Value
   $admin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
@@ -98,7 +101,7 @@ export function makeWindowsPathsPrivate(targets, writableDirectory) {
         if (!systemRoot || !path.win32.isAbsolute(systemRoot))
             throw new Error('Windows system directory unavailable');
         const output = childProcess.execFileSync(path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')], {
-            input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory })).toString('base64'),
+            input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory })).toString('base64') + '\n',
             encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
             timeout: 15_000, maxBuffer: 4096,
         });

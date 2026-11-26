@@ -149,7 +149,6 @@ function commitsFromState(cwd, state, db) {
   return {
     commits: pending.slice(0, MAX_COMMITS_PER_RUN).map(({ fullHash, hash }) => ({
       fullHash, hash,
-      message: gitText(cwd, ['show', '-s', '--format=%s', fullHash]),
       branch: state.branch,
       batch: range.length > 1,
     })),
@@ -384,7 +383,12 @@ process.stdin.on('end', () => {
       let remaining = resolved.pending;
       const captured = [];
       let archivedCount = 0;
-      for (const commit of commits) {
+      for (const pendingCommit of commits) {
+        // Keep subject lookup outside the write-failure catch: a Git error is
+        // still a hook error, rather than a three-strike capture failure.
+        const commit = pendingCommit.message === undefined
+          ? { ...pendingCommit, message: gitText(data.cwd, ['show', '-s', '--format=%s', pendingCommit.fullHash]) }
+          : pendingCommit;
         let result;
         try {
           result = captureCommit(db, data, projectName, commit);
