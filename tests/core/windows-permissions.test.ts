@@ -3,10 +3,11 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import childProcess from 'node:child_process';
-import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { databaseFiles, requirePrivateWritableDirectory } from '../../src/core/file-mode.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { windowsAclFixture } from '../helpers/permissions.js';
 import { parseTraceLine, traceScript } from '../../scripts/diagnose-windows-messages-entry.mjs';
 
 const roots: string[] = [];
@@ -36,7 +37,7 @@ describe('Windows permissions bridge', () => {
     expect(script).toContain("Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\\Microsoft.PowerShell.Utility\\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop");
     const frame = String((options as { input: string }).input);
     expect(frame).toMatch(/^[A-Za-z0-9+/=]+\n$/);
-    expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], writableDirectory: dir });
+    expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], writableDirectory: dir, readOnly: false });
     expect(options).toMatchObject({ timeout: 15000, windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
   });
 
@@ -58,54 +59,18 @@ describe('Windows permissions bridge', () => {
     makeWindowsPathsPrivate([path.join(directory(), 'absent.db')]);
     expect(exec).not.toHaveBeenCalled();
   });
+
+  it('sends readonly verification without a write probe', () => {
+    const dir = directory();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue('{"ok":true}');
+    verifyWindowsPathsPrivate([dir]);
+    const frame = String((exec.mock.calls[0][2] as { input: string }).input);
+    expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], readOnly: true });
+  });
 });
 
-// The fixture adds a known public allow or owner deny, and independently reads
-// the real DACL. These cases run on Windows; a mocked bridge is not ACL proof.
-const FIXTURE = String.raw`
-$ErrorActionPreference = 'Stop'
-$null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
-$reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
-$frame = $reader.ReadLine()
-if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
-$r = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json
-$self = [Security.Principal.WindowsIdentity]::GetCurrent().User
-$acl = if ([IO.Directory]::Exists($r.file)) { [IO.Directory]::GetAccessControl($r.file) } else { [IO.File]::GetAccessControl($r.file) }
-switch ($r.action) {
-  'public' {
-    $acl.SetAccessRuleProtection($true, $true)
-    $everyone = [Security.Principal.SecurityIdentifier]::new('S-1-1-0')
-    if ([IO.Directory]::Exists($r.file)) {
-      $acl.AddAccessRule(([Security.AccessControl.FileSystemAccessRule]::new($everyone, [Security.AccessControl.FileSystemRights]::Read,
-        ([Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit),
-        [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Allow)))
-    } else {
-      $acl.AddAccessRule(([Security.AccessControl.FileSystemAccessRule]::new($everyone, [Security.AccessControl.FileSystemRights]::Read, [Security.AccessControl.AccessControlType]::Allow)))
-    }
-  }
-  'deny' {
-    $acl.AddAccessRule(([Security.AccessControl.FileSystemAccessRule]::new($self, [Security.AccessControl.FileSystemRights]::Write, [Security.AccessControl.AccessControlType]::Deny)))
-  }
-  'restore' {
-    foreach ($rule in @($acl.GetAccessRules($true, $false, [Security.Principal.SecurityIdentifier]))) {
-      if ($rule.IdentityReference.Value -eq $self.Value -and $rule.AccessControlType -eq [Security.AccessControl.AccessControlType]::Deny) { $acl.RemoveAccessRuleSpecific($rule) }
-    }
-  }
-}
-if ($r.action -ne 'read') {
-  if ([IO.Directory]::Exists($r.file)) { [IO.Directory]::SetAccessControl($r.file, $acl) }
-  else { [IO.File]::SetAccessControl($r.file, $acl) }
-}
-$rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
-  @{ sid = $_.IdentityReference.Value; type = $_.AccessControlType.ToString(); rights = [int]$_.FileSystemRights }
-})
-@{ protected = $acl.AreAccessRulesProtected; rules = $rules } | ConvertTo-Json -Depth 3 -Compress
-`;
-function fixture(file: string, action: 'public' | 'deny' | 'restore' | 'read'): { protected: boolean; rules: { sid: string; type: string; rights: number }[] } {
-  return JSON.parse(childProcess.execFileSync(path.win32.join(process.env.SystemRoot ?? process.env.SYSTEMROOT!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
-    ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(FIXTURE, 'utf16le').toString('base64')],
-    { input: Buffer.from(JSON.stringify({ file, action })).toString('base64') + '\n', encoding: 'utf8', windowsHide: true, timeout: 15000 }));
-}
+const fixture = windowsAclFixture;
 
 function withFailureTrace<T>(action: () => T): T {
   let traceFile: string | undefined;
@@ -177,6 +142,35 @@ describe('Windows permission diagnostic projection', () => {
 });
 
 describe.runIf(process.platform === 'win32')('actual Windows private paths', () => {
+  it('accepts a safe inherited ACL and rejects a public inherited ACL without changing either', () => {
+    const privateParent = directory();
+    makeWindowsPathsPrivate([privateParent], privateParent);
+    const safe = path.join(privateParent, 'safe.db');
+    fs.writeFileSync(safe, 'fixture');
+    const safeBefore = fixture(safe, 'read');
+    expect(safeBefore.protected).toBe(false);
+    expect(() => verifyWindowsPathsPrivate([safe])).not.toThrow();
+    expect(fixture(safe, 'read')).toEqual(safeBefore);
+
+    const publicParent = directory();
+    fixture(publicParent, 'public');
+    const publicFile = path.join(publicParent, 'public.db');
+    fs.writeFileSync(publicFile, 'fixture');
+    const publicBefore = fixture(publicFile, 'read');
+    expect(publicBefore.protected).toBe(false);
+    expect(publicBefore.rules).toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
+    expect(() => verifyWindowsPathsPrivate([publicFile])).toThrow(/Cannot verify private Windows permissions/);
+    expect(fixture(publicFile, 'read')).toEqual(publicBefore);
+  });
+
+  it('refuses a public DACL without repairing it', () => {
+    const file = path.join(directory(), 'public.db');
+    fs.writeFileSync(file, 'fixture');
+    fixture(file, 'public');
+    expect(() => verifyWindowsPathsPrivate([file])).toThrow(/Cannot verify private Windows permissions/);
+    expect(fixture(file, 'read').rules).toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
+  });
+
   it('protects new message sidecars and repairs explicitly public existing message files', () => {
     const dir = path.join(directory(), "空 白 ' $(literal); path");
     fs.mkdirSync(dir);

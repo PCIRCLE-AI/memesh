@@ -19,6 +19,7 @@ import { stopBridge } from '../../src/network/bridge-control.js';
 import { readStatus } from '../../src/network/bridge-state.js';
 import { installRuntimeOnce, linkRuntime, type Tree } from './helpers.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
+import { expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 
 const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); roots.splice(0).forEach(r => fs.rmSync(r, { recursive: true, force: true })); });
@@ -74,7 +75,7 @@ it('moves only three metadata tables atomically and reuses publication without c
     expect(db.prepare('SELECT * FROM agent_network_peers').all()).toHaveLength(1);
   } finally { db.close(); }
   expect(readPublicNetworkContext(f.root)?.self.id).toBe(f.self.machineId);
-  expect(fs.statSync(networkMetadataPath(f.root)).mode & 0o077).toBe(0);
+  expectPrivateFile(networkMetadataPath(f.root));
 });
 
 it('keeps local read/status after signed removal while remote authorization closes visibly', async () => {
@@ -100,9 +101,19 @@ it('does not trust tampered signatures or repair unsafe metadata permissions', a
   const db = openNetworkStore(file);
   db.prepare("UPDATE agent_network_config SET roster_signature='invalid'").run(); db.close();
   expect(() => readPublicNetworkContext(f.root)).toThrow();
-  fs.chmodSync(file, 0o644);
-  expect(() => readPublicNetworkContext(f.root)).toThrow(/Unsafe/);
-  expect(fs.statSync(file).mode & 0o777).toBe(0o644);
+  const unsafe = fixture(); await migrateNetworkMetadata(unsafe.ctx);
+  const unsafeFile = networkMetadataPath(unsafe.root);
+  const before = hash(unsafeFile);
+  if (process.platform === 'win32') {
+    const publicAcl = makeWindowsAclPublic(unsafeFile);
+    expect(() => readPublicNetworkContext(unsafe.root)).toThrow(/Cannot verify private Windows permissions/);
+    expect(readWindowsAcl(unsafeFile)).toEqual(publicAcl);
+  } else {
+    fs.chmodSync(unsafeFile, 0o644);
+    expect(() => readPublicNetworkContext(unsafe.root)).toThrow(/Unsafe/);
+    expect(fs.statSync(unsafeFile).mode & 0o777).toBe(0o644);
+  }
+  expect(hash(unsafeFile)).toBe(before);
 });
 
 it.skipIf(process.platform !== 'darwin')('accepts only the fixed macOS tmp/var aliases, not a task-owned directory link', async () => {

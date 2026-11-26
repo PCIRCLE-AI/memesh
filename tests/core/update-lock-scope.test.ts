@@ -5,6 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
+import { expectPrivateDir } from '../helpers/permissions.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -119,7 +120,7 @@ describe('auto-update lock scope', () => {
     expect(first).toMatchObject({ state: 'dispatched', lock });
     expect(second).toMatchObject({ state: 'throttled' });
     expect(second.lock).toBeUndefined();
-    expect(fs.statSync(path.dirname(lock)).mode & 0o077).toBe(0);
+    expectPrivateDir(path.dirname(lock));
     expect(fs.existsSync(path.join(home, 'data-a', 'auto-update-attempt'))).toBe(false);
     expect(fs.existsSync(path.join(home, 'data-b', 'auto-update-attempt'))).toBe(false);
   });

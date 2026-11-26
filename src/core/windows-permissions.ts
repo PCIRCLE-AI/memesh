@@ -39,6 +39,12 @@ try {
     return $sid -in @($self, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4') -or
       ($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
   }
+  function Assert-Private($acl) {
+    Check-Acl $acl
+    foreach ($rule in $acl.GetAccessRules($true, $true, $sidType)) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
+    }
+  }
   function Rule-Key($rule) {
     return '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value, $rule.AccessControlType,
       [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags
@@ -63,6 +69,11 @@ try {
     return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'
   }
   foreach ($file in $request.paths) {
+    if ($request.readOnly) {
+      $verifyAcl = Read-Acl $file
+      Assert-Private $verifyAcl
+      continue
+    }
     $acl = Read-Acl $file
     Check-Acl $acl
     $owner = $acl.GetOwner($sidType).Value
@@ -118,6 +129,15 @@ try {
 
 /** Windows mode bits cannot establish privacy; verify the actual DACL. */
 export function makeWindowsPathsPrivate(targets: string[], writableDirectory?: string): void {
+  runWindowsPermissionCheck(targets, writableDirectory, false);
+}
+
+/** Validate an existing Windows DACL without changing it or probing writes. */
+export function verifyWindowsPathsPrivate(targets: string[]): void {
+  runWindowsPermissionCheck(targets, undefined, true);
+}
+
+function runWindowsPermissionCheck(targets: string[], writableDirectory: string | undefined, readOnly: boolean): void {
   const paths: string[] = [];
   for (const target of targets) {
     if (fs.statSync(target, { throwIfNoEntry: false }) !== undefined) paths.push(fs.realpathSync(target));
@@ -130,7 +150,7 @@ export function makeWindowsPathsPrivate(targets: string[], writableDirectory?: s
       path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')],
       {
-        input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory })).toString('base64') + '\n',
+        input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString('base64') + '\n',
         encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
         timeout: 15_000, maxBuffer: 4096,
       },

@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { NETWORK_METADATA_SCHEMA_SQL } from '../storage/agent-network-schema.js';
 import { openPublicNetworkDatabase } from '../core/public-network-context.js';
+import { makeWindowsPathsPrivate } from '../core/windows-permissions.js';
 import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
 import { stopBridge } from './bridge-control.js';
 import { probeBridge } from './control-socket.js';
@@ -51,11 +52,13 @@ export async function migrateNetworkMetadata(ctx: NetworkContext): Promise<boole
     const rows = Object.entries(TABLES).map(([table, columns]) => ({ table, columns,
       rows: source.prepare(`SELECT ${columns.join(',')} FROM ${table}`).all() }));
     const directory = path.dirname(target);
-    fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    const madeDirectory = fs.mkdirSync(directory, { recursive: true, mode: 0o700 });
+    if (madeDirectory && process.platform === 'win32') makeWindowsPathsPrivate([directory], directory);
     // Reuse the readonly guard to reject an unsafe existing directory, without chmod.
     const check = openPublicNetworkDatabase(target); check?.close();
     temporary = path.join(directory, `.metadata-${randomUUID()}.db`);
     fs.closeSync(fs.openSync(temporary, 'wx', 0o600));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([temporary]);
     const destination = new MemeshDatabase(temporary);
     try {
       destination.exec(NETWORK_METADATA_SCHEMA_SQL);
@@ -70,6 +73,7 @@ export async function migrateNetworkMetadata(ctx: NetworkContext): Promise<boole
       }).immediate();
       destination.pragma('wal_checkpoint(TRUNCATE)');
     } finally { destination.close(); }
+    if (process.platform === 'win32') makeWindowsPathsPrivate([temporary, `${temporary}-wal`, `${temporary}-shm`, `${temporary}-journal`]);
     source.exec('COMMIT');
     const fd = fs.openSync(temporary, 'r+'); try { fs.fsyncSync(fd); } finally { fs.closeSync(fd); }
     try { fs.linkSync(temporary, target); }

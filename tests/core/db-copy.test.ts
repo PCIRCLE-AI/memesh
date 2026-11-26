@@ -10,6 +10,7 @@ import path from 'node:path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { copyDatabaseBefore, DB_COPIES_KEPT } from '../../src/core/db-copy.js';
+import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 
 const PREFIX = 'knowledge-graph-before-note-trust';
 let root: string;
@@ -158,8 +159,8 @@ describe('copyDatabaseBefore', () => {
     try {
       const copy = copyDatabaseBefore(getDatabase(), PREFIX);
       expect(copy.kind).toBe('ready');
-      if (copy.kind === 'ready') expect(fs.statSync(copy.path).mode & 0o777).toBe(0o600);
-      expect(fs.statSync(backups).mode & 0o777).toBe(0o700);
+      if (copy.kind === 'ready') expectPrivateFile(copy.path);
+      expectPrivateDir(backups);
     } finally {
       process.umask(previousMask);
     }

@@ -3,6 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { hasPagesWaiting, immutableAddress, refuseMismatchedSidecars } from './file-mode.js';
+import { verifyWindowsPathsPrivate } from './windows-permissions.js';
 import { verifyRoster } from '../network/roster.js';
 import type { ConversationNetworkSnapshot } from './conversation-messages.js';
 
@@ -28,6 +29,7 @@ export function openPublicNetworkDatabase(file: string, consistentSnapshot = fal
   }
   if (!parent.isDirectory() || parent.isSymbolicLink() || fs.realpathSync(path.dirname(file)) !== expectedParent
     || (process.platform !== 'win32' && (parent.uid !== process.getuid?.() || (parent.mode & 0o077) !== 0))) throw new Error('Unsafe network metadata directory');
+  if (process.platform === 'win32') verifyWindowsPathsPrivate([path.dirname(file)]);
   const main = stat(file);
   if (!main) return undefined;
   for (const target of [file, `${file}-wal`, `${file}-shm`, `${file}-journal`]) {
@@ -35,6 +37,7 @@ export function openPublicNetworkDatabase(file: string, consistentSnapshot = fal
     if (value && (!value.isFile() || value.isSymbolicLink() || value.nlink !== 1
       || (process.platform !== 'win32' && (value.uid !== process.getuid?.() || (value.mode & 0o077) !== 0)))) throw new Error('Unsafe network metadata file');
   }
+  if (process.platform === 'win32') verifyWindowsPathsPrivate([file, `${file}-wal`, `${file}-shm`, `${file}-journal`]);
   const pending = hasPagesWaiting(file);
   if (pending) {
     if (!stat(`${file}-shm`)) throw new Error('Network metadata WAL requires existing SHM for readonly access');

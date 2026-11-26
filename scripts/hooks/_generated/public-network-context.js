@@ -10,6 +10,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { MemeshDatabase } from './sqlite.js';
 import { hasPagesWaiting, immutableAddress, refuseMismatchedSidecars } from './file-mode.js';
+import { verifyWindowsPathsPrivate } from './windows-permissions.js';
 import { verifyRoster } from './network-roster.js';
 function stat(file) {
     try {
@@ -36,6 +37,8 @@ export function openPublicNetworkDatabase(file, consistentSnapshot = false) {
     if (!parent.isDirectory() || parent.isSymbolicLink() || fs.realpathSync(path.dirname(file)) !== expectedParent
         || (process.platform !== 'win32' && (parent.uid !== process.getuid?.() || (parent.mode & 0o077) !== 0)))
         throw new Error('Unsafe network metadata directory');
+    if (process.platform === 'win32')
+        verifyWindowsPathsPrivate([path.dirname(file)]);
     const main = stat(file);
     if (!main)
         return undefined;
@@ -45,6 +48,8 @@ export function openPublicNetworkDatabase(file, consistentSnapshot = false) {
             || (process.platform !== 'win32' && (value.uid !== process.getuid?.() || (value.mode & 0o077) !== 0))))
             throw new Error('Unsafe network metadata file');
     }
+    if (process.platform === 'win32')
+        verifyWindowsPathsPrivate([file, `${file}-wal`, `${file}-shm`, `${file}-journal`]);
     const pending = hasPagesWaiting(file);
     if (pending) {
         if (!stat(`${file}-shm`))
