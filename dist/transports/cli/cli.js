@@ -1211,8 +1211,8 @@ var require_command = __commonJS({
   "node_modules/commander/lib/command.js"(exports) {
     var EventEmitter = __require("node:events").EventEmitter;
     var childProcess2 = __require("node:child_process");
-    var path48 = __require("node:path");
-    var fs48 = __require("node:fs");
+    var path49 = __require("node:path");
+    var fs49 = __require("node:fs");
     var process2 = __require("node:process");
     var { Argument: Argument2, humanReadableArgName } = require_argument();
     var { CommanderError: CommanderError2 } = require_error();
@@ -2206,7 +2206,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} subcommandName
        */
       _checkForMissingExecutable(executableFile, executableDir, subcommandName) {
-        if (fs48.existsSync(executableFile)) return;
+        if (fs49.existsSync(executableFile)) return;
         const executableDirMessage = executableDir ? `searched for local subcommand relative to directory '${executableDir}'` : "no directory for search for local subcommand, use .executableDir() to supply a custom directory";
         const executableMissing = `'${executableFile}' does not exist
  - if '${subcommandName}' is not meant to be an executable command, remove description parameter from '.command()' and use '.description()' instead
@@ -2224,11 +2224,11 @@ Expecting one of '${allowedValues.join("', '")}'`);
         let launchWithNode = false;
         const sourceExt = [".js", ".ts", ".tsx", ".mjs", ".cjs"];
         function findFile(baseDir, baseName) {
-          const localBin = path48.resolve(baseDir, baseName);
-          if (fs48.existsSync(localBin)) return localBin;
-          if (sourceExt.includes(path48.extname(baseName))) return void 0;
+          const localBin = path49.resolve(baseDir, baseName);
+          if (fs49.existsSync(localBin)) return localBin;
+          if (sourceExt.includes(path49.extname(baseName))) return void 0;
           const foundExt = sourceExt.find(
-            (ext) => fs48.existsSync(`${localBin}${ext}`)
+            (ext) => fs49.existsSync(`${localBin}${ext}`)
           );
           if (foundExt) return `${localBin}${foundExt}`;
           return void 0;
@@ -2240,21 +2240,21 @@ Expecting one of '${allowedValues.join("', '")}'`);
         if (this._scriptPath) {
           let resolvedScriptPath;
           try {
-            resolvedScriptPath = fs48.realpathSync(this._scriptPath);
+            resolvedScriptPath = fs49.realpathSync(this._scriptPath);
           } catch {
             resolvedScriptPath = this._scriptPath;
           }
-          executableDir = path48.resolve(
-            path48.dirname(resolvedScriptPath),
+          executableDir = path49.resolve(
+            path49.dirname(resolvedScriptPath),
             executableDir
           );
         }
         if (executableDir) {
           let localFile = findFile(executableDir, executableFile);
           if (!localFile && !subcommand._executableFile && this._scriptPath) {
-            const legacyName = path48.basename(
+            const legacyName = path49.basename(
               this._scriptPath,
-              path48.extname(this._scriptPath)
+              path49.extname(this._scriptPath)
             );
             if (legacyName !== this._name) {
               localFile = findFile(
@@ -2265,7 +2265,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
           }
           executableFile = localFile || executableFile;
         }
-        launchWithNode = sourceExt.includes(path48.extname(executableFile));
+        launchWithNode = sourceExt.includes(path49.extname(executableFile));
         let proc;
         if (process2.platform !== "win32") {
           if (launchWithNode) {
@@ -3180,7 +3180,7 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @return {Command}
        */
       nameFromFilename(filename) {
-        this._name = path48.basename(filename, path48.extname(filename));
+        this._name = path49.basename(filename, path49.extname(filename));
         return this;
       }
       /**
@@ -3194,9 +3194,9 @@ Expecting one of '${allowedValues.join("', '")}'`);
        * @param {string} [path]
        * @return {(string|null|Command)}
        */
-      executableDir(path49) {
-        if (path49 === void 0) return this._executableDir;
-        this._executableDir = path49;
+      executableDir(path50) {
+        if (path50 === void 0) return this._executableDir;
+        this._executableDir = path50;
         return this;
       }
       /**
@@ -3604,9 +3604,9 @@ var init_sqlite = __esm({
     BUSY_TIMEOUT_MS = 3e4;
     MemeshDatabase = class extends DatabaseSync {
       #depth = 0;
-      constructor(path48, options = {}) {
+      constructor(path49, options = {}) {
         assertNodeSupported();
-        super(path48, options);
+        super(path49, options);
         this.pragma(`busy_timeout = ${BUSY_TIMEOUT_MS}`);
       }
       pragma(statement) {
@@ -7001,8 +7001,8 @@ function isPathShapedFileName(name) {
     return false;
   return true;
 }
-function isScratchPath(path48) {
-  return SCRATCH_PREFIXES.some((prefix) => path48.startsWith(prefix));
+function isScratchPath(path49) {
+  return SCRATCH_PREFIXES.some((prefix) => path49.startsWith(prefix));
 }
 function bashEditedPaths(cmd) {
   if (typeof cmd !== "string")
@@ -12838,9 +12838,9 @@ function agentScopeIdRejection(field, value) {
   return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
 function sessionIdRejection(field, value) {
-  const path48 = agentScopeIdRejection(field, value);
-  if (path48)
-    return path48;
+  const path49 = agentScopeIdRejection(field, value);
+  if (path49)
+    return path49;
   if (/[\u0080-\uffff]/.test(value)) {
     return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it (received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
   }
@@ -13090,10 +13090,10 @@ function mergeDefs(...defs) {
 function cloneDef(schema) {
   return mergeDefs(schema._zod.def);
 }
-function getElementAtPath(obj, path48) {
-  if (!path48)
+function getElementAtPath(obj, path49) {
+  if (!path49)
     return obj;
-  return path48.reduce((acc, key) => acc?.[key], obj);
+  return path49.reduce((acc, key) => acc?.[key], obj);
 }
 function promiseAllObject(promisesObj) {
   const keys2 = Object.keys(promisesObj);
@@ -13352,11 +13352,11 @@ function explicitlyAborted(x, startIndex = 0) {
   }
   return false;
 }
-function prefixIssues(path48, issues) {
+function prefixIssues(path49, issues) {
   return issues.map((iss) => {
     var _a3;
     (_a3 = iss).path ?? (_a3.path = []);
-    iss.path.unshift(path48);
+    iss.path.unshift(path49);
     return iss;
   });
 }
@@ -13889,16 +13889,16 @@ function flattenError(error62, mapper = (issue2) => issue2.message) {
 }
 function formatError(error62, mapper = (issue2) => issue2.message) {
   const fieldErrors = { _errors: [] };
-  const processError = (error63, path48 = []) => {
+  const processError = (error63, path49 = []) => {
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path48, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path49, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path48, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path49, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path48, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path49, ...issue2.path]);
       } else {
-        const fullpath = [...path48, ...issue2.path];
+        const fullpath = [...path49, ...issue2.path];
         if (fullpath.length === 0) {
           fieldErrors._errors.push(mapper(issue2));
         } else {
@@ -13937,17 +13937,17 @@ function formatError(error62, mapper = (issue2) => issue2.message) {
 }
 function treeifyError(error62, mapper = (issue2) => issue2.message) {
   const result = { errors: [] };
-  const processError = (error63, path48 = []) => {
+  const processError = (error63, path49 = []) => {
     var _a3;
     for (const issue2 of error63.issues) {
       if (issue2.code === "invalid_union" && issue2.errors.length) {
-        issue2.errors.map((issues) => processError({ issues }, [...path48, ...issue2.path]));
+        issue2.errors.map((issues) => processError({ issues }, [...path49, ...issue2.path]));
       } else if (issue2.code === "invalid_key") {
-        processError({ issues: issue2.issues }, [...path48, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path49, ...issue2.path]);
       } else if (issue2.code === "invalid_element") {
-        processError({ issues: issue2.issues }, [...path48, ...issue2.path]);
+        processError({ issues: issue2.issues }, [...path49, ...issue2.path]);
       } else {
-        const fullpath = [...path48, ...issue2.path];
+        const fullpath = [...path49, ...issue2.path];
         if (fullpath.length === 0) {
           result.errors.push(mapper(issue2));
           continue;
@@ -13986,8 +13986,8 @@ function treeifyError(error62, mapper = (issue2) => issue2.message) {
 }
 function toDotPath(_path) {
   const segs = [];
-  const path48 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
-  for (const seg of path48) {
+  const path49 = _path.map((seg) => typeof seg === "object" ? seg.key : seg);
+  for (const seg of path49) {
     if (typeof seg === "number")
       segs.push(`[${seg}]`);
     else if (typeof seg === "symbol")
@@ -32019,13 +32019,13 @@ function resolveRef(ref, ctx) {
   if (!ref.startsWith("#")) {
     throw new Error("External $ref is not supported, only local refs (#/...) are allowed");
   }
-  const path48 = ref.slice(1).split("/").filter(Boolean);
-  if (path48.length === 0) {
+  const path49 = ref.slice(1).split("/").filter(Boolean);
+  if (path49.length === 0) {
     return ctx.rootSchema;
   }
   const defsKey = ctx.version === "draft-2020-12" ? "$defs" : "definitions";
-  if (path48[0] === defsKey) {
-    const key = path48[1] === void 0 ? void 0 : decodeJSONPointerSegment(path48[1]);
+  if (path49[0] === defsKey) {
+    const key = path49[1] === void 0 ? void 0 : decodeJSONPointerSegment(path49[1]);
     if (!key || !ctx.defs[key]) {
       throw new Error(`Reference not found: ${ref}`);
     }
@@ -53340,11 +53340,11 @@ var require_mime_types = __commonJS({
       }
       return exts[0];
     }
-    function lookup(path48) {
-      if (!path48 || typeof path48 !== "string") {
+    function lookup(path49) {
+      if (!path49 || typeof path49 !== "string") {
         return false;
       }
-      var extension2 = extname("x." + path48).toLowerCase().slice(1);
+      var extension2 = extname("x." + path49).toLowerCase().slice(1);
       if (!extension2) {
         return false;
       }
@@ -57247,13 +57247,13 @@ var require_view = __commonJS({
   "node_modules/express/lib/view.js"(exports, module) {
     "use strict";
     var debug = require_src()("express:view");
-    var path48 = __require("node:path");
-    var fs48 = __require("node:fs");
-    var dirname = path48.dirname;
-    var basename = path48.basename;
-    var extname = path48.extname;
-    var join = path48.join;
-    var resolve2 = path48.resolve;
+    var path49 = __require("node:path");
+    var fs49 = __require("node:fs");
+    var dirname = path49.dirname;
+    var basename = path49.basename;
+    var extname = path49.extname;
+    var join = path49.join;
+    var resolve2 = path49.resolve;
     module.exports = View;
     function View(name, options) {
       var opts = options || {};
@@ -57282,17 +57282,17 @@ var require_view = __commonJS({
       this.path = this.lookup(fileName);
     }
     View.prototype.lookup = function lookup(name) {
-      var path49;
+      var path50;
       var roots = [].concat(this.root);
       debug('lookup "%s"', name);
-      for (var i = 0; i < roots.length && !path49; i++) {
+      for (var i = 0; i < roots.length && !path50; i++) {
         var root = roots[i];
         var loc = resolve2(root, name);
         var dir = dirname(loc);
         var file2 = basename(loc);
-        path49 = this.resolve(dir, file2);
+        path50 = this.resolve(dir, file2);
       }
-      return path49;
+      return path50;
     };
     View.prototype.render = function render(options, callback) {
       var sync = true;
@@ -57314,21 +57314,21 @@ var require_view = __commonJS({
     };
     View.prototype.resolve = function resolve3(dir, file2) {
       var ext = this.ext;
-      var path49 = join(dir, file2);
-      var stat2 = tryStat(path49);
+      var path50 = join(dir, file2);
+      var stat2 = tryStat(path50);
       if (stat2 && stat2.isFile()) {
-        return path49;
+        return path50;
       }
-      path49 = join(dir, basename(file2, ext), "index" + ext);
-      stat2 = tryStat(path49);
+      path50 = join(dir, basename(file2, ext), "index" + ext);
+      stat2 = tryStat(path50);
       if (stat2 && stat2.isFile()) {
-        return path49;
+        return path50;
       }
     };
-    function tryStat(path49) {
-      debug('stat "%s"', path49);
+    function tryStat(path50) {
+      debug('stat "%s"', path50);
       try {
-        return fs48.statSync(path49);
+        return fs49.statSync(path50);
       } catch (e) {
         return void 0;
       }
@@ -58584,15 +58584,15 @@ var require_dist3 = __commonJS({
       let index = 0;
       function consumeUntil(end) {
         const output2 = [];
-        let path48 = "";
+        let path49 = "";
         function writePath() {
-          if (!path48)
+          if (!path49)
             return;
           output2.push({
             type: "text",
-            value: encodePath(path48)
+            value: encodePath(path49)
           });
-          path48 = "";
+          path49 = "";
         }
         while (index < chars.length) {
           const value = chars[index++];
@@ -58604,7 +58604,7 @@ var require_dist3 = __commonJS({
             if (index === chars.length) {
               throw new PathError(`Unexpected end after \\ at index ${index}`, str);
             }
-            path48 += chars[index++];
+            path49 += chars[index++];
             continue;
           }
           if (value === ":" || value === "*") {
@@ -58648,7 +58648,7 @@ var require_dist3 = __commonJS({
           if (value === "}" || value === "(" || value === ")" || value === "[" || value === "]" || value === "+" || value === "?" || value === "!") {
             throw new PathError(`Unexpected ${value} at index ${index - 1}`, str);
           }
-          path48 += value;
+          path49 += value;
         }
         if (end) {
           throw new PathError(`Unexpected end at index ${index}, expected ${end}`, str);
@@ -58658,17 +58658,17 @@ var require_dist3 = __commonJS({
       }
       return new TokenData(consumeUntil(""), str);
     }
-    function compile2(path48, options = {}) {
+    function compile2(path49, options = {}) {
       const { encode: encode3 = encodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const data = typeof path48 === "object" ? path48 : parse3(path48, options);
+      const data = typeof path49 === "object" ? path49 : parse3(path49, options);
       const fn = tokensToFunction(data.tokens, delimiter, encode3);
-      return function path49(params = {}) {
+      return function path50(params = {}) {
         const missing = [];
-        const path50 = fn(params, missing);
+        const path51 = fn(params, missing);
         if (missing.length) {
           throw new TypeError(`Missing parameters: ${missing.join(", ")}`);
         }
-        return path50;
+        return path51;
       };
     }
     function tokensToFunction(tokens, delimiter, encode3) {
@@ -58730,9 +58730,9 @@ var require_dist3 = __commonJS({
         return encodeValue(value);
       };
     }
-    function match(path48, options = {}) {
+    function match(path49, options = {}) {
       const { decode: decode3 = decodeURIComponent, delimiter = DEFAULT_DELIMITER } = options;
-      const { regexp, keys: keys2 } = pathToRegexp(path48, options);
+      const { regexp, keys: keys2 } = pathToRegexp(path49, options);
       const decoders = keys2.map((key) => {
         if (decode3 === false)
           return NOOP_VALUE;
@@ -58744,7 +58744,7 @@ var require_dist3 = __commonJS({
         const m = regexp.exec(input2);
         if (!m)
           return false;
-        const path49 = m[0];
+        const path50 = m[0];
         const params = /* @__PURE__ */ Object.create(null);
         for (let i = 1; i < m.length; i++) {
           if (m[i] === void 0)
@@ -58753,21 +58753,21 @@ var require_dist3 = __commonJS({
           const decoder = decoders[i - 1];
           params[key.name] = decoder(m[i]);
         }
-        return { path: path49, params };
+        return { path: path50, params };
       };
     }
-    function pathToRegexp(path48, options = {}) {
+    function pathToRegexp(path49, options = {}) {
       const { delimiter = DEFAULT_DELIMITER, end = true, sensitive = false, trailing = true } = options;
       const keys2 = [];
       let source = "";
       let combinations = 0;
-      function process2(path49) {
-        if (Array.isArray(path49)) {
-          for (const p of path49)
+      function process2(path50) {
+        if (Array.isArray(path50)) {
+          for (const p of path50)
             process2(p);
           return;
         }
-        const data = typeof path49 === "object" ? path49 : parse3(path49, options);
+        const data = typeof path50 === "object" ? path50 : parse3(path50, options);
         flatten(data.tokens, 0, [], (tokens) => {
           if (combinations >= 256) {
             throw new PathError("Too many path combinations", data.originalPath);
@@ -58778,7 +58778,7 @@ var require_dist3 = __commonJS({
           combinations++;
         });
       }
-      process2(path48);
+      process2(path49);
       let pattern = `^(?:${source})`;
       if (trailing)
         pattern += "(?:" + escape2(delimiter) + "$)?";
@@ -58918,18 +58918,18 @@ var require_layer = __commonJS({
     var TRAILING_SLASH_REGEXP = /\/+$/;
     var MATCHING_GROUP_REGEXP = /\((?:\?<(.*?)>)?(?!\?)/g;
     module.exports = Layer;
-    function Layer(path48, options, fn) {
+    function Layer(path49, options, fn) {
       if (!(this instanceof Layer)) {
-        return new Layer(path48, options, fn);
+        return new Layer(path49, options, fn);
       }
-      debug("new %o", path48);
+      debug("new %o", path49);
       const opts = options || {};
       this.handle = fn;
       this.keys = [];
       this.name = fn.name || "<anonymous>";
       this.params = void 0;
       this.path = void 0;
-      this.slash = path48 === "/" && opts.end === false;
+      this.slash = path49 === "/" && opts.end === false;
       function matcher(_path) {
         if (_path instanceof RegExp) {
           const keys2 = [];
@@ -58968,7 +58968,7 @@ var require_layer = __commonJS({
           decode: decodeParam
         });
       }
-      this.matchers = Array.isArray(path48) ? path48.map(matcher) : [matcher(path48)];
+      this.matchers = Array.isArray(path49) ? path49.map(matcher) : [matcher(path49)];
     }
     Layer.prototype.handleError = function handleError(error62, req, res, next) {
       const fn = this.handle;
@@ -59008,9 +59008,9 @@ var require_layer = __commonJS({
         next(err);
       }
     };
-    Layer.prototype.match = function match(path48) {
+    Layer.prototype.match = function match(path49) {
       let match2;
-      if (path48 != null) {
+      if (path49 != null) {
         if (this.slash) {
           this.params = {};
           this.path = "";
@@ -59018,7 +59018,7 @@ var require_layer = __commonJS({
         }
         let i = 0;
         while (!match2 && i < this.matchers.length) {
-          match2 = this.matchers[i](path48);
+          match2 = this.matchers[i](path49);
           i++;
         }
       }
@@ -59046,13 +59046,13 @@ var require_layer = __commonJS({
         throw err;
       }
     }
-    function loosen(path48) {
-      if (path48 instanceof RegExp || path48 === "/") {
-        return path48;
+    function loosen(path49) {
+      if (path49 instanceof RegExp || path49 === "/") {
+        return path49;
       }
-      return Array.isArray(path48) ? path48.map(function(p) {
+      return Array.isArray(path49) ? path49.map(function(p) {
         return loosen(p);
-      }) : String(path48).replace(TRAILING_SLASH_REGEXP, "");
+      }) : String(path49).replace(TRAILING_SLASH_REGEXP, "");
     }
   }
 });
@@ -59068,9 +59068,9 @@ var require_route = __commonJS({
     var flatten = Array.prototype.flat;
     var methods = METHODS.map((method) => method.toLowerCase());
     module.exports = Route;
-    function Route(path48) {
-      debug("new %o", path48);
-      this.path = path48;
+    function Route(path49) {
+      debug("new %o", path49);
+      this.path = path49;
       this.stack = [];
       this.methods = /* @__PURE__ */ Object.create(null);
     }
@@ -59278,8 +59278,8 @@ var require_router = __commonJS({
         if (++sync > 100) {
           return setImmediate(next, err);
         }
-        const path48 = getPathname(req);
-        if (path48 == null) {
+        const path49 = getPathname(req);
+        if (path49 == null) {
           return done(layerError);
         }
         let layer;
@@ -59287,7 +59287,7 @@ var require_router = __commonJS({
         let route;
         while (match !== true && idx < stack.length) {
           layer = stack[idx++];
-          match = matchLayer(layer, path48);
+          match = matchLayer(layer, path49);
           route = layer.route;
           if (typeof match !== "boolean") {
             layerError = layerError || match;
@@ -59325,18 +59325,18 @@ var require_router = __commonJS({
           } else if (route) {
             layer.handleRequest(req, res, next);
           } else {
-            trimPrefix(layer, layerError, layerPath, path48);
+            trimPrefix(layer, layerError, layerPath, path49);
           }
           sync = 0;
         });
       }
-      function trimPrefix(layer, layerError, layerPath, path48) {
+      function trimPrefix(layer, layerError, layerPath, path49) {
         if (layerPath.length !== 0) {
-          if (layerPath !== path48.substring(0, layerPath.length)) {
+          if (layerPath !== path49.substring(0, layerPath.length)) {
             next(layerError);
             return;
           }
-          const c = path48[layerPath.length];
+          const c = path49[layerPath.length];
           if (c && c !== "/") {
             next(layerError);
             return;
@@ -59360,7 +59360,7 @@ var require_router = __commonJS({
     };
     Router.prototype.use = function use(handler) {
       let offset = 0;
-      let path48 = "/";
+      let path49 = "/";
       if (typeof handler !== "function") {
         let arg = handler;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -59368,7 +59368,7 @@ var require_router = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path48 = handler;
+          path49 = handler;
         }
       }
       const callbacks = flatten.call(slice.call(arguments, offset), Infinity);
@@ -59380,8 +59380,8 @@ var require_router = __commonJS({
         if (typeof fn !== "function") {
           throw new TypeError("argument handler must be a function");
         }
-        debug("use %o %s", path48, fn.name || "<anonymous>");
-        const layer = new Layer(path48, {
+        debug("use %o %s", path49, fn.name || "<anonymous>");
+        const layer = new Layer(path49, {
           sensitive: this.caseSensitive,
           strict: false,
           end: false
@@ -59391,9 +59391,9 @@ var require_router = __commonJS({
       }
       return this;
     };
-    Router.prototype.route = function route(path48) {
-      const route2 = new Route(path48);
-      const layer = new Layer(path48, {
+    Router.prototype.route = function route(path49) {
+      const route2 = new Route(path49);
+      const layer = new Layer(path49, {
         sensitive: this.caseSensitive,
         strict: this.strict,
         end: true
@@ -59406,8 +59406,8 @@ var require_router = __commonJS({
       return route2;
     };
     methods.concat("all").forEach(function(method) {
-      Router.prototype[method] = function(path48) {
-        const route = this.route(path48);
+      Router.prototype[method] = function(path49) {
+        const route = this.route(path49);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
@@ -59436,9 +59436,9 @@ var require_router = __commonJS({
       const fqdnIndex = url2.substring(0, pathLength).indexOf("://");
       return fqdnIndex !== -1 ? url2.substring(0, url2.indexOf("/", 3 + fqdnIndex)) : void 0;
     }
-    function matchLayer(layer, path48) {
+    function matchLayer(layer, path49) {
       try {
-        return layer.match(path48);
+        return layer.match(path49);
       } catch (err) {
         return err;
       }
@@ -59666,7 +59666,7 @@ var require_application = __commonJS({
     };
     app2.use = function use(fn) {
       var offset = 0;
-      var path48 = "/";
+      var path49 = "/";
       if (typeof fn !== "function") {
         var arg = fn;
         while (Array.isArray(arg) && arg.length !== 0) {
@@ -59674,7 +59674,7 @@ var require_application = __commonJS({
         }
         if (typeof arg !== "function") {
           offset = 1;
-          path48 = fn;
+          path49 = fn;
         }
       }
       var fns = flatten.call(slice.call(arguments, offset), Infinity);
@@ -59684,12 +59684,12 @@ var require_application = __commonJS({
       var router = this.router;
       fns.forEach(function(fn2) {
         if (!fn2 || !fn2.handle || !fn2.set) {
-          return router.use(path48, fn2);
+          return router.use(path49, fn2);
         }
-        debug(".use app under %s", path48);
-        fn2.mountpath = path48;
+        debug(".use app under %s", path49);
+        fn2.mountpath = path49;
         fn2.parent = this;
-        router.use(path48, function mounted_app(req, res, next) {
+        router.use(path49, function mounted_app(req, res, next) {
           var orig = req.app;
           fn2.handle(req, res, function(err) {
             Object.setPrototypeOf(req, orig.request);
@@ -59701,8 +59701,8 @@ var require_application = __commonJS({
       }, this);
       return this;
     };
-    app2.route = function route(path48) {
-      return this.router.route(path48);
+    app2.route = function route(path49) {
+      return this.router.route(path49);
     };
     app2.engine = function engine(ext, fn) {
       if (typeof fn !== "function") {
@@ -59745,7 +59745,7 @@ var require_application = __commonJS({
       }
       return this;
     };
-    app2.path = function path48() {
+    app2.path = function path49() {
       return this.parent ? this.parent.path() + this.mountpath : "";
     };
     app2.enabled = function enabled(setting) {
@@ -59761,17 +59761,17 @@ var require_application = __commonJS({
       return this.set(setting, false);
     };
     methods.forEach(function(method) {
-      app2[method] = function(path48) {
+      app2[method] = function(path49) {
         if (method === "get" && arguments.length === 1) {
-          return this.set(path48);
+          return this.set(path49);
         }
-        var route = this.route(path48);
+        var route = this.route(path49);
         route[method].apply(route, slice.call(arguments, 1));
         return this;
       };
     });
-    app2.all = function all(path48) {
-      var route = this.route(path48);
+    app2.all = function all(path49) {
+      var route = this.route(path49);
       var args = slice.call(arguments, 1);
       for (var i = 0; i < methods.length; i++) {
         route[methods[i]].apply(route, args);
@@ -60681,7 +60681,7 @@ var require_request = __commonJS({
       var subdomains2 = !isIP4(hostname3) ? hostname3.split(".").reverse() : [hostname3];
       return subdomains2.slice(offset);
     });
-    defineGetter(req, "path", function path48() {
+    defineGetter(req, "path", function path49() {
       return parse3(this).pathname;
     });
     defineGetter(req, "host", function host() {
@@ -61088,32 +61088,32 @@ var require_send = __commonJS({
     var escapeHtml = require_escape_html();
     var etag = require_etag();
     var fresh = require_fresh();
-    var fs48 = __require("fs");
+    var fs49 = __require("fs");
     var mime = require_mime_types();
     var ms = require_ms();
     var onFinished = require_on_finished();
     var parseRange = require_range_parser();
-    var path48 = __require("path");
+    var path49 = __require("path");
     var statuses = require_statuses();
     var Stream = __require("stream");
     var util = __require("util");
-    var extname = path48.extname;
-    var join = path48.join;
-    var normalize = path48.normalize;
-    var resolve2 = path48.resolve;
-    var sep = path48.sep;
+    var extname = path49.extname;
+    var join = path49.join;
+    var normalize = path49.normalize;
+    var resolve2 = path49.resolve;
+    var sep = path49.sep;
     var BYTES_RANGE_REGEXP = /^ *bytes=/;
     var MAX_MAXAGE = 60 * 60 * 24 * 365 * 1e3;
     var UP_PATH_REGEXP = /(?:^|[\\/])\.\.(?:[\\/]|$)/;
     module.exports = send;
-    function send(req, path49, options) {
-      return new SendStream(req, path49, options);
+    function send(req, path50, options) {
+      return new SendStream(req, path50, options);
     }
-    function SendStream(req, path49, options) {
+    function SendStream(req, path50, options) {
       Stream.call(this);
       var opts = options || {};
       this.options = opts;
-      this.path = path49;
+      this.path = path50;
       this.req = req;
       this._acceptRanges = opts.acceptRanges !== void 0 ? Boolean(opts.acceptRanges) : true;
       this._cacheControl = opts.cacheControl !== void 0 ? Boolean(opts.cacheControl) : true;
@@ -61227,10 +61227,10 @@ var require_send = __commonJS({
       var lastModified = this.res.getHeader("Last-Modified");
       return parseHttpDate(lastModified) <= parseHttpDate(ifRange);
     };
-    SendStream.prototype.redirect = function redirect(path49) {
+    SendStream.prototype.redirect = function redirect(path50) {
       var res = this.res;
       if (hasListeners(this, "directory")) {
-        this.emit("directory", res, path49);
+        this.emit("directory", res, path50);
         return;
       }
       if (this.hasTrailingSlash()) {
@@ -61250,38 +61250,38 @@ var require_send = __commonJS({
     SendStream.prototype.pipe = function pipe2(res) {
       var root = this._root;
       this.res = res;
-      var path49 = decode3(this.path);
-      if (path49 === -1) {
+      var path50 = decode3(this.path);
+      if (path50 === -1) {
         this.error(400);
         return res;
       }
-      if (~path49.indexOf("\0")) {
+      if (~path50.indexOf("\0")) {
         this.error(400);
         return res;
       }
       var parts;
       if (root !== null) {
-        if (path49) {
-          path49 = normalize("." + sep + path49);
+        if (path50) {
+          path50 = normalize("." + sep + path50);
         }
-        if (UP_PATH_REGEXP.test(path49)) {
-          debug('malicious path "%s"', path49);
+        if (UP_PATH_REGEXP.test(path50)) {
+          debug('malicious path "%s"', path50);
           this.error(403);
           return res;
         }
-        parts = path49.split(sep);
-        path49 = normalize(join(root, path49));
+        parts = path50.split(sep);
+        path50 = normalize(join(root, path50));
       } else {
-        if (UP_PATH_REGEXP.test(path49)) {
-          debug('malicious path "%s"', path49);
+        if (UP_PATH_REGEXP.test(path50)) {
+          debug('malicious path "%s"', path50);
           this.error(403);
           return res;
         }
-        parts = normalize(path49).split(sep);
-        path49 = resolve2(path49);
+        parts = normalize(path50).split(sep);
+        path50 = resolve2(path50);
       }
       if (containsDotFile(parts)) {
-        debug('%s dotfile "%s"', this._dotfiles, path49);
+        debug('%s dotfile "%s"', this._dotfiles, path50);
         switch (this._dotfiles) {
           case "allow":
             break;
@@ -61295,13 +61295,13 @@ var require_send = __commonJS({
         }
       }
       if (this._index.length && this.hasTrailingSlash()) {
-        this.sendIndex(path49);
+        this.sendIndex(path50);
         return res;
       }
-      this.sendFile(path49);
+      this.sendFile(path50);
       return res;
     };
-    SendStream.prototype.send = function send2(path49, stat2) {
+    SendStream.prototype.send = function send2(path50, stat2) {
       var len = stat2.size;
       var options = this.options;
       var opts = {};
@@ -61313,9 +61313,9 @@ var require_send = __commonJS({
         this.headersAlreadySent();
         return;
       }
-      debug('pipe "%s"', path49);
-      this.setHeader(path49, stat2);
-      this.type(path49);
+      debug('pipe "%s"', path50);
+      this.setHeader(path50, stat2);
+      this.type(path50);
       if (this.isConditionalGET()) {
         if (this.isPreconditionFailure()) {
           this.error(412);
@@ -61364,30 +61364,30 @@ var require_send = __commonJS({
         res.end();
         return;
       }
-      this.stream(path49, opts);
+      this.stream(path50, opts);
     };
-    SendStream.prototype.sendFile = function sendFile(path49) {
+    SendStream.prototype.sendFile = function sendFile(path50) {
       var i = 0;
       var self = this;
-      debug('stat "%s"', path49);
-      fs48.stat(path49, function onstat(err, stat2) {
-        var pathEndsWithSep = path49[path49.length - 1] === sep;
-        if (err && err.code === "ENOENT" && !extname(path49) && !pathEndsWithSep) {
+      debug('stat "%s"', path50);
+      fs49.stat(path50, function onstat(err, stat2) {
+        var pathEndsWithSep = path50[path50.length - 1] === sep;
+        if (err && err.code === "ENOENT" && !extname(path50) && !pathEndsWithSep) {
           return next(err);
         }
         if (err) return self.onStatError(err);
-        if (stat2.isDirectory()) return self.redirect(path49);
+        if (stat2.isDirectory()) return self.redirect(path50);
         if (pathEndsWithSep) return self.error(404);
-        self.emit("file", path49, stat2);
-        self.send(path49, stat2);
+        self.emit("file", path50, stat2);
+        self.send(path50, stat2);
       });
       function next(err) {
         if (self._extensions.length <= i) {
           return err ? self.onStatError(err) : self.error(404);
         }
-        var p = path49 + "." + self._extensions[i++];
+        var p = path50 + "." + self._extensions[i++];
         debug('stat "%s"', p);
-        fs48.stat(p, function(err2, stat2) {
+        fs49.stat(p, function(err2, stat2) {
           if (err2) return next(err2);
           if (stat2.isDirectory()) return next();
           self.emit("file", p, stat2);
@@ -61395,7 +61395,7 @@ var require_send = __commonJS({
         });
       }
     };
-    SendStream.prototype.sendIndex = function sendIndex(path49) {
+    SendStream.prototype.sendIndex = function sendIndex(path50) {
       var i = -1;
       var self = this;
       function next(err) {
@@ -61403,9 +61403,9 @@ var require_send = __commonJS({
           if (err) return self.onStatError(err);
           return self.error(404);
         }
-        var p = join(path49, self._index[i]);
+        var p = join(path50, self._index[i]);
         debug('stat "%s"', p);
-        fs48.stat(p, function(err2, stat2) {
+        fs49.stat(p, function(err2, stat2) {
           if (err2) return next(err2);
           if (stat2.isDirectory()) return next();
           self.emit("file", p, stat2);
@@ -61414,10 +61414,10 @@ var require_send = __commonJS({
       }
       next();
     };
-    SendStream.prototype.stream = function stream(path49, options) {
+    SendStream.prototype.stream = function stream(path50, options) {
       var self = this;
       var res = this.res;
-      var stream2 = fs48.createReadStream(path49, options);
+      var stream2 = fs49.createReadStream(path50, options);
       this.emit("stream", stream2);
       stream2.pipe(res);
       function cleanup() {
@@ -61432,17 +61432,17 @@ var require_send = __commonJS({
         self.emit("end");
       });
     };
-    SendStream.prototype.type = function type(path49) {
+    SendStream.prototype.type = function type(path50) {
       var res = this.res;
       if (res.getHeader("Content-Type")) return;
-      var ext = extname(path49);
+      var ext = extname(path50);
       var type2 = mime.contentType(ext) || "application/octet-stream";
       debug("content-type %s", type2);
       res.setHeader("Content-Type", type2);
     };
-    SendStream.prototype.setHeader = function setHeader(path49, stat2) {
+    SendStream.prototype.setHeader = function setHeader(path50, stat2) {
       var res = this.res;
-      this.emit("headers", res, path49, stat2);
+      this.emit("headers", res, path50, stat2);
       if (this._acceptRanges && !res.getHeader("Accept-Ranges")) {
         debug("accept ranges");
         res.setHeader("Accept-Ranges", "bytes");
@@ -61500,9 +61500,9 @@ var require_send = __commonJS({
       }
       return err instanceof Error ? createError(status, err, { expose: false }) : createError(status, err);
     }
-    function decode3(path49) {
+    function decode3(path50) {
       try {
-        return decodeURIComponent(path49);
+        return decodeURIComponent(path50);
       } catch (err) {
         return -1;
       }
@@ -61646,7 +61646,7 @@ var require_response = __commonJS({
     var http = __require("node:http");
     var onFinished = require_on_finished();
     var mime = require_mime_types();
-    var path48 = __require("node:path");
+    var path49 = __require("node:path");
     var pathIsAbsolute = __require("node:path").isAbsolute;
     var statuses = require_statuses();
     var sign2 = require_cookie_signature().sign;
@@ -61655,8 +61655,8 @@ var require_response = __commonJS({
     var setCharset = require_utils3().setCharset;
     var cookie = require_cookie();
     var send = require_send();
-    var extname = path48.extname;
-    var resolve2 = path48.resolve;
+    var extname = path49.extname;
+    var resolve2 = path49.resolve;
     var vary = require_vary();
     var { Buffer: Buffer3 } = __require("node:buffer");
     var res = Object.create(http.ServerResponse.prototype);
@@ -61802,26 +61802,26 @@ var require_response = __commonJS({
       this.type("txt");
       return this.send(body);
     };
-    res.sendFile = function sendFile(path49, options, callback) {
+    res.sendFile = function sendFile(path50, options, callback) {
       var done = callback;
       var req = this.req;
       var res2 = this;
       var next = req.next;
       var opts = options || {};
-      if (!path49) {
+      if (!path50) {
         throw new TypeError("path argument is required to res.sendFile");
       }
-      if (typeof path49 !== "string") {
+      if (typeof path50 !== "string") {
         throw new TypeError("path must be a string to res.sendFile");
       }
       if (typeof options === "function") {
         done = options;
         opts = {};
       }
-      if (!opts.root && !pathIsAbsolute(path49)) {
+      if (!opts.root && !pathIsAbsolute(path50)) {
         throw new TypeError("path must be absolute or specify root to res.sendFile");
       }
-      var pathname = encodeURI(path49);
+      var pathname = encodeURI(path50);
       opts.etag = this.app.enabled("etag");
       var file2 = send(req, pathname, opts);
       sendfile(res2, file2, opts, function(err) {
@@ -61832,7 +61832,7 @@ var require_response = __commonJS({
         }
       });
     };
-    res.download = function download(path49, filename, options, callback) {
+    res.download = function download(path50, filename, options, callback) {
       var done = callback;
       var name = filename;
       var opts = options || null;
@@ -61849,7 +61849,7 @@ var require_response = __commonJS({
         opts = filename;
       }
       var headers = {
-        "Content-Disposition": contentDisposition(name || path49)
+        "Content-Disposition": contentDisposition(name || path50)
       };
       if (opts && opts.headers) {
         var keys2 = Object.keys(opts.headers);
@@ -61862,7 +61862,7 @@ var require_response = __commonJS({
       }
       opts = Object.create(opts);
       opts.headers = headers;
-      var fullPath = !opts.root ? resolve2(path49) : path49;
+      var fullPath = !opts.root ? resolve2(path50) : path50;
       return this.sendFile(fullPath, opts, done);
     };
     res.contentType = res.type = function contentType(type) {
@@ -62145,11 +62145,11 @@ var require_serve_static = __commonJS({
         }
         var forwardError = !fallthrough;
         var originalUrl = parseUrl.original(req);
-        var path48 = parseUrl(req).pathname;
-        if (path48 === "/" && originalUrl.pathname.substr(-1) !== "/") {
-          path48 = "";
+        var path49 = parseUrl(req).pathname;
+        if (path49 === "/" && originalUrl.pathname.substr(-1) !== "/") {
+          path49 = "";
         }
-        var stream = send(req, path48, opts);
+        var stream = send(req, path49, opts);
         stream.on("directory", onDirectory);
         if (setHeaders) {
           stream.on("headers", setHeaders);
@@ -71203,6 +71203,92 @@ var init_project_tags = __esm({
   }
 });
 
+// dist/transports/mcp/project-context.js
+var project_context_exports = {};
+__export(project_context_exports, {
+  resolveMcpProject: () => resolveMcpProject
+});
+import fs47 from "node:fs";
+import path47 from "node:path";
+import { fileURLToPath as fileURLToPath5 } from "node:url";
+function existingDirectory(candidate) {
+  try {
+    const real = fs47.realpathSync(candidate);
+    return fs47.statSync(real).isDirectory() ? real : null;
+  } catch {
+    return null;
+  }
+}
+function rootDirectory(uri) {
+  if (/^file:(\/\/)?$/i.test(uri))
+    return null;
+  try {
+    const parsed = new URL(uri);
+    return parsed.protocol === "file:" ? existingDirectory(fileURLToPath5(parsed)) : null;
+  } catch {
+    return null;
+  }
+}
+function resolveMcpProject(launchRoot, rootUris) {
+  if (rootUris === null) {
+    return {
+      error: "workspace_unavailable",
+      reason: "The client advertises workspace roots but did not return them."
+    };
+  }
+  const fromRoots = /* @__PURE__ */ new Map();
+  for (const uri of rootUris) {
+    const directory = rootDirectory(uri);
+    if (!directory) {
+      return {
+        error: "workspace_unavailable",
+        reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`
+      };
+    }
+    const ids = getProjectIds(directory);
+    fromRoots.set(ids[0], [.../* @__PURE__ */ new Set([...fromRoots.get(ids[0]) ?? [], ...ids])]);
+  }
+  if (launchRoot !== void 0) {
+    const directory = path47.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
+    if (!directory) {
+      return {
+        error: "workspace_unavailable",
+        reason: `MEMESH_PROJECT_ROOT is not an existing absolute directory: ${JSON.stringify(launchRoot)}.`
+      };
+    }
+    const ids = getProjectIds(directory);
+    const project = ids[0];
+    if ([...fromRoots.keys()].some((other) => other !== project)) {
+      return {
+        error: "workspace_ambiguous",
+        reason: "MEMESH_PROJECT_ROOT and the client's workspace root name different projects."
+      };
+    }
+    return { project, ids };
+  }
+  if (fromRoots.size === 1) {
+    const [[project, ids]] = [...fromRoots];
+    return { project, ids };
+  }
+  if (fromRoots.size > 1) {
+    return {
+      error: "workspace_ambiguous",
+      reason: "The client's workspace roots name more than one project."
+    };
+  }
+  return {
+    error: "workspace_unavailable",
+    reason: "No project is bound to this MCP session (no workspace root and no MEMESH_PROJECT_ROOT).",
+    unbound: true
+  };
+}
+var init_project_context = __esm({
+  "dist/transports/mcp/project-context.js"() {
+    "use strict";
+    init_paths();
+  }
+});
+
 // dist/core/prompt-recall.js
 var prompt_recall_exports = {};
 __export(prompt_recall_exports, {
@@ -71608,9 +71694,9 @@ var {
 init_db();
 init_sqlite();
 import { createHash as createHash20 } from "crypto";
-import fs47 from "fs";
-import path47 from "path";
-import { fileURLToPath as fileURLToPath5 } from "url";
+import fs48 from "fs";
+import path48 from "path";
+import { fileURLToPath as fileURLToPath6 } from "url";
 
 // dist/core/database-repair.js
 init_sqlite();
@@ -75343,7 +75429,7 @@ function firstMemoryCommand(project) {
   return `memesh remember --name first-memory --type note --obs "what to remember" --tags ${word}`;
 }
 async function withReadOnlyDatabase(fn) {
-  if (fs47.existsSync(getDbPath()))
+  if (fs48.existsSync(getDbPath()))
     return withDatabase(fn);
   openDatabase(":memory:");
   try {
@@ -75356,10 +75442,10 @@ function unwritableMemoryTargets(dbPath) {
   const found = [];
   try {
     const [real, wal, shm] = databaseFiles(dbPath);
-    let dir = path47.dirname(real);
-    while (!fs47.existsSync(dir) && path47.dirname(dir) !== dir)
-      dir = path47.dirname(dir);
-    for (const target of [dir, ...[real, wal, shm].filter((file2) => fs47.existsSync(file2))]) {
+    let dir = path48.dirname(real);
+    while (!fs48.existsSync(dir) && path48.dirname(dir) !== dir)
+      dir = path48.dirname(dir);
+    for (const target of [dir, ...[real, wal, shm].filter((file2) => fs48.existsSync(file2))]) {
       if (!isWritable(target))
         found.push(target);
     }
@@ -75372,7 +75458,7 @@ function cannotSaveMemoriesSentence(targets) {
   const others = [];
   for (const target of targets) {
     try {
-      (belongsToAnotherUser(fs47.statSync(target)) ? others : yours).push(target);
+      (belongsToAnotherUser(fs48.statSync(target)) ? others : yours).push(target);
     } catch {
       yours.push(target);
     }
@@ -75455,7 +75541,7 @@ function isPromptAbort(err) {
 }
 function createHostConfigAtomically(host, configPath, config2) {
   try {
-    fs47.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
+    fs48.writeFileSync(configPath, `${JSON.stringify(config2, null, 2)}
 `, { flag: "wx", mode: 384 });
   } catch (error62) {
     if (error62.code === "EEXIST") {
@@ -75473,8 +75559,8 @@ function wireUserHooks() {
   return `hooks: added ${r.added}, skipped ${r.skipped} already-installed${r.backupPath ? ` (backup: ${r.backupPath})` : ""}`;
 }
 var packageRoot2 = findPackageRoot(import.meta.url);
-var packageJsonPath2 = path47.join(packageRoot2, "package.json");
-var pkg = JSON.parse(fs47.readFileSync(packageJsonPath2, "utf8"));
+var packageJsonPath2 = path48.join(packageRoot2, "package.json");
+var pkg = JSON.parse(fs48.readFileSync(packageJsonPath2, "utf8"));
 var RECALL_OMITTED_HINT = "omitted to keep the response under size \u2014 narrow the query, or use memesh export for the full text";
 var RECALL_SCAN_NOTE = "The search index is out of date; these results come from a scan of the stored text.";
 var program2 = new Command();
@@ -75812,13 +75898,13 @@ program2.command("export").description("Export memories as JSON. Defaults to std
     }
     const json2 = JSON.stringify(signed, null, 2);
     if (opts.out) {
-      const outDir = path47.dirname(path47.resolve(opts.out));
-      if (!fs47.existsSync(outDir)) {
+      const outDir = path48.dirname(path48.resolve(opts.out));
+      if (!fs48.existsSync(outDir)) {
         console.error(`Error: cannot write ${opts.out} \u2014 the directory ${outDir} does not exist.`);
         console.error(`       Create it first (mkdir -p ${shellQuote(outDir)}), or drop -o to write to stdout.`);
         process.exit(1);
       }
-      fs47.writeFileSync(opts.out, json2 + "\n");
+      fs48.writeFileSync(opts.out, json2 + "\n");
       process.stderr.write(`\u2705 Exported ${result.entity_count} entities to ${opts.out}
 `);
     } else {
@@ -75917,7 +76003,7 @@ program2.command("import").description("Import memories from a JSON export file,
   await withDatabase(async () => {
     let raw;
     try {
-      raw = fs47.readFileSync(file2, "utf8");
+      raw = fs48.readFileSync(file2, "utf8");
     } catch (err) {
       if (err?.code === "ENOENT") {
         console.error(`Error: file not found: ${file2}`);
@@ -76500,7 +76586,7 @@ configCmd.command("set").description(`Set an ordinary config value: autoCapture 
       const held = accountConfigHolding2(getConfigDir(), updateControlDir2()) ?? accountConfigHolding2(getConfigDir(), accountMemeshDir2());
       if (held === null)
         return;
-      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off, and that one wins. Set it there too: MEMESH_DIR=${path47.dirname(held.path)} memesh config set autoUpdate ${value}` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file, then set it there too: MEMESH_DIR=${path47.dirname(held.path)} memesh config set autoUpdate ${value}`);
+      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off, and that one wins. Set it there too: MEMESH_DIR=${path48.dirname(held.path)} memesh config set autoUpdate ${value}` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file, then set it there too: MEMESH_DIR=${path48.dirname(held.path)} memesh config set autoUpdate ${value}`);
     });
   }
   if (key === "autoUpdate" && value === "off") {
@@ -76531,7 +76617,7 @@ configCmd.command("unset").description("Remove a config value (ordinary settings
       const held = accountConfigHolding2(getConfigDir(), updateControlDir2()) ?? accountConfigHolding2(getConfigDir(), accountMemeshDir2());
       if (held === null)
         return;
-      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off. Remove it there too: MEMESH_DIR=${path47.dirname(held.path)} memesh config unset autoUpdate` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file.`);
+      console.log(held.kind === "off" ? `   Automatic updates are still off: ${held.path} says off. Remove it there too: MEMESH_DIR=${path48.dirname(held.path)} memesh config unset autoUpdate` : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file.`);
     });
   }
 });
@@ -76605,22 +76691,22 @@ program2.command("update").description("Update MeMesh now, the same verified way
 function resolveUpgradePluginScript(packageRootPath, pluginCacheRoot, pluginRegistryPath) {
   const roots = versionedPluginCacheRoots(pluginCacheRoot);
   const newestRoot = roots[roots.length - 1];
-  const bundled = path47.join(packageRootPath, "scripts", "upgrade-plugin.sh");
-  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs47.existsSync(pluginRegistryPath));
-  if (fs47.existsSync(bundled) && hasRepairTarget) {
-    return { script: bundled, newest: newestRoot ? path47.basename(newestRoot) : null };
+  const bundled = path48.join(packageRootPath, "scripts", "upgrade-plugin.sh");
+  const hasRepairTarget = Boolean(newestRoot || pluginRegistryPath && fs48.existsSync(pluginRegistryPath));
+  if (fs48.existsSync(bundled) && hasRepairTarget) {
+    return { script: bundled, newest: newestRoot ? path48.basename(newestRoot) : null };
   }
   if (!newestRoot)
     return null;
-  const newest = path47.basename(newestRoot);
-  const script = path47.join(newestRoot, "scripts", "upgrade-plugin.sh");
+  const newest = path48.basename(newestRoot);
+  const script = path48.join(newestRoot, "scripts", "upgrade-plugin.sh");
   return { script, newest };
 }
 program2.command("upgrade-plugin").description("Repair the Claude Code plugin install: puts back the commit it recorded (use `memesh update` to move to a newer release)").action(async () => {
   const { spawnSync: spawnSync5 } = await import("child_process");
   const configRoot = pluginHostConfigRoot("claude-code");
-  const cacheRoot = path47.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
-  const registryPath = path47.join(configRoot, "plugins", "installed_plugins.json");
+  const cacheRoot = path48.join(configRoot, "plugins", "cache", "pcircle-memesh", "memesh");
+  const registryPath = path48.join(configRoot, "plugins", "installed_plugins.json");
   const resolved = resolveUpgradePluginScript(packageRoot2, cacheRoot, registryPath);
   if (!resolved) {
     console.error(`No Claude Code plugin install found (looked in ${cacheRoot}).`);
@@ -76629,7 +76715,7 @@ program2.command("upgrade-plugin").description("Repair the Claude Code plugin in
     process.exit(1);
   }
   const { script, newest } = resolved;
-  if (!fs47.existsSync(script)) {
+  if (!fs48.existsSync(script)) {
     console.error(`Plugin install found${newest ? ` (v${newest})` : ""}, but it has no scripts/upgrade-plugin.sh \u2014 plugin versions before 4.2.5 shipped without it.`);
     console.error("Reinstall once from the Claude Code /plugin UI, or run the npm-global copy directly:");
     console.error('  bash "$(npm prefix -g)/lib/node_modules/@pcircle/memesh/scripts/upgrade-plugin.sh"');
@@ -76686,7 +76772,7 @@ kgCmd.command("backfill-relations").description("Propose relations that connect 
     minNameJaccard: opts.minJaccard
   };
   if (!opts.apply) {
-    if (!fs47.existsSync(getDbPath())) {
+    if (!fs48.existsSync(getDbPath())) {
       if (opts.json)
         console.log(JSON.stringify({ candidates: [], skippedOrphanIds: [] }, null, 2));
       else
@@ -76892,7 +76978,7 @@ Nothing written. Re-run with --apply to commit (the DB is backed up first).`);
     await withDatabase(() => run(to));
     return;
   }
-  if (!fs47.existsSync(getDbPath())) {
+  if (!fs48.existsSync(getDbPath())) {
     if (opts.from) {
       console.error(`Error: No MeMesh database at ${getDbPath()}, so nothing carries project ${opts.from}. Check HOME and MEMESH_DB_PATH.`);
       process.exitCode = 1;
@@ -77383,13 +77469,25 @@ async function hermesInput(session2) {
   }
 }
 var HERMES_BASE_TAGS = ["platform:hermes"];
+async function hermesProject() {
+  const cwd = process.env.MEMESH_PROJECT_ROOT;
+  if (cwd === void 0)
+    return { project: null };
+  const { resolveMcpProject: resolveMcpProject2 } = await Promise.resolve().then(() => (init_project_context(), project_context_exports));
+  const resolution = resolveMcpProject2(cwd, []);
+  if ("error" in resolution) {
+    console.error(`Error: ${resolution.error}: ${resolution.reason}`);
+    process.exit(1);
+  }
+  return { project: resolution.project, cwd };
+}
 function bootstrapHermesNetworkBridge() {
-  const assetsDir = fileURLToPath5(new URL("../../network/", import.meta.url));
-  const cliEntry = process.argv[1] ?? fileURLToPath5(import.meta.url);
+  const assetsDir = fileURLToPath6(new URL("../../network/", import.meta.url));
+  const cliEntry = process.argv[1] ?? fileURLToPath6(import.meta.url);
   void bootstrapNetworkBridge({
-    dataDir: path47.resolve(getMemeshDirFromDbPath()),
+    dataDir: path48.resolve(getMemeshDirFromDbPath()),
     dbPath: getDbPath(),
-    bridgeEntry: path47.join(assetsDir, "bridge.js"),
+    bridgeEntry: path48.join(assetsDir, "bridge.js"),
     assetsDir
   }, cliEntry).catch((error62) => {
     console.error(`MeMesh Hermes network bridge bootstrap failed: ${cliErrorText(error62)}`);
@@ -77410,6 +77508,7 @@ hermesCmd.command("prompt-context").description("Read relevant memory for a Herm
     console.error("Error: messages must be a boolean");
     process.exit(1);
   }
+  const project = await hermesProject();
   const inbox = {};
   if (body.messages === true) {
     inbox.messages = "";
@@ -77426,7 +77525,7 @@ hermesCmd.command("prompt-context").description("Read relevant memory for a Herm
     }
   }
   const config2 = readConfig();
-  if (config2.promptRecall === false || !fs47.existsSync(getDbPath())) {
+  if (config2.promptRecall === false || !fs48.existsSync(getDbPath())) {
     console.log(JSON.stringify({ text: "", ids: [], ...inbox }));
     return;
   }
@@ -77436,7 +77535,7 @@ hermesCmd.command("prompt-context").description("Read relevant memory for a Herm
   try {
     db2.pragma("busy_timeout = 1000");
     const { text: text2, ids } = selectPromptRecall2(db2, body.prompt, {
-      project: null,
+      ...project,
       platform: "hermes",
       excludeConversationSession: opts.session,
       exclude: new Set(body.exclude)
@@ -77464,15 +77563,15 @@ hermesCmd.command("message").description("Run one Hermes conversation-message ac
 });
 hermesCmd.command("install").description("Install the Hermes memory provider from this MeMesh package, or refresh a copy MeMesh installed earlier. Automatic updates keep copies installed this way current.").option("--path <dir>", "Where to install it (default: $HERMES_HOME/plugins/memesh, HERMES_HOME defaulting to ~/.hermes). Inside a Hermes checkout use <checkout>/plugins/memory/memesh.").option("--force", "Replace a directory MeMesh did not install, or a copy you edited. The old directory is saved under the MeMesh data directory first.").action(async (opts) => {
   const { HERMES_REASONS: HERMES_REASONS2, defaultInstallTarget: defaultInstallTarget2, installProvider: installProvider2, registerInstall: registerInstall2 } = await Promise.resolve().then(() => (init_hermes_provider(), hermes_provider_exports));
-  const sourceDir = path47.join(packageRoot2, "extensions", "hermes-memesh");
-  if (!fs47.existsSync(path47.join(sourceDir, "__init__.py"))) {
+  const sourceDir = path48.join(packageRoot2, "extensions", "hermes-memesh");
+  if (!fs48.existsSync(path48.join(sourceDir, "__init__.py"))) {
     console.error(`Error: this MeMesh package does not contain the Hermes provider (looked in ${sourceDir}).`);
     console.error("  Update MeMesh (memesh update), or copy extensions/hermes-memesh/ from the repository by hand.");
     process.exit(1);
   }
   let target;
   try {
-    target = typeof opts.path === "string" && opts.path !== "" ? path47.resolve(opts.path) : defaultInstallTarget2(process.env, null);
+    target = typeof opts.path === "string" && opts.path !== "" ? path48.resolve(opts.path) : defaultInstallTarget2(process.env, null);
   } catch (err) {
     console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
     process.exit(1);
@@ -77483,7 +77582,7 @@ hermesCmd.command("install").description("Install the Hermes memory provider fro
     target,
     version: pkg.version,
     force: Boolean(opts.force),
-    backupRoot: path47.join(memeshDataDir, "backups"),
+    backupRoot: path48.join(memeshDataDir, "backups"),
     now: /* @__PURE__ */ new Date()
   });
   if (result.outcome === "skipped" || result.outcome === "failed") {
@@ -77520,10 +77619,11 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
     console.log(JSON.stringify({ outcome: "skipped", reason: "auto-capture is turned off" }));
     return;
   }
+  const { project } = await hermesProject();
   await withDatabase(() => {
-    const messagePath = path47.join(getMemeshDirFromDbPath(), "messages.db");
+    const messagePath = path48.join(getMemeshDirFromDbPath(), "messages.db");
     let receivedMessages = [];
-    if (fs47.existsSync(messagePath)) {
+    if (fs48.existsSync(messagePath)) {
       try {
         const messages = new ConversationMessages();
         try {
@@ -77542,7 +77642,7 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
       assistantText: body.assistant,
       sourceHost: "hermes",
       namePrefix: "hermes-turn",
-      baseTags: HERMES_BASE_TAGS,
+      baseTags: project === null ? HERMES_BASE_TAGS : [...HERMES_BASE_TAGS, `project:${project}`],
       receivedMessages
     });
     console.log(JSON.stringify(result));
@@ -77551,7 +77651,7 @@ hermesCmd.command("capture-turn").description('Store one Hermes turn ({"user": "
 function readLocalFile(flag, file2, maxBytes) {
   let stat2;
   try {
-    stat2 = fs47.statSync(file2);
+    stat2 = fs48.statSync(file2);
   } catch (err) {
     console.error(`Error: ${flag} ${file2}: ${err.code ?? String(err)}`);
     process.exit(1);
@@ -77564,7 +77664,7 @@ function readLocalFile(flag, file2, maxBytes) {
     console.error(`Error: ${flag} ${file2} is larger than ${maxBytes} bytes.`);
     process.exit(1);
   }
-  return fs47.readFileSync(file2);
+  return fs48.readFileSync(file2);
 }
 function reportDelegationError(err) {
   if (err instanceof DelegationInputError) {
@@ -77676,7 +77776,7 @@ if (cliEntryPath && isExecutedModule(cliEntryPath, import.meta.url)) {
 }
 function isExecutedModule(entryPath, moduleUrl) {
   try {
-    return fs47.realpathSync(entryPath) === fs47.realpathSync(fileURLToPath5(moduleUrl));
+    return fs48.realpathSync(entryPath) === fs48.realpathSync(fileURLToPath6(moduleUrl));
   } catch {
     return false;
   }

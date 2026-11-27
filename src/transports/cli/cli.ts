@@ -3103,6 +3103,19 @@ async function hermesInput(session: unknown): Promise<Record<string, unknown>> {
 
 const HERMES_BASE_TAGS = ['platform:hermes'];
 
+async function hermesProject(): Promise<{ project: string | null; cwd?: string }> {
+  // A gateway's working directory is not a declaration of the user's project.
+  const cwd = process.env.MEMESH_PROJECT_ROOT;
+  if (cwd === undefined) return { project: null };
+  const { resolveMcpProject } = await import('../mcp/project-context.js');
+  const resolution = resolveMcpProject(cwd, []);
+  if ('error' in resolution) {
+    console.error(`Error: ${resolution.error}: ${resolution.reason}`);
+    process.exit(1);
+  }
+  return { project: resolution.project, cwd };
+}
+
 function bootstrapHermesNetworkBridge(): void {
   const assetsDir = fileURLToPath(new URL('../../network/', import.meta.url));
   const cliEntry = process.argv[1] ?? fileURLToPath(import.meta.url);
@@ -3138,6 +3151,7 @@ hermesCmd
       console.error('Error: messages must be a boolean');
       process.exit(1);
     }
+    const project = await hermesProject();
     const inbox: { messages?: string; messages_error?: string } = {};
     if (body.messages === true) {
       inbox.messages = '';
@@ -3162,10 +3176,8 @@ hermesCmd
     const db = openReadOnlyForPreview(getDbPath());
     try {
       db.pragma('busy_timeout = 1000');
-      // Gateway cwd is not a project declaration. Match Hermes captures,
-      // which belong to no project, and never replay this session's turns.
       const { text, ids } = selectPromptRecall(db, body.prompt, {
-        project: null, platform: 'hermes', excludeConversationSession: opts.session,
+        ...project, platform: 'hermes', excludeConversationSession: opts.session,
         exclude: new Set(body.exclude as number[] | undefined),
       });
       console.log(JSON.stringify({ text, ids, ...inbox }));
@@ -3259,6 +3271,7 @@ hermesCmd
       console.log(JSON.stringify({ outcome: 'skipped', reason: 'auto-capture is turned off' }));
       return;
     }
+    const { project } = await hermesProject();
     await withDatabase(() => {
       const messagePath = path.join(getMemeshDirFromDbPath(), 'messages.db');
       let receivedMessages: Array<{ envelope: string; body: string }> = [];
@@ -3283,7 +3296,7 @@ hermesCmd
         assistantText: body.assistant as string,
         sourceHost: 'hermes',
         namePrefix: 'hermes-turn',
-        baseTags: HERMES_BASE_TAGS,
+        baseTags: project === null ? HERMES_BASE_TAGS : [...HERMES_BASE_TAGS, `project:${project}`],
         receivedMessages,
       });
       console.log(JSON.stringify(result));

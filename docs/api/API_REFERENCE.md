@@ -2481,10 +2481,14 @@ and returns `{"text":"...","ids":[...]}`. Its stdin may also include
 `"exclude":[1,2]` for positive memory IDs already delivered to the session.
 At most two eligible keyword-search results (at most
 one assistant conversation) share a 4 KiB UTF-8 budget including the data notice,
-fences and truncation handles. It reads unfiled memories and Hermes captures,
-excluding other hosts/projects and the supplied session's conversations. It
-honors `promptRecall` independently of `autoCapture`. No database or no
-match returns empty text and IDs. Explicit `memesh_recall` remains an HTTP tool.
+fences and truncation handles. It reads eligible unfiled memories and, when
+bound, same-project memories from any host. It excludes other projects, the
+supplied session's conversations, and unfiled memories scoped to another host.
+An existing absolute `MEMESH_PROJECT_ROOT` binds capture and prefetch to one
+project and its aliases for the whole process. Leave it unset for multi-project gateways. Existing
+unfiled captures stay unfiled. It honors `promptRecall` independently of
+`autoCapture`. No database or no match returns empty text and IDs. Explicit
+`memesh_recall` remains an HTTP tool.
 
 ### memesh delegation
 

@@ -57,10 +57,11 @@ require a bearer token when bound to `localhost`.
 - `prefetch()` / `queue_prefetch()`: calls `memesh hermes prompt-context`
   with the prompt on stdin. The shared selector brings in at most two strong
   matches (at most one assistant conversation), with the entire fenced context
-  limited to 4 KiB of UTF-8. Truncated content includes a recall handle. It
-  excludes the current session's conversations and other projects/hosts;
-  Hermes's unfiled captures remain eligible. A session switch invalidates the
-  cache. Missing CLI, failures and timeouts skip injection with a log warning.
+  limited to 4 KiB of UTF-8. Truncated content includes a recall handle.
+  Prefetch reads eligible unfiled memories and, when bound, same-project
+  memories from any host. It excludes other projects, the current session's
+  conversations, and unfiled memories scoped to another host. A session switch
+  invalidates the cache. Missing CLI, failures and timeouts skip injection with a log warning.
   Content delivered during this provider process is deduplicated per session;
   opening titles do not mark content as read. Pending messages have a separate
   8,000-byte budget, contain whole envelopes, and repeat until read or replied to.
@@ -86,10 +87,10 @@ require a bearer token when bound to `localhost`.
   the default when both run as the same user on the same machine. If
   `memesh serve` runs under systemd with `MEMESH_DB_PATH`/`MEMESH_DIR` in its
   unit file, give the Hermes process the same values.
-- Hermes writes have no `project:` tag, so MeMesh treats them as memories
-  that belong to no project: up to five of them can appear in every
-  project's session-start briefing. Recall them by query or by the
-  `platform:hermes` tag.
+- For a Hermes process dedicated to one project, set `MEMESH_PROJECT_ROOT` to
+  its existing absolute directory to bind automatic capture and prefetch to
+  that project and its aliases. Leave it unset on multi-project gateways.
+  Without it, new captures stay unfiled. Existing unfiled captures stay unfiled.
 - `sync_turn()` never waits: turns go to one background worker through a
   queue of 8; when it is full the turn is dropped with a warning in the log.
   At session end and shutdown the plugin waits up to 5 s in total (one

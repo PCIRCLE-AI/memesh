@@ -14,8 +14,8 @@ beforeEach(() => {
   env = buildIsolatedSuiteEnv(process.env, { runtimeHome: home });
 });
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
-function run(args: string[], input = '') {
-  return spawnSync(process.execPath, [cli, ...args], { env, input, encoding: 'utf8', timeout: 15_000 });
+function run(args: string[], input = '', cwd?: string) {
+  return spawnSync(process.execPath, [cli, ...args], { cwd, env, input, encoding: 'utf8', timeout: 15_000 });
 }
 function context(session = 'reader') {
   const result = run(['hermes', 'prompt-context', '--session', session], JSON.stringify({ prompt: 'Jasper orange routing prefix' }));
@@ -78,6 +78,41 @@ it('does not automatically expose memories filed under another project', () => {
   const otherHost = run(['remember', '--name', 'other-host-routing', '--type', 'note', '--no-project', '--tags', 'platform:codex', '--obs', 'Jasper orange routing prefix: other-host-only']);
   expect(otherHost.status, otherHost.stderr).toBe(0);
   expect(context()).toEqual({ text: '', ids: [] });
+});
+
+it('recalls project-tagged assistant content through a checkout path alias only when bound to that project', () => {
+  const project = fs.mkdtempSync(path.join(home, 'project-'));
+  const other = fs.mkdtempSync(path.join(home, 'other-'));
+  const init = spawnSync('git', ['init', '--quiet', project], { env, encoding: 'utf8', timeout: 15_000 });
+  expect(init.status, init.stderr).toBe(0);
+  for (const [cwd, name, marker] of [
+    [project, 'same-project-turn', 'local-path-memory-Q7'],
+    [other, 'other-project-turn', 'unrelated-project-Q8'],
+  ]) {
+    const saved = run(['remember', '--name', name, '--type', 'conversation', '--tags', 'role:assistant', '--obs',
+      'Jasper orange routing prefix: ' + marker], '', cwd);
+    expect(saved.status, saved.stderr).toBe(0);
+  }
+  const remote = spawnSync('git', ['-C', project, 'remote', 'add', 'origin', 'https://example.com/qa/hermes-routing.git'], {
+    env, encoding: 'utf8', timeout: 15_000,
+  });
+  expect(remote.status, remote.stderr).toBe(0);
+
+  expect(context()).toEqual({ text: '', ids: [] });
+  env.MEMESH_PROJECT_ROOT = project;
+  const result = context();
+  expect(result.ids).toHaveLength(1);
+  expect(result.text).toContain('local-path-memory-Q7');
+  expect(result.text).not.toContain('unrelated-project-Q8');
+});
+
+it('refuses an invalid declared workspace before prompt-context can register a conversation', () => {
+  env.MEMESH_PROJECT_ROOT = path.join(home, 'missing-project');
+  const before = fs.readdirSync(home);
+  const result = run(['hermes', 'prompt-context', '--session', 'reader'], '{"prompt":"Jasper orange routing prefix","messages":true}');
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain('workspace_unavailable');
+  expect(fs.readdirSync(home)).toEqual(before);
 });
 
 it('rejects malformed input before accessing the database', () => {

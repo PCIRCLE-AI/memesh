@@ -54,7 +54,7 @@ contract):
 |---|---|---|
 | `is_available()` | none (no network) | Check `shutil.which("memesh")` **and** a hardcoded `~/.npm-global/bin/memesh` fallback — see Provider unavailable under Troubleshooting and safety. |
 | `initialize()` | none | Open one `httpx.Client(base_url=..., timeout=5.0)`, reused for the provider's lifetime. |
-| `prefetch(query)` | `memesh hermes prompt-context` (stdin) | Up to two strong matches, at most one assistant conversation, sharing a 4 KiB UTF-8 context budget including notice, fences and handles. Excludes own-session turns and other projects/hosts, permits Hermes's unfiled captures. Background prefetch remains bounded to ~3 s; the CLI has a 5 s timeout. A session switch invalidates cached results. |
+| `prefetch(query)` | `memesh hermes prompt-context` (stdin) | Up to two strong matches, at most one assistant conversation, sharing a 4 KiB UTF-8 context budget including notice, fences and handles. Reads eligible unfiled memories and, when bound, same-project memories from any host. Excludes other projects, own-session conversations, and unfiled memories scoped to another host. Background prefetch remains bounded to ~3 s; the CLI has a 5 s timeout. A session switch invalidates cached results. |
 | `sync_turn(user, assistant)` | `memesh hermes capture-turn` (stdin) | Backgrounded; primary-agent turns only. Each nonempty side is stored as a separate `conversation` memory in full, after secret masking, tagged by session and role. No keyword classifier. |
 | `on_pre_compress(messages)` / `on_session_end(messages)` | No summary capture | Compression writes nothing; session end drains pending turn writes, sharing one 5 s deadline with `shutdown()`. |
 | `get_tool_schemas()` / `handle_tool_call()` | `/v1/remember`, `/v1/recall`, `/v1/forget` | Expose as `memesh_remember` / `memesh_recall` / `memesh_forget` so the model saves by default (`memesh_remember`) and can look up or correct (`memesh_recall`, `memesh_forget`) on top of automatic recall. `memesh_remember` passes optional `why` through and returns the server's own `error` sentence when a write is refused. |
@@ -78,12 +78,11 @@ Two consequences to plan for:
   Hermes process must carry the same values — otherwise the CLI writes to
   one database while recall reads another, and captures look lost. A service's
   `Environment=` is not your shell's.
-- **No `project:` tag.** Hermes writes carry `platform:hermes` and
-  `session:<id>`, but no project, because a gateway's working directory says
-  nothing reliable about which project a conversation is about. A memory with
-  no project counts as one that belongs to no project, so up to five of them
-  can appear in every project's session-start briefing; recall them by query
-  or by `platform:hermes`.
+- **Optional project scope.** For a Hermes process dedicated to one project,
+  set `MEMESH_PROJECT_ROOT` to its existing absolute directory to bind automatic
+  capture and recall to that project and its aliases. Leave it unset on
+  multi-project gateways. New captures then stay unfiled. Existing unfiled
+  captures stay unfiled.
 
 Activate with `hermes memory setup memesh` (non-interactive: the second
 positional arg skips the picker) — this writes `memory.provider: memesh` to
