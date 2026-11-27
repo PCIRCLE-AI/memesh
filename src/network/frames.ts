@@ -4,14 +4,18 @@ import { SIGNED_ROSTER_MAX_BYTES } from './roster.js';
 import type { SignedRoster } from './types.js';
 import type { BiStream } from './iroh-types.js';
 import { deadline, toBytes } from './endpoint.js';
+import { isMachineId } from './identity.js';
 import type { NetworkConversationMessage, ConversationDeliveryReceipt, RemoteConversationRegistration } from '../core/conversation-messages.js';
 
 export type ConversationFrame =
   | { version: 2; kind: 'conversations'; relay: string | null; addrs: string[]; entries: RemoteConversationRegistration[] }
+  | { version: 2; kind: 'peer-routes'; routes: PeerRoute[] }
   | { version: 2; kind: 'conversation-message'; row: NetworkConversationMessage }
   | { version: 2; kind: 'conversation-receipt'; receipt: ConversationDeliveryReceipt };
 
-/** NET/2 business frames contain only message data or minimal conversation presence. */
+export interface PeerRoute { machine_id: string; relay: string | null; addrs: string[] }
+
+/** NET/2 contains messages, minimal presence and owner-provided connection hints. */
 export function parseConversationFrame(bytes: Buffer): ConversationFrame {
   if (bytes.length > FRAME_MAX_BYTES) throw new FrameError('frame_too_large', 'Frame too large');
   let raw;
@@ -29,7 +33,28 @@ export function parseConversationFrame(bytes: Buffer): ConversationFrame {
   if (raw.kind === 'conversation-receipt' && exactKeys(raw, ['version','kind','receipt'])
     && raw.receipt && typeof raw.receipt === 'object' && !Array.isArray(raw.receipt)
     && exactKeys(raw.receipt, ['message_id','event','actor','at'])) return raw;
+  if (raw.kind === 'peer-routes' && exactKeys(raw, ['version','kind','routes'])
+    && Array.isArray(raw.routes) && raw.routes.length <= 256
+    && raw.routes.every((r: Record<string, unknown>) => r && typeof r === 'object' && !Array.isArray(r)
+      && exactKeys(r, ['machine_id','relay','addrs']) && isMachineId(r.machine_id) && isOptionalText(r.relay)
+      && Array.isArray(r.addrs) && r.addrs.length <= 64 && r.addrs.every((a: unknown) => isText(a, 64)))
+    && new Set(raw.routes.map((r: PeerRoute) => r.machine_id)).size === raw.routes.length) return raw;
   throw new FrameError('frame_invalid', 'Invalid conversation frame');
+}
+
+export function peerRouteFrames(routes: PeerRoute[]): ConversationFrame[] {
+  const frames: ConversationFrame[] = [];
+  let frame: Extract<ConversationFrame, { kind: 'peer-routes' }> = { version: 2, kind: 'peer-routes', routes: [] };
+  for (const route of routes) {
+    const next = { ...frame, routes: [...frame.routes, route] };
+    if (Buffer.byteLength(JSON.stringify(next)) > FRAME_MAX_BYTES || next.routes.length > 256) {
+      if (!frame.routes.length) throw new FrameError('frame_too_large', 'Peer route too large');
+      frames.push(frame); frame = { ...frame, routes: [route] };
+      parseConversationFrame(Buffer.from(JSON.stringify(frame)));
+    } else frame = next;
+  }
+  if (frame.routes.length) frames.push(frame);
+  return frames;
 }
 
 export function conversationPresenceFrames(relay: string | null, addrs: string[], entries: RemoteConversationRegistration[]): ConversationFrame[] {

@@ -23,7 +23,7 @@ export function testBindAddress(value) {
 export function advertisedAddresses(endpoint, env = process.env) {
     return testBindAddress(env[TEST_BIND_VARIABLE]) === null ? endpoint.addr().directAddresses() : [];
 }
-export async function bindEndpoint(iroh, secret, relay, alpns, env = process.env) {
+export async function bindEndpoint(iroh, secret, relay, alpns, env = process.env, savedBindAddresses = []) {
     const bindAddress = testBindAddress(env[TEST_BIND_VARIABLE]);
     const builder = iroh.Endpoint.builder();
     builder.applyMinimal();
@@ -33,6 +33,9 @@ export async function bindEndpoint(iroh, secret, relay, alpns, env = process.env
         builder.alpns(alpns.map((alpn) => toBytes(alpn)));
     if (bindAddress !== null)
         builder.bindAddr(bindAddress);
+    else
+        for (const address of savedBindAddresses)
+            builder.bindAddr(address);
     return builder.bind();
 }
 //# sourceMappingURL=endpoint.js.map

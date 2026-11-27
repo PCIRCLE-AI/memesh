@@ -32,6 +32,8 @@ are not part of a published npm release yet.
 
 ### Changed
 
+- Direct-only networks reuse their listening ports after restart. The network owner introduces joined members' connection addresses so new members can reach existing peers without a relay.
+
 - MeMesh no longer scans your messages for keywords to remind the agent to save a memory. Saving is on by default; users can ask the agent to remove specific stored memories with `forget`.
 - `memesh remember` now files a memory under the current directory's project, the same default `memesh learn` and the MCP tools use. Before, it stored the memory with no project unless you tagged one. `--project <name>` names another project and `--no-project` stores one with none. Writing to a memory that belongs to a different project is now refused, as it is over MCP.
 - `memesh import --restore-archived` now works with the default `--merge skip`: it makes the forgotten memory active again and replaces nothing else. A forgotten memory the file names is reported as `Kept archived` under every merge strategy, with the exact command that brings it back, instead of being counted as `skipped`. The import result gains `restored` and `trusted` counts.

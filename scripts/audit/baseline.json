@@ -306,6 +306,11 @@
       "reason": "`route?.addrs ?? []` means no known direct addresses; the configured relay may still resolve the peer. A failed or timed-out connect throws before a copy ACK; the courier records an error and leaves the message queued, never delivered. Actual delivery still requires the recipient's hook/read/reply.",
       "triaged": "2026-11-08 (cross-machine messages); re-keyed 393→398 after the test frame log hook above grew; statement unchanged"
     },
+    "C5 src/network/bridge-serve.ts#d94c9371": {
+      "class": "SAFE-OPTIONAL-ROUTE",
+      "reason": "An absent saved socket supplies no bind hint. Readiness still requires a successful native bind and retained control ownership; occupied saved sockets fail without choosing a different port.",
+      "triaged": "2026-11-27"
+    },
     "C5 src/network/bridge-serve.ts#7db5a438": {
       "class": "SAFE-OPTIONAL-ROUTE",
       "reason": "Membership RPC's empty direct-address list is optional routing input, not a success fallback: endpoint.connect must resolve via the configured relay or reject within the deadline. The expected transport peer and network ACK are checked before confirmation; an unavailable owner leaves metadata intact and restores the previously stopped bridge state. Covered by membership CLI/wire and owner-offline failure checks.",

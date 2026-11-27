@@ -38,6 +38,7 @@ export type EndpointAddr = object;
 export interface Endpoint {
   id(): EndpointIdLike;
   addr(): { directAddresses(): string[] };
+  boundSockets(): string[];
   online(): Promise<void>;
   connect(addr: EndpointAddr, alpn: number[]): Promise<Connection>;
   /** Null once the endpoint has closed. */

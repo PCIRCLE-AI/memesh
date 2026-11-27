@@ -110,7 +110,7 @@ function testBindAddress(value) {
 function advertisedAddresses(endpoint, env = process.env) {
   return testBindAddress(env[TEST_BIND_VARIABLE]) === null ? endpoint.addr().directAddresses() : [];
 }
-async function bindEndpoint(iroh, secret, relay, alpns, env = process.env) {
+async function bindEndpoint(iroh, secret, relay, alpns, env = process.env, savedBindAddresses = []) {
   const bindAddress = testBindAddress(env[TEST_BIND_VARIABLE]);
   const builder = iroh.Endpoint.builder();
   builder.applyMinimal();
@@ -120,6 +120,9 @@ async function bindEndpoint(iroh, secret, relay, alpns, env = process.env) {
     builder.alpns(alpns.map((alpn) => toBytes(alpn)));
   if (bindAddress !== null)
     builder.bindAddr(bindAddress);
+  else
+    for (const address of savedBindAddresses)
+      builder.bindAddr(address);
   return builder.bind();
 }
 
@@ -2164,6 +2167,34 @@ async function wakeConversationMessage(message, target, localMachine = os3.hostn
 // dist/network/bridge-state.js
 import fs10 from "node:fs";
 import path11 from "node:path";
+import { isIP } from "node:net";
+function restartBindAddresses(status) {
+  if (!status || typeof status !== "object")
+    return [];
+  const saved = status.bind_addresses;
+  const addresses = saved === void 0 ? status.direct_addresses : saved;
+  if (!Array.isArray(addresses))
+    return [];
+  const result = [];
+  const families = /* @__PURE__ */ new Set();
+  for (const address of addresses) {
+    if (typeof address !== "string")
+      continue;
+    const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d{1,5})$/.exec(address);
+    if (!match)
+      continue;
+    const host = match[1] ?? match[2];
+    const family = isIP(host);
+    const port = Number(match[3]);
+    if (!family || family === 6 !== Boolean(match[1]) || port < 1 || port > 65535 || families.has(family))
+      continue;
+    if (saved !== void 0 && host !== (family === 4 ? "0.0.0.0" : "::"))
+      continue;
+    families.add(family);
+    result.push(family === 4 ? `0.0.0.0:${port}` : `[::]:${port}`);
+  }
+  return result;
+}
 function statusPath(dataDir2) {
   return path11.join(networkDir(dataDir2), "bridge-status.json");
 }
@@ -2176,6 +2207,13 @@ function writeStatus(dataDir2, status) {
   fs10.writeFileSync(temporary, `${JSON.stringify(status)}
 `, { mode: 384 });
   fs10.renameSync(temporary, file);
+}
+function readStatus(dataDir2) {
+  try {
+    return JSON.parse(fs10.readFileSync(statusPath(dataDir2), "utf8"));
+  } catch {
+    return null;
+  }
 }
 
 // dist/network/control-socket.js
@@ -2202,7 +2240,27 @@ function parseConversationFrame(bytes) {
     return raw;
   if (raw.kind === "conversation-receipt" && exactKeys(raw, ["version", "kind", "receipt"]) && raw.receipt && typeof raw.receipt === "object" && !Array.isArray(raw.receipt) && exactKeys(raw.receipt, ["message_id", "event", "actor", "at"]))
     return raw;
+  if (raw.kind === "peer-routes" && exactKeys(raw, ["version", "kind", "routes"]) && Array.isArray(raw.routes) && raw.routes.length <= 256 && raw.routes.every((r) => r && typeof r === "object" && !Array.isArray(r) && exactKeys(r, ["machine_id", "relay", "addrs"]) && isMachineId(r.machine_id) && isOptionalText(r.relay) && Array.isArray(r.addrs) && r.addrs.length <= 64 && r.addrs.every((a) => isText(a, 64))) && new Set(raw.routes.map((r) => r.machine_id)).size === raw.routes.length)
+    return raw;
   throw new FrameError("frame_invalid", "Invalid conversation frame");
+}
+function peerRouteFrames(routes) {
+  const frames = [];
+  let frame = { version: 2, kind: "peer-routes", routes: [] };
+  for (const route of routes) {
+    const next = { ...frame, routes: [...frame.routes, route] };
+    if (Buffer.byteLength(JSON.stringify(next)) > FRAME_MAX_BYTES || next.routes.length > 256) {
+      if (!frame.routes.length)
+        throw new FrameError("frame_too_large", "Peer route too large");
+      frames.push(frame);
+      frame = { ...frame, routes: [route] };
+      parseConversationFrame(Buffer.from(JSON.stringify(frame)));
+    } else
+      frame = next;
+  }
+  if (frame.routes.length)
+    frames.push(frame);
+  return frames;
 }
 function conversationPresenceFrames(relay, addrs, entries) {
   const frames = [];
@@ -2770,6 +2828,26 @@ function appendTestFrameLog(file, bytes) {
 }
 
 // dist/network/courier.js
+function memberRoutes(db, joined, target) {
+  return joined.roster.members.flatMap((member) => {
+    if (member.machine_id === joined.config.machine_id || member.machine_id === target)
+      return [];
+    const route = peerRoute(db, member.machine_id);
+    return route ? [{ machine_id: member.machine_id, ...route }] : [];
+  });
+}
+function receivePeerRoutes(db, joined, sender, routes) {
+  if (sender !== joined.config.owner_id)
+    throw new FrameError("route_forbidden", "Only the owner may introduce peer routes");
+  if (routes.some((route) => route.machine_id === joined.config.machine_id || route.machine_id === joined.config.owner_id || !joined.roster.members.some((member) => member.machine_id === route.machine_id))) {
+    throw new FrameError("route_forbidden", "Route is not for another current member");
+  }
+  db.transaction(() => {
+    for (const route of routes)
+      if (!peerRoute(db, route.machine_id))
+        rememberPeer(db, route.machine_id, route.relay, route.addrs, Date.now());
+  })();
+}
 function rememberPeer(db, machineId, relay, addrs, now) {
   db.prepare(`
     INSERT INTO agent_network_peers (machine_id, relay_url, addrs_json, seen_at_ms) VALUES (?, ?, ?, ?)
@@ -2855,6 +2933,7 @@ async function serve(dataDir2, dbPath) {
     last_error: null,
     last_error_at: null,
     direct_addresses: [],
+    bind_addresses: restartBindAddresses(readStatus(dataDir2)),
     joins_accepted: 0,
     joins_refused: 0,
     non_member_refused: 0,
@@ -2917,7 +2996,27 @@ async function serve(dataDir2, dbPath) {
   }
   let endpoint;
   try {
-    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN]);
+    const savedAddresses = relayUrl === RELAY_OFF ? status.bind_addresses ?? [] : [];
+    const rebindUntil = Date.now() + HEARTBEAT_MS + CLOSE_DEADLINE_MS2;
+    for (; ; ) {
+      if (!control.stillOurs())
+        throw new Error("Control socket ownership was lost before binding");
+      try {
+        endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN], process.env, savedAddresses);
+        if (!control.stillOurs()) {
+          await deadline(endpoint.close(), CLOSE_DEADLINE_MS2, "closing a displaced endpoint");
+          throw new Error("Control socket ownership was lost while binding");
+        }
+        break;
+      } catch (err) {
+        if (!savedAddresses.length || !/address already in use/i.test(errorMessage(err)) || Date.now() >= rebindUntil || !control.stillOurs())
+          throw err;
+        await new Promise((resolve) => setTimeout(resolve, 250));
+        if (Date.now() >= rebindUntil)
+          throw err;
+      }
+    }
+    status.bind_addresses = endpoint.boundSockets();
   } catch (err) {
     db.close();
     return fail("exit_bind", `Cannot open a network connection: ${errorMessage(err)}`);
@@ -3288,6 +3387,10 @@ async function serve(dataDir2, dbPath) {
       return { result: "rejected", code: "not_a_member" };
     const store = messages(joined);
     try {
+      if (frame.kind === "peer-routes") {
+        receivePeerRoutes(db, joined, remoteId, frame.routes);
+        return { result: "accepted" };
+      }
       if (frame.kind === "conversations") {
         const firstContact = !peerRoute(db, remoteId);
         store.upsertRemoteRegistrations(remoteId, frame.entries);
@@ -3451,17 +3554,19 @@ async function serve(dataDir2, dbPath) {
   const sentTo = /* @__PURE__ */ new Map();
   const announce = (joined, heartbeat2) => {
     const store = messages(joined);
-    let frames;
+    let presence;
     try {
-      frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
+      presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
     } finally {
       store.close();
     }
-    const content = JSON.stringify(frames);
+    const routes = isOwner && relayUrl === RELAY_OFF ? memberRoutes(db, joined, machineId) : [];
     for (const member of joined.roster.members) {
       const target = member.machine_id;
       if (target === machineId || announcingTo.has(target))
         continue;
+      const frames = routes.length ? [...presence, ...peerRouteFrames(routes.filter((route) => route.machine_id !== target))] : presence;
+      const content = JSON.stringify(frames);
       if (!heartbeat2 && sentTo.get(target) === content)
         continue;
       if (!peerRoute(db, target) && relayUrl === RELAY_OFF)
@@ -3472,8 +3577,11 @@ async function serve(dataDir2, dbPath) {
           if (stopping)
             return;
           const { ack } = await sendFrame(target, frame);
-          if (ack.result !== "accepted")
+          if (ack.result !== "accepted") {
+            if (frame.kind === "peer-routes" && ack.result === "rejected" && ack.code === "frame_invalid")
+              continue;
             throw new Error("Presence not accepted");
+          }
         }
         sentTo.set(target, content);
       })().catch((err) => {

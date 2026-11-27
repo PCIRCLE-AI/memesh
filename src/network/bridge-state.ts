@@ -3,6 +3,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { isIP } from 'node:net';
 import { networkDir } from './types.js';
 
 export type RelayState = 'off' | 'connecting' | 'online' | 'unreachable';
@@ -16,12 +17,36 @@ export interface BridgeStatus {
   last_error: string | null;
   last_error_at: string | null;
   direct_addresses: string[];
+  bind_addresses?: string[];
   joins_accepted: number;
   joins_refused: number;
   non_member_refused: number;
   frames_received: number;
   /** Written only after this holder atomically clears confirmed membership. */
   membership_departure?: { network_id: string; owner_id: string; machine_id: string };
+}
+
+/** Recover one valid port per family, preferring the actual prior bind sockets. */
+export function restartBindAddresses(status: BridgeStatus | null): string[] {
+  if (!status || typeof status !== 'object') return [];
+  const saved: unknown = status.bind_addresses;
+  const addresses: unknown = saved === undefined ? status.direct_addresses : saved;
+  if (!Array.isArray(addresses)) return [];
+  const result: string[] = [];
+  const families = new Set<number>();
+  for (const address of addresses) {
+    if (typeof address !== 'string') continue;
+    const match = /^(?:\[([^\]]+)\]|([^:]+)):(\d{1,5})$/.exec(address);
+    if (!match) continue;
+    const host = match[1] ?? match[2];
+    const family = isIP(host);
+    const port = Number(match[3]);
+    if (!family || (family === 6) !== Boolean(match[1]) || port < 1 || port > 65_535 || families.has(family)) continue;
+    if (saved !== undefined && host !== (family === 4 ? '0.0.0.0' : '::')) continue;
+    families.add(family);
+    result.push(family === 4 ? `0.0.0.0:${port}` : `[::]:${port}`);
+  }
+  return result;
 }
 
 export function statusPath(dataDir: string): string {

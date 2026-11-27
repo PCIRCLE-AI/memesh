@@ -34,6 +34,7 @@ export interface Endpoint {
     addr(): {
         directAddresses(): string[];
     };
+    boundSockets(): string[];
     online(): Promise<void>;
     connect(addr: EndpointAddr, alpn: number[]): Promise<Connection>;
     acceptNext(): Promise<Incoming | null>;

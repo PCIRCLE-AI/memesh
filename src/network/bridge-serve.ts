@@ -11,7 +11,7 @@ import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migr
 import { getDbPath } from '../core/paths.js';
 import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { logPath, writeStatus, type BridgeStatus } from './bridge-state.js';
+import { logPath, readStatus, restartBindAddresses, writeStatus, type BridgeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
 import {
   MEMBERSHIP_MAX_BYTES, MEMBERSHIP_ACK_MAX_BYTES, MEMBERSHIP_DEADLINE_MS,
@@ -27,11 +27,11 @@ import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint, typ
 import { findMember, verifyRoster } from './roster.js';
 import { appendTestFrameLog } from './test-frame-log.js';
 import {
-  peerRoute, rememberPeer, type Joined,
+  peerRoute, rememberPeer, memberRoutes, receivePeerRoutes, type Joined,
 } from './courier.js';
 import {
   ACK_MAX_BYTES, FRAME_MAX_BYTES, FrameError, parseAck, type Ack,
-  exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, type ConversationFrame,
+  exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, peerRouteFrames, type ConversationFrame,
 } from './frames.js';
 import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf, type NetworkConfig } from './store.js';
 import {
@@ -109,6 +109,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     last_error: null,
     last_error_at: null,
     direct_addresses: [],
+    bind_addresses: restartBindAddresses(readStatus(dataDir)),
     joins_accepted: 0,
     joins_refused: 0,
     non_member_refused: 0,
@@ -175,7 +176,26 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
 
   let endpoint: Endpoint;
   try {
-    endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN]);
+    const savedAddresses = relayUrl === RELAY_OFF ? status.bind_addresses ?? [] : [];
+    // A displaced holder needs one heartbeat and its close deadline to release these ports.
+    const rebindUntil = Date.now() + HEARTBEAT_MS + CLOSE_DEADLINE_MS;
+    for (;;) {
+      if (!control.stillOurs()) throw new Error('Control socket ownership was lost before binding');
+      try {
+        endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN], process.env, savedAddresses);
+        if (!control.stillOurs()) {
+          await deadline(endpoint.close(), CLOSE_DEADLINE_MS, 'closing a displaced endpoint');
+          throw new Error('Control socket ownership was lost while binding');
+        }
+        break;
+      } catch (err) {
+        if (!savedAddresses.length || !/address already in use/i.test(errorMessage(err))
+          || Date.now() >= rebindUntil || !control.stillOurs()) throw err;
+        await new Promise(resolve => setTimeout(resolve, 250));
+        if (Date.now() >= rebindUntil) throw err;
+      }
+    }
+    status.bind_addresses = endpoint.boundSockets();
   } catch (err) {
     db.close();
     return fail('exit_bind', `Cannot open a network connection: ${errorMessage(err)}`);
@@ -493,6 +513,10 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
     if (!member) return { result: 'rejected', code: 'not_a_member' };
     const store = messages(joined);
     try {
+    if (frame.kind === 'peer-routes') {
+      receivePeerRoutes(db, joined, remoteId, frame.routes);
+      return { result: 'accepted' };
+    }
     if (frame.kind === 'conversations') {
       const firstContact = !peerRoute(db, remoteId);
       store.upsertRemoteRegistrations(remoteId, frame.entries);
@@ -641,13 +665,15 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   /** Send presence to every member whose last copy differs, or to all on a heartbeat. */
   const announce = (joined: Joined, heartbeat: boolean): void => {
     const store = messages(joined);
-    let frames: ConversationFrame[];
-    try { frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations()); }
+    let presence: ConversationFrame[];
+    try { presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations()); }
     finally { store.close(); }
-    const content = JSON.stringify(frames);
+    const routes = isOwner && relayUrl === RELAY_OFF ? memberRoutes(db, joined, machineId) : [];
     for (const member of joined.roster.members) {
       const target = member.machine_id;
       if (target === machineId || announcingTo.has(target)) continue;
+      const frames = routes.length ? [...presence, ...peerRouteFrames(routes.filter(route => route.machine_id !== target))] : presence;
+      const content = JSON.stringify(frames);
       if (!heartbeat && sentTo.get(target) === content) continue; // Nothing new for it.
       if (!peerRoute(db, target) && relayUrl === RELAY_OFF) continue; // No way to reach it yet.
       announcingTo.add(target);
@@ -655,7 +681,11 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
         for (const frame of frames) {
           if (stopping) return;
           const { ack } = await sendFrame(target, frame);
-          if (ack.result !== 'accepted') throw new Error('Presence not accepted');
+          if (ack.result !== 'accepted') {
+            // Older NET/2 peers accept presence but cannot use route introductions.
+            if (frame.kind === 'peer-routes' && ack.result === 'rejected' && ack.code === 'frame_invalid') continue;
+            throw new Error('Presence not accepted');
+          }
         }
         sentTo.set(target, content);
       })()

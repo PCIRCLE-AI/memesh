@@ -4,7 +4,7 @@ import { ConversationMessages } from '../core/conversation-messages.js';
 import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
 import { getDbPath } from '../core/paths.js';
 import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
-import { logPath, writeStatus } from './bridge-state.js';
+import { logPath, readStatus, restartBindAddresses, writeStatus } from './bridge-state.js';
 import { holdControlSocket } from './control-socket.js';
 import { MEMBERSHIP_MAX_BYTES, MEMBERSHIP_ACK_MAX_BYTES, MEMBERSHIP_DEADLINE_MS, parseMembershipFrame, parseMembershipAck, membershipConfig, removeMember, clearMembership, receiveMembershipRoster, } from './membership.js';
 import { advertisedAddresses, bindEndpoint, deadline, toBytes } from './endpoint.js';
@@ -14,8 +14,8 @@ import { explainLoadFailure, loadNative } from './native-loader.js';
 import { RELAY_PING_INTERVAL_MS, applyRelayState, pingRelay, relayComplaint } from './relay-monitor.js';
 import { findMember, verifyRoster } from './roster.js';
 import { appendTestFrameLog } from './test-frame-log.js';
-import { peerRoute, rememberPeer, } from './courier.js';
-import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FrameError, parseAck, exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, } from './frames.js';
+import { peerRoute, rememberPeer, memberRoutes, receivePeerRoutes, } from './courier.js';
+import { ACK_MAX_BYTES, FRAME_MAX_BYTES, FrameError, parseAck, exchangeRosterStream, parseConversationFrame, conversationPresenceFrames, peerRouteFrames, } from './frames.js';
 import { authorizeNetworkPeer, exchangeRoster, openNetworkStore, readConfig, signedRosterOf } from './store.js';
 import { EXIT_ALREADY_RUNNING, EXIT_HOLDER_UNRESPONSIVE, JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN, RELAY_OFF, errorMessage, runtimeDir, } from './types.js';
 const RELAY_ONLINE_DEADLINE_MS = 20_000;
@@ -85,6 +85,7 @@ export async function serve(dataDir, dbPath) {
         last_error: null,
         last_error_at: null,
         direct_addresses: [],
+        bind_addresses: restartBindAddresses(readStatus(dataDir)),
         joins_accepted: 0,
         joins_refused: 0,
         non_member_refused: 0,
@@ -151,7 +152,29 @@ export async function serve(dataDir, dbPath) {
     }
     let endpoint;
     try {
-        endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN]);
+        const savedAddresses = relayUrl === RELAY_OFF ? status.bind_addresses ?? [] : [];
+        const rebindUntil = Date.now() + HEARTBEAT_MS + CLOSE_DEADLINE_MS;
+        for (;;) {
+            if (!control.stillOurs())
+                throw new Error('Control socket ownership was lost before binding');
+            try {
+                endpoint = await bindEndpoint(iroh, identity.secret, relayUrl, isOwner ? [JOIN_ALPN, NET_ALPN, MEMBERSHIP_ALPN] : [NET_ALPN, MEMBERSHIP_ALPN], process.env, savedAddresses);
+                if (!control.stillOurs()) {
+                    await deadline(endpoint.close(), CLOSE_DEADLINE_MS, 'closing a displaced endpoint');
+                    throw new Error('Control socket ownership was lost while binding');
+                }
+                break;
+            }
+            catch (err) {
+                if (!savedAddresses.length || !/address already in use/i.test(errorMessage(err))
+                    || Date.now() >= rebindUntil || !control.stillOurs())
+                    throw err;
+                await new Promise(resolve => setTimeout(resolve, 250));
+                if (Date.now() >= rebindUntil)
+                    throw err;
+            }
+        }
+        status.bind_addresses = endpoint.boundSockets();
     }
     catch (err) {
         db.close();
@@ -509,6 +532,10 @@ export async function serve(dataDir, dbPath) {
             return { result: 'rejected', code: 'not_a_member' };
         const store = messages(joined);
         try {
+            if (frame.kind === 'peer-routes') {
+                receivePeerRoutes(db, joined, remoteId, frame.routes);
+                return { result: 'accepted' };
+            }
             if (frame.kind === 'conversations') {
                 const firstContact = !peerRoute(db, remoteId);
                 store.upsertRemoteRegistrations(remoteId, frame.entries);
@@ -684,18 +711,20 @@ export async function serve(dataDir, dbPath) {
     const sentTo = new Map();
     const announce = (joined, heartbeat) => {
         const store = messages(joined);
-        let frames;
+        let presence;
         try {
-            frames = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
+            presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
         }
         finally {
             store.close();
         }
-        const content = JSON.stringify(frames);
+        const routes = isOwner && relayUrl === RELAY_OFF ? memberRoutes(db, joined, machineId) : [];
         for (const member of joined.roster.members) {
             const target = member.machine_id;
             if (target === machineId || announcingTo.has(target))
                 continue;
+            const frames = routes.length ? [...presence, ...peerRouteFrames(routes.filter(route => route.machine_id !== target))] : presence;
+            const content = JSON.stringify(frames);
             if (!heartbeat && sentTo.get(target) === content)
                 continue;
             if (!peerRoute(db, target) && relayUrl === RELAY_OFF)
@@ -706,8 +735,11 @@ export async function serve(dataDir, dbPath) {
                     if (stopping)
                         return;
                     const { ack } = await sendFrame(target, frame);
-                    if (ack.result !== 'accepted')
+                    if (ack.result !== 'accepted') {
+                        if (frame.kind === 'peer-routes' && ack.result === 'rejected' && ack.code === 'frame_invalid')
+                            continue;
                         throw new Error('Presence not accepted');
+                    }
                 }
                 sentTo.set(target, content);
             })()

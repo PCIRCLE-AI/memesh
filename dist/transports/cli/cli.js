@@ -60180,7 +60180,7 @@ var require_request = __commonJS({
   "node_modules/express/lib/request.js"(exports, module) {
     "use strict";
     var accepts = require_accepts();
-    var isIP3 = __require("node:net").isIP;
+    var isIP4 = __require("node:net").isIP;
     var typeis = require_type_is();
     var http = __require("node:http");
     var fresh = require_fresh();
@@ -60270,7 +60270,7 @@ var require_request = __commonJS({
       var hostname3 = this.hostname;
       if (!hostname3) return [];
       var offset = this.app.get("subdomain offset");
-      var subdomains2 = !isIP3(hostname3) ? hostname3.split(".").reverse() : [hostname3];
+      var subdomains2 = !isIP4(hostname3) ? hostname3.split(".").reverse() : [hostname3];
       return subdomains2.slice(offset);
     });
     defineGetter(req, "path", function path47() {
@@ -64187,7 +64187,7 @@ import { isIPv6 } from "node:net";
 import { isIPv6 as isIPv62 } from "node:net";
 import { Buffer as Buffer2 } from "node:buffer";
 import { createHash as createHash15 } from "node:crypto";
-import { isIP } from "node:net";
+import { isIP as isIP2 } from "node:net";
 function ipKeyGenerator(ip, ipv6Subnet = 56) {
   if (isIPv6(ip)) {
     const address = new import_ip_address.Address6(ip);
@@ -64481,7 +64481,7 @@ var init_dist = __esm({
             `An undefined 'request.ip' was detected. This might indicate a misconfiguration or the connection being destroyed prematurely.`
           );
         }
-        if (!isIP(ip)) {
+        if (!isIP2(ip)) {
           throw new ValidationError(
             "ERR_ERL_INVALID_IP_ADDRESS",
             `An invalid 'request.ip' (${ip}) was detected. Consider passing a custom 'keyGenerator' function to the rate limiter.`
@@ -69136,7 +69136,7 @@ __export(server_exports, {
   startServer: () => startServer
 });
 import { randomBytes as randomBytes8, timingSafeEqual as timingSafeEqual3 } from "crypto";
-import { isIP as isIP2 } from "net";
+import { isIP as isIP3 } from "net";
 import fs45 from "fs";
 import path44 from "path";
 import { fileURLToPath as fileURLToPath4 } from "url";
@@ -69377,7 +69377,7 @@ function isLoopbackHost(host) {
   const normalized = normalizeHost(host);
   if (normalized === "localhost")
     return true;
-  const family2 = isIP2(normalized);
+  const family2 = isIP3(normalized);
   if (family2 === 4)
     return normalized.startsWith("127.");
   if (family2 !== 6)
@@ -73030,6 +73030,7 @@ import fs36 from "node:fs";
 init_types2();
 import fs33 from "node:fs";
 import path32 from "node:path";
+import { isIP } from "node:net";
 function statusPath(dataDir) {
   return path32.join(networkDir(dataDir), "bridge-status.json");
 }
@@ -73064,6 +73065,7 @@ init_roster();
 init_types2();
 
 // dist/network/frames.js
+init_identity();
 var ROSTER_EXCHANGE_MAX_BYTES = SIGNED_ROSTER_MAX_BYTES + 1024;
 var FRAME_MAX_BYTES = 72 * 1024;
 

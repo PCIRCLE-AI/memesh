@@ -450,6 +450,10 @@ describe.skipIf(!supported || process.platform === 'win32')('messages between tw
           case 'conversation-receipt':
             expect(Object.keys(raw).sort()).toEqual(['version', 'kind', 'receipt'].sort());
             break;
+          case 'peer-routes':
+            expect(Object.keys(raw).sort()).toEqual(['version', 'kind', 'routes'].sort());
+            for (const route of raw.routes) expect(Object.keys(route).sort()).toEqual(['machine_id', 'relay', 'addrs'].sort());
+            break;
           default:
             expect.unreachable('Unknown NET/2 frame kind');
         }
@@ -465,6 +469,6 @@ describe.skipIf(!supported || process.platform === 'win32')('messages between tw
       frames.push(...rows);
       expect(memory(ctx)).toEqual(originalMemory.get(ctx));
     }
-    expect(new Set(frames.map(frame => frame.kind))).toEqual(new Set(['conversations', 'conversation-message', 'conversation-receipt']));
+    expect(new Set(frames.map(frame => frame.kind))).toEqual(new Set(['conversations', 'peer-routes', 'conversation-message', 'conversation-receipt']));
   });
 });

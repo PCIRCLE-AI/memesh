@@ -8,6 +8,7 @@ export interface BridgeStatus {
     last_error: string | null;
     last_error_at: string | null;
     direct_addresses: string[];
+    bind_addresses?: string[];
     joins_accepted: number;
     joins_refused: number;
     non_member_refused: number;
@@ -18,6 +19,7 @@ export interface BridgeStatus {
         machine_id: string;
     };
 }
+export declare function restartBindAddresses(status: BridgeStatus | null): string[];
 export declare function statusPath(dataDir: string): string;
 export declare function logPath(dataDir: string): string;
 export declare function writeStatus(dataDir: string, status: BridgeStatus): void;

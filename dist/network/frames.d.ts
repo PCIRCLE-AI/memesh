@@ -9,6 +9,10 @@ export type ConversationFrame = {
     entries: RemoteConversationRegistration[];
 } | {
     version: 2;
+    kind: 'peer-routes';
+    routes: PeerRoute[];
+} | {
+    version: 2;
     kind: 'conversation-message';
     row: NetworkConversationMessage;
 } | {
@@ -16,7 +20,13 @@ export type ConversationFrame = {
     kind: 'conversation-receipt';
     receipt: ConversationDeliveryReceipt;
 };
+export interface PeerRoute {
+    machine_id: string;
+    relay: string | null;
+    addrs: string[];
+}
 export declare function parseConversationFrame(bytes: Buffer): ConversationFrame;
+export declare function peerRouteFrames(routes: PeerRoute[]): ConversationFrame[];
 export declare function conversationPresenceFrames(relay: string | null, addrs: string[], entries: RemoteConversationRegistration[]): ConversationFrame[];
 export declare const ROSTER_EXCHANGE_MAX_BYTES: number;
 export declare function parseRosterExchange(bytes: Buffer): SignedRoster;

@@ -46,6 +46,7 @@ export function advertisedAddresses(endpoint: Endpoint, env: NodeJS.ProcessEnv =
 
 export async function bindEndpoint(
   iroh: IrohModule, secret: Buffer, relay: string, alpns: string[], env: NodeJS.ProcessEnv = process.env,
+  savedBindAddresses: string[] = [],
 ): Promise<Endpoint> {
   const bindAddress = testBindAddress(env[TEST_BIND_VARIABLE]);
   const builder = iroh.Endpoint.builder();
@@ -55,5 +56,6 @@ export async function bindEndpoint(
   builder.relayMode(relay === RELAY_OFF ? iroh.RelayMode.disabled() : iroh.RelayMode.customFromUrls([relay]));
   if (alpns.length > 0) builder.alpns(alpns.map((alpn) => toBytes(alpn)));
   if (bindAddress !== null) builder.bindAddr(bindAddress);
+  else for (const address of savedBindAddresses) builder.bindAddr(address);
   return builder.bind();
 }
