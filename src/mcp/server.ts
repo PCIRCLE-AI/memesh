@@ -124,6 +124,14 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 async function main() {
+  // Skip synchronous storage setup if the client already closed stdin.
+  // read(0) preserves buffered requests, which must finish before normal exit.
+  process.stdin.once('end', shutdown);
+  process.stdin.read(0);
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  if (closing || process.stdin.readableEnded) return shutdown();
+  process.stdin.off('end', shutdown);
+
   // The agent that started this server is a running host: the updater waits
   // for it to exit before it replaces any file (this covers hosts with no hooks).
   try {

@@ -8,8 +8,10 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
+import { buildIsolatedRuntimeEnv } from '../scripts/lib/isolated-env.mjs';
 
 function everythingUnder(root: string): string[] {
   const found: string[] = [];
@@ -25,6 +27,45 @@ function everythingUnder(root: string): string[] {
 }
 
 describe('the packaged MCP server on a fresh HOME', () => {
+  it('exits on an already closed stdin without creating storage or an update registry', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-empty-stdin-')));
+    const env = buildIsolatedRuntimeEnv(process.env, {
+      runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
+    });
+    try {
+      const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
+        cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
+        input: '', encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(everythingUnder(home)).toEqual([]);
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('answers a buffered initialization request before exiting on stdin EOF', () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-buffered-stdin-')));
+    const env = buildIsolatedRuntimeEnv(process.env, {
+      runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
+    });
+    try {
+      const request = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+        protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'eof-fixture', version: '1' },
+      } };
+      const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
+        cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
+        input: JSON.stringify(request) + '\n', encoding: 'utf8', timeout: 10_000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(JSON.parse(result.stdout)).toMatchObject({ id: 1, result: { serverInfo: { name: 'memesh' } } });
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
   it('answers real calls and creates no install.json', async () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-fresh-home-')));
     // Config only so the detached update checker does not outlive the fixture; MEMESH_DIR is NOT set, so the

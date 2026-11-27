@@ -871,7 +871,12 @@ export function replayPendingConversations(env = process.env) {
 /** Capture an attributed event; retain write I/O failures alongside lock contention. */
 export function captureConversation(event, env = process.env) {
   const safe = redactTextValues({ ...event, capturedAt: Date.now() });
-  conversationDeadline ??= Date.now() + HOOK_BUSY_TIMEOUT_MS;
+  // Windows pending publication must verify its ACL before the same hook ends.
+  // Leave it half the remaining budget instead of spending all of it on a lock.
+  const waitMs = process.platform === 'win32'
+    ? Math.max(0, Math.min(HOOK_BUSY_TIMEOUT_MS, Math.floor((windowsHookStateDeadline(3000) - performance.now()) / 2)))
+    : HOOK_BUSY_TIMEOUT_MS;
+  conversationDeadline = Math.min(conversationDeadline ?? Infinity, Date.now() + waitMs);
   let db;
   let writing = false;
   try {

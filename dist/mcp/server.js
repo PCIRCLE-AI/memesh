@@ -41727,6 +41727,12 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   });
 });
 async function main() {
+  process.stdin.once("end", shutdown);
+  process.stdin.read(0);
+  await new Promise((resolve) => setImmediate(resolve));
+  if (closing || process.stdin.readableEnded)
+    return shutdown();
+  process.stdin.off("end", shutdown);
   try {
     registerLiveHost(updateControlDir());
   } catch (err) {

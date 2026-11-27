@@ -157,11 +157,13 @@ it.each([['held', false], ['released during the read', true]] as const)('keeps l
       child.stdout.once('data', chunk => { clearTimeout(timer); if (String(chunk) === 'ready') resolve(); else reject(new Error('holder not ready')); });
     });
     const started = performance.now();
-    stop('A complete assistant response retained while its quote source is locked.');
+    const captured = stop('A complete assistant response retained while its quote source is locked.');
     // One 2s contention budget plus hook startup/cleanup, not two separate waits.
     expect(performance.now() - started).toBeLessThan(3000);
     const pending = path.join(home, '.memesh/pending-conversations');
-    expect(fs.existsSync(pending) ? fs.readdirSync(pending) : []).toHaveLength(releaseDuringRead ? 0 : 1);
+    const outcome = path.join(home, '.memesh/hook-outcomes.jsonl');
+    const detail = captured.stderr + (fs.existsSync(outcome) ? fs.readFileSync(outcome, 'utf8').slice(-4096) : '');
+    expect(fs.existsSync(pending) ? fs.readdirSync(pending) : [], detail).toHaveLength(releaseDuringRead ? 0 : 1);
     if (releaseDuringRead) expect(rows().find(row => row.type === 'conversation')?.content).toBe('A complete assistant response retained while its quote source is locked.');
     else child.stdin.end('release');
     expect(await closed).toBe(0);

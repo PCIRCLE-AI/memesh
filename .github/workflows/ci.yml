@@ -130,6 +130,7 @@ jobs:
         run: npm ci
 
       - name: Build source and generated artifacts
+        id: build_source
         run: npm run build
 
       - name: Release gates (the same ones the publish path runs)
@@ -159,18 +160,21 @@ jobs:
         run: node scripts/diagnose-windows-messages-entry.mjs
 
       - name: Windows native boundaries
-        if: runner.os == 'Windows'
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.build_source.outcome == 'success' }}
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
         run: |
+          $nativeFailed = $false
           node scripts/run-tests-isolated.mjs tests/core/windows-permissions.test.ts --testNamePattern compares.split.and.combined.Windows.allows
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
           node scripts/run-tests-isolated.mjs tests/core/conversation-message-entry.test.ts --testNamePattern explicit.destination.without.source
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
           node scripts/run-tests-isolated.mjs tests/hooks/stop-handoff.test.ts --testNamePattern keeps.locked.quote.reads
-          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
           node scripts/run-tests-isolated.mjs tests/network/conversation-courier.test.ts --testNamePattern CLI.copy.remains.queued
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
+          if ($nativeFailed) { exit 1 }
 
       - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
         # Temp folders on the runner's own temp disk. On Windows, TEMP points
