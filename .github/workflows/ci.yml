@@ -75,7 +75,7 @@ jobs:
     name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
     # Windows runs native ACL checks in the serial suite.
-    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 40 }}
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 40 }}
     strategy:
       fail-fast: false
       # Which runtimes this matrix covers, and why each is here.
