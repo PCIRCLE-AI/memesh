@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL, fileURLToPath } from 'node:url';
 import { ConversationMessages } from './_generated/conversation-messages.js';
+import { resolveClaudeLauncher } from './_claude-channel.js';
 import { hookSourceHost, recordHookOutcome, SKIP_REASONS, HOOK_BUSY_TIMEOUT_MS, getDbPath, getMemeshDirFromDbPath } from './_shared.js';
 
 const writeStdout = text => new Promise((resolve, reject) => {
@@ -21,8 +22,9 @@ export async function deliverConversationMessages(payload, options = {}) {
       || !['claude-code', 'codex'].includes(host) || typeof id !== 'string' || !id) {
       record('skipped', SKIP_REASONS.messageIdentityUnavailable);
     } else {
-      // Native hooks are direct children of the host; no process-list permission is needed.
-      const pid = (options.findHostPid ?? (() => process.ppid))(host);
+      // Claude may run the hook through a short-lived shell.
+      const pid = (options.findHostPid ?? (host => host === 'claude-code'
+        ? resolveClaudeLauncher()?.pid ?? process.ppid : process.ppid))(host);
       if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('conversation-host-process-unavailable');
       store = new ConversationMessages({ busyTimeoutMs: HOOK_BUSY_TIMEOUT_MS });
       if (store.networkIssue) record('error', `network: ${store.networkIssue}`);

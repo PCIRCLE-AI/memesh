@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { deliverConversationMessages } from '../../scripts/hooks/messages.js';
@@ -30,6 +31,35 @@ const status = () => {
 };
 
 describe('whole-message hook output', () => {
+  it.skipIf(process.platform === 'win32')('registers the Claude launcher through a temporary hook shell', () => {
+    vi.stubEnv('MEMESH_HOOK_HOST', 'claude-code');
+    send('idle channel pending body');
+    const launcher = path.join(root, 'claude');
+    fs.symlinkSync(process.execPath, launcher);
+    const driver = path.join(root, 'launcher.mjs');
+    fs.writeFileSync(driver, `
+      import { spawnSync } from 'node:child_process';
+      import assert from 'node:assert/strict';
+      import { ConversationMessages } from ${JSON.stringify(new URL('../../dist/core/conversation-messages.js', import.meta.url).href)};
+      const hook = spawnSync('/bin/sh', ['-c', '"$1" "$2"; result=$?; :; exit "$result"', 'hook-shell',
+        ${JSON.stringify(process.execPath)}, ${JSON.stringify(path.resolve('scripts/hooks/messages.js'))}], {
+        input: JSON.stringify({session_id:'B', hook_event_name:'SessionStart'}), encoding:'utf8'
+      });
+      assert.equal(hook.status, 0, hook.stderr);
+      const store = new ConversationMessages();
+      try {
+        const registered = store.discover().find(row => row.id === 'B');
+        assert.equal(registered.pid, process.pid);
+        assert.equal(registered.online, true);
+        store.registerChannel('B', process.pid);
+        process.stdout.write(JSON.stringify({pid:process.pid, registered}));
+      } finally { store.close(); }
+    `);
+    const child = spawnSync(launcher, [driver], { encoding: 'utf8', timeout: 15_000 });
+    expect(child.status, child.stderr).toBe(0);
+    const result = JSON.parse(child.stdout);
+    expect(result.registered).toMatchObject({ id: 'B', host: 'claude-code', pid: result.pid, online: true });
+  });
   it.each([true, false])('uses the owner host classifier for a matching plugin root: %s', async matching => {
     for (const key of ['MEMESH_HOOK_HOST', 'CODEX_SANDBOX', 'CODEX_PLUGIN_ROOT', 'CODEX_HOME', 'CLAUDE_PLUGIN_ROOT', 'CLAUDE_PROJECT_DIR', 'CLAUDECODE']) vi.stubEnv(key, '');
     vi.stubEnv('PLUGIN_ROOT', matching ? path.resolve('.') : root);

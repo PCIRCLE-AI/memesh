@@ -288,8 +288,8 @@
     },
     {
       "path": "scripts/hooks/messages.js",
-      "sha256": "5a2bfbac07ff623eb1e426ebd98d4012d6cef04150f09bcffbef16218ac6db7b",
-      "bytes": 3648
+      "sha256": "a0f0dd64091b903c66bec8d9a85d79c371831e36c45cc533ab9f8d20e90c8919",
+      "bytes": 3761
     },
     {
       "path": "scripts/hooks/post-commit.js",
