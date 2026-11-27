@@ -24,7 +24,7 @@ import {
   EXIT_ALREADY_RUNNING, JOIN_ALPN, NET_ALPN, NetworkError, childEnv, networkMetadataPath, runtimeDir, type NetworkContext,
 } from '../../src/network/types.js';
 import {
-  buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, writeTtyPreload, type Tree,
+  buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, reportBridgeFailure, writeTtyPreload, type Tree,
 } from './helpers.js';
 
 const lockText = fs.readFileSync(path.resolve(import.meta.dirname, '../../src/network/runtime-lock.json'), 'utf8');
@@ -681,7 +681,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
           while (Date.now() - started < 20_000 && !(await probeBridge(ctx.dataDir, 500) as { ready?: boolean }).ready) {
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
-          unsettled.push(`round ${round}: ${live.length} alive, probe ${JSON.stringify(probe)}, lock ${lockText}, answered after ${Date.now() - started} ms`);
+          unsettled.push(`round ${round}: ${live.length} alive, probe ${JSON.stringify(probe)}, lock ${lockText}, checked after ${Date.now() - started} ms`);
           break;
         }
         await new Promise((resolve) => setTimeout(resolve, 20));
@@ -691,6 +691,13 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       const held = children.flatMap((child, index) => child.pid !== holder && child.exitCode !== EXIT_ALREADY_RUNNING
         ? [{ pid: child.pid, exit: child.exitCode ?? child.signalCode, stderr: stderr[index] }] : []);
       if (held.length > 0) doubleHeld.push(`round ${round}: ${JSON.stringify(held)}`);
+      if (holder === null || held.length > 0) {
+        try {
+          console.error('Bridge startup contenders:', JSON.stringify({ round, probe: await probeBridge(ctx.dataDir, 500),
+            children: children.map(child => ({ pid: child.pid, exit: child.exitCode, signal: child.signalCode })) }));
+          reportBridgeFailure([ctx.dataDir]);
+        } catch { /* Diagnostic I/O must not replace the original assertion or cleanup. */ }
+      }
       await stopBridge(ctx).catch(() => undefined);
       for (const child of children) child.kill('SIGKILL');
       await Promise.all(children.map((child) => (child.exitCode === null && child.signalCode === null ? new Promise((resolve) => { child.once('exit', resolve); }) : null)));
