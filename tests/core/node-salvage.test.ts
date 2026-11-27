@@ -6,6 +6,7 @@ import { join } from 'node:path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { salvageWithNode } from '../../src/core/node-salvage.js';
 import { hasPagesWaiting, SIDECAR_PERMISSIONS_CODE } from '../../src/core/file-mode.js';
+import { expectPrivateFile } from '../helpers/permissions.js';
 
 function fixture(run: (src: string, out: string) => void) {
   const dir = mkdtempSync(join(tmpdir(), 'node-salvage-'));
@@ -78,7 +79,7 @@ describe('node salvage', () => {
       { name: 'entities', copied: 20, complete: true }, { name: 'deliveries', copied: 0, complete: false }
     ]);
     expect(readFileSync(src)).toEqual(bytes);
-    expect(statSync(out).mode & 0o777).toBe(0o600);
+    expectPrivateFile(out);
     damage(src, [eroot]);
     expect(salvageWithNode(src, out + '2').tables[0]).toEqual({ name: 'entities', copied: 0, complete: false });
   }));
