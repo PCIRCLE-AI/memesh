@@ -8,7 +8,9 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
+import { once } from 'node:events';
+import { pathToFileURL } from 'node:url';
 import { Client } from '@modelcontextprotocol/sdk/client/index.js';
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js';
 import { buildIsolatedRuntimeEnv } from '../scripts/lib/isolated-env.mjs';
@@ -27,7 +29,7 @@ function everythingUnder(root: string): string[] {
 }
 
 describe('the packaged MCP server on a fresh HOME', () => {
-  it('exits on an already closed stdin without creating storage or an update registry', () => {
+  it('exits on an already closed stdin', () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-empty-stdin-')));
     const env = buildIsolatedRuntimeEnv(process.env, {
       runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
@@ -35,32 +37,74 @@ describe('the packaged MCP server on a fresh HOME', () => {
     try {
       const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
         cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
-        input: '', encoding: 'utf8', timeout: 10_000,
+        input: '', encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
       });
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
-      expect(everythingUnder(home)).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
   }, 30_000);
 
-  it('answers a buffered initialization request before exiting on stdin EOF', () => {
+  it('exits when empty stdin closes after startup', async () => {
+    const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-late-eof-')));
+    const env = buildIsolatedRuntimeEnv(process.env, {
+      runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
+    });
+    try {
+      const entry = pathToFileURL(path.resolve('dist/mcp/server.js')).href;
+      // Keep stdin open past the startup turn, even on a slow child process.
+      const child = spawn(process.execPath, ['--input-type=module', '-e',
+        'await import(process.argv[1]); setImmediate(() => process.stdout.write("ready\\n"));', entry,
+      ], {
+        cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
+        timeout: 10_000, killSignal: 'SIGKILL',
+      });
+      let stdout = '';
+      let stderr = '';
+      child.stdout.setEncoding('utf8').on('data', (chunk) => { stdout += chunk; });
+      child.stderr.setEncoding('utf8').on('data', (chunk) => { stderr += chunk; });
+      child.stdout.once('data', () => child.stdin.end());
+      expect(await once(child, 'close'), stderr).toEqual([0, null]);
+      expect(stdout).toBe('ready\n');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    }
+  }, 30_000);
+
+  it('answers buffered requests and persists the write before exiting on stdin EOF', () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-buffered-stdin-')));
     const env = buildIsolatedRuntimeEnv(process.env, {
       runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
     });
     try {
-      const request = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
+      const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
         protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'eof-fixture', version: '1' },
       } };
-      const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
-        cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
-        input: JSON.stringify(request) + '\n', encoding: 'utf8', timeout: 10_000,
-      });
-      expect(result.error).toBeUndefined();
-      expect(result.status, result.stderr).toBe(0);
-      expect(JSON.parse(result.stdout)).toMatchObject({ id: 1, result: { serverInfo: { name: 'memesh' } } });
+      const initialized = { jsonrpc: '2.0', method: 'notifications/initialized' };
+      const call = (name: string, args: Record<string, unknown>) => {
+        const request = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } };
+        const input = [initialize, initialized, request].map(message => JSON.stringify(message)).join('\n') + '\n';
+        const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
+          cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
+          input, encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
+        });
+        expect(result.error).toBeUndefined();
+        expect(result.status, result.stderr).toBe(0);
+        const replies = result.stdout.trim().split('\n').map(line => JSON.parse(line));
+        expect(replies.find(reply => reply.id === 1)).toMatchObject({ result: { serverInfo: { name: 'memesh' } } });
+        const toolReply = replies.find(reply => reply.id === 2);
+        expect(toolReply).toMatchObject({ result: { content: [{ type: 'text', text: expect.any(String) }] } });
+        expect(toolReply.result.isError).not.toBe(true);
+        return toolReply.result.content[0].text;
+      };
+      const name = 'buffered-eof-memory';
+      const observation = 'stdin eof persistence';
+      const stored = call('remember', { name, type: 'note', project: false, observations: [observation] });
+      expect(JSON.parse(stored)).toMatchObject({ name, stored: true });
+      const recalled = call('recall', { query: observation, project: false });
+      expect(recalled).toContain(name);
+      expect(recalled).toContain(observation);
     } finally {
       fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }

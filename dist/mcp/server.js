@@ -41727,12 +41727,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   });
 });
 async function main() {
-  process.stdin.once("end", shutdown);
-  process.stdin.read(0);
-  await new Promise((resolve) => setImmediate(resolve));
-  if (closing || process.stdin.readableEnded)
-    return shutdown();
-  process.stdin.off("end", shutdown);
   try {
     registerLiveHost(updateControlDir());
   } catch (err) {
@@ -41745,6 +41739,7 @@ async function main() {
     throw err;
   }
   const transport = new StdioServerTransport();
+  process.stdin.once("end", onStdinEnd);
   await server.connect(transport);
   try {
     void dispatchAutoUpdate(findPackageRoot(import.meta.url)).catch((err) => {
@@ -41754,10 +41749,16 @@ async function main() {
     logAutoUpdateLine(updateControlDir(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
   }
 }
+function onStdinEnd() {
+  process.stdin.destroy();
+  process.once("beforeExit", shutdown);
+}
 function shutdown() {
   if (closing)
     return;
   closing = true;
+  process.stdin.off("end", onStdinEnd);
+  process.off("beforeExit", shutdown);
   try {
     closeDatabase();
   } catch {

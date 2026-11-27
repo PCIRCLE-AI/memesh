@@ -124,14 +124,6 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
 });
 
 async function main() {
-  // Skip synchronous storage setup if the client already closed stdin.
-  // read(0) preserves buffered requests, which must finish before normal exit.
-  process.stdin.once('end', shutdown);
-  process.stdin.read(0);
-  await new Promise<void>((resolve) => setImmediate(resolve));
-  if (closing || process.stdin.readableEnded) return shutdown();
-  process.stdin.off('end', shutdown);
-
   // The agent that started this server is a running host: the updater waits
   // for it to exit before it replaces any file (this covers hosts with no hooks).
   try {
@@ -149,6 +141,7 @@ async function main() {
     throw err;
   }
   const transport = new StdioServerTransport();
+  process.stdin.once('end', onStdinEnd);
   await server.connect(transport);
   // A host that wires only this server runs no SessionStart hook, so nothing else would start the updater there. It is the same
   // single entry the hooks and `memesh serve` use: its own throttle, lock and policy decide whether anything happens.
@@ -161,9 +154,17 @@ async function main() {
   }
 }
 
+function onStdinEnd() {
+  // Release the ended input and give in-flight requests and stdout time to drain.
+  process.stdin.destroy();
+  process.once('beforeExit', shutdown);
+}
+
 function shutdown() {
   if (closing) return;
   closing = true;
+  process.stdin.off('end', onStdinEnd);
+  process.off('beforeExit', shutdown);
   try { closeDatabase(); } catch { /* best effort */ }
   process.exit(0);
 }

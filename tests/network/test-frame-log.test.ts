@@ -31,8 +31,8 @@ describe('courier selected-route diagnostics', () => {
       sendFrame: async (_target: string, frame: { kind: string }) => { calls.push(frame.kind); return { ack, path: selectedPath }; },
       appendLog: (_dir: string, event: string, detail: Record<string, unknown>) => records.push({ event, detail }),
       dataDir: 'unused-private-fixture', recordError: (_event: string, error: unknown) => failures.push(error), errorMessage: String,
-    }) as (target: string) => Promise<void>;
-    await deliver('recipient-machine');
+    }) as (target: string, outgoing: ReturnType<typeof store.outgoingFor>, receipts: ReturnType<typeof store.receiptsFor>) => Promise<void>;
+    await deliver('recipient-machine', store.outgoingFor(), store.receiptsFor());
     expect(failures).toEqual([]);
     expect(calls).toEqual(['conversation-message', 'copy', 'conversation-receipt', 'receipt']);
     expect(records).toEqual(['conversation-message', 'conversation-receipt'].map(frame => ({

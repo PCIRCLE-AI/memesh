@@ -6,7 +6,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { ConversationMessages } from '../core/conversation-messages.js';
+import { ConversationMessages, type NetworkConversationMessage, type ConversationDeliveryReceipt } from '../core/conversation-messages.js';
 import { assertLegacyPathsAreDifferent } from '../core/conversation-message-migration.js';
 import { getDbPath } from '../core/paths.js';
 import { wakeConversationMessage } from '../host-adapters/conversation-wake.js';
@@ -628,12 +628,9 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   const sendingTo = new Set<string>();
   const announcingTo = new Set<string>();
   /** One machine's due messages, in order; stops at the first it cannot reach. */
-  const deliverTo = async (target: string): Promise<void> => {
+  const deliverTo = async (target: string, outgoing: NetworkConversationMessage[], receipts: ConversationDeliveryReceipt[]): Promise<void> => {
     sendingTo.add(target);
     try {
-      const before = messages(authorize(target));
-      let outgoing; let receipts;
-      try { outgoing = before.outgoingFor(target); receipts = before.receiptsFor(target); } finally { before.close(); }
       for (const row of outgoing) {
         if (stopping) return;
         const { ack, path } = await sendFrame(target, { version: 2, kind: 'conversation-message', row });
@@ -663,11 +660,7 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
   // agent here connected, disconnected or let its lease run out), plus a heartbeat.
   const sentTo = new Map<string, string>();
   /** Send presence to every member whose last copy differs, or to all on a heartbeat. */
-  const announce = (joined: Joined, heartbeat: boolean): void => {
-    const store = messages(joined);
-    let presence: ConversationFrame[];
-    try { presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations()); }
-    finally { store.close(); }
+  const announce = (joined: Joined, heartbeat: boolean, presence: ConversationFrame[]): void => {
     const routes = isOwner && relayUrl === RELAY_OFF ? memberRoutes(db, joined, machineId) : [];
     for (const member of joined.roster.members) {
       const target = member.machine_id;
@@ -708,15 +701,21 @@ export async function serve(dataDir: string, dbPath: string): Promise<number> {
       }
       const now = Date.now();
       const store = messages(joined);
-      try { store.maintainMessages(); } finally { store.close(); }
-      // Started, not awaited: each machine runs on its own, at most one run each at a time.
-      for (const member of joined.roster.members) {
-        const target = member.machine_id;
-        if (target !== machineId && !sendingTo.has(target)) void deliverTo(target);
-      }
+      let presence: ConversationFrame[];
+      try {
+        store.maintainMessages();
+        // One checked open per poll; frames are revalidated after the network wait.
+        for (const member of joined.roster.members) {
+          const target = member.machine_id;
+          if (target === machineId || sendingTo.has(target)) continue;
+          try { void deliverTo(target, store.outgoingFor(target), store.receiptsFor(target)); }
+          catch (err) { recordError('courier_failed', errorMessage(err)); }
+        }
+        presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
+      } finally { store.close(); }
       const heartbeat = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
       if (heartbeat) lastPresenceAt = now;
-      announce(joined, heartbeat);
+      announce(joined, heartbeat, presence);
     } catch (err) {
       recordError('courier_failed', errorMessage(err));
     } finally {

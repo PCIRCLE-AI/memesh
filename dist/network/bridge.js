@@ -3587,18 +3587,9 @@ async function serve(dataDir2, dbPath) {
   let courierBusy = false;
   const sendingTo = /* @__PURE__ */ new Set();
   const announcingTo = /* @__PURE__ */ new Set();
-  const deliverTo = async (target) => {
+  const deliverTo = async (target, outgoing, receipts) => {
     sendingTo.add(target);
     try {
-      const before = messages(authorize(target));
-      let outgoing;
-      let receipts;
-      try {
-        outgoing = before.outgoingFor(target);
-        receipts = before.receiptsFor(target);
-      } finally {
-        before.close();
-      }
       for (const row of outgoing) {
         if (stopping)
           return;
@@ -3637,14 +3628,7 @@ async function serve(dataDir2, dbPath) {
     }
   };
   const sentTo = /* @__PURE__ */ new Map();
-  const announce = (joined, heartbeat2) => {
-    const store = messages(joined);
-    let presence;
-    try {
-      presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
-    } finally {
-      store.close();
-    }
+  const announce = (joined, heartbeat2, presence) => {
     const routes = isOwner && relayUrl === RELAY_OFF ? memberRoutes(db, joined, machineId) : [];
     for (const member of joined.roster.members) {
       const target = member.machine_id;
@@ -3692,20 +3676,27 @@ async function serve(dataDir2, dbPath) {
       }
       const now = Date.now();
       const store = messages(joined);
+      let presence;
       try {
         store.maintainMessages();
+        for (const member of joined.roster.members) {
+          const target = member.machine_id;
+          if (target === machineId || sendingTo.has(target))
+            continue;
+          try {
+            void deliverTo(target, store.outgoingFor(target), store.receiptsFor(target));
+          } catch (err) {
+            recordError("courier_failed", errorMessage(err));
+          }
+        }
+        presence = conversationPresenceFrames(relayUrl === RELAY_OFF ? null : relayUrl, advertisedAddresses(endpoint), store.exportRegistrations());
       } finally {
         store.close();
-      }
-      for (const member of joined.roster.members) {
-        const target = member.machine_id;
-        if (target !== machineId && !sendingTo.has(target))
-          void deliverTo(target);
       }
       const heartbeat2 = now - lastPresenceAt >= PRESENCE_INTERVAL_MS;
       if (heartbeat2)
         lastPresenceAt = now;
-      announce(joined, heartbeat2);
+      announce(joined, heartbeat2, presence);
     } catch (err) {
       recordError("courier_failed", errorMessage(err));
     } finally {
