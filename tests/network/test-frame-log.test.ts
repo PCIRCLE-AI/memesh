@@ -4,8 +4,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { runInNewContext } from 'node:vm';
 import { transform } from 'esbuild';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendTestFrameLog } from '../../src/network/test-frame-log.js';
+import * as windowsPermissions from '../../src/core/windows-permissions.js';
 import { makeHome, removeTree } from './helpers.js';
 
 // Exercise the actual two courier callers without starting a native endpoint.
@@ -76,5 +77,66 @@ describe.skipIf(process.platform === 'win32')('the test frame log', () => {
     const linked = path.join(dir, 'linked');
     fs.symlinkSync(dir, linked);
     expect(appendTestFrameLog(path.join(linked, 'frames.log'), Buffer.from('x'))).toMatch(/not a plain folder/);
+  });
+});
+
+describe('the Windows test frame log path', () => {
+  let dir: string;
+  beforeEach(() => { dir = fs.realpathSync(makeHome('fl-')); });
+  afterEach(() => { vi.restoreAllMocks(); removeTree(dir); });
+
+  function appendOnWindows(file: string, body: string): string | null {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try { return appendTestFrameLog(file, Buffer.from(body)); }
+    finally { Object.defineProperty(process, 'platform', platform); }
+  }
+
+  it('verifies the folder and secures the file before appending any bytes', () => {
+    const file = path.join(dir, 'frames.log');
+    const verify = vi.spyOn(windowsPermissions, 'verifyWindowsPathsPrivate').mockImplementation(() => {});
+    const seen: string[] = [];
+    const makePrivate = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementation(() => {
+      seen.push(fs.readFileSync(file, 'utf8'));
+    });
+    expect(appendOnWindows(file, 'one')).toBeNull();
+    expect(appendOnWindows(file, 'two')).toBeNull();
+    expect(verify.mock.calls).toEqual([[[dir]], [[dir]]]);
+    expect(makePrivate.mock.calls).toEqual([[[file]], [[file]]]);
+    expect(verify.mock.invocationCallOrder[0]).toBeLessThan(makePrivate.mock.invocationCallOrder[0]);
+    expect(seen).toEqual(['', 'one\n']);
+    expect(fs.readFileSync(file, 'utf8')).toBe('one\ntwo\n');
+  });
+
+  it('refuses a directory whose ACL is not private before checking or opening the file', () => {
+    const file = path.join(dir, 'frames.log');
+    const verify = vi.spyOn(windowsPermissions, 'verifyWindowsPathsPrivate').mockImplementation(() => {
+      throw new Error('public directory');
+    });
+    const makePrivate = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate');
+    const lstat = vi.spyOn(fs, 'lstatSync');
+    const realpath = vi.spyOn(fs, 'realpathSync');
+    const open = vi.spyOn(fs, 'openSync');
+    expect(appendOnWindows(file, 'secret')).toMatch(/public directory/);
+    expect(verify).toHaveBeenCalledWith([dir]);
+    expect(lstat.mock.calls.some(([target]) => target === file)).toBe(false);
+    expect(realpath.mock.calls.some(([target]) => target === file)).toBe(false);
+    expect(open.mock.calls.some(([target]) => target === file)).toBe(false);
+    expect(makePrivate).not.toHaveBeenCalled();
+    expect(fs.existsSync(file)).toBe(false);
+  });
+
+  it('refuses to write if the file is replaced while securing its ACL', () => {
+    const file = path.join(dir, 'frames.log');
+    const moved = path.join(dir, 'original.log');
+    fs.writeFileSync(file, 'original');
+    vi.spyOn(windowsPermissions, 'verifyWindowsPathsPrivate').mockImplementation(() => {});
+    vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementation(() => {
+      fs.renameSync(file, moved);
+      fs.writeFileSync(file, 'replacement');
+    });
+    expect(appendOnWindows(file, 'secret')).toMatch(/unsafe or changed frame log path/);
+    expect(fs.readFileSync(moved, 'utf8')).toBe('original');
+    expect(fs.readFileSync(file, 'utf8')).toBe('replacement');
   });
 });

@@ -6,10 +6,52 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from '../core/windows-permissions.js';
+
+function windowsLogEntry(file: string, directory: boolean, expected?: fs.BigIntStats): fs.BigIntStats {
+  const entry = fs.lstatSync(file, { bigint: true });
+  if (entry.isSymbolicLink() || entry.ino === 0n || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n)
+    || path.relative(file, fs.realpathSync(file)) !== ''
+    || (expected && (entry.dev !== expected.dev || entry.ino !== expected.ino))) {
+    throw new Error(`unsafe or changed frame log path: ${file}`);
+  }
+  return entry;
+}
+
+function appendWindowsFrameLog(file: string, folder: string, bytes: Buffer): string | null {
+  try {
+    const directory = windowsLogEntry(folder, true);
+    verifyWindowsPathsPrivate([folder]);
+    windowsLogEntry(folder, true, directory);
+
+    const existing = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
+    if (existing) windowsLogEntry(file, false, existing);
+    const create = existing ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL;
+    windowsLogEntry(folder, true, directory);
+    const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | create, 0o600);
+    try {
+      const opened = fs.fstatSync(fd, { bigint: true });
+      windowsLogEntry(folder, true, directory);
+      windowsLogEntry(file, false, opened);
+      if (existing && (opened.dev !== existing.dev || opened.ino !== existing.ino)) {
+        throw new Error(`frame log path changed while opening: ${file}`);
+      }
+      makeWindowsPathsPrivate([file]);
+      windowsLogEntry(folder, true, directory);
+      windowsLogEntry(file, false, opened);
+      fs.writeSync(fd, `${bytes.toString('utf8')}\n`);
+      return null;
+    } finally { fs.closeSync(fd); }
+  } catch (error) {
+    return `the frame log ${file} could not be opened safely (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
 
 /** Append one frame. Null when written; otherwise why it was refused. */
 export function appendTestFrameLog(file: string, bytes: Buffer): string | null {
-  const folder = path.dirname(path.resolve(file));
+  const absolute = path.resolve(file);
+  const folder = path.dirname(absolute);
+  if (process.platform === 'win32') return appendWindowsFrameLog(absolute, folder, bytes);
   let folderStat: fs.Stats;
   try {
     folderStat = fs.lstatSync(folder);

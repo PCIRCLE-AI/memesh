@@ -14,6 +14,7 @@ import { readStatus } from '../../src/network/bridge-state.js';
 import { networkMetadataPath, type NetworkContext } from '../../src/network/types.js';
 import { installRuntimeOnce, linkRuntime, reportBridgeFailure, type Tree } from './helpers.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 
 // Actual compiled public CLI, two native iroh processes on this machine, relay off.
 // This is neither a three-host test nor a native-model wake assertion.
@@ -47,6 +48,7 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
     const runtime = installRuntimeOnce(tree);
     for (const name of ['alpha', 'beta']) {
       const home = path.join(root, name); fs.mkdirSync(home, { mode: 0o700 });
+      if (process.platform === 'win32') makeWindowsPathsPrivate([home]);
       const dataDir = path.join(home, 'data'); fs.mkdirSync(dataDir, { mode: 0o700 });
       const dbPath = path.join(dataDir, 'knowledge-graph.db');
       const env = buildIsolatedRuntimeEnv(process.env, { runtimeHome: home, memeshDir: dataDir, dbPath });
@@ -100,14 +102,17 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
     const read = (await cli(b, 'session-b', ['read','--message-id',sent.message_id])).message;
     expect(read.body).toBe(body); expect(read.sent_at).toBe(copied.sent_at);
     await wait(async () => (await cli(a, 'session-a', ['status','--json','--message-id',sent.message_id])).messages[0].state === 'read', 'read-receipt');
-    const reply = await cli(b, 'session-b', ['send','--recipient','session-a@alpha','--kind','result','--reply-to',sent.message_id,'--payload-stdin'], 'FULL REPLY🙂');
+    const replyBody = 'FULL REPLY🙂';
+    const reply = await cli(b, 'session-b', ['send','--recipient','session-a@alpha','--kind','result','--reply-to',sent.message_id,'--payload-stdin'], replyBody);
     await wait(async () => (await cli(a, 'session-a', ['status','--json','--message-id',reply.message_id])).messages.length === 1, 'reply-copy');
-    expect((await cli(a, 'session-a', ['read','--message-id',reply.message_id])).message).toMatchObject({ body: 'FULL REPLY🙂', reply_to: sent.message_id });
+    expect((await cli(a, 'session-a', ['read','--message-id',reply.message_id])).message).toMatchObject({ body: replyBody, reply_to: sent.message_id });
     contexts.forEach((ctx, i) => {
       const after = createHash('sha256').update(fs.readFileSync(ctx.dbPath)).digest('hex');
       events.push({phase:'graph-preserved',host:i,before:graphHashes[i],after});
       expect(after).toBe(graphHashes[i]);
-      expect(fs.readFileSync(path.join(path.dirname(ctx.dataDir), 'frames.jsonl'), 'utf8')).not.toContain('PRIVATE_MEMORY_MUST_NOT_CROSS');
+      const frames = fs.readFileSync(path.join(path.dirname(ctx.dataDir), 'frames.jsonl'), 'utf8');
+      expect(frames).toContain(`"body":${JSON.stringify(i === 0 ? replyBody : body)}`);
+      expect(frames).not.toContain('PRIVATE_MEMORY_MUST_NOT_CROSS');
     });
   } catch (error) {
     errors.unshift(error);

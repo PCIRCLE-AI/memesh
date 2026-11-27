@@ -2892,8 +2892,49 @@ async function pingRelay(relayUrl, fetchImpl = fetch) {
 // dist/network/test-frame-log.js
 import fs12 from "node:fs";
 import path13 from "node:path";
+function windowsLogEntry(file, directory, expected) {
+  const entry = fs12.lstatSync(file, { bigint: true });
+  if (entry.isSymbolicLink() || entry.ino === 0n || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n) || path13.relative(file, fs12.realpathSync(file)) !== "" || expected && (entry.dev !== expected.dev || entry.ino !== expected.ino)) {
+    throw new Error(`unsafe or changed frame log path: ${file}`);
+  }
+  return entry;
+}
+function appendWindowsFrameLog(file, folder, bytes) {
+  try {
+    const directory = windowsLogEntry(folder, true);
+    verifyWindowsPathsPrivate([folder]);
+    windowsLogEntry(folder, true, directory);
+    const existing = fs12.lstatSync(file, { bigint: true, throwIfNoEntry: false });
+    if (existing)
+      windowsLogEntry(file, false, existing);
+    const create = existing ? 0 : fs12.constants.O_CREAT | fs12.constants.O_EXCL;
+    windowsLogEntry(folder, true, directory);
+    const fd = fs12.openSync(file, fs12.constants.O_WRONLY | fs12.constants.O_APPEND | create, 384);
+    try {
+      const opened = fs12.fstatSync(fd, { bigint: true });
+      windowsLogEntry(folder, true, directory);
+      windowsLogEntry(file, false, opened);
+      if (existing && (opened.dev !== existing.dev || opened.ino !== existing.ino)) {
+        throw new Error(`frame log path changed while opening: ${file}`);
+      }
+      makeWindowsPathsPrivate([file]);
+      windowsLogEntry(folder, true, directory);
+      windowsLogEntry(file, false, opened);
+      fs12.writeSync(fd, `${bytes.toString("utf8")}
+`);
+      return null;
+    } finally {
+      fs12.closeSync(fd);
+    }
+  } catch (error) {
+    return `the frame log ${file} could not be opened safely (${error instanceof Error ? error.message : String(error)})`;
+  }
+}
 function appendTestFrameLog(file, bytes) {
-  const folder = path13.dirname(path13.resolve(file));
+  const absolute = path13.resolve(file);
+  const folder = path13.dirname(absolute);
+  if (process.platform === "win32")
+    return appendWindowsFrameLog(absolute, folder, bytes);
   let folderStat;
   try {
     folderStat = fs12.lstatSync(folder);
