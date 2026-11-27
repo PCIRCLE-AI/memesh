@@ -68,9 +68,15 @@ describe('a registration that is judged gone says why, and a failure to remove i
     fs.writeFileSync(path.join(d, LIVE_HOSTS_DIR, `${pid}.json`), JSON.stringify({ pid, at: new Date().toISOString(), started }));
   };
 
-  it('a pid that is alive but is another program now is not called "no longer running"', () => {
+  it('distinguishes a reused pid when a start time is available, otherwise keeps the live host', () => {
     const d = tmp();
     write(d, process.pid, 'v2:Thu Jan  1 00:00:00 1970');
+    if (!posix) {
+      expect(liveHostPids(d)).toEqual([process.pid]);
+      expect(fs.existsSync(path.join(d, LIVE_HOSTS_DIR, `${process.pid}.json`))).toBe(true);
+      expect(log(d)).toBe('');
+      return;
+    }
     expect(liveHostPids(d)).toEqual([]);
     const text = log(d);
     expect(text.length).toBeGreaterThan(0); // the log was really written: the absence below is of a word in it

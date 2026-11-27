@@ -31,6 +31,7 @@ import path from 'path';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { canDenyReads } from '../helpers/permissions.js';
+import { npmInvocation } from '../../src/core/npm-launch.js';
 
 const require = createRequire(import.meta.url);
 // _shared.js is plain JS with no type declarations.
@@ -53,7 +54,7 @@ function fresh(): { home: string; dbPath: string } {
   return { home, dbPath: path.join(home, 'test.db') };
 }
 
-function run(home: string, dbPath: string, cachePath = path.join(home, 'no-such-update-check.json'), extraEnv: NodeJS.ProcessEnv = {}): string {
+function run(home: string, dbPath: string, cachePath = path.join(home, 'no-such-update-check.json'), extraEnv: NodeJS.ProcessEnv = {}, timeout = 20_000): string {
   return execFileSync('node', [path.resolve('scripts/hooks/session-start.js')], {
     input: JSON.stringify({ cwd: '/tmp/first-session-project', session_id: `first-session-${Date.now()}-${Math.random()}` }),
     env: {
@@ -66,7 +67,7 @@ function run(home: string, dbPath: string, cachePath = path.join(home, 'no-such-
       ...extraEnv,
     },
     encoding: 'utf8',
-    timeout: 20_000,
+    timeout,
   });
 }
 
@@ -109,11 +110,6 @@ const attemptOnlyCache = (home: string): string => {
   return cachePath;
 };
 
-async function waitForCheckStart(home: string): Promise<boolean> {
-  for (let i = 0; i < 150 && !startedCheck(home); i += 1) await new Promise((r) => setTimeout(r, 100));
-  return startedCheck(home);
-}
-
 describe('#540: update warning on the first session', () => {
   it('with no database yet: silent in every session, nothing is recorded, and no check is started (none can have been tried)', () => {
     const { home, dbPath } = fresh();
@@ -130,18 +126,114 @@ describe('#540: update warning on the first session', () => {
 
   describe.each(DATABASES)('on %s', (_label, makeDatabase) => {
     it('the first session that has a database starts the check, is silent once, and the next session speaks if there is still no answer', async () => {
+      const deadline = Date.now() + 55_000;
+      const remaining = (cleanup = false) => Math.max(0, deadline - Date.now() - (cleanup ? 0 : 10_000));
       const { home, dbPath } = fresh();
       makeDatabase(dbPath);
-      const first = run(home, dbPath);
-      expect(first).not.toContain(WARNING);
-      expect(usedSilence(home)).toBe(true);
-      expect(reasonMatching(home, /update warning withheld: first session/), `no record of why the warning was withheld: ${JSON.stringify(reasons(home))}`).toBe(true);
-      expect(await waitForCheckStart(home), 'the session that stayed silent did not start the check').toBe(true);
-      // The check this session started is still running: the next session must not find its answer already there,
-      // or the warning would be absent for the right reason and this test would be racing the network.
-      expect(fs.existsSync(cachePathOf(home)), 'the background check finished before the next session ran').toBe(false);
-      const next = run(home, dbPath);
-      expect(next).toContain(WARNING);
+      const preload = path.join(home, 'hold-registry.cjs');
+      const ready = path.join(home, 'registry-ready.json');
+      const owned = path.join(home, 'background-owned.json');
+      const release = path.join(home, 'release-registry');
+      const exited = path.join(home, 'background-exited.json');
+      const cli = path.resolve('dist/transports/cli/cli.js');
+      const lookups = [
+        npmInvocation(['show', '@pcircle/memesh', 'version']),
+        npmInvocation(['view', `@pcircle/memesh@${VERSION}`, 'deprecated']),
+      ];
+      expect(lookups.every(Boolean), 'npm must be available to the real background check').toBe(true);
+      fs.writeFileSync(preload, `const fs = require('node:fs');
+const cp = require('node:child_process');
+const { syncBuiltinESMExports } = require('node:module');
+const lookups = ${JSON.stringify(lookups)};
+function publish(file, value) {
+  const temp = file+'.'+process.pid+'.'+Math.random().toString(36).slice(2)+'.tmp';
+  fs.writeFileSync(temp, JSON.stringify(value), { flag: 'wx' });
+  fs.renameSync(temp, file);
+}
+const spawn = cp.spawn;
+cp.spawn = function(command, args, options) {
+  const child = spawn.apply(this, arguments);
+  if (command === process.execPath && args[0] === ${JSON.stringify(cli)} && args[1] === 'status' && child.pid) {
+    publish(${JSON.stringify(owned)}, { pid: child.pid, cli: args[0] });
+  }
+  return child;
+};
+if (process.argv[1] === ${JSON.stringify(cli)} && process.argv[2] === 'status') {
+  process.once('exit', code => publish(${JSON.stringify(exited)}, { pid: process.pid, code }));
+  const watchdog = setTimeout(() => process.exit(1), Math.max(1, ${deadline - 1_000} - Date.now()));
+  watchdog.unref();
+  const calls = [];
+  cp.execFile = function(command, args, options, callback) {
+    const index = lookups.findIndex(q => command === q.command && JSON.stringify(args) === JSON.stringify(q.args));
+    if (index === -1) throw new Error('unexpected background execFile: '+command+' '+JSON.stringify(args));
+    calls.push({ index, pid: process.pid });
+    if (calls.length === 2) publish(${JSON.stringify(ready)}, calls);
+    if (calls.length > 2) throw new Error('unexpected extra registry call');
+    const timer = setInterval(() => {
+      if (!fs.existsSync(${JSON.stringify(release)})) return;
+      clearInterval(timer);
+      callback(null, index === 0 ? ${JSON.stringify(VERSION)} : '', '');
+    }, 25);
+    return {};
+  };
+  syncBuiltinESMExports();
+}
+syncBuiltinESMExports();
+`);
+      const env = { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(preload)}`, MEMESH_AUTO_UPDATE: 'off' };
+      const waitFor = async (done: () => boolean, cleanup = false) => {
+        while (!done() && remaining(cleanup) > 0) await new Promise(r => setTimeout(r, Math.min(100, remaining(cleanup))));
+        return done();
+      };
+      const calls = (): Array<{ index: number; pid: number }> => fs.existsSync(ready)
+        ? JSON.parse(fs.readFileSync(ready, 'utf8')) : [];
+      const runHook = () => {
+        const budget = Math.min(20_000, remaining());
+        if (budget === 0) throw new Error('first-session case deadline reached before hook');
+        return run(home, dbPath, cachePathOf(home), env, budget);
+      };
+      let bodyError: unknown;
+      try {
+        const first = runHook();
+        expect(first).not.toContain(WARNING);
+        expect(usedSilence(home)).toBe(true);
+        expect(reasonMatching(home, /update warning withheld: first session/), `no record of why the warning was withheld: ${JSON.stringify(reasons(home))}`).toBe(true);
+        expect(await waitFor(() => startedCheck(home)), 'the session that stayed silent did not start the check').toBe(true);
+        expect(await waitFor(() => calls().length === 2), 'both real background registry calls must reach the barrier').toBe(true);
+        expect(fs.existsSync(owned), 'the hook must record its owned background PID').toBe(true);
+        expect(calls().map(call => call.index).sort()).toEqual([0, 1]);
+        expect(new Set(calls().map(call => call.pid)).size).toBe(1);
+        // The check this session started is still running: the next session must not find its answer already there,
+        // or the warning would be absent for the right reason and this test would be racing the network.
+        expect(fs.existsSync(cachePathOf(home)), 'the background check finished before the next session ran').toBe(false);
+        const next = runHook();
+        expect(next).toContain(WARNING);
+        expect(fs.existsSync(cachePathOf(home))).toBe(false);
+        expect(calls()).toHaveLength(2);
+      } catch (error) { bodyError = error; }
+      try {
+        fs.writeFileSync(release, 'release');
+        if (fs.existsSync(owned)) {
+          const owner = JSON.parse(fs.readFileSync(owned, 'utf8')) as { pid: number; cli: string };
+          expect(owner.cli).toBe(cli);
+          expect(Number.isSafeInteger(owner.pid) && owner.pid > 0).toBe(true);
+          expect(await waitFor(() => fs.existsSync(exited), true), 'the owned background process did not finish after release').toBe(true);
+          const result = JSON.parse(fs.readFileSync(exited, 'utf8')) as { pid: number; code: number };
+          expect(result.pid).toBe(owner.pid);
+          expect(await waitFor(() => {
+            try { process.kill(result.pid, 0); return false; }
+            catch (error) { return (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+          }, true), 'the background process still exists after its exit record').toBe(true);
+          expect(result.code).toBe(0);
+          expect(calls().every(call => call.pid === result.pid)).toBe(true);
+          const cache = JSON.parse(fs.readFileSync(cachePathOf(home), 'utf8')) as { checkSucceeded: boolean; latestVersion: string };
+          expect(cache).toMatchObject({ checkSucceeded: true, latestVersion: VERSION });
+        }
+      } catch (cleanupError) {
+        if (bodyError !== undefined) throw new AggregateError([bodyError, cleanupError], 'first-session assertion failed; background cleanup also failed', { cause: cleanupError });
+        throw cleanupError;
+      }
+      if (bodyError !== undefined) throw bodyError;
     }, 60_000);
 
     it('a cache file that exists but holds no finished check is not "the first session": the warning speaks', () => {

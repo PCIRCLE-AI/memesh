@@ -8,6 +8,7 @@ import { spawn } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { createSchema, hasTables, MEMORY_READ_TABLES } from '../../src/storage/schema.js';
 
@@ -54,13 +55,17 @@ describe('createSchema', () => {
     const dir = tmp();
     const dbPath = path.join(dir, 'race.db');
     const opener = `
-      import { openHookDb } from ${JSON.stringify(path.resolve('scripts/hooks/_shared.js'))};
+      import { openHookDb } from ${JSON.stringify(pathToFileURL(path.resolve('scripts/hooks/_shared.js')).href)};
       const { db } = openHookDb({ ...process.env, MEMESH_DB_PATH: ${JSON.stringify(dbPath)} }, { fts: true });
       db.close();
     `;
+    const errors: string[] = [];
     const run = () => new Promise<number | null>((resolve) => {
-      const child = spawn('node', ['--input-type=module', '-e', opener], { env: { ...process.env, HOME: dir }, stdio: 'ignore' });
-      child.on('close', resolve);
+      const child = spawn('node', ['--input-type=module', '-e', opener], { env: { ...process.env, HOME: dir }, stdio: ['ignore', 'ignore', 'pipe'] });
+      let stderr = '';
+      child.stderr!.setEncoding('utf8');
+      child.stderr!.on('data', (chunk: string) => { stderr += chunk; });
+      child.on('close', (code) => { errors.push(stderr); resolve(code); });
     });
     const seen = new Set<number>();
     let done = false;
@@ -80,7 +85,7 @@ describe('createSchema', () => {
     const codes = await Promise.all([run(), run()]);
     done = true;
     await poll;
-    expect(codes).toEqual([0, 0]);
+    expect(codes, errors.join('\n')).toEqual([0, 0]);
     expect(codes).toHaveLength(2);
     expect([...seen].filter((n) => n !== 0 && n !== MEMORY_READ_TABLES.length), 'a reader saw a half-built schema').toEqual([]);
   }, 60_000);

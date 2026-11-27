@@ -10,6 +10,7 @@ import { SAVE_WORDED_PROMPTS } from '../helpers/save-worded-prompts.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { renderConversationMessage } from '../../scripts/hooks/_generated/conversation-messages.js';
 import { redactSecrets } from '../../scripts/hooks/_shared.js';
+import { windowsAclFixture } from '../helpers/permissions.js';
 
 // The hook run as a subprocess, against a throwaway HOME so it never reads or
 // writes the developer's real ~/.memesh. The waiting-message reminder is
@@ -192,13 +193,18 @@ describe('Feature: User Prompt Intent Hook', () => {
     it('replays a real user prompt after its conversation source is temporarily unreadable', () => {
       const session = 'wake-replay';
       const prompt = changedEnvelope(sentMessage(session));
-      chmodSync(messagePath(), 0o644);
+      try {
+        if (process.platform === 'win32') windowsAclFixture(messagePath(), 'deny-read');
+        else chmodSync(messagePath(), 0o644);
+        if (process.platform === 'win32') expect(() => readFileSync(messagePath())).toThrow(/EACCES|EPERM/);
+        expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
+        expect(existsSync(path.join(tmpHome, '.memesh', 'pending-conversations'))).toBe(true);
+        expect(capturedConversationTexts()).toEqual([]);
+      } finally {
+        if (process.platform === 'win32') windowsAclFixture(messagePath(), 'restore-read');
+        else chmodSync(messagePath(), 0o600);
+      }
 
-      expectNoOp(runHook({ session_id: session, cwd: tmpHome, prompt }, { MEMESH_AUTO_CAPTURE: 'true' }));
-      expect(existsSync(path.join(tmpHome, '.memesh', 'pending-conversations'))).toBe(true);
-      expect(capturedConversationTexts()).toEqual([]);
-
-      chmodSync(messagePath(), 0o600);
       expectNoOp(runHook({ session_id: 'wake-next', cwd: tmpHome, prompt: 'trigger pending replay' }, { MEMESH_AUTO_CAPTURE: 'true' }));
       expect(capturedConversationTexts()).toContain(prompt);
     });

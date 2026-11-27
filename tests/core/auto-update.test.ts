@@ -59,7 +59,7 @@ import { installProvider, inspectInstall, registryProblem, defaultInstallTarget,
 import { processStartTag } from '../../src/core/process-identity.js';
 import { npmInvocation } from '../../src/core/npm-launch.js';
 import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
-import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateDir, expectPrivateFile, makeWindowsAclPublic, readWindowsAcl, windowsAclFixture } from '../helpers/permissions.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 // A test that writes into the current directory (the repository) leaves files that get committed by accident: the
@@ -1053,26 +1053,57 @@ describe('the policy, hardened', () => {
     const throughFile = tmp();
     fs.writeFileSync(path.join(throughFile, 'not-a-dir'), 'x');
     cases.push(['ENOTDIR', path.join(throughFile, 'not-a-dir')]);
+    cases.push(['non-directory ancestor', path.join(throughFile, 'not-a-dir', 'nested')]);
     const dangling = tmp();
     fs.symlinkSync(path.join(dangling, 'nowhere.json'), path.join(dangling, 'config.json'));
     cases.push(['dangling symlink', dangling]);
     for (const [label, dir] of cases) {
-      const decision = resolveUpdatePolicy({ env: {}, activeDir: dir, accountHome: a.home });
+      const decision = resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: dir, accountHome: a.home });
       expect(decision, label).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffUnreadableConfig });
       expect(decision.detail, label).toContain('config.json');
     }
     if (process.getuid?.() !== 0) {
       const locked = tmp();
       fs.writeFileSync(path.join(locked, 'config.json'), '{"autoUpdate":"major"}');
-      fs.chmodSync(locked, 0o000);
       try {
-        expect(resolveUpdatePolicy({ env: {}, activeDir: locked, accountHome: a.home })).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffUnreadableConfig });
+        if (process.platform === 'win32') windowsAclFixture(locked, 'deny-read');
+        else fs.chmodSync(locked, 0o000);
+        let denied: unknown;
+        try { fs.readFileSync(path.join(locked, 'config.json')); } catch (error) { denied = error; }
+        expect(denied).toMatchObject({ code: expect.stringMatching(/^(EACCES|EPERM)$/) });
+        expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: locked, accountHome: a.home })).toMatchObject({ policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffUnreadableConfig });
       } finally {
-        fs.chmodSync(locked, 0o700);
+        if (process.platform === 'win32') windowsAclFixture(locked, 'restore-read');
+        else fs.chmodSync(locked, 0o700);
       }
     }
     // A directory that simply has no config is still absent.
     expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: a.dir, accountHome: a.home }).policy).toBe('major');
+  });
+
+  it.each(['not-a-dir', path.join('not-a-dir', 'nested')])('does not treat Windows ENOENT below a file as absent: %s', (relative) => {
+    const a = account();
+    const root = tmp();
+    fs.writeFileSync(path.join(root, 'not-a-dir'), 'x');
+    const activeDir = path.join(root, relative);
+    const file = path.join(activeDir, 'config.json');
+    const read = fs.readFileSync;
+    const stat = fs.lstatSync;
+    const missing = () => Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+    const readSpy = vi.spyOn(fs, 'readFileSync').mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]) === file) throw missing();
+      return Reflect.apply(read, fs, args);
+    }) as typeof fs.readFileSync);
+    const statSpy = vi.spyOn(fs, 'lstatSync').mockImplementation(((...args: unknown[]) => {
+      if (String(args[0]) === file) throw missing();
+      return Reflect.apply(stat, fs, args);
+    }) as typeof fs.lstatSync);
+    try {
+      expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir, accountHome: a.home })).toMatchObject({
+        policy: 'off', reason: AUTO_UPDATE_REASONS.policyOffUnreadableConfig, detail: expect.stringContaining('config.json'),
+      });
+      expect(resolveUpdatePolicy({ env: { HOME: a.home }, activeDir: path.join(root, 'missing', 'nested'), accountHome: a.home }).policy).toBe('major');
+    } finally { readSpy.mockRestore(); statSpy.mockRestore(); }
   });
 
   it('does not apply the default inside CI, but honours an explicit setting there', () => {
@@ -1702,15 +1733,34 @@ describe('memesh update (manual): the same verified path, without the policy or 
   it('a runner killed by a signal is reported as interrupted, and an install that had begun says how to put the version back', () => {
     const dir = tmp();
     fs.writeFileSync(path.join(dir, 'auto-update-installing.json'), JSON.stringify({ at: '2026-11-08T00:00:00.000Z', from: '4.12.0', to: '4.13.0', pid: 2_147_483_000, started: null }));
-    const killed = runManualUpdate(stubRunner("process.kill(process.pid, 'SIGKILL');"), dir);
+    const marker = path.join(dir, 'kill-marker');
+    const runner = stubRunner(`
+      import fs from 'node:fs';
+      fs.writeFileSync(${JSON.stringify(marker)}, 'before SIGKILL');
+      try { process.kill(process.pid, 'SIGKILL'); }
+      catch (error) { fs.writeFileSync(${JSON.stringify(marker)}, 'SIGKILL failed'); throw error; }
+      fs.writeFileSync(${JSON.stringify(marker)}, 'SIGKILL returned');
+    `);
+    const killed = runManualUpdate(runner, dir);
+    expect(fs.readFileSync(marker, 'utf8')).toBe('before SIGKILL');
     const text = killed.lines.join('\n');
     expect(killed.code).toBe(1);
     expect(text).toContain('interrupted');
-    expect(text).toContain('SIGKILL');
+    if (process.platform === 'win32') expect(text).not.toContain('SIGKILL');
+    else expect(text).toContain('SIGKILL');
     expect(text).toContain('some files may already be new');
     expect(text).toContain('memesh update --reinstall');
-    const early = runManualUpdate(stubRunner("process.kill(process.pid, 'SIGKILL');"), tmp());
-    expect(early.lines.join('\n')).toContain('Nothing had been installed yet');
+    fs.unlinkSync(marker);
+    const early = runManualUpdate(runner, tmp());
+    expect(fs.readFileSync(marker, 'utf8')).toBe('before SIGKILL');
+    expect(early.code).toBe(1);
+    const earlyText = early.lines.join('\n');
+    if (process.platform === 'win32') {
+      expect(earlyText).toContain('No update was made');
+      expect(earlyText).toContain('the runner ended (exit 1) without recording a result');
+      expect(earlyText).not.toMatch(/SIGKILL|some files may already be new|memesh update --reinstall/);
+      expect(earlyText).not.toMatch(/\b(?:Error|ERR_[A-Z_]+|EACCES|EPERM|ENOENT)\b/);
+    } else expect(earlyText).toContain('Nothing had been installed yet');
   });
 
   it('a record that cannot be read after a runner that exited 0 is not reported as "another update running"', () => {
@@ -2247,18 +2297,30 @@ describe('the Hermes copy: what is kept, what is put back, what is cleaned up', 
   it.skipIf(isRoot)('something unreadable in the copy is reported as that, with the error: not as "edited" and not as "not ours"', () => {
     const { memeshDir, target, input } = setup();
     installProvider({ ...input('# v1\n', '1.0.0'), target, force: false, backupRoot: path.join(memeshDir, 'backups') });
-    fs.chmodSync(path.join(target, '__init__.py'), 0o000);
+    const provider = path.join(target, '__init__.py');
+    const marker = path.join(target, '.memesh-install.json');
     try {
+      if (process.platform === 'win32') windowsAclFixture(provider, 'deny-read');
+      else fs.chmodSync(provider, 0o000);
+      expect(() => fs.readFileSync(provider)).toThrow(/EACCES|EPERM/);
       expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringContaining('EACCES') });
       const out = refreshInstalls(input('# v2\n', '2.0.0'));
       expect(out).toMatchObject([{ outcome: 'failed', reason: expect.stringContaining('EACCES') }]);
       expect(out[0].reason).not.toContain('changed after MeMesh installed it');
       expect(out[0].reason).not.toContain('not installed by MeMesh');
-    } finally { fs.chmodSync(path.join(target, '__init__.py'), 0o644); }
-    fs.chmodSync(path.join(target, '.memesh-install.json'), 0o000);
+    } finally {
+      if (process.platform === 'win32') windowsAclFixture(provider, 'restore-read');
+      else fs.chmodSync(provider, 0o644);
+    }
     try {
+      if (process.platform === 'win32') windowsAclFixture(marker, 'deny-read');
+      else fs.chmodSync(marker, 0o000);
+      expect(() => fs.readFileSync(marker)).toThrow(/EACCES|EPERM/);
       expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringContaining('EACCES') });
-    } finally { fs.chmodSync(path.join(target, '.memesh-install.json'), 0o644); }
+    } finally {
+      if (process.platform === 'win32') windowsAclFixture(marker, 'restore-read');
+      else fs.chmodSync(marker, 0o644);
+    }
   });
 
   it('the temporary directories have no plugin.yaml of their own: Hermes cannot mistake one for a second MeMesh provider', () => {
@@ -2432,8 +2494,8 @@ describe('Codex: where it lives, and what is not known', () => {
   const codexCalls = (calls: string[]) => calls.filter((c) => c.startsWith('codex'));
 
   it('codexHomeFor: the Codex directory a plugin of ours was installed into, whatever HOME is now; anything else is null, never a guess', () => {
-    expect(codexHomeFor('/h/other/.codex/plugins/cache/pcircle-memesh/memesh/4.12.0')).toBe('/h/other/.codex');
-    expect(codexHomeFor('/srv/codex-x/plugins/cache/pcircle-memesh/memesh/4.12.0')).toBe('/srv/codex-x');
+    expect(codexHomeFor('/h/other/.codex/plugins/cache/pcircle-memesh/memesh/4.12.0')).toBe(path.resolve('/h/other/.codex'));
+    expect(codexHomeFor('/srv/codex-x/plugins/cache/pcircle-memesh/memesh/4.12.0')).toBe(path.resolve('/srv/codex-x'));
     // Another marketplace's plugin (a local development copy) is not ours to replace with the official release.
     expect(codexHomeFor('/h/me/.codex/plugins/cache/my-dev-marketplace/memesh/4.12.0')).toBeNull();
     // Not a Codex plugin cache at all: no fallback to the account's .codex, no fallback to a temporary directory.
@@ -2892,9 +2954,10 @@ describe('the release commit is confirmed to be part of main by the updater itse
     const w = fakeWorld({ verified: false });
     const real = w.deps.exec;
     let asked = 0;
-    w.deps.exec = (cmd, args, opts) => { if (cmd === process.execPath) asked += 1; return real(cmd, args, opts); };
-    await runAutoUpdate(w.deps);
+    w.deps.exec = (cmd, args, opts) => { if (cmd === process.execPath && args[0] === '-e' && args[1] === COMPARE_SCRIPT) asked += 1; return real(cmd, args, opts); };
+    expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.sourceNotVerified });
     expect(asked).toBe(0);
+    expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
   });
 });
 
@@ -3044,7 +3107,12 @@ describe('the dependency tree is pinned by the release, and installed without ru
     let unreadable = '';
     w.deps.exec = (cmd, args, opts) => {
       const r = real(cmd, args, opts);
-      if (cmd === 'npm' && args[0] === 'root') { unreadable = path.join(installedDir, 'secret'); fs.writeFileSync(unreadable, 'x'); fs.chmodSync(unreadable, 0o000); }
+      if (cmd === 'npm' && args[0] === 'root') {
+        unreadable = path.join(installedDir, 'secret'); fs.writeFileSync(unreadable, 'x');
+        if (process.platform === 'win32') windowsAclFixture(unreadable, 'deny-read');
+        else fs.chmodSync(unreadable, 0o000);
+        expect(() => fs.readFileSync(unreadable)).toThrow(/EACCES|EPERM/);
+      }
       return r;
     };
     w.deps.exec = logicalNpmEntry(w.deps.exec);
@@ -3052,7 +3120,14 @@ describe('the dependency tree is pinned by the release, and installed without ru
       expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'failed', reason: AUTO_UPDATE_REASONS.rollbackUnavailable });
       expect(w.calls.some((c) => c.startsWith('npm install -g'))).toBe(false);
       expect(fs.readdirSync(path.dirname(installedDir)).filter((n) => n.startsWith('memesh.rollback'))).toEqual([]);
-    } finally { if (unreadable) fs.chmodSync(unreadable, 0o600); }
+      expect(fs.existsSync(unreadable)).toBe(true);
+      expect(JSON.parse(fs.readFileSync(path.join(installedDir, 'package.json'), 'utf8')).version).toBe('4.12.0');
+    } finally {
+      if (unreadable && fs.existsSync(unreadable)) {
+        if (process.platform === 'win32') windowsAclFixture(unreadable, 'restore-read');
+        else fs.chmodSync(unreadable, 0o600);
+      }
+    }
   });
 
   it('copies left beside the install by a runner that was killed are swept, those of a running one are not', async () => {
@@ -3437,9 +3512,16 @@ describe('the attempt time is taken when the runner has started', () => {
   it('one that started takes the slot, owner-only, with the time it was dispatched', async () => {
     await withDir(async (dir) => {
       expect(await dispatchAutoUpdate(root(), 1_000_000, { ...CAN, spawnImpl: fakeChild('spawn') })).toEqual({ state: 'dispatched' });
-      expect(fs.readFileSync(path.join(dir, 'auto-update-attempt'), 'utf8')).toBe('1000000');
-      expect(fs.statSync(path.join(dir, 'auto-update-attempt')).mode & 0o777).toBe(0o600);
+      const attempt = path.join(dir, 'auto-update-attempt');
+      expect(fs.readFileSync(attempt, 'utf8')).toBe('1000000');
+      expectPrivateFile(attempt);
+      if (process.platform === 'win32') {
+        makeWindowsAclPublic(attempt);
+        expect(readWindowsAcl(attempt).rules).toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
+      }
       expect(await dispatchAutoUpdate(root(), 1_000_000 + 60_000, { ...CAN, spawnImpl: fakeChild('spawn') })).toEqual({ state: 'throttled' });
+      expectPrivateFile(attempt);
+      expect(fs.readFileSync(attempt, 'utf8')).toBe('1000000');
     });
   });
 });
@@ -3480,9 +3562,41 @@ describe('what the install steps answer decides the outcome', () => {
     expect(fs.existsSync(waitFile)).toBe(false);
   });
 
-  it('a log that cannot be opened (a directory is in its place) is said on stderr, and nothing is started', async () => {
+  it.skipIf(process.platform === 'win32')('a FIFO log without a reader cannot block dispatch or its diagnostic', async () => {
+    const home = tmp();
+    const dir = path.join(home, '.memesh');
+    fs.mkdirSync(dir);
+    const logPath = path.join(dir, 'auto-update.log');
+    const fifo = spawnSync('mkfifo', [logPath], { encoding: 'utf8', timeout: 5_000 });
+    expect(fifo.status, fifo.stderr).toBe(0);
+    const savedHome = process.env.HOME;
+    process.env.HOME = home;
+    const root = tmp();
+    fs.mkdirSync(path.join(root, 'scripts', 'hooks'), { recursive: true });
+    fs.writeFileSync(path.join(root, 'scripts', 'hooks', 'auto-update-runner.mjs'), 'process.exit(0);\n');
+    const written: string[] = [];
+    const err = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write);
+    const spawnImpl = vi.fn(() => { throw new Error('must not spawn with a FIFO log'); });
+    try {
+      expect(await dispatchAutoUpdate(root, Date.now(), { canSelfUpdate: () => ({ ok: true, label: 'test install' }), spawnImpl: spawnImpl as unknown as typeof import('child_process').spawn })).toEqual({ state: 'failed' });
+      expect(written.join('')).toContain('durable log unavailable');
+      expect(fs.existsSync(path.join(dir, DISPATCH_CLAIM))).toBe(false);
+      // A diagnostic before log preflight must also fall back without blocking.
+      expect(await dispatchAutoUpdate(root, Date.now(), { canSelfUpdate: () => ({ ok: false, label: 'source checkout' }), spawnImpl: spawnImpl as unknown as typeof import('child_process').spawn })).toEqual({ state: 'unsupported' });
+      expect(written.join('')).toContain('source checkout cannot update itself');
+      expect(spawnImpl).not.toHaveBeenCalled();
+      expect(fs.existsSync(path.join(dir, 'auto-update-attempt'))).toBe(false);
+      expect(fs.lstatSync(logPath).isFIFO()).toBe(true);
+    } finally {
+      err.mockRestore();
+      if (savedHome === undefined) delete process.env.HOME; else process.env.HOME = savedHome;
+    }
+  });
+
+  it.each(['directory', 'non-file descriptor', 'write failure'] as const)('a log that cannot be opened (a directory is in its place) is said on stderr, and nothing is started: %s', async (failure) => {
     const home = tmp(); const dir = path.join(home, '.memesh'); fs.mkdirSync(dir);
-    fs.mkdirSync(path.join(dir, 'auto-update.log'));
+    const logPath = path.join(dir, 'auto-update.log');
+    if (failure === 'directory') fs.mkdirSync(logPath);
     const saved = { HOME: process.env.HOME, MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
     process.env.HOME = home;
     process.env.MEMESH_DIR = tmp();
@@ -3492,13 +3606,36 @@ describe('what the install steps answer decides the outcome', () => {
     fs.writeFileSync(path.join(root, 'scripts', 'hooks', 'auto-update-runner.mjs'), 'process.exit(0);\n');
     const written: string[] = [];
     const err = vi.spyOn(process.stderr, 'write').mockImplementation(((chunk: unknown) => { written.push(String(chunk)); return true; }) as typeof process.stderr.write);
+    let logFd = -1;
+    const open = fs.openSync;
+    const fstat = fs.fstatSync;
+    const write = fs.writeSync;
+    const openSpy = vi.spyOn(fs, 'openSync').mockImplementation(((...args: unknown[]) => {
+      const fd = Reflect.apply(open, fs, args);
+      if (String(args[0]) === logPath) logFd = fd;
+      return fd;
+    }) as typeof fs.openSync);
+    const statSpy = vi.spyOn(fs, 'fstatSync').mockImplementation(((...args: unknown[]) => {
+      if (args[0] === logFd && failure === 'non-file descriptor') return { isFile: () => false };
+      return Reflect.apply(fstat, fs, args);
+    }) as typeof fs.fstatSync);
+    const writeSpy = vi.spyOn(fs, 'writeSync').mockImplementation(((...args: unknown[]) => {
+      if (args[0] === logFd && failure === 'write failure') throw Object.assign(new Error('EIO: log write failed'), { code: 'EIO' });
+      return Reflect.apply(write, fs, args);
+    }) as typeof fs.writeSync);
+    const spawnImpl = vi.fn(() => { throw new Error('must not spawn without a writable file log'); });
     try {
-      expect(await dispatchAutoUpdate(root, Date.now(), { canSelfUpdate: () => ({ ok: true, label: 'test install' }) })).toEqual({ state: 'failed' });
+      expect(await dispatchAutoUpdate(root, Date.now(), { canSelfUpdate: () => ({ ok: true, label: 'test install' }), spawnImpl: spawnImpl as unknown as typeof import('child_process').spawn })).toEqual({ state: 'failed' });
     } finally {
       err.mockRestore();
+      openSpy.mockRestore(); statSpy.mockRestore(); writeSpy.mockRestore();
       for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     }
+    expect(spawnImpl).not.toHaveBeenCalled();
     expect(written.join('')).toContain('durable log unavailable');
+    if (failure === 'write failure') expect(written.join('')).toContain('EIO: log write failed');
+    if (logFd >= 0) expect(() => fs.fstatSync(logFd)).toThrow();
+    expect(fs.existsSync(path.join(dir, DISPATCH_CLAIM))).toBe(false);
     expect(fs.existsSync(path.join(dir, 'auto-update-attempt'))).toBe(false);
   });
 });

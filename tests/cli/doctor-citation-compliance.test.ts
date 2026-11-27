@@ -207,7 +207,9 @@ describe('doctor: the memory-citation rate is reported, not left to be found', (
     fs.mkdirSync(codexHome, { recursive: true });
     const fakeBin = path.join(home, 'fake-bin');
     fs.mkdirSync(fakeBin);
-    fs.writeFileSync(path.join(fakeBin, 'codex'), '#!/bin/sh\nexit 0\n', { mode: 0o755 });
+    const codexCommand = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+    const codexScript = process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n';
+    fs.writeFileSync(path.join(fakeBin, codexCommand), codexScript, { mode: 0o755 });
     const codexOnly = {
       CODEX_HOME: codexHome,
       CLAUDE_CONFIG_DIR: path.join(home, 'no-such-claude'),

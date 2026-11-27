@@ -14,6 +14,7 @@ import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from '
 import { writeJustUpgradedMarker } from './update-notice.js';
 import { processStartTag, sameProcessAlive } from './process-identity.js';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from './file-mode.js';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 import { classifyBump, getInstalledGlobalVersion } from './updater.js';
 export const DEFAULT_AUTO_UPDATE_POLICY = 'major';
 export const PACKAGE_NAME = '@pcircle/memesh';
@@ -102,7 +103,32 @@ function readConfigFile(file) {
         }
         catch (lerr) {
             const lcode = lerr.code ?? 'UNKNOWN';
-            return lcode === 'ENOENT' ? { state: 'absent' } : { state: 'unreadable', why: lcode };
+            if (lcode !== 'ENOENT')
+                return { state: 'unreadable', why: lcode };
+            let parent = path.dirname(file);
+            for (;;) {
+                try {
+                    return fs.statSync(parent).isDirectory() ? { state: 'absent' } : { state: 'unreadable', why: 'ENOTDIR' };
+                }
+                catch (parentError) {
+                    const parentCode = parentError.code ?? 'UNKNOWN';
+                    if (parentCode !== 'ENOENT')
+                        return { state: 'unreadable', why: parentCode };
+                    try {
+                        fs.lstatSync(parent);
+                        return { state: 'unreadable', why: 'dangling symlink' };
+                    }
+                    catch (statError) {
+                        const statCode = statError.code ?? 'UNKNOWN';
+                        if (statCode !== 'ENOENT')
+                            return { state: 'unreadable', why: statCode };
+                    }
+                    const next = path.dirname(parent);
+                    if (next === parent)
+                        return { state: 'unreadable', why: parentCode };
+                    parent = next;
+                }
+            }
         }
     }
     try {
@@ -221,6 +247,112 @@ export function resolveUpdatePolicy(input) {
 }
 export function updateControlDir() {
     return path.join(homeDir(), '.memesh');
+}
+function windowsControlEntry(file, directory, expected) {
+    const entry = fs.lstatSync(file, { bigint: true });
+    if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n)
+        || path.relative(file, fs.realpathSync(file)) !== ''
+        || (expected && (entry.dev !== expected.dev || entry.ino !== expected.ino))) {
+        throw new Error(`Unsafe or changed updater control path: ${file}.`);
+    }
+    return entry;
+}
+function prepareUpdateControlDirectory(dir) {
+    if (process.platform !== 'win32') {
+        ensureOwnerDir(dir);
+        return null;
+    }
+    const parent = path.dirname(dir);
+    windowsControlEntry(parent, true);
+    try {
+        fs.mkdirSync(dir);
+    }
+    catch (error) {
+        if (error.code !== 'EEXIST')
+            throw error;
+    }
+    const entry = windowsControlEntry(dir, true);
+    makeWindowsPathsPrivate([dir]);
+    return windowsControlEntry(dir, true, entry);
+}
+function checkWindowsAttemptHandle(file, fd, entry) {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (opened.dev !== entry.dev || opened.ino !== entry.ino || opened.nlink !== 1n) {
+        throw new Error(`Updater attempt path changed: ${file}.`);
+    }
+}
+function readAttemptTime(file, directory) {
+    if (!directory) {
+        try {
+            return fs.readFileSync(file, 'utf8');
+        }
+        catch {
+            return '';
+        }
+    }
+    const parent = path.dirname(file);
+    windowsControlEntry(parent, true, directory);
+    const existing = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
+    if (!existing)
+        return '';
+    windowsControlEntry(file, false, existing);
+    makeWindowsPathsPrivate([file]);
+    windowsControlEntry(parent, true, directory);
+    windowsControlEntry(file, false, existing);
+    const fd = fs.openSync(file, 'r');
+    try {
+        checkWindowsAttemptHandle(file, fd, existing);
+        return fs.readFileSync(fd, 'utf8');
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
+function writeAttemptTime(file, now, directory) {
+    if (!directory) {
+        fs.writeFileSync(file, String(now), { mode: 0o600 });
+        ownerOnly(file);
+        return;
+    }
+    const parent = path.dirname(file);
+    windowsControlEntry(parent, true, directory);
+    let created;
+    try {
+        if (!fs.lstatSync(file, { throwIfNoEntry: false })) {
+            const empty = fs.openSync(file, 'wx', 0o600);
+            try {
+                created = fs.fstatSync(empty, { bigint: true });
+            }
+            finally {
+                fs.closeSync(empty);
+            }
+        }
+        const entry = windowsControlEntry(file, false, created);
+        makeWindowsPathsPrivate([file]);
+        windowsControlEntry(parent, true, directory);
+        windowsControlEntry(file, false, entry);
+        const fd = fs.openSync(file, fs.constants.O_WRONLY);
+        try {
+            checkWindowsAttemptHandle(file, fd, entry);
+            const text = String(now);
+            fs.writeFileSync(fd, text);
+            fs.ftruncateSync(fd, text.length);
+        }
+        finally {
+            fs.closeSync(fd);
+        }
+    }
+    catch (error) {
+        if (created) {
+            try {
+                windowsControlEntry(parent, true, directory);
+                windowsControlEntry(file, false, created);
+                fs.unlinkSync(file);
+            }
+            catch { }
+        }
+        throw error;
+    }
 }
 export function accountMemeshDir() {
     const home = safeAccountHome();
@@ -1412,21 +1544,39 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
     const dir = updateControlDir();
     let fd = -1;
     let claim = null;
+    let prepared;
+    const logFlags = process.platform === 'win32' ? 'a' : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NONBLOCK;
     const say = (line) => {
-        try {
-            ensureOwnerDir(dir);
-            fs.appendFileSync(path.join(dir, LOG_FILE), `[${new Date().toISOString()}] ${oneLine(line)}\n`, { mode: 0o600 });
-            ownerOnly(path.join(dir, LOG_FILE));
-        }
-        catch {
+        let logFd = -1;
+        if (prepared !== undefined) {
             try {
-                process.stderr.write(`[memesh] ${oneLine(line)}\n`);
+                if (prepared)
+                    windowsControlEntry(dir, true, prepared);
+                logFd = fs.openSync(path.join(dir, LOG_FILE), logFlags, 0o600);
+                if (!fs.fstatSync(logFd).isFile())
+                    throw new Error('the update log is not a regular file');
+                fs.writeSync(logFd, `[${new Date().toISOString()}] ${oneLine(line)}\n`);
+                ownerOnly(path.join(dir, LOG_FILE));
+                return;
             }
             catch { }
+            finally {
+                if (logFd >= 0) {
+                    try {
+                        fs.closeSync(logFd);
+                    }
+                    catch { }
+                }
+            }
         }
+        try {
+            process.stderr.write(`[memesh] ${oneLine(line)}\n`);
+        }
+        catch { }
     };
     try {
-        ensureOwnerDir(dir);
+        const directory = prepareUpdateControlDirectory(dir);
+        prepared = directory;
         removeRetiredFiles(dir);
         const support = (options.canSelfUpdate ?? defaultCanSelfUpdate)(pluginRoot);
         if (!support.ok) {
@@ -1463,8 +1613,9 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
             }
         }
         const attemptPath = path.join(dir, ATTEMPT_FILE);
+        const text = readAttemptTime(attemptPath, directory).trim();
         try {
-            const last = Number(fs.readFileSync(attemptPath, 'utf8'));
+            const last = text === '' ? NaN : Number(text);
             if (Number.isFinite(last) && last > nowMs) {
                 say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
             }
@@ -1481,7 +1632,10 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
         }
         const logPath = path.join(dir, LOG_FILE);
         try {
-            fd = fs.openSync(logPath, 'a', 0o600);
+            fd = fs.openSync(logPath, logFlags, 0o600);
+            if (!fs.fstatSync(fd).isFile())
+                throw new Error('the update log is not a regular file');
+            fs.writeSync(fd, `[${new Date().toISOString()}] auto-update: preparing the runner\n`);
         }
         catch (err) {
             try {
@@ -1490,9 +1644,7 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
             catch { }
             return { state: 'failed' };
         }
-        const lockDir = updateControlDir();
-        ensureOwnerDir(lockDir);
-        const lockPath = path.join(lockDir, 'auto-update.lock');
+        const lockPath = path.join(dir, 'auto-update.lock');
         const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true });
         return await new Promise((resolve) => {
             let settled = false;
@@ -1513,8 +1665,7 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
             child.once('spawn', () => {
                 child.unref();
                 try {
-                    fs.writeFileSync(attemptPath, String(nowMs), { mode: 0o600 });
-                    ownerOnly(attemptPath);
+                    writeAttemptTime(attemptPath, nowMs, directory);
                 }
                 catch (err) {
                     say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`);
@@ -1530,11 +1681,18 @@ export async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options
                 fs.closeSync(fd);
             }
             catch { }
+            fd = -1;
         }
         say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
         return { state: 'failed' };
     }
     finally {
+        if (fd >= 0) {
+            try {
+                fs.closeSync(fd);
+            }
+            catch { }
+        }
         if (claim !== null) {
             try {
                 fs.rmSync(claim, { recursive: true, force: true });
@@ -1572,9 +1730,10 @@ export function runManualUpdate(pluginRoot, dir = updateControlDir(), options = 
     if (!fs.existsSync(runnerPath)) {
         return { code: 1, lines: [`❌ The update runner is missing (${runnerPath}); reinstall MeMesh.`] };
     }
-    ensureOwnerDir(dir);
     const lockDir = updateControlDir();
-    ensureOwnerDir(lockDir);
+    prepareUpdateControlDirectory(lockDir);
+    if (path.relative(dir, lockDir) !== '')
+        ensureOwnerDir(dir);
     const before = readAutoUpdateState(dir)?.at ?? null;
     const offBeforeRun = currentPolicy().policy === 'off';
     const ran = spawnSync(process.execPath, [runnerPath, path.join(lockDir, 'auto-update.lock'), options.reinstall ? '--reinstall' : '--manual'], { stdio: ['ignore', 'pipe', 'pipe'], encoding: 'utf8', env: process.env });
@@ -1634,9 +1793,10 @@ export function startReinstall(pluginRoot, dir = updateControlDir()) {
     const runnerPath = path.join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
     if (!fs.existsSync(runnerPath))
         throw new Error(`The update runner is missing at ${runnerPath}; reinstall MeMesh.`);
-    ensureOwnerDir(dir);
     const lockDir = updateControlDir();
-    ensureOwnerDir(lockDir);
+    prepareUpdateControlDirectory(lockDir);
+    if (path.relative(dir, lockDir) !== '')
+        ensureOwnerDir(dir);
     const logPath = path.join(dir, LOG_FILE);
     const fd = fs.openSync(logPath, 'a', 0o600);
     try {

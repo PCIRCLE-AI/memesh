@@ -40005,7 +40005,30 @@ function readConfigFile(file2) {
       return { state: "unreadable", why: "dangling symlink" };
     } catch (lerr) {
       const lcode = lerr.code ?? "UNKNOWN";
-      return lcode === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: lcode };
+      if (lcode !== "ENOENT")
+        return { state: "unreadable", why: lcode };
+      let parent = path19.dirname(file2);
+      for (; ; ) {
+        try {
+          return fs20.statSync(parent).isDirectory() ? { state: "absent" } : { state: "unreadable", why: "ENOTDIR" };
+        } catch (parentError) {
+          const parentCode = parentError.code ?? "UNKNOWN";
+          if (parentCode !== "ENOENT")
+            return { state: "unreadable", why: parentCode };
+          try {
+            fs20.lstatSync(parent);
+            return { state: "unreadable", why: "dangling symlink" };
+          } catch (statError) {
+            const statCode = statError.code ?? "UNKNOWN";
+            if (statCode !== "ENOENT")
+              return { state: "unreadable", why: statCode };
+          }
+          const next = path19.dirname(parent);
+          if (next === parent)
+            return { state: "unreadable", why: parentCode };
+          parent = next;
+        }
+      }
     }
   }
   try {
@@ -40121,6 +40144,104 @@ function resolveUpdatePolicy(input2) {
 function updateControlDir() {
   return path19.join(homeDir(), ".memesh");
 }
+function windowsControlEntry(file2, directory, expected) {
+  const entry = fs20.lstatSync(file2, { bigint: true });
+  if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n) || path19.relative(file2, fs20.realpathSync(file2)) !== "" || expected && (entry.dev !== expected.dev || entry.ino !== expected.ino)) {
+    throw new Error(`Unsafe or changed updater control path: ${file2}.`);
+  }
+  return entry;
+}
+function prepareUpdateControlDirectory(dir) {
+  if (process.platform !== "win32") {
+    ensureOwnerDir(dir);
+    return null;
+  }
+  const parent = path19.dirname(dir);
+  windowsControlEntry(parent, true);
+  try {
+    fs20.mkdirSync(dir);
+  } catch (error62) {
+    if (error62.code !== "EEXIST")
+      throw error62;
+  }
+  const entry = windowsControlEntry(dir, true);
+  makeWindowsPathsPrivate([dir]);
+  return windowsControlEntry(dir, true, entry);
+}
+function checkWindowsAttemptHandle(file2, fd, entry) {
+  const opened = fs20.fstatSync(fd, { bigint: true });
+  if (opened.dev !== entry.dev || opened.ino !== entry.ino || opened.nlink !== 1n) {
+    throw new Error(`Updater attempt path changed: ${file2}.`);
+  }
+}
+function readAttemptTime(file2, directory) {
+  if (!directory) {
+    try {
+      return fs20.readFileSync(file2, "utf8");
+    } catch {
+      return "";
+    }
+  }
+  const parent = path19.dirname(file2);
+  windowsControlEntry(parent, true, directory);
+  const existing = fs20.lstatSync(file2, { bigint: true, throwIfNoEntry: false });
+  if (!existing)
+    return "";
+  windowsControlEntry(file2, false, existing);
+  makeWindowsPathsPrivate([file2]);
+  windowsControlEntry(parent, true, directory);
+  windowsControlEntry(file2, false, existing);
+  const fd = fs20.openSync(file2, "r");
+  try {
+    checkWindowsAttemptHandle(file2, fd, existing);
+    return fs20.readFileSync(fd, "utf8");
+  } finally {
+    fs20.closeSync(fd);
+  }
+}
+function writeAttemptTime(file2, now, directory) {
+  if (!directory) {
+    fs20.writeFileSync(file2, String(now), { mode: 384 });
+    ownerOnly(file2);
+    return;
+  }
+  const parent = path19.dirname(file2);
+  windowsControlEntry(parent, true, directory);
+  let created;
+  try {
+    if (!fs20.lstatSync(file2, { throwIfNoEntry: false })) {
+      const empty = fs20.openSync(file2, "wx", 384);
+      try {
+        created = fs20.fstatSync(empty, { bigint: true });
+      } finally {
+        fs20.closeSync(empty);
+      }
+    }
+    const entry = windowsControlEntry(file2, false, created);
+    makeWindowsPathsPrivate([file2]);
+    windowsControlEntry(parent, true, directory);
+    windowsControlEntry(file2, false, entry);
+    const fd = fs20.openSync(file2, fs20.constants.O_WRONLY);
+    try {
+      checkWindowsAttemptHandle(file2, fd, entry);
+      const text2 = String(now);
+      fs20.writeFileSync(fd, text2);
+      fs20.ftruncateSync(fd, text2.length);
+    } finally {
+      fs20.closeSync(fd);
+    }
+  } catch (error62) {
+    if (created) {
+      try {
+        windowsControlEntry(parent, true, directory);
+        windowsControlEntry(file2, false, created);
+        fs20.unlinkSync(file2);
+      } catch {
+      }
+    }
+    throw error62;
+  }
+}
 function currentPolicy(env = process.env) {
   return resolveUpdatePolicy({ env, activeDir: getMemeshDirFromDbPath(), extraConfigDirs: [memeshDir(), updateControlDir()], accountHome: safeAccountHome() });
 }
@@ -40190,22 +40311,40 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
   const dir = updateControlDir();
   let fd = -1;
   let claim2 = null;
+  let prepared;
+  const logFlags = process.platform === "win32" ? "a" : fs20.constants.O_WRONLY | fs20.constants.O_CREAT | fs20.constants.O_APPEND | fs20.constants.O_NONBLOCK;
   const say = (line) => {
-    try {
-      ensureOwnerDir(dir);
-      fs20.appendFileSync(path19.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
-`, { mode: 384 });
-      ownerOnly(path19.join(dir, LOG_FILE));
-    } catch {
+    let logFd = -1;
+    if (prepared !== void 0) {
       try {
-        process.stderr.write(`[memesh] ${oneLine(line)}
+        if (prepared)
+          windowsControlEntry(dir, true, prepared);
+        logFd = fs20.openSync(path19.join(dir, LOG_FILE), logFlags, 384);
+        if (!fs20.fstatSync(logFd).isFile())
+          throw new Error("the update log is not a regular file");
+        fs20.writeSync(logFd, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
 `);
+        ownerOnly(path19.join(dir, LOG_FILE));
+        return;
       } catch {
+      } finally {
+        if (logFd >= 0) {
+          try {
+            fs20.closeSync(logFd);
+          } catch {
+          }
+        }
       }
+    }
+    try {
+      process.stderr.write(`[memesh] ${oneLine(line)}
+`);
+    } catch {
     }
   };
   try {
-    ensureOwnerDir(dir);
+    const directory = prepareUpdateControlDirectory(dir);
+    prepared = directory;
     removeRetiredFiles(dir);
     const support = (options.canSelfUpdate ?? defaultCanSelfUpdate)(pluginRoot);
     if (!support.ok) {
@@ -40240,8 +40379,9 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       }
     }
     const attemptPath = path19.join(dir, ATTEMPT_FILE);
+    const text2 = readAttemptTime(attemptPath, directory).trim();
     try {
-      const last = Number(fs20.readFileSync(attemptPath, "utf8"));
+      const last = text2 === "" ? NaN : Number(text2);
       if (Number.isFinite(last) && last > nowMs) {
         say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
       } else if (Number.isFinite(last) && nowMs - last < ATTEMPT_INTERVAL_MS) {
@@ -40257,7 +40397,11 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
     }
     const logPath = path19.join(dir, LOG_FILE);
     try {
-      fd = fs20.openSync(logPath, "a", 384);
+      fd = fs20.openSync(logPath, logFlags, 384);
+      if (!fs20.fstatSync(fd).isFile())
+        throw new Error("the update log is not a regular file");
+      fs20.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] auto-update: preparing the runner
+`);
     } catch (err) {
       try {
         process.stderr.write(`[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err instanceof Error ? err.message : String(err)})
@@ -40266,9 +40410,7 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       }
       return { state: "failed" };
     }
-    const lockDir = updateControlDir();
-    ensureOwnerDir(lockDir);
-    const lockPath = path19.join(lockDir, "auto-update.lock");
+    const lockPath = path19.join(dir, "auto-update.lock");
     const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ["ignore", fd, fd], env: process.env, windowsHide: true });
     return await new Promise((resolve) => {
       let settled = false;
@@ -40289,8 +40431,7 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       child.once("spawn", () => {
         child.unref();
         try {
-          fs20.writeFileSync(attemptPath, String(nowMs), { mode: 384 });
-          ownerOnly(attemptPath);
+          writeAttemptTime(attemptPath, nowMs, directory);
         } catch (err) {
           say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`);
         }
@@ -40304,10 +40445,17 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
         fs20.closeSync(fd);
       } catch {
       }
+      fd = -1;
     }
     say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
     return { state: "failed" };
   } finally {
+    if (fd >= 0) {
+      try {
+        fs20.closeSync(fd);
+      } catch {
+      }
+    }
     if (claim2 !== null) {
       try {
         fs20.rmSync(claim2, { recursive: true, force: true });

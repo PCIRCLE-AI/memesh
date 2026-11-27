@@ -51,7 +51,7 @@ function loadsIn(text: string): Loads {
     if (ts.isCallExpression(node)) {
       const callee = node.expression;
       const isImport = callee.kind === ts.SyntaxKind.ImportKeyword;
-      const isRequireLike = ts.isIdentifier(callee) && /require/i.test(callee.text);
+      const isRequireLike = ts.isIdentifier(callee) && (callee.text === 'require' || callee.text === 'createRequire');
       const root = ts.isPropertyAccessExpression(callee) ? callee.expression : callee;
       const isModuleCall = ts.isIdentifier(root) && moduleBindings.has(root.text);
       const isDlopen = ts.isPropertyAccessExpression(callee) && callee.name.text === 'dlopen';
@@ -104,6 +104,8 @@ describe('the parser sees every way of loading a module', () => {
     ["await import('../' + 'db.js');", [], ["import('../' + 'db.js')"]],
     ["createRequire(import.meta.url)(p);", [], ['createRequire(import.meta.url)']],
     ["require(p);", [], ['require(p)']],
+    ["require('../db.js');", ['../db.js'], []],
+    ['requireSameIdentity(file, expected, actual);', [], []],
     ["import { createRequire as cr } from 'node:module'; const r = cr(import.meta.url);", ['node:module'], ['cr(import.meta.url)']],
     ["import * as nm from 'node:module'; nm.createRequire(u);", ['node:module'], ['nm.createRequire(u)']],
     ["import Module from 'module'; Module._load(p);", ['module'], ['Module._load(p)']],

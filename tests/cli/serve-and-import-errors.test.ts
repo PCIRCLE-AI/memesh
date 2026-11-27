@@ -23,6 +23,7 @@ import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
@@ -142,7 +143,9 @@ describe('serve: a MEMESH_REMOTE_TOKEN that is too short is reported, not obeyed
     const { spawn } = await import('child_process');
     const memeshDir = path.join(home, '.memesh');
     fs.mkdirSync(memeshDir, { recursive: true, mode: 0o700 });
-    fs.writeFileSync(path.join(memeshDir, 'remote-token'), `${'e'.repeat(64)}\n`, { mode: 0o600 });
+    const tokenFile = path.join(memeshDir, 'remote-token');
+    fs.writeFileSync(tokenFile, `${'e'.repeat(64)}\n`, { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([memeshDir, tokenFile]);
     const child = spawn('node', [CLI_PATH, 'serve', '--host', lan!, '--allow-remote', '--port', '0'], {
       env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_REMOTE_TOKEN: 'short' },
     });

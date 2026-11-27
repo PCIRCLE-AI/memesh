@@ -210,7 +210,7 @@ describe('journey through the real packaged CLI', () => {
       const needle = 'function journeyEnv(scratch, base = process.env, platform = process.platform) {';
       expect(bundle).toContain(needle);
       const pkg = path.join(work, 'inherit-pkg');
-      fs.mkdirSync(path.join(pkg, 'dist/transports/cli'), { recursive: true });
+      fs.cpSync(path.join(PACKAGE_ROOT, 'dist'), path.join(pkg, 'dist'), { recursive: true });
       fs.copyFileSync(path.join(PACKAGE_ROOT, 'package.json'), path.join(pkg, 'package.json'));
       const cli = path.join(pkg, 'dist/transports/cli/cli.js');
       // Observe only actual CLI step children. The normal bundle must leave this
@@ -250,6 +250,7 @@ if (process.argv[2] !== 'doctor' && process.env.MEMESH_ROUTER_SOCKET === ${JSON.
     const env = journeyEnv('/scratch', {
       PATH: '/bin', HOME: '/real', MEMESH_DB_PATH: '/real/db', MEMESH_DIR: '/real', MEMESH_ROUTER_SOCKET: '/real/s',
       CLAUDE_CODE_SESSION_ID: 'abc', CODEX_THREAD_ID: 'outer-thread', ANTHROPIC_API_KEY: 'k', NODE_OPTIONS: '--require /evil.js', ...hostVariables,
+      APPDATA: '/real/roaming', LOCALAPPDATA: '/real/local',
     });
     expect(env.PATH).toBe('/bin');
     expect(env.HOME).toBe('/scratch');
@@ -259,7 +260,13 @@ if (process.argv[2] !== 'doctor' && process.env.MEMESH_ROUTER_SOCKET === ${JSON.
       expect(env[leaked]).toBeUndefined();
     }
     // The whole set, not four names: any variable added to the step is a decision to make here.
-    expect(Object.keys(env).sort()).toEqual(['HOME', 'MEMESH_AUTO_CAPTURE', 'MEMESH_DB_PATH', 'MEMESH_DIR', 'PATH', 'USERPROFILE']);
+    const expectedKeys = ['HOME', 'MEMESH_AUTO_CAPTURE', 'MEMESH_DB_PATH', 'MEMESH_DIR', 'PATH', 'USERPROFILE'];
+    if (process.platform === 'win32') {
+      expectedKeys.push('APPDATA', 'LOCALAPPDATA');
+      expect(env.APPDATA).toBe(path.join('/scratch', 'AppData', 'Roaming'));
+      expect(env.LOCALAPPDATA).toBe(path.join('/scratch', 'AppData', 'Local'));
+    }
+    expect(Object.keys(env).sort()).toEqual(expectedKeys.sort());
   });
 });
 

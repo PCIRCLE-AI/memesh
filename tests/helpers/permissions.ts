@@ -34,9 +34,18 @@ switch ($r.action) {
     }
   }
 }
+if ($r.action -in @('deny-read', 'restore-read')) {
+  $directory = [IO.Directory]::Exists($r.file)
+  $rights = if ($directory) { [Security.AccessControl.FileSystemRights]::ListDirectory -bor [Security.AccessControl.FileSystemRights]::Traverse } else { [Security.AccessControl.FileSystemRights]::ReadData }
+  $inherit = if ($directory) { [Security.AccessControl.InheritanceFlags]::ContainerInherit -bor [Security.AccessControl.InheritanceFlags]::ObjectInherit } else { [Security.AccessControl.InheritanceFlags]::None }
+  $rule = [Security.AccessControl.FileSystemAccessRule]::new($self, $rights, $inherit, [Security.AccessControl.PropagationFlags]::None, [Security.AccessControl.AccessControlType]::Deny)
+  if ($r.action -eq 'deny-read') { $acl.AddAccessRule($rule) }
+  else { $acl.RemoveAccessRuleSpecific($rule) }
+}
 if ($r.action -ne 'read') {
   if ([IO.Directory]::Exists($r.file)) { [IO.Directory]::SetAccessControl($r.file, $acl) }
   else { [IO.File]::SetAccessControl($r.file, $acl) }
+  $acl = if ([IO.Directory]::Exists($r.file)) { [IO.Directory]::GetAccessControl($r.file) } else { [IO.File]::GetAccessControl($r.file) }
 }
 $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
 @{ self = $self.Value; admin = $admin; owner = $acl.GetOwner([Security.Principal.SecurityIdentifier]).Value; nullDacl = $null -eq $raw.DiscretionaryAcl; protected = $acl.AreAccessRulesProtected; rules = @($acl.GetAccessRules($true, $true, [Security.Principal.SecurityIdentifier]) | ForEach-Object {
@@ -44,7 +53,7 @@ $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescr
 }) } | ConvertTo-Json -Depth 3 -Compress
 `;
 
-export function windowsAclFixture(file: string, action: 'public' | 'deny' | 'restore' | 'read'): WindowsAcl {
+export function windowsAclFixture(file: string, action: 'public' | 'deny' | 'restore' | 'read' | 'deny-read' | 'restore-read'): WindowsAcl {
   return JSON.parse(childProcess.execFileSync(path.win32.join(process.env.SystemRoot ?? process.env.SYSTEMROOT!, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
     ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(WINDOWS_ACL_FIXTURE, 'utf16le').toString('base64')],
     { input: Buffer.from(JSON.stringify({ file, action })).toString('base64') + '\n', encoding: 'utf8', windowsHide: true, timeout: 15_000 }));

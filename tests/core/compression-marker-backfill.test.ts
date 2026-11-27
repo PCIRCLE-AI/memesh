@@ -2,7 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { describe, it, expect, vi } from 'vitest';
 import { spawn } from 'node:child_process';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 import { closeDatabase, getDatabase, openDatabase, openInitialisedDatabase } from '../../src/db.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { openHookDb } from '../../scripts/hooks/_shared.js';
@@ -10,6 +10,7 @@ import { forget, remember } from '../../src/core/operations.js';
 import { computePatterns } from '../../src/core/patterns.js';
 import { backfillCompressionMarkers, compressWeeklyNoise } from '../../src/core/lifecycle.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 
 const handle = useTestDatabase('memesh-marker-backfill-');
 const KEY = 'compression_marker_backfill';
@@ -147,6 +148,7 @@ describe('marking records that earlier versions archived by compression', () => 
     it('finishes after a killed run: expired claim and half-written copy are cleaned up, one complete backup remains', () => {
       legacyCompressedWeek(25);
       fs.mkdirSync(backupsDir(), { recursive: true });
+      if (process.platform === 'win32') makeWindowsPathsPrivate([backupsDir()]);
       fs.writeFileSync(path.join(backupsDir(), 'before-compression-marker-2026-01-01T00-00-00-000Z.db.tmp'), 'half a backup');
       fs.writeFileSync(path.join(backupsDir(), '.partial-before-compression-marker-2147483647-deadbeef.db'), 'dead owner copy');
       getDatabase().prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(leaseKey, `424242:${Date.now() - 1000}`);
@@ -545,8 +547,12 @@ describe('marking records that earlier versions archived by compression', () => 
         spy.mockRestore();
       }
       expect(targets).toHaveLength(1);
-      expect(path.basename(String(targets[0]))).toMatch(/^\.partial-before-compression-marker-\d+-[a-f0-9]{8}\.db$/);
-      expect(fs.existsSync(String(targets[0]))).toBe(false);
+      const target = String(targets[0]);
+      const partialPath = process.platform === 'win32' ? fileURLToPath(target) : target;
+      if (process.platform === 'win32') expect(new URL(target).search).toBe('?mode=rw');
+      expect(fs.realpathSync(path.dirname(partialPath))).toBe(fs.realpathSync(backupsDir()));
+      expect(path.basename(partialPath)).toMatch(/^\.partial-before-compression-marker-\d+-[a-f0-9]{8}\.db$/);
+      expect(fs.existsSync(partialPath)).toBe(false);
       expect(finalBackups()).toHaveLength(1);
     });
 

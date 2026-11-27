@@ -206,6 +206,11 @@
       "reason": "parity pin that core and hook mirror share the classifier; behavior tested in the same file",
       "triaged": "2026-08-04"
     },
+    "C6 tests/hooks/pre-edit-recall.test.ts": {
+      "class": "SAFE-HEURISTIC-FALSE-POSITIVE",
+      "reason": "Reads the spawned hook's saved throttle JSON. The heuristic captures auth.ts from the expected filename array on the same line, not from the read path. Tests assert actual hook output and persisted state.",
+      "triaged": "2026-11-27"
+    },
     "C1 tests/cli/recall-presentation.test.ts": {
       "class": "SAFE",
       "reason": "the .toBe(0)/exit-code assertions are paired with positive stdout content checks in the same tests (needle text, headers)",

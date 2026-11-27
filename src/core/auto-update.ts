@@ -34,6 +34,7 @@ import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from '
 import { writeJustUpgradedMarker } from './update-notice.js';
 import { processStartTag, sameProcessAlive } from './process-identity.js';
 import { guardDatabaseFiles, removeGroupAndOtherAccess } from './file-mode.js';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 import { classifyBump, getInstalledGlobalVersion, type AutoUpdatePolicy } from './updater.js';
 
 export const DEFAULT_AUTO_UPDATE_POLICY: AutoUpdatePolicy = 'major';
@@ -172,12 +173,8 @@ export interface PolicyInput {
 
 type ConfigRead = { state: 'absent' } | { state: 'unreadable'; why: string } | { state: 'ok'; raw: Record<string, unknown> };
 
-/**
- * "Absent" needs two answers: the read says ENOENT and an lstat of the same path
- * says ENOENT too. A dangling symlink (read: ENOENT, lstat: exists), a directory
- * that cannot be entered (EACCES), a path through a file (ENOTDIR) all mean the
- * file may exist and say off, so they are unreadable, not absent.
- */
+/** A missing config is absent only when its existing ancestors are directories.
+ * Dangling links, inaccessible paths and paths through files are unreadable. */
 function readConfigFile(file: string): ConfigRead {
   let text: string;
   try {
@@ -190,7 +187,27 @@ function readConfigFile(file: string): ConfigRead {
       return { state: 'unreadable', why: 'dangling symlink' };
     } catch (lerr) {
       const lcode = (lerr as NodeJS.ErrnoException).code ?? 'UNKNOWN';
-      return lcode === 'ENOENT' ? { state: 'absent' } : { state: 'unreadable', why: lcode };
+      if (lcode !== 'ENOENT') return { state: 'unreadable', why: lcode };
+      // Windows can report ENOENT, rather than ENOTDIR, below a regular file.
+      let parent = path.dirname(file);
+      for (;;) {
+        try {
+          return fs.statSync(parent).isDirectory() ? { state: 'absent' } : { state: 'unreadable', why: 'ENOTDIR' };
+        } catch (parentError) {
+          const parentCode = (parentError as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+          if (parentCode !== 'ENOENT') return { state: 'unreadable', why: parentCode };
+          try {
+            fs.lstatSync(parent);
+            return { state: 'unreadable', why: 'dangling symlink' };
+          } catch (statError) {
+            const statCode = (statError as NodeJS.ErrnoException).code ?? 'UNKNOWN';
+            if (statCode !== 'ENOENT') return { state: 'unreadable', why: statCode };
+          }
+          const next = path.dirname(parent);
+          if (next === parent) return { state: 'unreadable', why: parentCode };
+          parent = next;
+        }
+      }
     }
   }
   try {
@@ -307,6 +324,97 @@ export function resolveUpdatePolicy(input: PolicyInput): PolicyDecision {
 /** Updater control records follow HOME, independently of the database and system account. */
 export function updateControlDir(): string {
   return path.join(homeDir(), '.memesh');
+}
+
+function windowsControlEntry(file: string, directory: boolean, expected?: fs.BigIntStats): fs.BigIntStats {
+  const entry = fs.lstatSync(file, { bigint: true });
+  if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n)
+    || path.relative(file, fs.realpathSync(file)) !== ''
+    || (expected && (entry.dev !== expected.dev || entry.ino !== expected.ino))) {
+    throw new Error(`Unsafe or changed updater control path: ${file}.`);
+  }
+  return entry;
+}
+
+function prepareUpdateControlDirectory(dir: string): fs.BigIntStats | null {
+  if (process.platform !== 'win32') {
+    ensureOwnerDir(dir);
+    return null;
+  }
+  const parent = path.dirname(dir);
+  windowsControlEntry(parent, true);
+  try { fs.mkdirSync(dir); } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+  }
+  const entry = windowsControlEntry(dir, true);
+  // This leaf holds the cross-install lock. Its new children inherit a private DACL.
+  makeWindowsPathsPrivate([dir]);
+  return windowsControlEntry(dir, true, entry);
+}
+
+function checkWindowsAttemptHandle(file: string, fd: number, entry: fs.BigIntStats): void {
+  const opened = fs.fstatSync(fd, { bigint: true });
+  if (opened.dev !== entry.dev || opened.ino !== entry.ino || opened.nlink !== 1n) {
+    throw new Error(`Updater attempt path changed: ${file}.`);
+  }
+}
+
+function readAttemptTime(file: string, directory: fs.BigIntStats | null): string {
+  if (!directory) {
+    try { return fs.readFileSync(file, 'utf8'); } catch { return ''; }
+  }
+  const parent = path.dirname(file);
+  windowsControlEntry(parent, true, directory);
+  const existing = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
+  if (!existing) return '';
+  windowsControlEntry(file, false, existing);
+  // Older attempt files may have explicit allows even after the control directory is private.
+  makeWindowsPathsPrivate([file]);
+  windowsControlEntry(parent, true, directory);
+  windowsControlEntry(file, false, existing);
+  const fd = fs.openSync(file, 'r');
+  try {
+    checkWindowsAttemptHandle(file, fd, existing);
+    return fs.readFileSync(fd, 'utf8');
+  } finally { fs.closeSync(fd); }
+}
+
+function writeAttemptTime(file: string, now: number, directory: fs.BigIntStats | null): void {
+  if (!directory) {
+    fs.writeFileSync(file, String(now), { mode: 0o600 });
+    ownerOnly(file);
+    return;
+  }
+  const parent = path.dirname(file);
+  windowsControlEntry(parent, true, directory);
+  let created: fs.BigIntStats | undefined;
+  try {
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })) {
+      const empty = fs.openSync(file, 'wx', 0o600);
+      try { created = fs.fstatSync(empty, { bigint: true }); } finally { fs.closeSync(empty); }
+    }
+    const entry = windowsControlEntry(file, false, created);
+    makeWindowsPathsPrivate([file]);
+    windowsControlEntry(parent, true, directory);
+    windowsControlEntry(file, false, entry);
+    // Reopen after narrowing the DACL. Keep the existing file's write restrictions.
+    const fd = fs.openSync(file, fs.constants.O_WRONLY);
+    try {
+      checkWindowsAttemptHandle(file, fd, entry);
+      const text = String(now);
+      fs.writeFileSync(fd, text);
+      fs.ftruncateSync(fd, text.length);
+    } finally { fs.closeSync(fd); }
+  } catch (error) {
+    if (created) {
+      try {
+        windowsControlEntry(parent, true, directory);
+        windowsControlEntry(file, false, created);
+        fs.unlinkSync(file);
+      } catch { /* Only remove the attempt created by this dispatch. */ }
+    }
+    throw error;
+  }
 }
 
 /** The account's config directory, used only for read-only policy checks. */
@@ -1541,17 +1649,29 @@ export async function dispatchAutoUpdate(
   const dir = updateControlDir();
   let fd = -1;
   let claim: string | null = null;
+  let prepared: fs.BigIntStats | null | undefined;
+  // A FIFO without a reader must fail before it can block this session.
+  const logFlags = process.platform === 'win32' ? 'a' : fs.constants.O_WRONLY | fs.constants.O_CREAT | fs.constants.O_APPEND | fs.constants.O_NONBLOCK;
   const say = (line: string) => {
-    try {
-      ensureOwnerDir(dir);
-      fs.appendFileSync(path.join(dir, LOG_FILE), `[${new Date().toISOString()}] ${oneLine(line)}\n`, { mode: 0o600 });
-      ownerOnly(path.join(dir, LOG_FILE));
-    } catch {
-      try { process.stderr.write(`[memesh] ${oneLine(line)}\n`); } catch { /* stderr unavailable */ }
+    let logFd = -1;
+    if (prepared !== undefined) {
+      try {
+        if (prepared) windowsControlEntry(dir, true, prepared);
+        logFd = fs.openSync(path.join(dir, LOG_FILE), logFlags, 0o600);
+        if (!fs.fstatSync(logFd).isFile()) throw new Error('the update log is not a regular file');
+        fs.writeSync(logFd, `[${new Date().toISOString()}] ${oneLine(line)}\n`);
+        ownerOnly(path.join(dir, LOG_FILE));
+        return;
+      } catch { /* Use stderr when the log cannot be written. */ }
+      finally {
+        if (logFd >= 0) { try { fs.closeSync(logFd); } catch { /* already closed */ } }
+      }
     }
+    try { process.stderr.write(`[memesh] ${oneLine(line)}\n`); } catch { /* stderr unavailable */ }
   };
   try {
-    ensureOwnerDir(dir);
+    const directory = prepareUpdateControlDirectory(dir);
+    prepared = directory;
     removeRetiredFiles(dir);
     // An install that cannot update itself (a source checkout, a project-local package) would only record "cannot update itself" in the
     // state, the attempt time and the 6-hour slot that every install of this account shares, and the plugin that CAN update would be throttled for it.
@@ -1576,15 +1696,16 @@ export async function dispatchAutoUpdate(
       }
     }
     const attemptPath = path.join(dir, ATTEMPT_FILE);
+    const text = readAttemptTime(attemptPath, directory).trim();
     try {
-      const last = Number(fs.readFileSync(attemptPath, 'utf8'));
+      const last = text === '' ? NaN : Number(text);
       if (Number.isFinite(last) && last > nowMs) {
         say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
       } else if (Number.isFinite(last) && nowMs - last < ATTEMPT_INTERVAL_MS) {
         say(`auto-update THROTTLED: the last attempt was ${Math.round((nowMs - last) / 60000)} minute(s) ago, under the ${ATTEMPT_INTERVAL_MS / 3600000}-hour interval`);
         return { state: 'throttled' };
       }
-    } catch { /* no earlier attempt */ }
+    } catch { /* An invalid timestamp cannot hold the slot. */ }
     const runnerPath = path.join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
     if (!fs.existsSync(runnerPath)) {
       say(`auto-update FAILED: runner missing at ${runnerPath}`);
@@ -1592,14 +1713,14 @@ export async function dispatchAutoUpdate(
     }
     const logPath = path.join(dir, LOG_FILE);
     try {
-      fd = fs.openSync(logPath, 'a', 0o600);
+      fd = fs.openSync(logPath, logFlags, 0o600);
+      if (!fs.fstatSync(fd).isFile()) throw new Error('the update log is not a regular file');
+      fs.writeSync(fd, `[${new Date().toISOString()}] auto-update: preparing the runner\n`);
     } catch (err) {
       try { process.stderr.write(`[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err instanceof Error ? err.message : String(err)})\n`); } catch { /* stderr unavailable */ }
       return { state: 'failed' };
     }
-    const lockDir = updateControlDir();
-    ensureOwnerDir(lockDir);
-    const lockPath = path.join(lockDir, 'auto-update.lock');
+    const lockPath = path.join(dir, 'auto-update.lock');
     const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true });
     return await new Promise((resolve) => {
       let settled = false;
@@ -1613,16 +1734,17 @@ export async function dispatchAutoUpdate(
       child.once('spawn', () => {
         child.unref();
         // Taken now, not before: a runner that could not start must not hold back the next attempt for 6 hours.
-        try { fs.writeFileSync(attemptPath, String(nowMs), { mode: 0o600 }); ownerOnly(attemptPath); } catch (err) { say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`); }
+        try { writeAttemptTime(attemptPath, nowMs, directory); } catch (err) { say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`); }
         finishWith('dispatched', `auto-update DISPATCHED: worker_pid=${child.pid ?? 'unknown'} lock=${lockPath}`);
       });
       child.once('error', (err) => finishWith('failed', `auto-update FAILED: stage=dispatch error=${err.message}`));
     });
   } catch (err) {
-    if (fd >= 0) { try { fs.closeSync(fd); } catch { /* already closed */ } }
+    if (fd >= 0) { try { fs.closeSync(fd); } catch { /* already closed */ } fd = -1; }
     say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
     return { state: 'failed' };
   } finally {
+    if (fd >= 0) { try { fs.closeSync(fd); } catch { /* already closed */ } }
     if (claim !== null) { try { fs.rmSync(claim, { recursive: true, force: true }); } catch (err) { say(`auto-update: could not remove the dispatch claim (${err instanceof Error ? err.message : String(err)}); it is taken over after a minute`); } }
   }
 }
@@ -1663,9 +1785,9 @@ export function runManualUpdate(pluginRoot: string, dir: string = updateControlD
   if (!fs.existsSync(runnerPath)) {
     return { code: 1, lines: [`❌ The update runner is missing (${runnerPath}); reinstall MeMesh.`] };
   }
-  ensureOwnerDir(dir);
   const lockDir = updateControlDir();
-  ensureOwnerDir(lockDir);
+  prepareUpdateControlDirectory(lockDir);
+  if (path.relative(dir, lockDir) !== '') ensureOwnerDir(dir);
   const before = readAutoUpdateState(dir)?.at ?? null;
   const offBeforeRun = currentPolicy().policy === 'off';
   // The runner's own one-line report is not shown: what is printed below is read from the record it wrote.
@@ -1730,9 +1852,9 @@ export function runManualUpdate(pluginRoot: string, dir: string = updateControlD
 export function startReinstall(pluginRoot: string, dir: string = updateControlDir()): { started: boolean; message: string } {
   const runnerPath = path.join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
   if (!fs.existsSync(runnerPath)) throw new Error(`The update runner is missing at ${runnerPath}; reinstall MeMesh.`);
-  ensureOwnerDir(dir);
   const lockDir = updateControlDir();
-  ensureOwnerDir(lockDir);
+  prepareUpdateControlDirectory(lockDir);
+  if (path.relative(dir, lockDir) !== '') ensureOwnerDir(dir);
   const logPath = path.join(dir, LOG_FILE);
   const fd = fs.openSync(logPath, 'a', 0o600);
   try {

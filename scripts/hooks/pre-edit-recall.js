@@ -92,7 +92,9 @@ process.stdin.on('end', () => {
       record('error', NODE_TOO_OLD_REASON);
       return;
     }
-    const contexts = editInputs(data).map(recallFile).filter(Boolean);
+    const batch = {};
+    const contexts = editInputs(data).map(target => recallFile(target, batch)).filter(Boolean);
+    if (batch.state?.dirty) recordSeen(batch.state);
     if (contexts.length) console.log(JSON.stringify({ hookSpecificOutput: {
       hookEventName: 'PreToolUse', additionalContext: contexts.join('\n\n'),
     } }));
@@ -114,7 +116,7 @@ function editInputs(data) {
   return paths.length ? [...new Set(paths)].map(file_path => ({ ...data, tool_input: { file_path, content: command } })) : [data];
 }
 
-function recallFile(data) {
+function recallFile(data, batch) {
   try {
     payload = data;
     if (!data.tool_input) {
@@ -151,36 +153,8 @@ function recallFile(data) {
       return pass();
     }
 
-    let seenFiles = [];
-    let windowsState;
-    let stateDenied = false;
-    try {
-      if (throttleFile && process.platform === 'win32') {
-        // Leave the time used by unthrottled repo/DB/guard work available
-        // even when the permissions subprocess consumes the read budget.
-        const state = prepareWindowsHookState(throttleFile, windowsHookStateDeadline(5000) - 3000);
-        windowsState = { ...state, deadline: windowsHookStateDeadline(5000) };
-        if (state.file) {
-          const fd = openWindowsHookState(state, 'r');
-          try {
-            const raw = JSON.parse(readFileSync(fd, 'utf8'));
-            seenFiles = Array.isArray(raw) ? raw : [];
-          } finally {
-            closeSync(fd);
-          }
-        }
-      } else if (throttleFile && existsSync(throttleFile)) {
-        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
-        seenFiles = Array.isArray(raw) ? raw : [];
-      }
-    } catch (err) {
-      if (process.platform === 'win32' && !(err instanceof SyntaxError)) {
-        stateDenied = true;
-        reportListError(throttleFile, err);
-      }
-      seenFiles = [];
-    }
-    const throttled = seenFiles.includes(fileKey);
+    const state = batch.state ??= readRecallState(throttleFile);
+    const throttled = state.seenFiles.includes(fileKey);
 
     // Project used to scope RECALL — derived from the EDITED FILE's own
     // location, not cwd (#358 AC3): a file living in another repository
@@ -588,7 +562,12 @@ function recallFile(data) {
           // anything was shown) — but not after a fault: that run looked at
           // nothing, and marking the file seen would switch recall off for
           // the whole session.
-          if (!recallFault && throttleFile && !stateDenied) recordSeen(throttleFile, seenFiles, fileKey, windowsState);
+          if (!recallFault && throttleFile && !state.denied) {
+            state.seenFiles.push(fileKey);
+            if (state.seenFiles.length > 100) state.seenFiles = state.seenFiles.slice(-50);
+            state.addedKeys.push(fileKey);
+            state.dirty = true;
+          }
         }
       }
     } finally {
@@ -681,6 +660,34 @@ function pass() {
   // Empty output = no additional context. Allow other patch targets to recall.
 }
 
+function readRecallState(throttleFile) {
+  const state = { throttleFile, seenFiles: [], addedKeys: [], denied: false, dirty: false };
+  try {
+    if (throttleFile && process.platform === 'win32') {
+      // One ACL read for this hook's session; publication still checks the same inode.
+      const windows = prepareWindowsHookState(throttleFile, windowsHookStateDeadline(5000) - 3000);
+      state.windows = { ...windows, deadline: windowsHookStateDeadline(5000) };
+      if (windows.file) {
+        const fd = openWindowsHookState(windows, 'r');
+        try {
+          const raw = JSON.parse(readFileSync(fd, 'utf8'));
+          state.seenFiles = Array.isArray(raw) ? raw : [];
+        } finally { closeSync(fd); }
+      }
+    } else if (throttleFile && existsSync(throttleFile)) {
+      const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
+      state.seenFiles = Array.isArray(raw) ? raw : [];
+    }
+  } catch (err) {
+    if (process.platform === 'win32' && !(err instanceof SyntaxError)) {
+      state.denied = true;
+      reportListError(throttleFile, err);
+    }
+    state.seenFiles = [];
+  }
+  return state;
+}
+
 /**
  * Write a warning to stderr at most once per distinct message per day.
  *
@@ -755,7 +762,29 @@ function reportListError(throttleFile, err) {
   record('error', `pre-edit list: ${hookErrorReason(err)}`);
 }
 
-function recordSeen(throttleFile, seenFiles, fileKey, windowsState) {
+function mergeSeenFiles(throttleFile, addedKeys, windowsState) {
+  let seenFiles = [];
+  try {
+    if (windowsState?.file) {
+      const fd = openWindowsHookState(windowsState, 'r');
+      try { seenFiles = JSON.parse(readFileSync(fd, 'utf8')); }
+      finally { closeSync(fd); }
+    } else if (!windowsState && existsSync(throttleFile)) {
+      seenFiles = JSON.parse(readFileSync(throttleFile, 'utf8'));
+    }
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+  }
+  if (!Array.isArray(seenFiles)) seenFiles = [];
+  for (const key of addedKeys) {
+    if (seenFiles.includes(key)) continue;
+    seenFiles.push(key);
+    if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
+  }
+  return seenFiles;
+}
+
+function recordSeen({ throttleFile, addedKeys, windows: windowsState }) {
   // One ledger row per run, however many steps fail: a list that cannot be
   // kept means the next edit of the file shows its memories again, and that
   // must be queryable, not only a line on stderr.
@@ -766,16 +795,13 @@ function recordSeen(throttleFile, seenFiles, fileKey, windowsState) {
     record('error', `pre-edit list: ${hookErrorReason(err)}`);
   };
   try {
-    seenFiles.push(fileKey);
-    // Cap at 100 to prevent unbounded growth
-    if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
     if (windowsState) {
       const state = windowsState.directory ? windowsState : prepareWindowsHookState(throttleFile, windowsState.deadline, true);
-      writeWindowsHookStateInPlace(state, seenFiles);
+      writeWindowsHookStateInPlace(state, mergeSeenFiles(throttleFile, addedKeys, state));
       assertWindowsHookStateDirectory(state);
     } else {
       ensurePrivateDir(THROTTLE_DIR);
-      writePrivateJson(throttleFile, seenFiles);
+      writePrivateJson(throttleFile, mergeSeenFiles(throttleFile, addedKeys));
     }
   } catch (err) {
     reportListError(throttleFile, err);

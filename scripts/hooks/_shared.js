@@ -1,4 +1,4 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
 import { performance } from 'node:perf_hooks';
 import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
@@ -710,8 +710,10 @@ export function openHookDb(env = process.env, opts = {}) {
 let replayingConversations = false;
 let replayAttempted = false;
 let conversationDeadline = null;
+const PENDING_CONVERSATION_LEAF = 'pending-conversations';
+const PENDING_CONVERSATION_NAME = /^[a-f0-9]{32}\.json$/;
 function pendingConversationDir(env) {
-  return join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'pending-conversations');
+  return join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), PENDING_CONVERSATION_LEAF);
 }
 
 // Internal event marker survives a source-read failure in the existing pending file.
@@ -827,20 +829,36 @@ export function replayPendingConversations(env = process.env) {
   replayingConversations = true;
   let db;
   try {
-    ({ db } = openHookDb(env, { fts: true, pendingReplay: true, conversation: true }));
     const deadline = conversationDeadline;
-    for (const file of readdirSync(dir)) {
-      if (!/^[0-9a-f]{32}\.json$/.test(file) || Date.now() >= deadline) continue;
-      const path = join(dir, file);
+    const windows = process.platform === 'win32';
+    const files = windows ? verifiedWindowsPendingConversations(dir, deadline) : null;
+    ({ db } = openHookDb(env, { fts: true, pendingReplay: true, conversation: true }));
+    for (const entry of files ?? readdirSync(dir)) {
+      if (Date.now() >= deadline) break;
+      if (!windows && !PENDING_CONVERSATION_NAME.test(entry)) continue;
+      const path = windows ? entry.filePath : join(dir, entry);
       let event;
-      try { event = JSON.parse(readFileSync(path, 'utf8')); } catch (err) {
+      try {
+        if (windows && !windowsHookStateStat(path, false)) continue;
+        const fd = windows ? openWindowsHookState(entry, 'r') : undefined;
+        try { event = JSON.parse(readFileSync(fd ?? path, 'utf8')); }
+        finally { if (fd !== undefined) closeSync(fd); }
+      } catch (err) {
         if (err.code === 'ENOENT') continue;
         throw err;
       }
       const checked = checkedConversationQuotes(event, env);
       db.pragma(`busy_timeout = ${Math.max(1, deadline - Date.now())}`);
       if (checked) writeConversation(db, checked);
-      try { unlinkSync(path); } catch (err) { if (err.code !== 'ENOENT') throw err; }
+      try {
+        if (windows) {
+          assertWindowsHookStateDirectory(entry);
+          const current = windowsHookStateStat(path, false);
+          if (!current) continue;
+          if (!sameHookStateFile(entry.file, current)) throw windowsHookStateError();
+        }
+        unlinkSync(path);
+      } catch (err) { if (err.code !== 'ENOENT') throw err; }
     }
   } catch (err) {
     try { process.stderr.write(`[memesh pending-conversations] ${hookErrorReason(err)}\n`); } catch {}
@@ -870,10 +888,14 @@ export function captureConversation(event, env = process.env) {
     const quoteReadFailed = err.code === 'MEMESH_CONVERSATION_QUOTE_SOURCE';
     if (!locked && !writeIoFailed && !quoteReadFailed) throw err;
     const dir = pendingConversationDir(env);
-    ensurePrivateDir(dir);
     // Immutable version files: a drainer that read OLD must never unlink NEW.
     const key = createHash('sha256').update(JSON.stringify(safe)).digest('hex').slice(0, 32);
-    writePrivateJsonAtomic(join(dir, `${key}.json`), safe);
+    const filePath = join(dir, `${key}.json`);
+    if (process.platform === 'win32') writeWindowsPendingConversation(filePath, safe);
+    else {
+      ensurePrivateDir(dir);
+      writePrivateJsonAtomic(filePath, safe);
+    }
     return { queued: true, reason: quoteReadFailed
       ? 'conversation quote source unavailable; redacted conversation pending replay' : locked
       ? 'database locked; redacted conversation pending replay'
@@ -1971,6 +1993,7 @@ export function writePrivateJson(filePath, value) {
 
 const WINDOWS_HOOK_STATE_NAMES = new Map([
   ['decision-nudge-flags', /^[A-Za-z0-9_-]+-(ExitPlanMode|AskUserQuestion)\.flag$/],
+  [PENDING_CONVERSATION_LEAF, PENDING_CONVERSATION_NAME],
   ['pre-edit-recall', /^[a-f0-9]{32}\.json$/],
   ['sessions', /^[a-f0-9]{64}\.json$/],
 ]);
@@ -2024,7 +2047,7 @@ function assertWindowsHookStateFile(state) {
   }
 }
 
-/** Guard exactly the three product-owned Windows state leaves. */
+/** Guard the fixed product-owned Windows state leaves. */
 export function prepareWindowsHookState(filePath, deadline, create = false) {
   filePath = resolve(filePath);
   const dirPath = dirname(filePath);
@@ -2091,7 +2114,7 @@ export function openWindowsHookState(state, flags) {
   }
 }
 
-function createPrivateWindowsHookStateFile(state, filePath) {
+function createEmptyWindowsHookStateFile(state, filePath) {
   assertWindowsHookStateDirectory(state);
   windowsHookStateTimeout(state.deadline);
   const fd = openSync(filePath, 'wx', PRIVATE_FILE_MODE);
@@ -2101,13 +2124,23 @@ function createPrivateWindowsHookStateFile(state, filePath) {
     if (!owned.isFile() || owned.nlink !== 1n || !sameHookStateFile(owned, windowsHookStateStat(filePath, false))) {
       throw windowsHookStateError();
     }
-    makeWindowsPathsPrivate([filePath], undefined, windowsHookStateTimeout(state.deadline));
-    assertWindowsHookStateDirectory(state);
-    if (!sameHookStateFile(owned, windowsHookStateStat(filePath, false))) throw windowsHookStateError();
     return { fd, owned };
   } catch (err) {
     try { closeSync(fd); } catch { /* preserve the permissions error */ }
     if (owned) removeNewWindowsHookState(state, filePath, owned);
+    throw err;
+  }
+}
+
+function createPrivateWindowsHookStateFile(state, filePath) {
+  const temporary = createEmptyWindowsHookStateFile(state, filePath);
+  try {
+    makeWindowsPathsPrivate([filePath], undefined, windowsHookStateTimeout(state.deadline));
+    assertWindowsHookStateFile({ ...state, filePath, file: temporary.owned });
+    return temporary;
+  } catch (err) {
+    try { closeSync(temporary.fd); } catch { /* preserve the permissions error */ }
+    removeNewWindowsHookState(state, filePath, temporary.owned);
     throw err;
   }
 }
@@ -2131,6 +2164,106 @@ function removeNewWindowsHookState(state, filePath, owned) {
     assertWindowsHookStateDirectory(state);
     if (sameHookStateFile(owned, windowsHookStateStat(filePath, false))) unlinkSync(filePath);
   } catch { /* preserve the write error */ }
+}
+
+function verifiedWindowsPendingConversations(dir, dbDeadline) {
+  const dirPath = resolve(dir);
+  const directory = windowsHookStateAncestor(dirPath);
+  if (!directory) return [];
+  const deadline = Math.min(windowsHookStateDeadline(3000), performance.now() + dbDeadline - Date.now());
+  const state = { dirPath, directory, deadline };
+  const files = [];
+  for (const name of readdirSync(dirPath)) {
+    if (!PENDING_CONVERSATION_NAME.test(name)) continue;
+    windowsHookStateTimeout(deadline);
+    const filePath = join(dirPath, name);
+    const file = windowsHookStateStat(filePath, false);
+    if (file) files.push({ ...state, filePath, file });
+  }
+  if (files.length) {
+    verifyWindowsPathsPrivate([dirPath, ...files.map(file => file.filePath)], windowsHookStateTimeout(deadline));
+    assertWindowsHookStateDirectory(state);
+  }
+  return files;
+}
+
+function publishWindowsPendingFile(state, content, newDirectory) {
+  const tmpPath = `${state.filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  const { fd, owned } = createEmptyWindowsHookStateFile(state, tmpPath);
+  try {
+    try {
+      if (newDirectory) {
+        makeWindowsPathsPrivate([state.dirPath, tmpPath], undefined, windowsHookStateTimeout(state.deadline));
+      } else {
+        const paths = [state.dirPath, tmpPath];
+        if (state.file) paths.push(state.filePath);
+        verifyWindowsPathsPrivate(paths, windowsHookStateTimeout(state.deadline));
+      }
+      windowsHookStateTimeout(state.deadline);
+      assertWindowsHookStateFile(state);
+      assertWindowsHookStateFile({ ...state, filePath: tmpPath, file: owned });
+      if (state.file) {
+        const current = openWindowsHookState(state, 'r');
+        try {
+          if (readFileSync(current, 'utf8') !== content) throw windowsHookStateError();
+        } finally { closeSync(current); }
+        return state.file;
+      }
+      writeFileSync(fd, content, 'utf8');
+    } finally { closeSync(fd); }
+    assertWindowsHookStateFile(state);
+    assertWindowsHookStateFile({ ...state, filePath: tmpPath, file: owned });
+    renameSync(tmpPath, state.filePath);
+    return owned;
+  } finally { removeNewWindowsHookState(state, tmpPath, owned); }
+}
+
+function writeWindowsPendingConversation(path, value) {
+  const filePath = resolve(path);
+  const dirPath = dirname(filePath);
+  const root = dirname(dirPath);
+  if (basename(dirPath) !== PENDING_CONVERSATION_LEAF || !PENDING_CONVERSATION_NAME.test(basename(filePath))) {
+    throw windowsHookStateError();
+  }
+  // UserPromptSubmit has the shortest host budget of the capture/replay callers.
+  const deadline = windowsHookStateDeadline(3000);
+  windowsHookStateTimeout(deadline);
+  if (!windowsHookStateAncestor(root)) mkdirSync(root, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const content = JSON.stringify(value);
+  let directory = windowsHookStateAncestor(dirPath);
+  if (!directory) {
+    if (!windowsHookStateAncestor(root)) throw windowsHookStateError();
+    // Publish the leaf only after its ACL is private, so concurrent hooks
+    // never mistake an unfinished leaf for an existing public directory.
+    const stagedPath = mkdtempSync(join(root, `.${PENDING_CONVERSATION_LEAF}-`));
+    const staged = {
+      dirPath: stagedPath, directory: windowsHookStateAncestor(stagedPath),
+      filePath: join(stagedPath, basename(filePath)), deadline,
+    };
+    let owned;
+    try {
+      owned = publishWindowsPendingFile(staged, content, true);
+      assertWindowsHookStateFile({ ...staged, file: owned });
+      directory = windowsHookStateAncestor(dirPath);
+      if (!directory) {
+        try {
+          renameSync(stagedPath, dirPath);
+          return;
+        } catch (err) {
+          directory = windowsHookStateAncestor(dirPath);
+          if (!directory) throw err;
+        }
+      }
+    } finally {
+      if (owned) removeNewWindowsHookState(staged, staged.filePath, owned);
+      try {
+        assertWindowsHookStateDirectory(staged);
+        rmdirSync(stagedPath);
+      } catch { /* preserve the original error and any nonempty stage */ }
+    }
+  }
+  const file = windowsHookStateStat(filePath, false);
+  publishWindowsPendingFile({ dirPath, directory, filePath, file, deadline }, content, false);
 }
 
 export function claimWindowsHookState(state, content) {

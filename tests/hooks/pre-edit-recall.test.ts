@@ -152,10 +152,44 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     const db = createTestDb();
     for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) addEntity(db, `note-${file}`, `${file}: keep this file safe`);
     db.close();
-    const result = runHook({ tool_name: 'apply_patch', tool_input: { command:
-      '*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** Add File: c.txt\n+new\n*** Delete File: d.txt\n*** End Patch' } });
+    const list = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
+    const trace = path.join(testDir, 'state-io.json');
+    const loader = path.join(testDir, 'state-io.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const list = ${JSON.stringify(list)}, trace = ${JSON.stringify(trace)};
+const original = { open: fs.openSync, close: fs.closeSync, read: fs.readFileSync, write: fs.writeFileSync };
+const descriptors = new Set();
+let reads = 0, writes = 0;
+const tracked = p => String(p) === list || descriptors.has(p);
+fs.openSync = function (p, ...rest) { const fd = original.open.call(this, p, ...rest); if (String(p) === list) descriptors.add(fd); return fd; };
+fs.closeSync = function (fd) { try { return original.close.call(this, fd); } finally { descriptors.delete(fd); } };
+fs.readFileSync = function (p, ...rest) { if (tracked(p)) reads++; return original.read.call(this, p, ...rest); };
+fs.writeFileSync = function (p, ...rest) { if (tracked(p)) writes++; return original.write.call(this, p, ...rest); };
+process.on('exit', () => original.write(trace, JSON.stringify({ reads, writes })));
+syncBuiltinESMExports();
+`);
+    const input = { cwd: testDir, session_id: 'session-a', tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** Add File: c.txt\n+new\n*** Delete File: d.txt\n*** End Patch' } };
+    const run = (payload = input) => {
+      const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+        input: JSON.stringify(payload), env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+      return result.stdout.trim();
+    };
+    const result = run();
     const context = JSON.parse(result).hookSpecificOutput.additionalContext;
     for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) expect(context).toContain(`note-${file}`);
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 0, writes: 1 });
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt', 'c.txt', 'd.txt']);
+    expect(run()).toBe('');
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 1, writes: 0 });
+    expect(run({ ...input, tool_input: { command: '*** Begin Patch\n*** Add File: e.txt\n+new\n*** End Patch' } })).toBe('');
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 2, writes: 1 });
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt']);
   });
 
   it('does not interpret an unrelated tool command as an apply_patch target', () => {
@@ -164,6 +198,94 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     db.close();
     expect(runHook({ tool_name: 'Bash', tool_input: { command:
       '*** Begin Patch\n*** Update File: a.txt\n*** End Patch' } })).toBe('');
+  });
+
+  it('a failed patch target keeps its guard and does not mark itself or suppress healthy targets', () => {
+    const db = createTestDb();
+    addEntity(db, 'healthy-a', 'a.txt: keep this file safe');
+    const failed = addEntity(db, 'failed-b', 'b.txt: keep this file safe');
+    db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(
+      'edit-b-guard', 'lesson_learned', JSON.stringify({ guard: {
+        enabled: true, tool: 'Edit', pattern: 'b[.]txt', message: 'Keep the b edit guarded', action: 'warn',
+      } }),
+    );
+    db.close();
+    const loader = path.join(testDir, 'observation-fault.mjs');
+    fs.writeFileSync(loader, `import { DatabaseSync } from 'node:sqlite';
+const prepare = DatabaseSync.prototype.prepare;
+DatabaseSync.prototype.prepare = function (sql) {
+  const statement = prepare.call(this, sql);
+  if (sql.startsWith('SELECT content FROM observations')) {
+    for (const method of ['get', 'all']) {
+      const original = statement[method].bind(statement);
+      statement[method] = (...args) => {
+        if (Number(args[0]) === ${failed}) throw new Error('controlled target observation failure');
+        return original(...args);
+      };
+    }
+  }
+  return statement;
+};
+`);
+    const input = { cwd: testDir, session_id: 'session-a', tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: b.txt\n@@\n-old\n+new\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch' } };
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify(input), env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('controlled target observation failure');
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    expect(context).toContain('Keep the b edit guarded');
+    expect(context).toContain('healthy-a');
+    expect(context).not.toContain('failed-b');
+    const list = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt']);
+    const retried = runHook(input);
+    expect(retried).toContain('failed-b');
+    expect(retried).toContain('Keep the b edit guarded');
+    expect(retried).not.toContain('healthy-a');
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it.each([['EIO', '["peer.txt"]'], ['corrupt JSON', '{']])('publication reread handles %s without hiding context', (fault, original) => {
+    const db = createTestDb();
+    addEntity(db, 'auth-note', 'auth.ts: keep the edit safe');
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const list = path.join(dir, recallListName('session-a'));
+    fs.writeFileSync(list, original, { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, list]);
+    const loader = path.join(testDir, 'reread-fault.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const list = ${JSON.stringify(list)}, inject = ${fault === 'EIO'};
+const original = { open: fs.openSync, close: fs.closeSync, read: fs.readFileSync };
+const descriptors = new Set();
+let reads = 0;
+fs.openSync = function (p, ...rest) { const fd = original.open.call(this, p, ...rest); if (String(p) === list) descriptors.add(fd); return fd; };
+fs.closeSync = function (fd) { try { return original.close.call(this, fd); } finally { descriptors.delete(fd); } };
+fs.readFileSync = function (p, ...rest) {
+  if ((String(p) === list || descriptors.has(p)) && ++reads === 2 && inject) throw Object.assign(new Error('controlled list reread'), { code: 'EIO' });
+  return original.read.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: 'auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-note');
+    if (fault === 'EIO') {
+      expect(result.stderr).toContain('controlled list reread');
+      expect(fs.readFileSync(list, 'utf8')).toBe(original);
+    } else {
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['auth.ts']);
+    }
   });
 
   it('reaches a CJK filename through the shared match expression', () => {
@@ -1066,12 +1188,13 @@ syncBuiltinESMExports();
       db.close();
 
       const run = () => spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
-        input: JSON.stringify({ cwd: testDir, tool_input: { file_path: '/src/auth.ts' } }),
+        input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
         env: { ...process.env, MEMESH_DB_PATH: dbPath },
         encoding: 'utf8',
         timeout: 10000,
       });
       expect(run().stdout.trim()).toBe('');
+      expect(fs.existsSync(path.join(testDir, 'pre-edit-recall', recallListName('session-a')))).toBe(false);
 
       const { DatabaseSync } = require('node:sqlite');
       const repair = new DatabaseSync(dbPath);

@@ -6,6 +6,7 @@ import { spawnSync } from 'node:child_process';
 import { afterEach, expect, it, vi } from 'vitest';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { openPublicNetworkDatabase, readPublicNetworkContext } from '../../src/core/public-network-context.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { migrateNetworkMetadata } from '../../src/network/metadata.js';
 import { networkMetadataPath } from '../../src/network/types.js';
 import { ensureIdentity } from '../../src/network/identity.js';
@@ -25,6 +26,7 @@ const roots: string[] = [];
 afterEach(() => { vi.unstubAllEnvs(); roots.splice(0).forEach(r => fs.rmSync(r, { recursive: true, force: true })); });
 function fixture() {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'nm-'))); roots.push(root);
+  if (process.platform === 'win32') makeWindowsPathsPrivate([root]);
   const ctx = { dataDir: root, dbPath: path.join(root, 'graph.db'), bridgeEntry: path.join(root, 'unused.js'), assetsDir: root };
   const owner = ensureIdentity(root), self = ensureIdentity(path.join(root, 'other'));
   const members = [owner, self].map((i, n) => ({ machine_id: i.machineId, name: n ? 'self' : 'owner', person: 'test', joined_at: new Date().toISOString() }));
@@ -37,6 +39,7 @@ function fixture() {
   db.prepare('INSERT INTO agent_network_peers VALUES (?,?,?,?)').run(owner.machineId, null, '[]', Date.now());
   db.exec("CREATE TABLE memory_canary (body TEXT); INSERT INTO memory_canary VALUES ('memory must remain local')");
   db.pragma('wal_checkpoint(TRUNCATE)'); db.close();
+  if (process.platform === 'win32') makeWindowsPathsPrivate([ctx.dbPath, ctx.dbPath + '-wal', ctx.dbPath + '-shm']);
   return { root, ctx, owner, self, roster };
 }
 const hash = (p: string) => createHash('sha256').update(fs.readFileSync(p)).digest('hex');

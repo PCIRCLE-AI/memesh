@@ -7,6 +7,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { build } from 'esbuild';
 import { ensureRuntime } from '../../src/network/runtime.js';
+import { ensureNetworkDir } from '../../src/network/identity.js';
 import type { IrohModule } from '../../src/network/iroh-types.js';
 import { runtimeDir, type NetworkContext } from '../../src/network/types.js';
 
@@ -65,7 +66,7 @@ export function installRuntimeOnce(tree: Tree): string {
 
 /** Give a home the installed runtime without another download. */
 export function linkRuntime(ctx: NetworkContext, runtime: string): void {
-  fs.mkdirSync(path.dirname(runtimeDir(ctx.dataDir)), { recursive: true, mode: 0o700 });
+  ensureNetworkDir(ctx.dataDir);
   fs.symlinkSync(runtime, runtimeDir(ctx.dataDir), 'junction');
 }
 

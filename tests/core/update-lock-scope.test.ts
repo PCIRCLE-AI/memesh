@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { afterEach, describe, expect, it } from 'vitest';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
-import { expectPrivateDir } from '../helpers/permissions.js';
+import { expectPrivateDir, expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 
 const roots: string[] = [];
 afterEach(() => {
@@ -35,12 +35,17 @@ const childProgram = `
   } finally { await server.close(); }
 `;
 
-function dispatch(root: string, plugin: string, home: string, data: string): { state: string; lock: string } {
-  const env = buildIsolatedRuntimeEnv({}, {
+function childEnv(home: string, data: string): NodeJS.ProcessEnv {
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  return buildIsolatedRuntimeEnv(systemRoot ? { SystemRoot: systemRoot } : {}, {
     runtimeHome: home,
     memeshDir: data,
     dbPath: path.join(data, 'knowledge-graph.db'),
   });
+}
+
+function dispatch(root: string, plugin: string, home: string, data: string): { state: string; lock: string } {
+  const env = childEnv(home, data);
   const run = spawnSync(process.execPath, ['--input-type=module', '--eval', childProgram, root, plugin], {
     env, encoding: 'utf8', timeout: 30_000,
   });
@@ -85,11 +90,7 @@ const directRouteProgram = `
 `;
 
 function directRoutes(root: string, plugin: string, home: string, data: string, uidHome: string) {
-  const env = buildIsolatedRuntimeEnv({}, {
-    runtimeHome: home,
-    memeshDir: data,
-    dbPath: path.join(data, 'knowledge-graph.db'),
-  });
+  const env = childEnv(home, data);
   const run = spawnSync(process.execPath, ['--input-type=module', '--eval', directRouteProgram, root, plugin, data, uidHome], {
     env, encoding: 'utf8', timeout: 30_000,
   });
@@ -113,6 +114,8 @@ describe('auto-update lock scope', () => {
     const plugin = path.join(home, 'plugin');
     fs.mkdirSync(path.join(plugin, 'scripts', 'hooks'), { recursive: true });
     fs.writeFileSync(path.join(plugin, 'scripts', 'hooks', 'auto-update-runner.mjs'), 'process.exit(0)\n');
+    if (process.platform === 'win32') makeWindowsAclPublic(home);
+    const inheritedAcl = process.platform === 'win32' ? readWindowsAcl(home) : undefined;
     const first = dispatch(root, plugin, home, path.join(home, 'data-a'));
     const second = dispatch(root, plugin, home, path.join(home, 'data-b'));
 
@@ -121,6 +124,10 @@ describe('auto-update lock scope', () => {
     expect(second).toMatchObject({ state: 'throttled' });
     expect(second.lock).toBeUndefined();
     expectPrivateDir(path.dirname(lock));
+    const attempt = path.join(path.dirname(lock), 'auto-update-attempt');
+    expectPrivateFile(attempt);
+    expect(fs.readFileSync(attempt, 'utf8')).toBe('1000000');
+    if (inheritedAcl) expect(readWindowsAcl(home)).toEqual(inheritedAcl);
     expect(fs.existsSync(path.join(home, 'data-a', 'auto-update-attempt'))).toBe(false);
     expect(fs.existsSync(path.join(home, 'data-b', 'auto-update-attempt'))).toBe(false);
   });
@@ -157,6 +164,7 @@ describe('auto-update lock scope', () => {
     expect(result.manualArgs).toEqual([lock, '--manual']);
     expect(result.reinstallArgs).toEqual([lock, '--reinstall']);
     expect(result.lockDir).toBe(path.dirname(lock));
+    expectPrivateDir(result.lockDir);
     expect(result.uidLockDir).toBe(path.join(uidHome, '.memesh'));
     expect(result.holder).toMatchObject({ label: 'manual', pid: expect.any(Number), running: true });
     expect(fs.existsSync(path.join(data, 'auto-update-state.json'))).toBe(true);

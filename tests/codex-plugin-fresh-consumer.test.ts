@@ -115,8 +115,8 @@ describe('Codex plugin fresh consumer', () => {
     const commands = manifest.hooks.hooks.SessionStart.flatMap((group: { hooks: Array<{ command: string }> }) => group.hooks.map(hook => hook.command));
     expect(commands).toHaveLength(2); // Refuse stale wiring before executing it.
     for (const command of commands) {
-      const entry = command.replace('${CLAUDE_PLUGIN_ROOT}', pluginRoot);
-      expect(entry.startsWith(path.join(pluginRoot, 'scripts/hooks/'))).toBe(true);
+      const entry = path.normalize(command.replace('${CLAUDE_PLUGIN_ROOT}', pluginRoot));
+      expect(path.dirname(entry)).toBe(path.join(pluginRoot, 'scripts', 'hooks'));
       const result = spawnSync(process.execPath, [entry], { cwd: pluginRoot, env: environment,
         input: JSON.stringify({ hook_event_name: 'SessionStart', source: 'startup', session_id: session, cwd: pluginRoot }),
         encoding: 'utf8', timeout: 10_000 });

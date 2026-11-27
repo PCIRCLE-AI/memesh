@@ -143,8 +143,8 @@
     },
     {
       "path": "scripts/hooks/_generated/network-identity.js",
-      "sha256": "592ba62e41580619af3b1b1fe1540e7542cf12bdee5f64dc3371d4309bf82981",
-      "bytes": 3588
+      "sha256": "455eeb7fb3e0a87886356e4a3607559e05151f6511b028f2b7f2851cc9d4f3d3",
+      "bytes": 8816
     },
     {
       "path": "scripts/hooks/_generated/network-roster.js",
@@ -253,8 +253,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "5303853a70c579855d0116119a7cf200b1fb7a52aa10ab4837f6c870f87bc7d4",
-      "bytes": 120532
+      "sha256": "6f30eeaffb679674a4793cf6051801a85b5fbf442743c2a2a1fa44601bb71da6",
+      "bytes": 126057
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -303,8 +303,8 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "ee4bb82fdcc7248de0973e803e8e0d56151a656b281693bbf720f3f2b360007f",
-      "bytes": 41205
+      "sha256": "134b4654400b30078187f46c58b32d50e5f5157c8a9af3f535cdc85f3bc1f5ab",
+      "bytes": 42184
     },
     {
       "path": "scripts/hooks/prompt-recall.js",

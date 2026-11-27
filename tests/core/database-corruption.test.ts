@@ -147,7 +147,7 @@ describe('the one-command repair advice', () => {
     const fix = truncateAndDiagnose();
     expect(fix).toContain(repairCommand(handle.dbPath));
     expect(fix).toContain('node ');
-    expect(fix).toContain('dist/transports/cli/cli.js');
+    expect(fix).toContain(path.join('dist', 'transports', 'cli', 'cli.js'));
     expect(fix).not.toMatch(/\.recover \||mv .*\.backup/);
   });
   it('uses the same command for doctor and database-open errors', () => {

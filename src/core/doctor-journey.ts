@@ -50,8 +50,8 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import { getMemeshDirFromDbPath } from './paths.js';
-import { ConversationMessages } from './conversation-messages.js';
 
 /** `prepare` is the journey's own scaffolding (the throwaway folder), not something memesh was asked to do. */
 export type JourneyStepId = 'prepare' | 'remember' | 'recall' | 'send' | 'fetch';
@@ -103,6 +103,7 @@ export const JOURNEY_TIMEOUT_MS = 30_000;
 export const JOURNEY_SKIP_ENV = 'MEMESH_SKIP_POST_INSTALL_JOURNEY';
 
 const REINSTALL = 'Reinstall with `npm install -g @pcircle/memesh@latest`, then run `memesh doctor --journey`. If it still fails, run `memesh feedback`.';
+const PREPARE_CONVERSATIONS = 'Prepare the synthetic conversations';
 
 /**
  * Only these variables reach the child; see the header for why. Windows needs
@@ -419,13 +420,6 @@ export async function runInstallJourney(options: JourneyOptions, testHooks: Jour
     // the network and outlive the folder we are about to delete.
     fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
     const env = journeyEnv(scratch);
-    // Scaffolding only: no host wake endpoint, and never the caller's messages.db.
-    const messages = new ConversationMessages({ file: path.join(dataDir, 'messages.db') });
-    try {
-      for (const id of [sender, recipient]) {
-        messages.register({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
-      }
-    } finally { messages.close(); }
 
     if (!fs.existsSync(entry)) {
       steps.push({
@@ -506,6 +500,34 @@ export async function runInstallJourney(options: JourneyOptions, testHooks: Jour
 
     if (!failedStep) {
       for (const spec of specs) {
+        const prepareStarted = Date.now();
+        const prepareBudget = timeoutMs - (prepareStarted - started);
+        if (spec.id === 'send' && prepareBudget > 0) {
+          // The constructor's native privacy check must inherit the same
+          // throwaway environment as the CLI commands.
+          const module = pathToFileURL(path.join(options.packageRoot, 'dist', 'core', 'conversation-messages.js')).href;
+          const registrations = [sender, recipient].map(id => ({ id, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} }));
+          const seed = `
+            import { ConversationMessages } from ${JSON.stringify(module)};
+            const messages = new ConversationMessages({ file: ${JSON.stringify(path.join(dataDir, 'messages.db'))} });
+            try {
+              for (const registration of ${JSON.stringify(registrations)}) messages.register(registration);
+            } finally { messages.close(); }
+          `;
+          const out = await runChild('--input-type=module', ['--eval', seed], undefined, env, scratch, prepareBudget);
+          if (out.status !== 0) {
+            timedOut = out.timedOut;
+            steps.push({
+              id: 'prepare', did: PREPARE_CONVERSATIONS, ok: false,
+              result: timedOut ? 'timed out' : 'could not initialize the message store',
+              reason: timedOut ? timeoutReason(timeoutMs, out.unstoppedPid) : out.spawnError ?? (tail(out.stderr) || tail(out.stdout) || '(no output)'),
+              fix: timedOut ? 'Run `memesh doctor --journey` again; if it keeps timing out, run `memesh doctor` to see which part of the install is slow or stuck.' : REINSTALL,
+              ms: Date.now() - prepareStarted,
+            });
+            failedStep = 'prepare';
+            break;
+          }
+        }
         const remaining = timeoutMs - (Date.now() - started);
         const stepStart = Date.now();
         if (remaining <= 0) {
@@ -593,7 +615,9 @@ export function formatJourney(result: JourneyResult): string[] {
   lines.push(result.ok
     ? `Journey PASSED in ${seconds}s: memesh can store, find, send and read back on this machine. Live delivery to a running agent is not checked here; \`memesh doctor\` reports on the router.`
     : result.failedStep === 'prepare'
-      ? `Journey could not run: this machine's temp folder is not usable, so memesh itself was not checked.`
+      ? result.steps.at(-1)?.did === PREPARE_CONVERSATIONS
+        ? `Journey could not finish${result.timedOut ? ' (timed out)' : ''}: the synthetic conversations could not be prepared.`
+        : `Journey could not run: this machine's temp folder is not usable, so memesh itself was not checked.`
       : `Journey FAILED${result.timedOut ? ' (timed out)' : ''} at "${result.failedStep}" after ${seconds}s. The core feature above is not working on this install.`);
   if (!result.cleaned) lines.push(`Note: the throwaway folder ${result.scratchDir} could not be removed (${result.cleanupError ?? 'unknown reason'}); it is safe to delete by hand.`);
   return lines;

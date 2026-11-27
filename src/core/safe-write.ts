@@ -120,7 +120,8 @@ export class Changes {
     this.undo.push(() => {
       for (let d = dir; ; d = path.dirname(d)) {
         fs.rmdirSync(d);
-        if (d === first) return;
+        // Windows mkdir returns a namespaced first-created path.
+        if (path.toNamespacedPath(d) === path.toNamespacedPath(first)) return;
       }
     });
   }

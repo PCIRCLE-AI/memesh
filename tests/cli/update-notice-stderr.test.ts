@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { npmInvocation } from '../../src/core/npm-launch.js';
 
 const repoRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '../..');
 const CLI = path.join(repoRoot, 'dist', 'transports', 'cli', 'cli.js');
@@ -13,6 +14,8 @@ describe('CLI first-use update notice (#308: any entry point)', () => {
   it('refreshes a missing cache from the actual bundled CLI without a hook or opening the graph', async () => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-cli-refresh-'));
     const preload = path.join(dir, 'offline.cjs');
+    const npm = npmInvocation([]);
+    expect(npm).not.toBeNull();
     fs.writeFileSync(preload, `
       const cp = require('node:child_process');
       const fs = require('node:fs');
@@ -21,10 +24,15 @@ describe('CLI first-use update notice (#308: any entry point)', () => {
         fs.writeFileSync(process.env.REFRESH_TRACE, JSON.stringify(args.slice(0, 2)));
         return originalSpawn(...args);
       };
-      const originalExecFile = cp.execFile;
+      const npm = ${JSON.stringify(npm)};
       cp.execFile = (command, args, options, callback) => {
-        if (command !== 'npm') return originalExecFile(command, args, options, callback);
-        process.nextTick(() => callback(null, args.includes('version') ? '99.0.0\\n' : '', ''));
+        if (command !== npm.command || !npm.args.every((arg, i) => args[i] === arg)) throw new Error('unexpected offline registry command');
+        const logicalArgs = args.slice(npm.args.length);
+        const latest = ['show', '@pcircle/memesh', 'version'];
+        const deprecated = ['view', ${JSON.stringify('@pcircle/memesh@' + CURRENT_VERSION)}, 'deprecated'];
+        const matches = expected => logicalArgs.length === expected.length && expected.every((arg, i) => logicalArgs[i] === arg);
+        if (!matches(latest) && !matches(deprecated)) throw new Error('unexpected offline registry arguments');
+        process.nextTick(() => callback(null, matches(latest) ? '99.0.0\\n' : '', ''));
         return { kill() {} };
       };
       require('node:module').syncBuiltinESMExports();

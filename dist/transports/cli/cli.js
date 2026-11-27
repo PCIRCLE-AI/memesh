@@ -9346,7 +9346,30 @@ function readConfigFile(file2) {
       return { state: "unreadable", why: "dangling symlink" };
     } catch (lerr) {
       const lcode = lerr.code ?? "UNKNOWN";
-      return lcode === "ENOENT" ? { state: "absent" } : { state: "unreadable", why: lcode };
+      if (lcode !== "ENOENT")
+        return { state: "unreadable", why: lcode };
+      let parent = path12.dirname(file2);
+      for (; ; ) {
+        try {
+          return fs14.statSync(parent).isDirectory() ? { state: "absent" } : { state: "unreadable", why: "ENOTDIR" };
+        } catch (parentError) {
+          const parentCode = parentError.code ?? "UNKNOWN";
+          if (parentCode !== "ENOENT")
+            return { state: "unreadable", why: parentCode };
+          try {
+            fs14.lstatSync(parent);
+            return { state: "unreadable", why: "dangling symlink" };
+          } catch (statError) {
+            const statCode = statError.code ?? "UNKNOWN";
+            if (statCode !== "ENOENT")
+              return { state: "unreadable", why: statCode };
+          }
+          const next = path12.dirname(parent);
+          if (next === parent)
+            return { state: "unreadable", why: parentCode };
+          parent = next;
+        }
+      }
     }
   }
   try {
@@ -9461,6 +9484,104 @@ function resolveUpdatePolicy(input2) {
 }
 function updateControlDir() {
   return path12.join(homeDir(), ".memesh");
+}
+function windowsControlEntry(file2, directory, expected) {
+  const entry = fs14.lstatSync(file2, { bigint: true });
+  if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile() && entry.nlink === 1n) || path12.relative(file2, fs14.realpathSync(file2)) !== "" || expected && (entry.dev !== expected.dev || entry.ino !== expected.ino)) {
+    throw new Error(`Unsafe or changed updater control path: ${file2}.`);
+  }
+  return entry;
+}
+function prepareUpdateControlDirectory(dir) {
+  if (process.platform !== "win32") {
+    ensureOwnerDir(dir);
+    return null;
+  }
+  const parent = path12.dirname(dir);
+  windowsControlEntry(parent, true);
+  try {
+    fs14.mkdirSync(dir);
+  } catch (error62) {
+    if (error62.code !== "EEXIST")
+      throw error62;
+  }
+  const entry = windowsControlEntry(dir, true);
+  makeWindowsPathsPrivate([dir]);
+  return windowsControlEntry(dir, true, entry);
+}
+function checkWindowsAttemptHandle(file2, fd, entry) {
+  const opened = fs14.fstatSync(fd, { bigint: true });
+  if (opened.dev !== entry.dev || opened.ino !== entry.ino || opened.nlink !== 1n) {
+    throw new Error(`Updater attempt path changed: ${file2}.`);
+  }
+}
+function readAttemptTime(file2, directory) {
+  if (!directory) {
+    try {
+      return fs14.readFileSync(file2, "utf8");
+    } catch {
+      return "";
+    }
+  }
+  const parent = path12.dirname(file2);
+  windowsControlEntry(parent, true, directory);
+  const existing = fs14.lstatSync(file2, { bigint: true, throwIfNoEntry: false });
+  if (!existing)
+    return "";
+  windowsControlEntry(file2, false, existing);
+  makeWindowsPathsPrivate([file2]);
+  windowsControlEntry(parent, true, directory);
+  windowsControlEntry(file2, false, existing);
+  const fd = fs14.openSync(file2, "r");
+  try {
+    checkWindowsAttemptHandle(file2, fd, existing);
+    return fs14.readFileSync(fd, "utf8");
+  } finally {
+    fs14.closeSync(fd);
+  }
+}
+function writeAttemptTime(file2, now, directory) {
+  if (!directory) {
+    fs14.writeFileSync(file2, String(now), { mode: 384 });
+    ownerOnly(file2);
+    return;
+  }
+  const parent = path12.dirname(file2);
+  windowsControlEntry(parent, true, directory);
+  let created;
+  try {
+    if (!fs14.lstatSync(file2, { throwIfNoEntry: false })) {
+      const empty = fs14.openSync(file2, "wx", 384);
+      try {
+        created = fs14.fstatSync(empty, { bigint: true });
+      } finally {
+        fs14.closeSync(empty);
+      }
+    }
+    const entry = windowsControlEntry(file2, false, created);
+    makeWindowsPathsPrivate([file2]);
+    windowsControlEntry(parent, true, directory);
+    windowsControlEntry(file2, false, entry);
+    const fd = fs14.openSync(file2, fs14.constants.O_WRONLY);
+    try {
+      checkWindowsAttemptHandle(file2, fd, entry);
+      const text2 = String(now);
+      fs14.writeFileSync(fd, text2);
+      fs14.ftruncateSync(fd, text2.length);
+    } finally {
+      fs14.closeSync(fd);
+    }
+  } catch (error62) {
+    if (created) {
+      try {
+        windowsControlEntry(parent, true, directory);
+        windowsControlEntry(file2, false, created);
+        fs14.unlinkSync(file2);
+      } catch {
+      }
+    }
+    throw error62;
+  }
 }
 function accountMemeshDir() {
   const home = safeAccountHome();
@@ -10584,22 +10705,40 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
   const dir = updateControlDir();
   let fd = -1;
   let claim2 = null;
+  let prepared;
+  const logFlags = process.platform === "win32" ? "a" : fs14.constants.O_WRONLY | fs14.constants.O_CREAT | fs14.constants.O_APPEND | fs14.constants.O_NONBLOCK;
   const say = (line) => {
-    try {
-      ensureOwnerDir(dir);
-      fs14.appendFileSync(path12.join(dir, LOG_FILE), `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
-`, { mode: 384 });
-      ownerOnly(path12.join(dir, LOG_FILE));
-    } catch {
+    let logFd = -1;
+    if (prepared !== void 0) {
       try {
-        process.stderr.write(`[memesh] ${oneLine(line)}
+        if (prepared)
+          windowsControlEntry(dir, true, prepared);
+        logFd = fs14.openSync(path12.join(dir, LOG_FILE), logFlags, 384);
+        if (!fs14.fstatSync(logFd).isFile())
+          throw new Error("the update log is not a regular file");
+        fs14.writeSync(logFd, `[${(/* @__PURE__ */ new Date()).toISOString()}] ${oneLine(line)}
 `);
+        ownerOnly(path12.join(dir, LOG_FILE));
+        return;
       } catch {
+      } finally {
+        if (logFd >= 0) {
+          try {
+            fs14.closeSync(logFd);
+          } catch {
+          }
+        }
       }
+    }
+    try {
+      process.stderr.write(`[memesh] ${oneLine(line)}
+`);
+    } catch {
     }
   };
   try {
-    ensureOwnerDir(dir);
+    const directory = prepareUpdateControlDirectory(dir);
+    prepared = directory;
     removeRetiredFiles(dir);
     const support = (options.canSelfUpdate ?? defaultCanSelfUpdate)(pluginRoot);
     if (!support.ok) {
@@ -10634,8 +10773,9 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       }
     }
     const attemptPath = path12.join(dir, ATTEMPT_FILE);
+    const text2 = readAttemptTime(attemptPath, directory).trim();
     try {
-      const last = Number(fs14.readFileSync(attemptPath, "utf8"));
+      const last = text2 === "" ? NaN : Number(text2);
       if (Number.isFinite(last) && last > nowMs) {
         say(`auto-update: the last attempt time is in the future (${new Date(last).toISOString()}); ignoring it`);
       } else if (Number.isFinite(last) && nowMs - last < ATTEMPT_INTERVAL_MS) {
@@ -10651,7 +10791,11 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
     }
     const logPath2 = path12.join(dir, LOG_FILE);
     try {
-      fd = fs14.openSync(logPath2, "a", 384);
+      fd = fs14.openSync(logPath2, logFlags, 384);
+      if (!fs14.fstatSync(fd).isFile())
+        throw new Error("the update log is not a regular file");
+      fs14.writeSync(fd, `[${(/* @__PURE__ */ new Date()).toISOString()}] auto-update: preparing the runner
+`);
     } catch (err) {
       try {
         process.stderr.write(`[memesh] auto-update FAILED: durable log unavailable at ${logPath2} (${err instanceof Error ? err.message : String(err)})
@@ -10660,9 +10804,7 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       }
       return { state: "failed" };
     }
-    const lockDir = updateControlDir();
-    ensureOwnerDir(lockDir);
-    const lockPath = path12.join(lockDir, "auto-update.lock");
+    const lockPath = path12.join(dir, "auto-update.lock");
     const child = (options.spawnImpl ?? spawn)(process.execPath, [runnerPath, lockPath], { detached: true, stdio: ["ignore", fd, fd], env: process.env, windowsHide: true });
     return await new Promise((resolve2) => {
       let settled = false;
@@ -10683,8 +10825,7 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
       child.once("spawn", () => {
         child.unref();
         try {
-          fs14.writeFileSync(attemptPath, String(nowMs), { mode: 384 });
-          ownerOnly(attemptPath);
+          writeAttemptTime(attemptPath, nowMs, directory);
         } catch (err) {
           say(`auto-update: could not record the attempt time (${err instanceof Error ? err.message : String(err)})`);
         }
@@ -10698,10 +10839,17 @@ async function dispatchAutoUpdate(pluginRoot, nowMs = Date.now(), options = {}) 
         fs14.closeSync(fd);
       } catch {
       }
+      fd = -1;
     }
     say(`auto-update FAILED: stage=dispatch error=${err instanceof Error ? err.message : String(err)}`);
     return { state: "failed" };
   } finally {
+    if (fd >= 0) {
+      try {
+        fs14.closeSync(fd);
+      } catch {
+      }
+    }
     if (claim2 !== null) {
       try {
         fs14.rmSync(claim2, { recursive: true, force: true });
@@ -10728,9 +10876,10 @@ function runManualUpdate(pluginRoot, dir = updateControlDir(), options = {}) {
   if (!fs14.existsSync(runnerPath)) {
     return { code: 1, lines: [`\u274C The update runner is missing (${runnerPath}); reinstall MeMesh.`] };
   }
-  ensureOwnerDir(dir);
   const lockDir = updateControlDir();
-  ensureOwnerDir(lockDir);
+  prepareUpdateControlDirectory(lockDir);
+  if (path12.relative(dir, lockDir) !== "")
+    ensureOwnerDir(dir);
   const before = readAutoUpdateState(dir)?.at ?? null;
   const offBeforeRun = currentPolicy().policy === "off";
   const ran = spawnSync(process.execPath, [runnerPath, path12.join(lockDir, "auto-update.lock"), options.reinstall ? "--reinstall" : "--manual"], { stdio: ["ignore", "pipe", "pipe"], encoding: "utf8", env: process.env });
@@ -10784,9 +10933,10 @@ function startReinstall(pluginRoot, dir = updateControlDir()) {
   const runnerPath = path12.join(pluginRoot, "scripts", "hooks", "auto-update-runner.mjs");
   if (!fs14.existsSync(runnerPath))
     throw new Error(`The update runner is missing at ${runnerPath}; reinstall MeMesh.`);
-  ensureOwnerDir(dir);
   const lockDir = updateControlDir();
-  ensureOwnerDir(lockDir);
+  prepareUpdateControlDirectory(lockDir);
+  if (path12.relative(dir, lockDir) !== "")
+    ensureOwnerDir(dir);
   const logPath2 = path12.join(dir, LOG_FILE);
   const fd = fs14.openSync(logPath2, "a", 384);
   try {
@@ -10836,6 +10986,7 @@ var init_auto_update = __esm({
     init_update_notice();
     init_process_identity();
     init_file_mode();
+    init_windows_permissions();
     init_updater();
     DEFAULT_AUTO_UPDATE_POLICY = "major";
     PACKAGE_NAME = "@pcircle/memesh";
@@ -34742,7 +34893,7 @@ var init_safe_write = __esm({
         this.undo.push(() => {
           for (let d = dir; ; d = path22.dirname(d)) {
             fs23.rmdirSync(d);
-            if (d === first)
+            if (path22.toNamespacedPath(d) === path22.toNamespacedPath(first))
               return;
           }
         });
@@ -35137,16 +35288,587 @@ var init_install_hooks = __esm({
   }
 });
 
-// dist/network/types.js
+// dist/core/doctor-journey.js
+import { spawn as spawn4, spawnSync as spawnSync3 } from "node:child_process";
+import crypto from "node:crypto";
+import fs26 from "node:fs";
+import os3 from "node:os";
 import path25 from "node:path";
+import { pathToFileURL as pathToFileURL4 } from "node:url";
+function journeyEnv(scratch, base = process.env, platform = process.platform) {
+  const P = platform === "win32" ? path25.win32 : path25;
+  const env = {};
+  for (const name of PASSTHROUGH_ENV) {
+    const key = platform === "win32" ? Object.keys(base).find((k) => k.toUpperCase() === name.toUpperCase()) : name;
+    const value = key === void 0 ? void 0 : base[key];
+    if (key === void 0 || value === void 0)
+      continue;
+    const isTempFolder = /^(TMPDIR|TMP|TEMP)$/i.test(key);
+    if (isTempFolder && value === "")
+      continue;
+    env[key] = isTempFolder && !P.isAbsolute(value) ? P.resolve(value) : value;
+  }
+  const dataDir = P.join(scratch, ".memesh");
+  env.HOME = scratch;
+  env.USERPROFILE = scratch;
+  if (platform === "win32") {
+    env.APPDATA = P.join(scratch, "AppData", "Roaming");
+    env.LOCALAPPDATA = P.join(scratch, "AppData", "Local");
+  }
+  env.MEMESH_DIR = dataDir;
+  env.MEMESH_DB_PATH = P.join(dataDir, "knowledge-graph.db");
+  env.MEMESH_AUTO_CAPTURE = "false";
+  return env;
+}
+function killCommandFor(platform, pid, systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows") {
+  return platform === "win32" ? { kind: "taskkill", command: path25.win32.join(systemRoot, "System32", "taskkill.exe"), args: ["/pid", String(pid), "/T", "/F"] } : { kind: "group", pid };
+}
+function descendantPids(root, run = spawnSync3) {
+  for (const ps of ["/bin/ps", "/usr/bin/ps"]) {
+    const r = run(ps, ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
+    if (r.error || r.status !== 0)
+      continue;
+    const children = /* @__PURE__ */ new Map();
+    for (const line of String(r.stdout).split("\n")) {
+      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
+      if (!m)
+        continue;
+      const parent = Number(m[2]);
+      const list = children.get(parent);
+      if (list)
+        list.push(Number(m[1]));
+      else
+        children.set(parent, [Number(m[1])]);
+    }
+    const found = [];
+    const queue = [root];
+    while (queue.length > 0) {
+      const below = children.get(queue.shift());
+      if (!below)
+        continue;
+      for (const pid of below) {
+        found.push(pid);
+        queue.push(pid);
+      }
+    }
+    return found;
+  }
+  return [];
+}
+function killTree(child, platform = process.platform, run = spawnSync3, outputOpen = true) {
+  if (child.pid === void 0)
+    return false;
+  const exited = child.exitCode != null || child.signalCode != null;
+  if (exited && (platform === "win32" || !outputOpen))
+    return true;
+  const cmd = killCommandFor(platform, child.pid);
+  try {
+    if (cmd.kind === "group") {
+      const below = exited ? [] : descendantPids(cmd.pid, run);
+      let delivered = false;
+      try {
+        process.kill(-cmd.pid, "SIGKILL");
+        delivered = true;
+      } catch (err) {
+        delivered = err.code === "ESRCH";
+      }
+      for (const pid of below) {
+        try {
+          process.kill(pid, "SIGKILL");
+        } catch {
+        }
+      }
+      if (delivered)
+        return true;
+    } else {
+      const r = run(cmd.command, cmd.args, { stdio: "ignore", windowsHide: true });
+      if (!r.error && r.status === 0)
+        return true;
+    }
+  } catch {
+  }
+  try {
+    return child.kill("SIGKILL");
+  } catch {
+    return false;
+  }
+}
+function timeoutReason(budgetMs, unstoppedPid) {
+  return unstoppedPid === void 0 ? `Did not finish within the ${formatBudget(budgetMs)} budget and was stopped.` : `Did not finish within the ${formatBudget(budgetMs)} budget, and it could not be stopped: process ${unstoppedPid} may still be running. End it by hand (Task Manager on Windows, \`kill ${unstoppedPid}\` elsewhere).`;
+}
+function formatBudget(ms) {
+  return ms < 1e4 ? `${(ms / 1e3).toFixed(1).replace(/\.0$/, "")} s` : `${Math.round(ms / 1e3)} s`;
+}
+function outputStillOpen(child) {
+  return [child.stdout, child.stderr].some((pipe2) => pipe2 !== null && pipe2 !== void 0 && !pipe2.readableEnded);
+}
+function cleanUpOnSignals() {
+  const listeners = /* @__PURE__ */ new Map();
+  const remove = () => {
+    for (const [signal, listener] of listeners)
+      process.removeListener(signal, listener);
+  };
+  for (const signal of CLEANUP_SIGNALS) {
+    const listener = () => {
+      for (const child of liveChildren)
+        killTree(child, process.platform, spawnSync3, outputStillOpen(child));
+      const stuck = [];
+      for (const dir of liveScratch) {
+        try {
+          fs26.rmSync(dir, { recursive: true, force: true });
+        } catch {
+        }
+        if (fs26.existsSync(dir))
+          stuck.push(dir);
+      }
+      const note2 = stuck.length === 0 ? "Interrupted: the install journey was stopped and its throwaway folder was removed." : `Interrupted: the install journey was stopped, but its throwaway folder could not be removed: ${stuck.join(", ")}. It is safe to delete by hand.`;
+      try {
+        fs26.writeSync(2, `${note2}
+`);
+      } catch {
+      }
+      remove();
+      try {
+        process.kill(process.pid, signal);
+      } catch {
+        process.exit(128 + (os3.constants.signals[signal] ?? 1));
+      }
+    };
+    try {
+      process.on(signal, listener);
+      listeners.set(signal, listener);
+    } catch {
+    }
+  }
+  return remove;
+}
+function runChild(entry, args, stdin, env, cwd, budgetMs) {
+  return new Promise((resolve2) => {
+    const out = [];
+    const err = [];
+    let timedOut = false;
+    let settled = false;
+    let child;
+    const clocks = {};
+    const settle2 = (outcome, killGroup) => {
+      if (settled)
+        return;
+      settled = true;
+      clearTimeout(clocks.budget);
+      clearTimeout(clocks.grace);
+      if (child) {
+        if (killGroup)
+          killTree(child, process.platform, spawnSync3, outputStillOpen(child));
+        liveChildren.delete(child);
+        child.stdout?.destroy();
+        child.stderr?.destroy();
+        child.stdin?.destroy();
+        if (outcome.unstoppedPid !== void 0)
+          child.unref();
+      }
+      resolve2({ ...outcome, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), timedOut });
+    };
+    try {
+      child = spawn4(process.execPath, [entry, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
+    } catch (e) {
+      settle2({ status: null, spawnError: e instanceof Error ? e.message : String(e) }, false);
+      return;
+    }
+    const started = child;
+    liveChildren.add(started);
+    clocks.budget = setTimeout(() => {
+      timedOut = true;
+      const stopped = killTree(started);
+      settle2({ status: null, ...stopped || started.pid === void 0 ? {} : { unstoppedPid: started.pid } }, false);
+    }, Math.max(budgetMs, 1));
+    started.stdout?.on("data", (chunk) => {
+      out.push(chunk);
+    });
+    started.stderr?.on("data", (chunk) => {
+      err.push(chunk);
+    });
+    started.once("error", (e) => settle2({ status: null, spawnError: e.message }, false));
+    started.once("exit", (status) => {
+      if (settled)
+        return;
+      clearTimeout(clocks.budget);
+      clocks.grace = setTimeout(() => settle2({ status }, true), EXIT_GRACE_MS);
+    });
+    started.once("close", (status) => settle2({ status }, false));
+    started.stdin?.on("error", () => {
+    });
+    started.stdin?.end(stdin ?? "");
+  });
+}
+function tail(text2, max = 300) {
+  const trimmed = text2.trim();
+  return trimmed.length <= max ? trimmed : `\u2026${trimmed.slice(-max)}`;
+}
+function parseJson(text2) {
+  try {
+    return JSON.parse(text2);
+  } catch {
+    return void 0;
+  }
+}
+function asRecord(value) {
+  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
+}
+async function runInstallJourney(options, testHooks = {}) {
+  const started = Date.now();
+  const timeoutMs = testHooks.timeoutMs ?? JOURNEY_TIMEOUT_MS;
+  const entry = testHooks.cliEntry ?? path25.join(options.packageRoot, "dist", "transports", "cli", "cli.js");
+  const nonce = crypto.randomBytes(5).toString("hex");
+  const noteText = `journey check ${nonce}`;
+  const payload = `journey message ${nonce}`;
+  const sender = `journey-sender-${nonce}`;
+  const recipient = `journey-recipient-${nonce}`;
+  const steps = [];
+  let timedOut = false;
+  let failedStep;
+  let storedName = "";
+  let messageId2 = "";
+  let scratch = "";
+  let cleaned = false;
+  let cleanupError;
+  const stopSignalCleanup = cleanUpOnSignals();
+  try {
+    scratch = path25.resolve(fs26.mkdtempSync(path25.join(os3.tmpdir(), "memesh-journey-")));
+    liveScratch.add(scratch);
+    const dataDir = path25.join(scratch, ".memesh");
+    fs26.mkdirSync(dataDir, { recursive: true, mode: 448 });
+    fs26.writeFileSync(path25.join(dataDir, "config.json"), JSON.stringify({ updateCheck: false }), { mode: 384 });
+    const env = journeyEnv(scratch);
+    if (!fs26.existsSync(entry)) {
+      steps.push({
+        id: "remember",
+        did: "Start the installed memesh command",
+        ok: false,
+        result: "not found",
+        ms: 0,
+        reason: `${entry} does not exist, so the installed package is incomplete.`,
+        fix: REINSTALL
+      });
+      failedStep = "remember";
+    }
+    const specs = [
+      {
+        id: "remember",
+        did: "Store a note (memesh remember)",
+        args: () => ["remember", noteText, "--json"],
+        check: (out) => {
+          const json2 = asRecord(parseJson(out));
+          if (json2?.stored !== true || typeof json2.name !== "string") {
+            return { ok: false, reason: `remember did not report the note as stored. It printed: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
+          }
+          storedName = json2.name;
+          return { ok: true, result: `stored as "${json2.name}"` };
+        }
+      },
+      {
+        id: "recall",
+        did: "Search for that note (memesh recall)",
+        args: () => ["recall", nonce, "--json"],
+        check: (out) => {
+          const json2 = asRecord(parseJson(out));
+          const entities = Array.isArray(json2?.entities) ? json2.entities : void 0;
+          if (!entities)
+            return { ok: false, reason: `recall printed something that is not a result list: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
+          const hit = entities.some((e) => asRecord(e)?.name === storedName);
+          if (!hit) {
+            return {
+              ok: false,
+              reason: `The note was stored but a search for it found ${entities.length === 0 ? "nothing" : `${entities.length} other result(s)`}. Saving and searching are not talking to the same data.`,
+              fix: "Run `memesh reindex`, then `memesh doctor --journey`. If it still fails, reinstall with `npm install -g @pcircle/memesh@latest` and run `memesh feedback`."
+            };
+          }
+          return { ok: true, result: `found it among ${entities.length} result(s)` };
+        }
+      },
+      {
+        id: "send",
+        did: "Send a message to a synthetic conversation (memesh message send)",
+        args: () => ["message", "send", "--recipient", recipient, "--kind", "question", "--payload-stdin"],
+        session: sender,
+        stdin: () => payload,
+        check: (out) => {
+          const json2 = asRecord(parseJson(out));
+          if (json2?.state !== "queued" || typeof json2.message_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(json2.message_id)) {
+            return { ok: false, reason: `send did not return a message id. It printed: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
+          }
+          messageId2 = json2.message_id;
+          return { ok: true, result: `queued message ${messageId2}` };
+        }
+      },
+      {
+        id: "fetch",
+        did: "Read the message back (memesh message read)",
+        args: () => ["message", "read", "--message-id", messageId2],
+        session: recipient,
+        check: (out) => {
+          const json2 = asRecord(parseJson(out));
+          const message = asRecord(json2?.message);
+          if (message?.body !== payload || message.id !== messageId2 || message.sender !== sender || message.recipient !== recipient || message.kind !== "question" || message.reply_to !== null) {
+            return {
+              ok: false,
+              reason: message ? "The message came back with different content or routing fields." : `read printed something that is not a message: ${tail(out) || "(nothing)"}`,
+              fix: REINSTALL
+            };
+          }
+          return { ok: true, result: "content matches what was sent" };
+        }
+      }
+    ];
+    if (!failedStep) {
+      for (const spec of specs) {
+        const prepareStarted = Date.now();
+        const prepareBudget = timeoutMs - (prepareStarted - started);
+        if (spec.id === "send" && prepareBudget > 0) {
+          const module = pathToFileURL4(path25.join(options.packageRoot, "dist", "core", "conversation-messages.js")).href;
+          const registrations = [sender, recipient].map((id) => ({ id, host: "claude-code", machine: os3.hostname(), pid: process.pid, wake: {} }));
+          const seed = `
+            import { ConversationMessages } from ${JSON.stringify(module)};
+            const messages = new ConversationMessages({ file: ${JSON.stringify(path25.join(dataDir, "messages.db"))} });
+            try {
+              for (const registration of ${JSON.stringify(registrations)}) messages.register(registration);
+            } finally { messages.close(); }
+          `;
+          const out2 = await runChild("--input-type=module", ["--eval", seed], void 0, env, scratch, prepareBudget);
+          if (out2.status !== 0) {
+            timedOut = out2.timedOut;
+            steps.push({
+              id: "prepare",
+              did: PREPARE_CONVERSATIONS,
+              ok: false,
+              result: timedOut ? "timed out" : "could not initialize the message store",
+              reason: timedOut ? timeoutReason(timeoutMs, out2.unstoppedPid) : out2.spawnError ?? (tail(out2.stderr) || tail(out2.stdout) || "(no output)"),
+              fix: timedOut ? "Run `memesh doctor --journey` again; if it keeps timing out, run `memesh doctor` to see which part of the install is slow or stuck." : REINSTALL,
+              ms: Date.now() - prepareStarted
+            });
+            failedStep = "prepare";
+            break;
+          }
+        }
+        const remaining = timeoutMs - (Date.now() - started);
+        const stepStart = Date.now();
+        if (remaining <= 0) {
+          timedOut = true;
+          steps.push({ id: spec.id, did: spec.did, ok: false, result: "not run", ms: 0, reason: `The journey ran out of its ${formatBudget(timeoutMs)} budget before this step.`, fix: "Close other heavy programs and run `memesh doctor --journey` again. A healthy install finishes in a few seconds." });
+          failedStep = spec.id;
+          break;
+        }
+        const stepEnv = spec.session ? { ...env, CLAUDE_CODE_SESSION_ID: spec.session } : env;
+        const out = await runChild(entry, spec.args(), spec.stdin?.(), stepEnv, scratch, remaining);
+        const ms = Date.now() - stepStart;
+        if (out.timedOut) {
+          timedOut = true;
+          steps.push({ id: spec.id, did: spec.did, ok: false, result: "timed out", ms, reason: timeoutReason(timeoutMs, out.unstoppedPid), fix: "Run `memesh doctor --journey` again; if it keeps timing out, run `memesh doctor` to see which part of the install is slow or stuck." });
+          failedStep = spec.id;
+          break;
+        }
+        if (out.spawnError) {
+          steps.push({ id: spec.id, did: spec.did, ok: false, result: "could not start", ms, reason: `Node could not start the installed command: ${out.spawnError}`, fix: REINSTALL });
+          failedStep = spec.id;
+          break;
+        }
+        if (out.status !== 0) {
+          steps.push({ id: spec.id, did: spec.did, ok: false, result: `exited with code ${out.status ?? "none"}`, ms, reason: `The command failed: ${tail(out.stderr) || tail(out.stdout) || "(no output)"}`, fix: REINSTALL });
+          failedStep = spec.id;
+          break;
+        }
+        const verdict = spec.check(out.stdout);
+        if (!verdict.ok) {
+          steps.push({ id: spec.id, did: spec.did, ok: false, result: "unexpected result", ms, reason: verdict.reason, fix: verdict.fix });
+          failedStep = spec.id;
+          break;
+        }
+        steps.push({ id: spec.id, did: spec.did, ok: true, result: verdict.result, ms });
+      }
+    }
+  } catch (err) {
+    const id = "prepare";
+    steps.push({
+      id,
+      did: "Prepare the throwaway folder",
+      ok: false,
+      result: "could not prepare",
+      ms: 0,
+      reason: err instanceof Error ? err.message : String(err),
+      fix: "Check that the system temp folder exists, is writable and has free space (it is set by TMPDIR, or TEMP/TMP on Windows), then run `memesh doctor --journey`."
+    });
+    failedStep = id;
+  } finally {
+    if (scratch === "") {
+      cleaned = true;
+    } else {
+      try {
+        fs26.rmSync(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
+        cleaned = !fs26.existsSync(scratch);
+        if (!cleaned)
+          cleanupError = "folder still present after removal";
+      } catch (err) {
+        cleanupError = err instanceof Error ? err.message : String(err);
+      }
+      liveScratch.delete(scratch);
+    }
+    stopSignalCleanup();
+  }
+  return {
+    ok: failedStep === void 0 && steps.length === 4,
+    steps,
+    failedStep,
+    timedOut,
+    elapsedMs: Date.now() - started,
+    scratchDir: scratch,
+    cleaned,
+    cleanupError
+  };
+}
+function formatJourney(result) {
+  const lines = ["Install journey \u2014 store, search, send and read back, in a throwaway folder (your memory database is not touched)"];
+  for (const step of result.steps) {
+    lines.push(`  ${step.ok ? "\u2705" : "\u274C"} ${step.did} \u2192 ${step.result} (${(step.ms / 1e3).toFixed(1)}s)`);
+    if (!step.ok) {
+      lines.push(`     Why: ${step.reason}`);
+      lines.push(`     Fix: ${step.fix}`);
+    }
+  }
+  const seconds = (result.elapsedMs / 1e3).toFixed(1);
+  lines.push(result.ok ? `Journey PASSED in ${seconds}s: memesh can store, find, send and read back on this machine. Live delivery to a running agent is not checked here; \`memesh doctor\` reports on the router.` : result.failedStep === "prepare" ? result.steps.at(-1)?.did === PREPARE_CONVERSATIONS ? `Journey could not finish${result.timedOut ? " (timed out)" : ""}: the synthetic conversations could not be prepared.` : `Journey could not run: this machine's temp folder is not usable, so memesh itself was not checked.` : `Journey FAILED${result.timedOut ? " (timed out)" : ""} at "${result.failedStep}" after ${seconds}s. The core feature above is not working on this install.`);
+  if (!result.cleaned)
+    lines.push(`Note: the throwaway folder ${result.scratchDir} could not be removed (${result.cleanupError ?? "unknown reason"}); it is safe to delete by hand.`);
+  return lines;
+}
+function journeyRecordPath(dir = getMemeshDirFromDbPath()) {
+  return path25.join(dir, "post-install-journey.json");
+}
+function toJourneyRecord(result, version2, trigger, now = /* @__PURE__ */ new Date()) {
+  const failed = result.steps.find((s) => !s.ok);
+  return {
+    ok: result.ok,
+    at: now.toISOString(),
+    version: version2,
+    trigger,
+    ...failed ? { failedStep: failed.id, reason: failed.reason, fix: failed.fix } : {}
+  };
+}
+function writeJourneyRecord(record2, dir = getMemeshDirFromDbPath()) {
+  fs26.mkdirSync(dir, { recursive: true, mode: 448 });
+  const target = journeyRecordPath(dir);
+  const temporary = `${target}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
+  try {
+    const fd = fs26.openSync(temporary, "wx", 384);
+    try {
+      fs26.writeFileSync(fd, `${JSON.stringify(record2, null, 2)}
+`);
+      fs26.fchmodSync(fd, 384);
+    } finally {
+      fs26.closeSync(fd);
+    }
+    fs26.renameSync(temporary, target);
+  } catch (err) {
+    try {
+      fs26.unlinkSync(temporary);
+    } catch {
+    }
+    throw err;
+  }
+}
+function readJourneyRecord(dir = getMemeshDirFromDbPath()) {
+  let raw;
+  try {
+    raw = fs26.readFileSync(journeyRecordPath(dir), "utf8");
+  } catch (err) {
+    if (err.code === "ENOENT")
+      return void 0;
+    return { unreadable: err instanceof Error ? err.message : String(err) };
+  }
+  const json2 = asRecord(parseJson(raw));
+  const complete = json2 !== void 0 && typeof json2.ok === "boolean" && typeof json2.at === "string" && typeof json2.version === "string" && (json2.ok || typeof json2.failedStep === "string" && typeof json2.reason === "string");
+  if (!json2 || !complete) {
+    return { unreadable: "post-install-journey.json is not a journey record" };
+  }
+  return json2;
+}
+function refreshExistingJourneyRecord(result, version2) {
+  const existing = readJourneyRecord();
+  if (existing === void 0 || "unreadable" in existing)
+    return;
+  try {
+    writeJourneyRecord(toJourneyRecord(result, version2, "doctor"));
+  } catch (err) {
+    console.error(`Could not update the saved journey result: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+function journeySkipped(flagNoJourney, env = process.env) {
+  if (flagNoJourney === false)
+    return true;
+  const raw = env[JOURNEY_SKIP_ENV];
+  return raw !== void 0 && raw !== "" && raw !== "0" && raw.toLowerCase() !== "false";
+}
+async function runPostInstallJourney(input2, testHooks = {}) {
+  if (journeySkipped(input2.journeyFlag)) {
+    console.log(`Install journey skipped (${input2.journeyFlag === false ? "--no-journey" : JOURNEY_SKIP_ENV}). Run it any time: memesh doctor --journey`);
+    return;
+  }
+  console.log("");
+  try {
+    const result = await runInstallJourney({ packageRoot: input2.packageRoot }, testHooks);
+    const lines = formatJourney(result);
+    if (result.ok) {
+      for (const line of lines)
+        console.log(line);
+    } else {
+      for (const line of lines)
+        console.error(line);
+      console.error("The install itself finished; this does not undo it. `memesh doctor` will keep showing this until the journey passes.");
+    }
+    try {
+      writeJourneyRecord(toJourneyRecord(result, input2.version, input2.trigger));
+    } catch (err) {
+      console.error(`Could not save the journey result for \`memesh doctor\`: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  } catch (err) {
+    console.error(`Install journey could not run: ${err instanceof Error ? err.message : String(err)}`);
+  }
+}
+var JOURNEY_TIMEOUT_MS, JOURNEY_SKIP_ENV, REINSTALL, PREPARE_CONVERSATIONS, PASSTHROUGH_ENV, liveChildren, liveScratch, CLEANUP_SIGNALS, EXIT_GRACE_MS;
+var init_doctor_journey = __esm({
+  "dist/core/doctor-journey.js"() {
+    "use strict";
+    init_paths();
+    JOURNEY_TIMEOUT_MS = 3e4;
+    JOURNEY_SKIP_ENV = "MEMESH_SKIP_POST_INSTALL_JOURNEY";
+    REINSTALL = "Reinstall with `npm install -g @pcircle/memesh@latest`, then run `memesh doctor --journey`. If it still fails, run `memesh feedback`.";
+    PREPARE_CONVERSATIONS = "Prepare the synthetic conversations";
+    PASSTHROUGH_ENV = [
+      "PATH",
+      "PATHEXT",
+      "SystemRoot",
+      "ComSpec",
+      "TMPDIR",
+      "TMP",
+      "TEMP",
+      "LANG",
+      "LC_ALL"
+    ];
+    liveChildren = /* @__PURE__ */ new Set();
+    liveScratch = /* @__PURE__ */ new Set();
+    CLEANUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
+    EXIT_GRACE_MS = 500;
+  }
+});
+
+// dist/network/types.js
+import path26 from "node:path";
 function networkDir(dataDir) {
-  return path25.join(dataDir, "network");
+  return path26.join(dataDir, "network");
 }
 function networkMetadataPath(dataDir) {
-  return path25.join(networkDir(dataDir), "metadata.db");
+  return path26.join(networkDir(dataDir), "metadata.db");
 }
 function runtimeDir(dataDir) {
-  return path25.join(networkDir(dataDir), "runtime");
+  return path26.join(networkDir(dataDir), "runtime");
 }
 function childEnv(ctx) {
   const inherited = Object.entries(ctx.env ?? process.env).filter(([key]) => key.toUpperCase() !== "NODE_PATH");
@@ -35180,18 +35902,86 @@ var init_types2 = __esm({
 
 // dist/network/identity.js
 import { createPrivateKey, createPublicKey, randomBytes as randomBytes3, sign, verify } from "node:crypto";
-import fs26 from "node:fs";
-import path26 from "node:path";
+import fs27 from "node:fs";
+import path27 from "node:path";
 function isMachineId(value) {
   return typeof value === "string" && MACHINE_ID.test(value);
 }
 function identityPath(dataDir) {
-  return path26.join(networkDir(dataDir), "identity.key");
+  return path27.join(networkDir(dataDir), "identity.key");
+}
+function windowsEntry(file2, directory) {
+  const entry = fs27.lstatSync(file2, { bigint: true });
+  if (entry.isSymbolicLink() || entry.ino === 0n || !(directory ? entry.isDirectory() : entry.isFile()) || path27.relative(file2, fs27.realpathSync(file2)) !== "") {
+    throw new NetworkError("identity_invalid", `Unsafe network path: ${file2}.`);
+  }
+  return entry;
+}
+function requireSameIdentity(file2, expected, actual) {
+  if (actual.dev !== expected.dev || actual.ino !== expected.ino) {
+    throw new NetworkError("identity_invalid", `Network path changed: ${file2}.`);
+  }
+}
+function removeWindowsStage(file2, owned) {
+  try {
+    requireSameIdentity(file2, owned, windowsEntry(file2, owned.isDirectory()));
+    if (owned.isDirectory())
+      fs27.rmdirSync(file2);
+    else
+      fs27.unlinkSync(file2);
+  } catch {
+  }
+}
+function verifyExistingWindowsNetworkDir(directory) {
+  if (!fs27.lstatSync(directory, { throwIfNoEntry: false }))
+    return false;
+  const leaf = windowsEntry(directory, true);
+  verifyWindowsPathsPrivate([directory]);
+  requireSameIdentity(directory, leaf, windowsEntry(directory, true));
+  return true;
+}
+function ensureWindowsNetworkDir(dir) {
+  const directory = path27.resolve(dir);
+  if (verifyExistingWindowsNetworkDir(directory))
+    return;
+  const parent = path27.dirname(directory);
+  for (let ancestor = parent; ; ancestor = path27.dirname(ancestor)) {
+    const entry = fs27.lstatSync(ancestor, { throwIfNoEntry: false });
+    if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) {
+      throw new NetworkError("identity_invalid", `Unsafe network parent: ${ancestor}.`);
+    }
+    if (path27.dirname(ancestor) === ancestor)
+      break;
+  }
+  fs27.mkdirSync(parent, { recursive: true, mode: 448 });
+  windowsEntry(parent, true);
+  const temporary = fs27.mkdtempSync(path27.join(parent, ".network-"));
+  const owned = windowsEntry(temporary, true);
+  try {
+    makeWindowsPathsPrivate([temporary]);
+    requireSameIdentity(temporary, owned, windowsEntry(temporary, true));
+    if (verifyExistingWindowsNetworkDir(directory))
+      return;
+    try {
+      fs27.renameSync(temporary, directory);
+    } catch (error62) {
+      if (!verifyExistingWindowsNetworkDir(directory))
+        throw error62;
+      return;
+    }
+    requireSameIdentity(directory, owned, windowsEntry(directory, true));
+  } finally {
+    removeWindowsStage(temporary, owned);
+  }
 }
 function ensureNetworkDir(dataDir) {
   const dir = networkDir(dataDir);
-  fs26.mkdirSync(dir, { recursive: true, mode: 448 });
-  removeGroupAndOtherAccess(dir);
+  if (process.platform === "win32") {
+    ensureWindowsNetworkDir(dir);
+  } else {
+    fs27.mkdirSync(dir, { recursive: true, mode: 448 });
+    removeGroupAndOtherAccess(dir);
+  }
   return dir;
 }
 function identityFromSeed(secret) {
@@ -35203,35 +35993,93 @@ function identityFromSeed(secret) {
     sign: (message) => sign(null, message, privateKey).toString("base64url")
   };
 }
+function readWindowsIdentity(file2) {
+  const directory = path27.dirname(file2);
+  const leaf = windowsEntry(directory, true);
+  const key = windowsEntry(file2, false);
+  const fd = fs27.openSync(file2, "r");
+  try {
+    requireSameIdentity(file2, key, fs27.fstatSync(fd, { bigint: true }));
+    verifyWindowsPathsPrivate([directory, file2]);
+    requireSameIdentity(directory, leaf, windowsEntry(directory, true));
+    requireSameIdentity(file2, key, windowsEntry(file2, false));
+    return fs27.readFileSync(fd);
+  } finally {
+    fs27.closeSync(fd);
+  }
+}
 function loadIdentity(dataDir) {
   const file2 = identityPath(dataDir);
   let secret;
   try {
-    secret = fs26.readFileSync(file2);
+    secret = process.platform === "win32" ? readWindowsIdentity(file2) : fs27.readFileSync(file2);
   } catch (err) {
+    if (err instanceof NetworkError)
+      throw err;
     const code = err.code;
-    throw new NetworkError(code === "ENOENT" ? "not_joined" : "identity_invalid", code === "ENOENT" ? "This machine has not joined a network." : `Cannot read ${file2} (${code}).`);
+    throw new NetworkError(code === "ENOENT" ? "not_joined" : "identity_invalid", code === "ENOENT" ? "This machine has not joined a network." : code === "MEMESH_PRIVATE_PATH" && err instanceof Error ? err.message : `Cannot read ${file2} (${code}).`);
   }
   if (secret.length !== SEED_BYTES) {
     throw new NetworkError("identity_invalid", `${file2} is not a valid machine key (${secret.length} bytes, expected ${SEED_BYTES}).`);
   }
-  removeGroupAndOtherAccess(file2);
+  if (process.platform !== "win32")
+    removeGroupAndOtherAccess(file2);
   return identityFromSeed(secret);
+}
+function linkIdentity(temporary, file2) {
+  try {
+    fs27.linkSync(temporary, file2);
+  } catch (error62) {
+    if (error62.code !== "EEXIST")
+      throw error62;
+  }
+}
+function createWindowsIdentity(temporary, file2) {
+  const directory = path27.dirname(file2);
+  const leaf = windowsEntry(directory, true);
+  const fd = fs27.openSync(temporary, "wx", 384);
+  let owned;
+  try {
+    try {
+      const stage = windowsEntry(temporary, false);
+      requireSameIdentity(temporary, stage, fs27.fstatSync(fd, { bigint: true }));
+      if (stage.nlink !== 1n)
+        throw new NetworkError("identity_invalid", `Unsafe network key stage: ${temporary}.`);
+      owned = stage;
+      makeWindowsPathsPrivate([temporary]);
+      requireSameIdentity(directory, leaf, windowsEntry(directory, true));
+      const verified = windowsEntry(temporary, false);
+      requireSameIdentity(temporary, owned, verified);
+      if (verified.nlink !== 1n)
+        throw new NetworkError("identity_invalid", `Unsafe network key stage: ${temporary}.`);
+      fs27.writeFileSync(fd, randomBytes3(SEED_BYTES));
+    } finally {
+      fs27.closeSync(fd);
+    }
+    requireSameIdentity(temporary, owned, windowsEntry(temporary, false));
+    linkIdentity(temporary, file2);
+  } finally {
+    if (owned)
+      removeWindowsStage(temporary, owned);
+  }
 }
 function ensureIdentity(dataDir) {
   ensureNetworkDir(dataDir);
   const file2 = identityPath(dataDir);
-  if (!fs26.existsSync(file2)) {
+  if (process.platform === "win32") {
+    if (!fs27.lstatSync(file2, { throwIfNoEntry: false })) {
+      createWindowsIdentity(`${file2}.tmp-${process.pid}-${randomBytes3(8).toString("hex")}`, file2);
+    }
+    return loadIdentity(dataDir);
+  }
+  if (!fs27.existsSync(file2)) {
     const temporary = `${file2}.tmp-${process.pid}`;
-    fs26.writeFileSync(temporary, randomBytes3(SEED_BYTES), { mode: 384, flag: "wx" });
+    fs27.writeFileSync(temporary, randomBytes3(SEED_BYTES), { mode: 384, flag: "wx" });
     try {
-      fs26.chmodSync(temporary, 384);
-      fs26.linkSync(temporary, file2);
-    } catch (err) {
-      if (err.code !== "EEXIST")
-        throw err;
+      fs27.chmodSync(temporary, 384);
+      linkIdentity(temporary, file2);
     } finally {
-      fs26.rmSync(temporary, { force: true });
+      fs27.rmSync(temporary, { force: true });
     }
   }
   return loadIdentity(dataDir);
@@ -35255,6 +36103,7 @@ var init_identity = __esm({
   "dist/network/identity.js"() {
     "use strict";
     init_file_mode();
+    init_windows_permissions();
     init_types2();
     SEED_BYTES = 32;
     PKCS8_PREFIX = Buffer.from("302e020100300506032b657004220420", "hex");
@@ -35385,11 +36234,11 @@ var init_roster = __esm({
 });
 
 // dist/core/public-network-context.js
-import fs27 from "node:fs";
-import path27 from "node:path";
+import fs28 from "node:fs";
+import path28 from "node:path";
 function stat(file2) {
   try {
-    return fs27.lstatSync(file2);
+    return fs28.lstatSync(file2);
   } catch (error62) {
     if (error62.code === "ENOENT")
       return void 0;
@@ -35397,21 +36246,21 @@ function stat(file2) {
   }
 }
 function openPublicNetworkDatabase(file2, consistentSnapshot = false) {
-  const parent = stat(path27.dirname(file2));
+  const parent = stat(path28.dirname(file2));
   if (!parent)
     return void 0;
-  let expectedParent = path27.resolve(path27.dirname(file2));
+  let expectedParent = path28.resolve(path28.dirname(file2));
   if (process.platform === "darwin") {
     for (const alias of ["/var", "/tmp"]) {
-      if ((expectedParent === alias || expectedParent.startsWith(`${alias}/`)) && fs27.realpathSync(alias) === `/private${alias}`) {
+      if ((expectedParent === alias || expectedParent.startsWith(`${alias}/`)) && fs28.realpathSync(alias) === `/private${alias}`) {
         expectedParent = `/private${expectedParent}`;
       }
     }
   }
-  if (!parent.isDirectory() || parent.isSymbolicLink() || fs27.realpathSync(path27.dirname(file2)) !== expectedParent || process.platform !== "win32" && (parent.uid !== process.getuid?.() || (parent.mode & 63) !== 0))
+  if (!parent.isDirectory() || parent.isSymbolicLink() || fs28.realpathSync(path28.dirname(file2)) !== expectedParent || process.platform !== "win32" && (parent.uid !== process.getuid?.() || (parent.mode & 63) !== 0))
     throw new Error("Unsafe network metadata directory");
   if (process.platform === "win32")
-    verifyWindowsPathsPrivate([path27.dirname(file2)]);
+    verifyWindowsPathsPrivate([path28.dirname(file2)]);
   const main = stat(file2);
   if (!main)
     return void 0;
@@ -35435,7 +36284,7 @@ function openPublicNetworkDatabase(file2, consistentSnapshot = false) {
   return db2;
 }
 function readPublicNetworkContext(dataDir) {
-  const db2 = openPublicNetworkDatabase(path27.join(dataDir, "network", "metadata.db"));
+  const db2 = openPublicNetworkDatabase(path28.join(dataDir, "network", "metadata.db"));
   if (!db2)
     return void 0;
   try {
@@ -35467,23 +36316,23 @@ var init_public_network_context = __esm({
 
 // dist/core/conversation-message-migration.js
 import { createHash as createHash11 } from "node:crypto";
-import fs28 from "node:fs";
-import path28 from "node:path";
+import fs29 from "node:fs";
+import path29 from "node:path";
 function legacyConversationArchiveFiles(graph, target) {
-  const directory = path28.dirname(path28.resolve(graph));
-  if (directory !== path28.dirname(path28.resolve(target)))
+  const directory = path29.dirname(path29.resolve(graph));
+  if (directory !== path29.dirname(path29.resolve(target)))
     throw new Error("Legacy archive and message store must share a data directory");
-  const backups = path28.join(directory, "backups");
-  const names = /* @__PURE__ */ new Set([path28.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path28.basename(graph)}`, "agent-messages-expired.db"]);
+  const backups = path29.join(directory, "backups");
+  const names = /* @__PURE__ */ new Set([path29.basename(graph) === "knowledge-graph.db" ? "agent-messages-expired.db" : `agent-messages-expired-${path29.basename(graph)}`, "agent-messages-expired.db"]);
   const privateEntry = (file2, directoryEntry) => {
-    const stat2 = fs28.lstatSync(file2);
+    const stat2 = fs29.lstatSync(file2);
     if (stat2.isSymbolicLink() || !(directoryEntry ? stat2.isDirectory() : stat2.isFile()) || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
       throw new Error(`Unsafe legacy archive path: ${file2}`);
     }
   };
-  const candidates = [...names].map((name) => path28.join(backups, name)).filter((file2) => {
+  const candidates = [...names].map((name) => path29.join(backups, name)).filter((file2) => {
     try {
-      return fs28.lstatSync(file2) !== void 0;
+      return fs29.lstatSync(file2) !== void 0;
     } catch (error62) {
       const code = error62.code;
       if (code === "ENOENT" || code === "ENOTDIR")
@@ -35501,7 +36350,7 @@ function legacyConversationArchiveFiles(graph, target) {
     assertLegacyPathsAreDifferent(file2, graph);
     assertLegacyPathsAreDifferent(file2, target);
     for (const suffix of ["-wal", "-shm", "-journal"]) {
-      if (fs28.lstatSync(file2 + suffix, { throwIfNoEntry: false }))
+      if (fs29.lstatSync(file2 + suffix, { throwIfNoEntry: false }))
         privateEntry(file2 + suffix, false);
     }
     refuseMismatchedSidecars(file2, { readOnly: true });
@@ -35601,12 +36450,12 @@ function assertLegacyDestinationIsDifferent(source, targetFile) {
   assertLegacyPathsAreDifferent(sourceFile, targetFile);
 }
 function assertLegacyPathsAreDifferent(sourceFile, targetFile) {
-  if (path28.resolve(sourceFile) === path28.resolve(targetFile))
+  if (path29.resolve(sourceFile) === path29.resolve(targetFile))
     throw new Error("Legacy source and target must be different files");
   let a, b;
   try {
-    a = fs28.statSync(sourceFile);
-    b = fs28.statSync(targetFile);
+    a = fs29.statSync(sourceFile);
+    b = fs29.statSync(targetFile);
   } catch (error62) {
     if (error62.code === "ENOENT")
       return;
@@ -35817,9 +36666,9 @@ var init_conversation_message_migration = __esm({
 });
 
 // dist/core/conversation-messages.js
-import fs29 from "node:fs";
-import path29 from "node:path";
-import os3 from "node:os";
+import fs30 from "node:fs";
+import path30 from "node:path";
+import os4 from "node:os";
 import { randomUUID as randomUUID4 } from "node:crypto";
 function publicMessage(row) {
   return Object.fromEntries(MESSAGE_COLUMNS.split(",").map((key) => [key, row[key]]));
@@ -35867,7 +36716,7 @@ var init_conversation_messages = __esm({
         if (busyTimeoutMs !== void 0 && (!Number.isSafeInteger(busyTimeoutMs) || busyTimeoutMs < 0 || busyTimeoutMs > 3e4)) {
           throw new Error("busyTimeoutMs must be an integer between 0 and 30000");
         }
-        const file2 = options.file ?? path29.join(getMemeshDirFromDbPath(), "messages.db");
+        const file2 = options.file ?? path30.join(getMemeshDirFromDbPath(), "messages.db");
         if (options.legacySource)
           assertLegacyDestinationIsDifferent(options.legacySource, file2);
         const legacyFile = options.file === void 0 && options.legacySource === void 0 ? getDbPath() : void 0;
@@ -35888,7 +36737,7 @@ var init_conversation_messages = __esm({
             throw new Error("Invalid verified network snapshot");
           this.network = structuredClone(n);
         }
-        this.machine = identifier(this.network?.self.name ?? options.machine ?? os3.hostname()).toLowerCase();
+        this.machine = identifier(this.network?.self.name ?? options.machine ?? os4.hostname()).toLowerCase();
         this.clock = options.clock ?? Date.now;
         this.processAlive = options.processAlive ?? ((pid) => {
           try {
@@ -35900,34 +36749,34 @@ var init_conversation_messages = __esm({
         });
         let ownedSource;
         try {
-          if (legacyFile !== void 0 && fs29.existsSync(legacyFile)) {
-            const directory = path29.dirname(fs29.realpathSync(legacyFile));
-            const stat2 = fs29.statSync(directory);
+          if (legacyFile !== void 0 && fs30.existsSync(legacyFile)) {
+            const directory = path30.dirname(fs30.realpathSync(legacyFile));
+            const stat2 = fs30.statSync(directory);
             if (!stat2.isDirectory() || process.platform !== "win32" && ((stat2.mode & 63) !== 0 || typeof process.getuid === "function" && stat2.uid !== process.getuid())) {
               throw new Error("Legacy retirement requires an owner-private source directory");
             }
-            fs29.accessSync(directory, fs29.constants.W_OK | fs29.constants.X_OK);
+            fs30.accessSync(directory, fs30.constants.W_OK | fs30.constants.X_OK);
             guardDatabaseFiles(legacyFile);
             ownedSource = new MemeshDatabase(legacyFile);
             if (busyTimeoutMs !== void 0)
               ownedSource.pragma(`busy_timeout = ${busyTimeoutMs}`);
             assertLegacyDestinationIsDifferent(ownedSource, file2);
           }
-          fs29.mkdirSync(path29.dirname(file2), { recursive: true, mode: 448 });
-          requirePrivateWritableDirectory(path29.dirname(file2), "messages must remain owner-private");
+          fs30.mkdirSync(path30.dirname(file2), { recursive: true, mode: 448 });
+          requirePrivateWritableDirectory(path30.dirname(file2), "messages must remain owner-private");
           if (process.platform === "win32") {
-            const directory = fs29.realpathSync(path29.dirname(file2));
+            const directory = fs30.realpathSync(path30.dirname(file2));
             const files = databaseFiles(file2);
             for (const target of files) {
-              if (fs29.statSync(target, { throwIfNoEntry: false }) && path29.dirname(fs29.realpathSync(target)) !== directory) {
+              if (fs30.statSync(target, { throwIfNoEntry: false }) && path30.dirname(fs30.realpathSync(target)) !== directory) {
                 throw new Error("Message files must remain in their owner-private directory.");
               }
             }
             makeWindowsPathsPrivate(files);
           }
           guardDatabaseFiles(file2);
-          const fd = fs29.openSync(file2, "a", 384);
-          fs29.closeSync(fd);
+          const fd = fs30.openSync(file2, "a", 384);
+          fs30.closeSync(fd);
           this.db = new MemeshDatabase(file2);
           try {
             if (busyTimeoutMs !== void 0)
@@ -36436,556 +37285,6 @@ var init_conversation_messages = __esm({
         }
       }
     };
-  }
-});
-
-// dist/core/doctor-journey.js
-import { spawn as spawn4, spawnSync as spawnSync3 } from "node:child_process";
-import crypto from "node:crypto";
-import fs30 from "node:fs";
-import os4 from "node:os";
-import path30 from "node:path";
-function journeyEnv(scratch, base = process.env, platform = process.platform) {
-  const P = platform === "win32" ? path30.win32 : path30;
-  const env = {};
-  for (const name of PASSTHROUGH_ENV) {
-    const key = platform === "win32" ? Object.keys(base).find((k) => k.toUpperCase() === name.toUpperCase()) : name;
-    const value = key === void 0 ? void 0 : base[key];
-    if (key === void 0 || value === void 0)
-      continue;
-    const isTempFolder = /^(TMPDIR|TMP|TEMP)$/i.test(key);
-    if (isTempFolder && value === "")
-      continue;
-    env[key] = isTempFolder && !P.isAbsolute(value) ? P.resolve(value) : value;
-  }
-  const dataDir = P.join(scratch, ".memesh");
-  env.HOME = scratch;
-  env.USERPROFILE = scratch;
-  if (platform === "win32") {
-    env.APPDATA = P.join(scratch, "AppData", "Roaming");
-    env.LOCALAPPDATA = P.join(scratch, "AppData", "Local");
-  }
-  env.MEMESH_DIR = dataDir;
-  env.MEMESH_DB_PATH = P.join(dataDir, "knowledge-graph.db");
-  env.MEMESH_AUTO_CAPTURE = "false";
-  return env;
-}
-function killCommandFor(platform, pid, systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT ?? "C:\\Windows") {
-  return platform === "win32" ? { kind: "taskkill", command: path30.win32.join(systemRoot, "System32", "taskkill.exe"), args: ["/pid", String(pid), "/T", "/F"] } : { kind: "group", pid };
-}
-function descendantPids(root, run = spawnSync3) {
-  for (const ps of ["/bin/ps", "/usr/bin/ps"]) {
-    const r = run(ps, ["-A", "-o", "pid=,ppid="], { encoding: "utf8" });
-    if (r.error || r.status !== 0)
-      continue;
-    const children = /* @__PURE__ */ new Map();
-    for (const line of String(r.stdout).split("\n")) {
-      const m = /^\s*(\d+)\s+(\d+)\s*$/.exec(line);
-      if (!m)
-        continue;
-      const parent = Number(m[2]);
-      const list = children.get(parent);
-      if (list)
-        list.push(Number(m[1]));
-      else
-        children.set(parent, [Number(m[1])]);
-    }
-    const found = [];
-    const queue = [root];
-    while (queue.length > 0) {
-      const below = children.get(queue.shift());
-      if (!below)
-        continue;
-      for (const pid of below) {
-        found.push(pid);
-        queue.push(pid);
-      }
-    }
-    return found;
-  }
-  return [];
-}
-function killTree(child, platform = process.platform, run = spawnSync3, outputOpen = true) {
-  if (child.pid === void 0)
-    return false;
-  const exited = child.exitCode != null || child.signalCode != null;
-  if (exited && (platform === "win32" || !outputOpen))
-    return true;
-  const cmd = killCommandFor(platform, child.pid);
-  try {
-    if (cmd.kind === "group") {
-      const below = exited ? [] : descendantPids(cmd.pid, run);
-      let delivered = false;
-      try {
-        process.kill(-cmd.pid, "SIGKILL");
-        delivered = true;
-      } catch (err) {
-        delivered = err.code === "ESRCH";
-      }
-      for (const pid of below) {
-        try {
-          process.kill(pid, "SIGKILL");
-        } catch {
-        }
-      }
-      if (delivered)
-        return true;
-    } else {
-      const r = run(cmd.command, cmd.args, { stdio: "ignore", windowsHide: true });
-      if (!r.error && r.status === 0)
-        return true;
-    }
-  } catch {
-  }
-  try {
-    return child.kill("SIGKILL");
-  } catch {
-    return false;
-  }
-}
-function timeoutReason(budgetMs, unstoppedPid) {
-  return unstoppedPid === void 0 ? `Did not finish within the ${formatBudget(budgetMs)} budget and was stopped.` : `Did not finish within the ${formatBudget(budgetMs)} budget, and it could not be stopped: process ${unstoppedPid} may still be running. End it by hand (Task Manager on Windows, \`kill ${unstoppedPid}\` elsewhere).`;
-}
-function formatBudget(ms) {
-  return ms < 1e4 ? `${(ms / 1e3).toFixed(1).replace(/\.0$/, "")} s` : `${Math.round(ms / 1e3)} s`;
-}
-function outputStillOpen(child) {
-  return [child.stdout, child.stderr].some((pipe2) => pipe2 !== null && pipe2 !== void 0 && !pipe2.readableEnded);
-}
-function cleanUpOnSignals() {
-  const listeners = /* @__PURE__ */ new Map();
-  const remove = () => {
-    for (const [signal, listener] of listeners)
-      process.removeListener(signal, listener);
-  };
-  for (const signal of CLEANUP_SIGNALS) {
-    const listener = () => {
-      for (const child of liveChildren)
-        killTree(child, process.platform, spawnSync3, outputStillOpen(child));
-      const stuck = [];
-      for (const dir of liveScratch) {
-        try {
-          fs30.rmSync(dir, { recursive: true, force: true });
-        } catch {
-        }
-        if (fs30.existsSync(dir))
-          stuck.push(dir);
-      }
-      const note2 = stuck.length === 0 ? "Interrupted: the install journey was stopped and its throwaway folder was removed." : `Interrupted: the install journey was stopped, but its throwaway folder could not be removed: ${stuck.join(", ")}. It is safe to delete by hand.`;
-      try {
-        fs30.writeSync(2, `${note2}
-`);
-      } catch {
-      }
-      remove();
-      try {
-        process.kill(process.pid, signal);
-      } catch {
-        process.exit(128 + (os4.constants.signals[signal] ?? 1));
-      }
-    };
-    try {
-      process.on(signal, listener);
-      listeners.set(signal, listener);
-    } catch {
-    }
-  }
-  return remove;
-}
-function runChild(entry, args, stdin, env, cwd, budgetMs) {
-  return new Promise((resolve2) => {
-    const out = [];
-    const err = [];
-    let timedOut = false;
-    let settled = false;
-    let child;
-    const clocks = {};
-    const settle2 = (outcome, killGroup) => {
-      if (settled)
-        return;
-      settled = true;
-      clearTimeout(clocks.budget);
-      clearTimeout(clocks.grace);
-      if (child) {
-        if (killGroup)
-          killTree(child, process.platform, spawnSync3, outputStillOpen(child));
-        liveChildren.delete(child);
-        child.stdout?.destroy();
-        child.stderr?.destroy();
-        child.stdin?.destroy();
-        if (outcome.unstoppedPid !== void 0)
-          child.unref();
-      }
-      resolve2({ ...outcome, stdout: Buffer.concat(out).toString("utf8"), stderr: Buffer.concat(err).toString("utf8"), timedOut });
-    };
-    try {
-      child = spawn4(process.execPath, [entry, ...args], { cwd, env, stdio: ["pipe", "pipe", "pipe"], windowsHide: true, detached: process.platform !== "win32" });
-    } catch (e) {
-      settle2({ status: null, spawnError: e instanceof Error ? e.message : String(e) }, false);
-      return;
-    }
-    const started = child;
-    liveChildren.add(started);
-    clocks.budget = setTimeout(() => {
-      timedOut = true;
-      const stopped = killTree(started);
-      settle2({ status: null, ...stopped || started.pid === void 0 ? {} : { unstoppedPid: started.pid } }, false);
-    }, Math.max(budgetMs, 1));
-    started.stdout?.on("data", (chunk) => {
-      out.push(chunk);
-    });
-    started.stderr?.on("data", (chunk) => {
-      err.push(chunk);
-    });
-    started.once("error", (e) => settle2({ status: null, spawnError: e.message }, false));
-    started.once("exit", (status) => {
-      if (settled)
-        return;
-      clearTimeout(clocks.budget);
-      clocks.grace = setTimeout(() => settle2({ status }, true), EXIT_GRACE_MS);
-    });
-    started.once("close", (status) => settle2({ status }, false));
-    started.stdin?.on("error", () => {
-    });
-    started.stdin?.end(stdin ?? "");
-  });
-}
-function tail(text2, max = 300) {
-  const trimmed = text2.trim();
-  return trimmed.length <= max ? trimmed : `\u2026${trimmed.slice(-max)}`;
-}
-function parseJson(text2) {
-  try {
-    return JSON.parse(text2);
-  } catch {
-    return void 0;
-  }
-}
-function asRecord(value) {
-  return typeof value === "object" && value !== null && !Array.isArray(value) ? value : void 0;
-}
-async function runInstallJourney(options, testHooks = {}) {
-  const started = Date.now();
-  const timeoutMs = testHooks.timeoutMs ?? JOURNEY_TIMEOUT_MS;
-  const entry = testHooks.cliEntry ?? path30.join(options.packageRoot, "dist", "transports", "cli", "cli.js");
-  const nonce = crypto.randomBytes(5).toString("hex");
-  const noteText = `journey check ${nonce}`;
-  const payload = `journey message ${nonce}`;
-  const sender = `journey-sender-${nonce}`;
-  const recipient = `journey-recipient-${nonce}`;
-  const steps = [];
-  let timedOut = false;
-  let failedStep;
-  let storedName = "";
-  let messageId2 = "";
-  let scratch = "";
-  let cleaned = false;
-  let cleanupError;
-  const stopSignalCleanup = cleanUpOnSignals();
-  try {
-    scratch = path30.resolve(fs30.mkdtempSync(path30.join(os4.tmpdir(), "memesh-journey-")));
-    liveScratch.add(scratch);
-    const dataDir = path30.join(scratch, ".memesh");
-    fs30.mkdirSync(dataDir, { recursive: true, mode: 448 });
-    fs30.writeFileSync(path30.join(dataDir, "config.json"), JSON.stringify({ updateCheck: false }), { mode: 384 });
-    const env = journeyEnv(scratch);
-    const messages = new ConversationMessages({ file: path30.join(dataDir, "messages.db") });
-    try {
-      for (const id of [sender, recipient]) {
-        messages.register({ id, host: "claude-code", machine: os4.hostname(), pid: process.pid, wake: {} });
-      }
-    } finally {
-      messages.close();
-    }
-    if (!fs30.existsSync(entry)) {
-      steps.push({
-        id: "remember",
-        did: "Start the installed memesh command",
-        ok: false,
-        result: "not found",
-        ms: 0,
-        reason: `${entry} does not exist, so the installed package is incomplete.`,
-        fix: REINSTALL
-      });
-      failedStep = "remember";
-    }
-    const specs = [
-      {
-        id: "remember",
-        did: "Store a note (memesh remember)",
-        args: () => ["remember", noteText, "--json"],
-        check: (out) => {
-          const json2 = asRecord(parseJson(out));
-          if (json2?.stored !== true || typeof json2.name !== "string") {
-            return { ok: false, reason: `remember did not report the note as stored. It printed: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
-          }
-          storedName = json2.name;
-          return { ok: true, result: `stored as "${json2.name}"` };
-        }
-      },
-      {
-        id: "recall",
-        did: "Search for that note (memesh recall)",
-        args: () => ["recall", nonce, "--json"],
-        check: (out) => {
-          const json2 = asRecord(parseJson(out));
-          const entities = Array.isArray(json2?.entities) ? json2.entities : void 0;
-          if (!entities)
-            return { ok: false, reason: `recall printed something that is not a result list: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
-          const hit = entities.some((e) => asRecord(e)?.name === storedName);
-          if (!hit) {
-            return {
-              ok: false,
-              reason: `The note was stored but a search for it found ${entities.length === 0 ? "nothing" : `${entities.length} other result(s)`}. Saving and searching are not talking to the same data.`,
-              fix: "Run `memesh reindex`, then `memesh doctor --journey`. If it still fails, reinstall with `npm install -g @pcircle/memesh@latest` and run `memesh feedback`."
-            };
-          }
-          return { ok: true, result: `found it among ${entities.length} result(s)` };
-        }
-      },
-      {
-        id: "send",
-        did: "Send a message to a synthetic conversation (memesh message send)",
-        args: () => ["message", "send", "--recipient", recipient, "--kind", "question", "--payload-stdin"],
-        session: sender,
-        stdin: () => payload,
-        check: (out) => {
-          const json2 = asRecord(parseJson(out));
-          if (json2?.state !== "queued" || typeof json2.message_id !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(json2.message_id)) {
-            return { ok: false, reason: `send did not return a message id. It printed: ${tail(out) || "(nothing)"}`, fix: REINSTALL };
-          }
-          messageId2 = json2.message_id;
-          return { ok: true, result: `queued message ${messageId2}` };
-        }
-      },
-      {
-        id: "fetch",
-        did: "Read the message back (memesh message read)",
-        args: () => ["message", "read", "--message-id", messageId2],
-        session: recipient,
-        check: (out) => {
-          const json2 = asRecord(parseJson(out));
-          const message = asRecord(json2?.message);
-          if (message?.body !== payload || message.id !== messageId2 || message.sender !== sender || message.recipient !== recipient || message.kind !== "question" || message.reply_to !== null) {
-            return {
-              ok: false,
-              reason: message ? "The message came back with different content or routing fields." : `read printed something that is not a message: ${tail(out) || "(nothing)"}`,
-              fix: REINSTALL
-            };
-          }
-          return { ok: true, result: "content matches what was sent" };
-        }
-      }
-    ];
-    if (!failedStep) {
-      for (const spec of specs) {
-        const remaining = timeoutMs - (Date.now() - started);
-        const stepStart = Date.now();
-        if (remaining <= 0) {
-          timedOut = true;
-          steps.push({ id: spec.id, did: spec.did, ok: false, result: "not run", ms: 0, reason: `The journey ran out of its ${formatBudget(timeoutMs)} budget before this step.`, fix: "Close other heavy programs and run `memesh doctor --journey` again. A healthy install finishes in a few seconds." });
-          failedStep = spec.id;
-          break;
-        }
-        const stepEnv = spec.session ? { ...env, CLAUDE_CODE_SESSION_ID: spec.session } : env;
-        const out = await runChild(entry, spec.args(), spec.stdin?.(), stepEnv, scratch, remaining);
-        const ms = Date.now() - stepStart;
-        if (out.timedOut) {
-          timedOut = true;
-          steps.push({ id: spec.id, did: spec.did, ok: false, result: "timed out", ms, reason: timeoutReason(timeoutMs, out.unstoppedPid), fix: "Run `memesh doctor --journey` again; if it keeps timing out, run `memesh doctor` to see which part of the install is slow or stuck." });
-          failedStep = spec.id;
-          break;
-        }
-        if (out.spawnError) {
-          steps.push({ id: spec.id, did: spec.did, ok: false, result: "could not start", ms, reason: `Node could not start the installed command: ${out.spawnError}`, fix: REINSTALL });
-          failedStep = spec.id;
-          break;
-        }
-        if (out.status !== 0) {
-          steps.push({ id: spec.id, did: spec.did, ok: false, result: `exited with code ${out.status ?? "none"}`, ms, reason: `The command failed: ${tail(out.stderr) || tail(out.stdout) || "(no output)"}`, fix: REINSTALL });
-          failedStep = spec.id;
-          break;
-        }
-        const verdict = spec.check(out.stdout);
-        if (!verdict.ok) {
-          steps.push({ id: spec.id, did: spec.did, ok: false, result: "unexpected result", ms, reason: verdict.reason, fix: verdict.fix });
-          failedStep = spec.id;
-          break;
-        }
-        steps.push({ id: spec.id, did: spec.did, ok: true, result: verdict.result, ms });
-      }
-    }
-  } catch (err) {
-    const id = "prepare";
-    steps.push({
-      id,
-      did: "Prepare the throwaway folder",
-      ok: false,
-      result: "could not prepare",
-      ms: 0,
-      reason: err instanceof Error ? err.message : String(err),
-      fix: "Check that the system temp folder exists, is writable and has free space (it is set by TMPDIR, or TEMP/TMP on Windows), then run `memesh doctor --journey`."
-    });
-    failedStep = id;
-  } finally {
-    if (scratch === "") {
-      cleaned = true;
-    } else {
-      try {
-        fs30.rmSync(scratch, { recursive: true, force: true, maxRetries: 3, retryDelay: 50 });
-        cleaned = !fs30.existsSync(scratch);
-        if (!cleaned)
-          cleanupError = "folder still present after removal";
-      } catch (err) {
-        cleanupError = err instanceof Error ? err.message : String(err);
-      }
-      liveScratch.delete(scratch);
-    }
-    stopSignalCleanup();
-  }
-  return {
-    ok: failedStep === void 0 && steps.length === 4,
-    steps,
-    failedStep,
-    timedOut,
-    elapsedMs: Date.now() - started,
-    scratchDir: scratch,
-    cleaned,
-    cleanupError
-  };
-}
-function formatJourney(result) {
-  const lines = ["Install journey \u2014 store, search, send and read back, in a throwaway folder (your memory database is not touched)"];
-  for (const step of result.steps) {
-    lines.push(`  ${step.ok ? "\u2705" : "\u274C"} ${step.did} \u2192 ${step.result} (${(step.ms / 1e3).toFixed(1)}s)`);
-    if (!step.ok) {
-      lines.push(`     Why: ${step.reason}`);
-      lines.push(`     Fix: ${step.fix}`);
-    }
-  }
-  const seconds = (result.elapsedMs / 1e3).toFixed(1);
-  lines.push(result.ok ? `Journey PASSED in ${seconds}s: memesh can store, find, send and read back on this machine. Live delivery to a running agent is not checked here; \`memesh doctor\` reports on the router.` : result.failedStep === "prepare" ? `Journey could not run: this machine's temp folder is not usable, so memesh itself was not checked.` : `Journey FAILED${result.timedOut ? " (timed out)" : ""} at "${result.failedStep}" after ${seconds}s. The core feature above is not working on this install.`);
-  if (!result.cleaned)
-    lines.push(`Note: the throwaway folder ${result.scratchDir} could not be removed (${result.cleanupError ?? "unknown reason"}); it is safe to delete by hand.`);
-  return lines;
-}
-function journeyRecordPath(dir = getMemeshDirFromDbPath()) {
-  return path30.join(dir, "post-install-journey.json");
-}
-function toJourneyRecord(result, version2, trigger, now = /* @__PURE__ */ new Date()) {
-  const failed = result.steps.find((s) => !s.ok);
-  return {
-    ok: result.ok,
-    at: now.toISOString(),
-    version: version2,
-    trigger,
-    ...failed ? { failedStep: failed.id, reason: failed.reason, fix: failed.fix } : {}
-  };
-}
-function writeJourneyRecord(record2, dir = getMemeshDirFromDbPath()) {
-  fs30.mkdirSync(dir, { recursive: true, mode: 448 });
-  const target = journeyRecordPath(dir);
-  const temporary = `${target}.${process.pid}.${crypto.randomBytes(4).toString("hex")}.tmp`;
-  try {
-    const fd = fs30.openSync(temporary, "wx", 384);
-    try {
-      fs30.writeFileSync(fd, `${JSON.stringify(record2, null, 2)}
-`);
-      fs30.fchmodSync(fd, 384);
-    } finally {
-      fs30.closeSync(fd);
-    }
-    fs30.renameSync(temporary, target);
-  } catch (err) {
-    try {
-      fs30.unlinkSync(temporary);
-    } catch {
-    }
-    throw err;
-  }
-}
-function readJourneyRecord(dir = getMemeshDirFromDbPath()) {
-  let raw;
-  try {
-    raw = fs30.readFileSync(journeyRecordPath(dir), "utf8");
-  } catch (err) {
-    if (err.code === "ENOENT")
-      return void 0;
-    return { unreadable: err instanceof Error ? err.message : String(err) };
-  }
-  const json2 = asRecord(parseJson(raw));
-  const complete = json2 !== void 0 && typeof json2.ok === "boolean" && typeof json2.at === "string" && typeof json2.version === "string" && (json2.ok || typeof json2.failedStep === "string" && typeof json2.reason === "string");
-  if (!json2 || !complete) {
-    return { unreadable: "post-install-journey.json is not a journey record" };
-  }
-  return json2;
-}
-function refreshExistingJourneyRecord(result, version2) {
-  const existing = readJourneyRecord();
-  if (existing === void 0 || "unreadable" in existing)
-    return;
-  try {
-    writeJourneyRecord(toJourneyRecord(result, version2, "doctor"));
-  } catch (err) {
-    console.error(`Could not update the saved journey result: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-function journeySkipped(flagNoJourney, env = process.env) {
-  if (flagNoJourney === false)
-    return true;
-  const raw = env[JOURNEY_SKIP_ENV];
-  return raw !== void 0 && raw !== "" && raw !== "0" && raw.toLowerCase() !== "false";
-}
-async function runPostInstallJourney(input2, testHooks = {}) {
-  if (journeySkipped(input2.journeyFlag)) {
-    console.log(`Install journey skipped (${input2.journeyFlag === false ? "--no-journey" : JOURNEY_SKIP_ENV}). Run it any time: memesh doctor --journey`);
-    return;
-  }
-  console.log("");
-  try {
-    const result = await runInstallJourney({ packageRoot: input2.packageRoot }, testHooks);
-    const lines = formatJourney(result);
-    if (result.ok) {
-      for (const line of lines)
-        console.log(line);
-    } else {
-      for (const line of lines)
-        console.error(line);
-      console.error("The install itself finished; this does not undo it. `memesh doctor` will keep showing this until the journey passes.");
-    }
-    try {
-      writeJourneyRecord(toJourneyRecord(result, input2.version, input2.trigger));
-    } catch (err) {
-      console.error(`Could not save the journey result for \`memesh doctor\`: ${err instanceof Error ? err.message : String(err)}`);
-    }
-  } catch (err) {
-    console.error(`Install journey could not run: ${err instanceof Error ? err.message : String(err)}`);
-  }
-}
-var JOURNEY_TIMEOUT_MS, JOURNEY_SKIP_ENV, REINSTALL, PASSTHROUGH_ENV, liveChildren, liveScratch, CLEANUP_SIGNALS, EXIT_GRACE_MS;
-var init_doctor_journey = __esm({
-  "dist/core/doctor-journey.js"() {
-    "use strict";
-    init_paths();
-    init_conversation_messages();
-    JOURNEY_TIMEOUT_MS = 3e4;
-    JOURNEY_SKIP_ENV = "MEMESH_SKIP_POST_INSTALL_JOURNEY";
-    REINSTALL = "Reinstall with `npm install -g @pcircle/memesh@latest`, then run `memesh doctor --journey`. If it still fails, run `memesh feedback`.";
-    PASSTHROUGH_ENV = [
-      "PATH",
-      "PATHEXT",
-      "SystemRoot",
-      "ComSpec",
-      "TMPDIR",
-      "TMP",
-      "TEMP",
-      "LANG",
-      "LC_ALL"
-    ];
-    liveChildren = /* @__PURE__ */ new Set();
-    liveScratch = /* @__PURE__ */ new Set();
-    CLEANUP_SIGNALS = ["SIGINT", "SIGTERM", "SIGHUP", "SIGQUIT"];
-    EXIT_GRACE_MS = 500;
   }
 });
 
@@ -69246,6 +69545,110 @@ function isLoopbackRequest(req) {
 function memeshDir2() {
   return getMemeshDirFromDbPath();
 }
+function windowsTokenEntry(file2, directory, expected) {
+  const entry = fs45.lstatSync(file2, { bigint: true });
+  if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile()) || path45.relative(file2, fs45.realpathSync(file2)) !== "" || expected && (entry.dev !== expected.dev || entry.ino !== expected.ino)) {
+    throw new Error(`Unsafe or changed remote token path: ${file2}.`);
+  }
+  return entry;
+}
+function removeWindowsTokenStage(file2, owned) {
+  try {
+    windowsTokenEntry(file2, owned.isDirectory(), owned);
+    if (owned.isDirectory())
+      fs45.rmdirSync(file2);
+    else
+      fs45.unlinkSync(file2);
+  } catch {
+  }
+}
+function prepareWindowsTokenDirectory(directory) {
+  if (!fs45.lstatSync(directory, { throwIfNoEntry: false })) {
+    const parent = path45.dirname(directory);
+    for (let ancestor = parent; ; ancestor = path45.dirname(ancestor)) {
+      const entry = fs45.lstatSync(ancestor, { throwIfNoEntry: false });
+      if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) {
+        throw new Error(`Unsafe remote token parent: ${ancestor}.`);
+      }
+      if (path45.dirname(ancestor) === ancestor)
+        break;
+    }
+    fs45.mkdirSync(parent, { recursive: true });
+    windowsTokenEntry(parent, true);
+    const staged = fs45.mkdtempSync(path45.join(parent, ".remote-token-dir-"));
+    const owned2 = windowsTokenEntry(staged, true);
+    try {
+      makeWindowsPathsPrivate([staged]);
+      windowsTokenEntry(staged, true, owned2);
+      if (!fs45.lstatSync(directory, { throwIfNoEntry: false })) {
+        try {
+          fs45.renameSync(staged, directory);
+        } catch (error62) {
+          if (!fs45.lstatSync(directory, { throwIfNoEntry: false }))
+            throw error62;
+        }
+      }
+    } finally {
+      removeWindowsTokenStage(staged, owned2);
+    }
+  }
+  const owned = windowsTokenEntry(directory, true);
+  verifyWindowsPathsPrivate([directory]);
+  return windowsTokenEntry(directory, true, owned);
+}
+function loadWindowsToken(file2) {
+  const directory = path45.dirname(file2);
+  const root = prepareWindowsTokenDirectory(directory);
+  if (!fs45.lstatSync(file2, { throwIfNoEntry: false })) {
+    const staged = path45.join(directory, `.remote-token-${randomBytes8(8).toString("hex")}`);
+    const fd2 = fs45.openSync(staged, "wx", 384);
+    let owned2;
+    try {
+      let value;
+      try {
+        owned2 = fs45.fstatSync(fd2, { bigint: true });
+        windowsTokenEntry(staged, false, owned2);
+        makeWindowsPathsPrivate([staged]);
+        windowsTokenEntry(directory, true, root);
+        if (windowsTokenEntry(staged, false, owned2).nlink !== 1n)
+          throw new Error("Remote token stage has another link.");
+        value = randomBytes8(32).toString("hex");
+        fs45.writeFileSync(fd2, value + "\n");
+      } finally {
+        fs45.closeSync(fd2);
+      }
+      windowsTokenEntry(staged, false, owned2);
+      try {
+        fs45.linkSync(staged, file2);
+        return { value, freshlyCreated: true };
+      } catch (error62) {
+        if (error62.code !== "EEXIST")
+          throw error62;
+      }
+    } finally {
+      if (owned2)
+        removeWindowsTokenStage(staged, owned2);
+    }
+  }
+  const owned = windowsTokenEntry(file2, false);
+  const fd = fs45.openSync(file2, "r");
+  try {
+    const opened = fs45.fstatSync(fd, { bigint: true });
+    if (opened.dev !== owned.dev || opened.ino !== owned.ino)
+      throw new Error(`Remote token path changed: ${file2}.`);
+    verifyWindowsPathsPrivate([file2]);
+    windowsTokenEntry(directory, true, root);
+    windowsTokenEntry(file2, false, owned);
+    return { value: fs45.readFileSync(fd, "utf8").trim(), freshlyCreated: false };
+  } finally {
+    fs45.closeSync(fd);
+  }
+}
+function requireUsableFileToken(value, tokenPath2) {
+  if (value.length < 16) {
+    throw new Error(`Existing ${tokenPath2} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
+  }
+}
 function loadOrCreateRemoteToken() {
   const fromEnv = process.env.MEMESH_REMOTE_TOKEN;
   const tokenPath2 = path45.join(memeshDir2(), "remote-token");
@@ -69253,6 +69656,11 @@ function loadOrCreateRemoteToken() {
     return { token: Buffer.from(fromEnv, "utf8"), freshlyCreated: false, source: "env", envIgnored: false, tokenPath: tokenPath2 };
   }
   const envIgnored = fromEnv !== void 0 && fromEnv !== "";
+  if (process.platform === "win32") {
+    const { value: value2, freshlyCreated } = loadWindowsToken(path45.resolve(tokenPath2));
+    requireUsableFileToken(value2, tokenPath2);
+    return { token: Buffer.from(value2, "utf8"), freshlyCreated, source: "file", envIgnored, tokenPath: tokenPath2 };
+  }
   const dir = memeshDir2();
   fs45.mkdirSync(dir, { recursive: true });
   removeGroupAndOtherAccess(dir);
@@ -69274,18 +69682,17 @@ function loadOrCreateRemoteToken() {
       throw err;
   }
   const value = fs45.readFileSync(tokenPath2, "utf8").trim();
-  if (value.length < 16) {
-    throw new Error(`Existing ${tokenPath2} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
-  }
+  requireUsableFileToken(value, tokenPath2);
   removeGroupAndOtherAccess(tokenPath2);
   return { token: Buffer.from(value, "utf8"), freshlyCreated: false, source: "file", envIgnored, tokenPath: tokenPath2 };
 }
 function remoteTokenStartupNotice(load) {
   if (load.freshlyCreated) {
+    const permissions = process.platform === "win32" ? "restricted Windows access" : "mode 600";
     return `
 MeMesh HTTP: bearer token generated for remote access.
 ` + (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.
-` : "") + `  Token file: ${load.tokenPath} (mode 600)
+` : "") + `  Token file: ${load.tokenPath} (${permissions})
   Use header: Authorization: Bearer <token>
   Rotate by deleting ${load.tokenPath} and restarting.
   Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).
@@ -69585,6 +69992,7 @@ var init_server = __esm({
     init_install_channel();
     init_paths();
     init_file_mode();
+    init_windows_permissions();
     init_database_diagnosis();
     init_sqlite();
     init_retired_routes();

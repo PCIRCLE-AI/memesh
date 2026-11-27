@@ -51,6 +51,7 @@ import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/v
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from '../../core/windows-permissions.js';
 import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
 import { assertNodeSupported, isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
@@ -176,6 +177,102 @@ export interface RemoteTokenLoad {
   tokenPath: string;
 }
 
+function windowsTokenEntry(file: string, directory: boolean, expected?: fs.BigIntStats): fs.BigIntStats {
+  const entry = fs.lstatSync(file, { bigint: true });
+  if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile())
+    || path.relative(file, fs.realpathSync(file)) !== ''
+    || (expected && (entry.dev !== expected.dev || entry.ino !== expected.ino))) {
+    throw new Error(`Unsafe or changed remote token path: ${file}.`);
+  }
+  return entry;
+}
+
+function removeWindowsTokenStage(file: string, owned: fs.BigIntStats): void {
+  try {
+    windowsTokenEntry(file, owned.isDirectory(), owned);
+    if (owned.isDirectory()) fs.rmdirSync(file);
+    else fs.unlinkSync(file);
+  } catch { /* Clean only a stage that is still ours. */ }
+}
+
+function prepareWindowsTokenDirectory(directory: string): fs.BigIntStats {
+  if (!fs.lstatSync(directory, { throwIfNoEntry: false })) {
+    const parent = path.dirname(directory);
+    for (let ancestor = parent; ; ancestor = path.dirname(ancestor)) {
+      const entry = fs.lstatSync(ancestor, { throwIfNoEntry: false });
+      if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) {
+        throw new Error(`Unsafe remote token parent: ${ancestor}.`);
+      }
+      if (path.dirname(ancestor) === ancestor) break;
+    }
+    fs.mkdirSync(parent, { recursive: true });
+    windowsTokenEntry(parent, true);
+    const staged = fs.mkdtempSync(path.join(parent, '.remote-token-dir-'));
+    const owned = windowsTokenEntry(staged, true);
+    try {
+      makeWindowsPathsPrivate([staged]);
+      windowsTokenEntry(staged, true, owned);
+      if (!fs.lstatSync(directory, { throwIfNoEntry: false })) {
+        try {
+          // Windows refuses a directory rename over an existing directory.
+          fs.renameSync(staged, directory);
+        } catch (error) {
+          if (!fs.lstatSync(directory, { throwIfNoEntry: false })) throw error;
+        }
+      }
+    } finally { removeWindowsTokenStage(staged, owned); }
+  }
+  const owned = windowsTokenEntry(directory, true);
+  verifyWindowsPathsPrivate([directory]);
+  return windowsTokenEntry(directory, true, owned);
+}
+
+function loadWindowsToken(file: string): { value: string; freshlyCreated: boolean } {
+  const directory = path.dirname(file);
+  const root = prepareWindowsTokenDirectory(directory);
+  if (!fs.lstatSync(file, { throwIfNoEntry: false })) {
+    const staged = path.join(directory, `.remote-token-${randomBytes(8).toString('hex')}`);
+    const fd = fs.openSync(staged, 'wx', 0o600);
+    let owned: fs.BigIntStats | undefined;
+    try {
+      let value: string;
+      try {
+        owned = fs.fstatSync(fd, { bigint: true });
+        windowsTokenEntry(staged, false, owned);
+        makeWindowsPathsPrivate([staged]);
+        windowsTokenEntry(directory, true, root);
+        if (windowsTokenEntry(staged, false, owned).nlink !== 1n) throw new Error('Remote token stage has another link.');
+        value = randomBytes(32).toString('hex');
+        fs.writeFileSync(fd, value + '\n');
+      } finally { fs.closeSync(fd); }
+      windowsTokenEntry(staged, false, owned);
+      try {
+        // Publish only a complete, private token. The losing server reads the winner's file.
+        fs.linkSync(staged, file);
+        return { value, freshlyCreated: true };
+      } catch (error) {
+        if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+      }
+    } finally { if (owned) removeWindowsTokenStage(staged, owned); }
+  }
+  const owned = windowsTokenEntry(file, false);
+  const fd = fs.openSync(file, 'r');
+  try {
+    const opened = fs.fstatSync(fd, { bigint: true });
+    if (opened.dev !== owned.dev || opened.ino !== owned.ino) throw new Error(`Remote token path changed: ${file}.`);
+    verifyWindowsPathsPrivate([file]);
+    windowsTokenEntry(directory, true, root);
+    windowsTokenEntry(file, false, owned);
+    return { value: fs.readFileSync(fd, 'utf8').trim(), freshlyCreated: false };
+  } finally { fs.closeSync(fd); }
+}
+
+function requireUsableFileToken(value: string, tokenPath: string): void {
+  if (value.length < 16) {
+    throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
+  }
+}
+
 export function loadOrCreateRemoteToken(): RemoteTokenLoad {
   const fromEnv = process.env.MEMESH_REMOTE_TOKEN;
   const tokenPath = path.join(memeshDir(), 'remote-token');
@@ -184,6 +281,11 @@ export function loadOrCreateRemoteToken(): RemoteTokenLoad {
   }
   // A variable that is set but too short is ignored, not an error: say so.
   const envIgnored = fromEnv !== undefined && fromEnv !== '';
+  if (process.platform === 'win32') {
+    const { value, freshlyCreated } = loadWindowsToken(path.resolve(tokenPath));
+    requireUsableFileToken(value, tokenPath);
+    return { token: Buffer.from(value, 'utf8'), freshlyCreated, source: 'file', envIgnored, tokenPath };
+  }
   const dir = memeshDir();
   fs.mkdirSync(dir, { recursive: true });
   // #520: other users lose access; the owner's own bits stay as set.
@@ -210,13 +312,7 @@ export function loadOrCreateRemoteToken(): RemoteTokenLoad {
   }
 
   const value = fs.readFileSync(tokenPath, 'utf8').trim();
-  if (value.length < 16) {
-    // Existing file is too short / corrupted. Don't silently overwrite —
-    // tell the operator so they can decide whether to delete and restart.
-    throw new Error(
-      `Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`
-    );
-  }
+  requireUsableFileToken(value, tokenPath);
   // An existing token is only read, never rewritten: it loses group/other
   // access and keeps the owner's bits, so a 0400 token stays 0400 (#520).
   removeGroupAndOtherAccess(tokenPath);
@@ -226,10 +322,11 @@ export function loadOrCreateRemoteToken(): RemoteTokenLoad {
 /** The line(s) printed at startup about the remote token — true to where it was loaded from. */
 export function remoteTokenStartupNotice(load: Pick<RemoteTokenLoad, 'freshlyCreated' | 'source' | 'envIgnored' | 'tokenPath'>): string {
   if (load.freshlyCreated) {
+    const permissions = process.platform === 'win32' ? 'restricted Windows access' : 'mode 600';
     return (
       `\nMeMesh HTTP: bearer token generated for remote access.\n` +
       (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : '') +
-      `  Token file: ${load.tokenPath} (mode 600)\n` +
+      `  Token file: ${load.tokenPath} (${permissions})\n` +
       `  Use header: Authorization: Bearer <token>\n` +
       `  Rotate by deleting ${load.tokenPath} and restarting.\n` +
       `  Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).\n\n`

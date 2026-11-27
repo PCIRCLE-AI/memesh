@@ -5,6 +5,8 @@ import { build } from 'esbuild';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { ensureIdentity, identityPath, isMachineId, loadIdentity, verifySignature } from '../../src/network/identity.js';
 import { NetworkError } from '../../src/network/types.js';
+import * as windowsPermissions from '../../src/core/windows-permissions.js';
+import { expectPrivateDir, expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 import { makeHome, removeTree } from './helpers.js';
 
 describe('machine identity', () => {
@@ -12,22 +14,41 @@ describe('machine identity', () => {
   beforeEach(() => { dataDir = makeHome(); });
   afterEach(() => removeTree(dataDir));
 
-  it('creates 32 random bytes with mode 0600 and keeps them', () => {
+  it('creates 32 private random bytes and keeps them', () => {
     const first = ensureIdentity(dataDir);
-    const stat = fs.statSync(identityPath(dataDir));
+    const file = identityPath(dataDir);
+    const stat = fs.statSync(file);
     expect(stat.size).toBe(32);
-    if (process.platform !== 'win32') expect(stat.mode & 0o777).toBe(0o600);
+    expectPrivateFile(file);
+    expectPrivateDir(path.dirname(file));
+    if (process.platform === 'win32') {
+      const temporaryLink = file + '.fixture-link';
+      fs.linkSync(file, temporaryLink);
+      try {
+        expect(fs.statSync(file).nlink).toBe(2);
+        expect(loadIdentity(dataDir).machineId).toBe(first.machineId);
+      } finally { fs.unlinkSync(temporaryLink); }
+    }
     expect(isMachineId(first.machineId)).toBe(true);
     expect(ensureIdentity(dataDir).machineId).toBe(first.machineId);
     expect(loadIdentity(dataDir).secret.equals(first.secret)).toBe(true);
   });
 
-  it('tightens a key file another user could read', () => {
+  it('handles an existing key with broader permissions', () => {
     ensureIdentity(dataDir);
-    if (process.platform === 'win32') return;
-    fs.chmodSync(identityPath(dataDir), 0o644);
-    loadIdentity(dataDir);
-    expect(fs.statSync(identityPath(dataDir)).mode & 0o777).toBe(0o600);
+    const file = identityPath(dataDir);
+    if (process.platform === 'win32') {
+      const publicAcl = makeWindowsAclPublic(file);
+      const before = fs.readFileSync(file);
+      expect(() => loadIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'identity_invalid' }));
+      expect(() => ensureIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'identity_invalid' }));
+      expect(fs.readFileSync(file).equals(before)).toBe(true);
+      expect(readWindowsAcl(file)).toEqual(publicAcl);
+    } else {
+      fs.chmodSync(file, 0o644);
+      loadIdentity(dataDir);
+      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
+    }
   });
 
   it('refuses a key of the wrong size instead of using it', () => {
@@ -37,7 +58,20 @@ describe('machine identity', () => {
     expect(() => loadIdentity(dataDir)).toThrowError(/not a valid machine key/);
   });
 
-  it('creates the key file with mode 0600 before anything could read it', () => {
+  it('requires the key file to be private before writing the seed', () => {
+    if (process.platform === 'win32') {
+      const makePrivate = windowsPermissions.makeWindowsPathsPrivate;
+      const acl = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementation((targets) => {
+        if (fs.lstatSync(targets[0]).isDirectory()) return makePrivate(targets);
+        expect(fs.statSync(targets[0]).size).toBe(0);
+        throw new Error('injected key ACL refusal');
+      });
+      try {
+        expect(() => ensureIdentity(dataDir)).toThrow('injected key ACL refusal');
+        expect(fs.readdirSync(path.dirname(identityPath(dataDir)))).toEqual([]);
+      } finally { acl.mockRestore(); }
+      return;
+    }
     const writes = vi.spyOn(fs, 'writeFileSync');
     const modes = vi.spyOn(fs, 'chmodSync');
     try {
@@ -49,6 +83,55 @@ describe('machine identity', () => {
       writes.mockRestore();
       modes.mockRestore();
     }
+  });
+
+  it.runIf(process.platform === 'win32')('retries after an initial network directory ACL failure', () => {
+    const acl = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementationOnce(() => {
+      throw new Error('injected network directory ACL timeout');
+    });
+    try {
+      expect(() => ensureIdentity(dataDir)).toThrow('injected network directory ACL timeout');
+      expect(fs.readdirSync(dataDir)).toEqual([]);
+      expect(isMachineId(ensureIdentity(dataDir).machineId)).toBe(true);
+      expectPrivateFile(identityPath(dataDir));
+    } finally { acl.mockRestore(); }
+  });
+
+  it.runIf(process.platform === 'win32')('retries after a temporary key inspection failure in the same process', () => {
+    const stat = vi.spyOn(fs, 'fstatSync').mockImplementationOnce(() => {
+      throw Object.assign(new Error('transient key inspection'), { code: 'EIO' });
+    });
+    try {
+      expect(() => ensureIdentity(dataDir)).toThrow('transient key inspection');
+      const file = identityPath(dataDir);
+      const directory = path.dirname(file);
+      expect(fs.existsSync(file)).toBe(false);
+      const leftover = fs.readdirSync(directory);
+      expect(leftover).toHaveLength(1);
+      expect(leftover[0]).toMatch(/^identity\.key\.tmp-/);
+      expect(fs.statSync(path.join(directory, leftover[0])).size).toBe(0);
+      const retry = ensureIdentity(dataDir);
+      expectPrivateFile(file);
+      expect(loadIdentity(dataDir).machineId).toBe(retry.machineId);
+      expect(fs.statSync(path.join(directory, leftover[0])).size).toBe(0);
+    } finally { stat.mockRestore(); }
+  });
+
+  it.runIf(process.platform === 'win32')('refuses an existing public network leaf and a junction', () => {
+    const directory = path.dirname(identityPath(dataDir));
+    fs.mkdirSync(directory);
+    const acl = makeWindowsAclPublic(directory);
+    expect(() => ensureIdentity(dataDir)).toThrow(/Cannot verify private Windows permissions/);
+    expect(readWindowsAcl(directory)).toEqual(acl);
+    expect(fs.readdirSync(directory)).toEqual([]);
+    fs.rmdirSync(directory);
+
+    const outside = path.join(dataDir, 'outside');
+    fs.mkdirSync(outside);
+    fs.symlinkSync(outside, directory, 'junction');
+    expect(() => ensureIdentity(dataDir)).toThrowError(expect.objectContaining({ code: 'identity_invalid' }));
+    expect(fs.lstatSync(directory).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([]);
   });
 
   it('makes the network folder private even under an open umask', () => {

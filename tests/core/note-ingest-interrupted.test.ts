@@ -50,8 +50,17 @@ afterEach(() => {
 /** Run the trusted read in a child that SIGKILLs itself when `fs.<method>` is called on a path matching `pattern`. */
 function killedRun(method: 'renameSync' | 'writeFileSync', pattern: string) {
   const preload = path.join(root, 'kill.cjs');
-  fs.writeFileSync(preload, `const fs = require('fs'); const orig = fs.${method};
-fs.${method} = function (p, ...rest) { if (String(p).includes(${JSON.stringify(pattern)})) process.kill(process.pid, 'SIGKILL'); return orig.call(this, p, ...rest); };\n`);
+  const marker = path.join(root, 'kill-marker');
+  fs.writeFileSync(preload, `const fs = require('fs'); const orig = fs.${method}; const write = fs.writeFileSync;
+fs.${method} = function (p, ...rest) {
+  if (String(p).includes(${JSON.stringify(pattern)})) {
+    write(${JSON.stringify(marker)}, 'before SIGKILL');
+    try { process.kill(process.pid, 'SIGKILL'); }
+    catch (error) { write(${JSON.stringify(marker)}, 'SIGKILL failed'); throw error; }
+    write(${JSON.stringify(marker)}, 'SIGKILL returned');
+  }
+  return orig.call(this, p, ...rest);
+};\n`);
   const script = `const { openDatabase } = await import(${JSON.stringify(dist('db.js'))});
 const { ingestNoteDirectory } = await import(${JSON.stringify(dist('core/note-ingest.js'))});
 openDatabase(${JSON.stringify(dbPath)});
@@ -68,7 +77,13 @@ describe('a Stop killed while it makes the folder\'s notes trusted', () => {
     ['while the record beside the copy is written', 'writeFileSync', '.db.json'],
   ] as const)('%s: nothing changed, nothing marks the notes as done, and the next run makes them trusted', (_when, method, pattern) => {
     const killed = killedRun(method, pattern);
-    expect(killed.signal, killed.stderr).toBe('SIGKILL');
+    expect(fs.readFileSync(path.join(root, 'kill-marker'), 'utf8')).toBe('before SIGKILL');
+    expect(killed.error).toBeUndefined();
+    expect(killed.stderr).not.toMatch(/\b(?:Error|ERR_[A-Z_]+|EACCES|EPERM|ENOENT)\b/);
+    // A Windows self-kill exits 1 without a signal recorded by the parent.
+    expect({ status: killed.status, signal: killed.signal }, killed.stderr).toEqual(
+      process.platform === 'win32' ? { status: 1, signal: null } : { status: null, signal: 'SIGKILL' },
+    );
     expect(killed.stdout).not.toContain('finished');
     openDatabase(dbPath);
     expect([trust('feedback-a'), trust('feedback-b')]).toEqual(['untrusted', 'untrusted']);

@@ -1,4 +1,4 @@
-import { spawn } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import fs from 'node:fs';
 import path from 'node:path';
 import { build } from 'esbuild';
@@ -22,12 +22,17 @@ describe('invites', () => {
   let home: string;
   let dbPath: string;
   let db: MemeshDatabase;
+  const raceChildren = new Set<ChildProcess>();
   beforeEach(() => {
     home = makeHome();
     dbPath = path.join(home, 'db.sqlite');
     db = openNetworkStore(dbPath);
   });
-  afterEach(() => {
+  afterEach(async () => {
+    await Promise.all([...raceChildren].map((child) => new Promise<void>((resolve) => {
+      child.once('close', () => resolve());
+      child.kill();
+    })));
     db.close();
     removeTree(home);
   });
@@ -76,16 +81,39 @@ describe('invites', () => {
       entryPoints: [path.resolve(import.meta.dirname, 'fixtures/consume-race.ts')],
       outfile: bundle, bundle: true, platform: 'node', format: 'esm', logLevel: 'silent',
     });
-    const startAt = Date.now() + 1500;
-    const wins = await Promise.all(Array.from({ length: racers }, () => new Promise<number>((resolve, reject) => {
-      const child = spawn(process.execPath, [bundle, dbPath, hashesFile, String(startAt), String(slotMs)], { stdio: ['ignore', 'pipe', 'inherit'] });
+    const runs = Array.from({ length: racers }, () => {
+      const child = spawn(process.execPath, [bundle, dbPath, hashesFile, String(slotMs)], { stdio: ['ignore', 'pipe', 'inherit', 'ipc'] });
+      raceChildren.add(child);
+      child.once('close', () => raceChildren.delete(child));
       let output = '';
-      child.stdout.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
-      child.on('close', (code) => (code === 0 ? resolve(Number(output.trim())) : reject(new Error(`racer exited ${code}`))));
-    })));
-    expect(wins.reduce((sum, won) => sum + won, 0)).toBe(invites);
-    // It was a race: the wins are spread, not one process running ahead of the rest.
-    expect(wins.filter((won) => won > 0).length).toBeGreaterThan(1);
+      let attempts: number | undefined;
+      child.stdout!.setEncoding('utf8').on('data', (chunk: string) => { output += chunk; });
+      const ready = new Promise<number>((resolve, reject) => {
+        child.on('message', (message: { type: string; invites: number; attempts: number }) => {
+          if (message.type === 'ready') resolve(message.invites);
+          if (message.type === 'done') attempts = message.attempts;
+        });
+        child.once('error', reject);
+        child.once('close', (code) => reject(new Error(`racer exited ${code} before ready`)));
+      });
+      const result = new Promise<{ wins: number; attempts: number | undefined }>((resolve, reject) => {
+        child.once('error', reject);
+        child.once('close', (code) => (code === 0 ? resolve({ wins: Number(output.trim()), attempts }) : reject(new Error(`racer exited ${code}`))));
+      });
+      return { child, ready, result };
+    });
+    const [initialized, results] = await Promise.all([
+      Promise.all(runs.map((run) => run.ready)).then((counts) => {
+        const startAt = Date.now() + 1500;
+        for (const { child } of runs) child.send({ startAt });
+        return counts;
+      }),
+      Promise.all(runs.map((run) => run.result)),
+    ]);
+    expect(initialized).toEqual(Array(racers).fill(invites));
+    expect(results.map((result) => result.attempts)).toEqual(Array(racers).fill(invites));
+    expect(results.reduce((sum, result) => sum + result.wins, 0)).toBe(invites);
+    expect(db.prepare('SELECT count(*) AS total, count(used_at) AS used FROM agent_network_invites').get()).toEqual({ total: invites, used: invites });
   }, 60_000);
 
   it('names why an invite cannot be used', () => {
