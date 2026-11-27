@@ -155,6 +155,42 @@ describe('Windows permission diagnostic projection', () => {
 });
 
 describe.runIf(process.platform === 'win32')('actual Windows private paths', () => {
+  it('compares split and combined Windows allows while retaining scope, rights and deny rules', () => {
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue('{"ok":true}');
+    makeWindowsPathsPrivate([directory()]);
+    const [command, args, options] = exec.mock.calls[0];
+    exec.mockRestore();
+    const script = Buffer.from((args as string[])[4], 'base64').toString('utf16le');
+    const pathLoop = '  foreach ($file in $request.paths) {';
+    expect(script).toContain(pathLoop);
+    const comparison = String.raw`
+  function Get-Keys($sddl) {
+    $fixture = [Security.AccessControl.DirectorySecurity]::new()
+    $fixture.SetSecurityDescriptorSddlForm($sddl)
+    return Rule-Keys $fixture $true
+  }
+  $unchanged = 'D:AI(D;;0x2;;;WD)(A;OICI;FA;;;SY)'
+  $split = '(A;;FA;;;BA)(A;OICIID;FA;;;SY)(A;OICIIOID;FA;;;BA)'
+  @{
+    split = Get-Keys ('D:AI(D;;0x2;;;WD)' + $split)
+    repeated = Get-Keys ('D:AI(D;;0x2;;;WD)' + $split + '(A;OICIIOID;FA;;;BA)(A;OICIIOID;FA;;;BA)')
+    combined = Get-Keys ($unchanged + '(A;OICI;FA;;;BA)')
+    reducedScope = Get-Keys ($unchanged + '(A;OICIIO;FA;;;BA)')
+    shallowScope = Get-Keys ($unchanged + '(A;OICINP;FA;;;BA)')
+    reducedRights = Get-Keys ($unchanged + '(A;OICI;FR;;;BA)')
+    changedDeny = Get-Keys 'D:AI(D;;0x4;;;WD)(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)'
+  } | ConvertTo-Json -Compress
+  exit
+`;
+    const encoded = Buffer.from(script.replace(pathLoop, comparison + pathLoop), 'utf16le').toString('base64');
+    const keys = JSON.parse(childProcess.execFileSync(command, [...(args as string[]).slice(0, 4), encoded], options).toString());
+    expect(keys.split).toBe(keys.combined);
+    expect(keys.repeated).toBe(keys.combined);
+    for (const changed of [keys.reducedScope, keys.shallowScope, keys.reducedRights, keys.changedDeny]) {
+      expect(changed).not.toBe(keys.combined);
+    }
+  });
+
   it('accepts a safe inherited ACL and rejects a public inherited ACL without changing either', () => {
     const privateParent = directory();
     makeWindowsPathsPrivate([privateParent], privateParent);

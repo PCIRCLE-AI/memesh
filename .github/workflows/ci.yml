@@ -158,6 +158,16 @@ jobs:
         timeout-minutes: 2
         run: node scripts/diagnose-windows-messages-entry.mjs
 
+      - name: Windows native boundaries
+        if: runner.os == 'Windows'
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: >-
+          node scripts/run-tests-isolated.mjs tests/core/windows-permissions.test.ts tests/core/conversation-message-entry.test.ts
+          tests/hooks/stop-handoff.test.ts tests/network/conversation-courier.test.ts
+          --testNamePattern "compares split and combined Windows allows|explicit destination without source|keeps locked quote reads|CLI copy remains queued"
+
       - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
         # Temp folders on the runner's own temp disk. On Windows, TEMP points
         # at C:\Users\runneradmin\AppData\Local\Temp, on the OS disk, while

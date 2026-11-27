@@ -6303,15 +6303,12 @@ try {
   }
   function Rule-Keys($acl, $isContainer) {
     $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    $allows = [Security.AccessControl.RawAcl]::new($raw.DiscretionaryAcl.Revision, 0)
+    $canonical = [Security.AccessControl.DiscretionaryAcl]::new($isContainer, $false, $raw.DiscretionaryAcl.Count)
     foreach ($ace in $raw.DiscretionaryAcl) {
       if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
-      $copy = $ace.Copy()
-      $copy.AceFlags = [Security.AccessControl.AceFlags](([int]$copy.AceFlags) -band (-bnot [int][Security.AccessControl.AceFlags]::Inherited))
-      $allows.InsertAce($allows.Count, $copy)
+      # AddAccess merges equivalent explicit ACEs across the entire ACL.
+      $canonical.AddAccess($allow, $ace.SecurityIdentifier, $ace.AccessMask, $ace.InheritanceFlags, $ace.PropagationFlags)
     }
-    $canonical = [Security.AccessControl.DiscretionaryAcl]::new($isContainer, $false, $allows)
-    if (-not $canonical.IsCanonical) { throw 'rights changed' }
     $allowKeys = (@($canonical | ForEach-Object { Ace-Key $_ } | Sort-Object) -join ';')
     $denyKeys = (@($acl.GetAccessRules($true, $true, $sidType) | Where-Object { $_.AccessControlType -ne $allow } | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
     return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'

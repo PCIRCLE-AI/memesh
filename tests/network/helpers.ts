@@ -92,7 +92,7 @@ export function removeTree(target: string): void {
   fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
 }
 
-/** Read only the case's own directories and print stage names, never log payloads. */
+/** Read only the case's own directories; print stage names and allowlisted error codes. */
 export function reportBridgeFailure(dataDirs: readonly string[]): void {
   const events = new Set([
     'running', 'stopped', 'exit_already_running', 'exit_holder_unresponsive', 'exit_database',
@@ -114,8 +114,16 @@ export function reportBridgeFailure(dataDirs: readonly string[]): void {
             logTail.push('failed_before_start');
           } else {
             try {
-              const event = JSON.parse(line)?.event;
-              if (events.has(event)) logTail.push(event);
+              const entry = JSON.parse(line);
+              const event = entry?.event;
+              if (events.has(event)) {
+                if (event === 'control_problem') {
+                  const code = typeof entry.error === 'string'
+                    ? /^Control (?:connection|socket) failed: (?:(?:read|write|connect|listen|accept|shutdown) )?(EPIPE|ECONNRESET|EACCES|EPERM|ENOENT|EINVAL|ECONNREFUSED|ETIMEDOUT|ENOTCONN|EADDRINUSE|ERR_STREAM_DESTROYED|ERR_STREAM_WRITE_AFTER_END|ERR_SOCKET_CLOSED)(?=$|[ :])/.exec(entry.error)?.[1]
+                    : undefined;
+                  logTail.push(`control_problem:${code ?? 'unknown'}`);
+                } else logTail.push(event);
+              }
             } catch { /* the tail can start or end in the middle of a line */ }
           }
         }
