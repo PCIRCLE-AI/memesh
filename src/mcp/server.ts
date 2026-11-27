@@ -2,6 +2,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { once } from 'node:events';
+import { Socket } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -123,7 +125,27 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   );
 });
 
+async function hasInitialPipeEof(): Promise<boolean> {
+  const input = process.stdin;
+  if (!(input instanceof Socket) || input.isTTY || input.readableLength > 0) return false;
+  if (input.readableEnded) return true;
+  // Give the pipe a short chance to report EOF while leaving any bytes for the SDK.
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await once(input, 'readable', { signal: deadline.signal });
+    if (input.readableLength > 0) return false;
+    input.read(0);
+    await new Promise<void>(resolve => process.nextTick(resolve));
+    return input.readableEnded;
+  } catch (error) {
+    if (!deadline.signal.aborted) throw error;
+    return false;
+  } finally { clearTimeout(timer); }
+}
+
 async function main() {
+  if (await hasInitialPipeEof()) return shutdown();
   // The agent that started this server is a running host: the updater waits
   // for it to exit before it replaces any file (this covers hosts with no hooks).
   try {

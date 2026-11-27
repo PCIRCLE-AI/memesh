@@ -29,7 +29,7 @@ function everythingUnder(root: string): string[] {
 }
 
 describe('the packaged MCP server on a fresh HOME', () => {
-  it('exits on an already closed stdin', () => {
+  it('exits on an already closed pipe before creating storage', () => {
     const home = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-mcp-empty-stdin-')));
     const env = buildIsolatedRuntimeEnv(process.env, {
       runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
@@ -41,6 +41,7 @@ describe('the packaged MCP server on a fresh HOME', () => {
       });
       expect(result.error).toBeUndefined();
       expect(result.status, result.stderr).toBe(0);
+      expect(everythingUnder(home)).toEqual([]);
     } finally {
       fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
     }
@@ -53,9 +54,15 @@ describe('the packaged MCP server on a fresh HOME', () => {
     });
     try {
       const entry = pathToFileURL(path.resolve('dist/mcp/server.js')).href;
-      // Keep stdin open past the startup turn, even on a slow child process.
-      const child = spawn(process.execPath, ['--input-type=module', '-e',
-        'await import(process.argv[1]); setImmediate(() => process.stdout.write("ready\\n"));', entry,
+      // Close stdin only after the SDK attaches its data listener.
+      const child = spawn(process.execPath, ['--input-type=module', '-e', `
+        process.stdin.on('newListener', function ready(event) {
+          if (event !== 'data') return;
+          process.stdin.off('newListener', ready);
+          setImmediate(() => process.stdout.write('ready\\n'));
+        });
+        await import(process.argv[1]);
+      `, entry,
       ], {
         cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
         timeout: 10_000, killSignal: 'SIGKILL',

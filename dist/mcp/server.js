@@ -7258,6 +7258,8 @@ var require_dist = __commonJS({
 // dist/mcp/server.js
 import fs25 from "fs";
 import path23 from "path";
+import { once } from "node:events";
+import { Socket } from "node:net";
 
 // node_modules/zod/v4/core/index.js
 var core_exports2 = {};
@@ -41739,7 +41741,32 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     } : {}
   });
 });
+async function hasInitialPipeEof() {
+  const input2 = process.stdin;
+  if (!(input2 instanceof Socket) || input2.isTTY || input2.readableLength > 0)
+    return false;
+  if (input2.readableEnded)
+    return true;
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await once(input2, "readable", { signal: deadline.signal });
+    if (input2.readableLength > 0)
+      return false;
+    input2.read(0);
+    await new Promise((resolve) => process.nextTick(resolve));
+    return input2.readableEnded;
+  } catch (error62) {
+    if (!deadline.signal.aborted)
+      throw error62;
+    return false;
+  } finally {
+    clearTimeout(timer);
+  }
+}
 async function main() {
+  if (await hasInitialPipeEof())
+    return shutdown();
   try {
     registerLiveHost(updateControlDir());
   } catch (err) {
