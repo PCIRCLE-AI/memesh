@@ -4,7 +4,7 @@ import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { expect, it } from 'vitest';
-import { buildTree, installRuntimeOnce, linkRuntime } from './helpers.js';
+import { buildTree, installRuntimeOnce, linkRuntime, reportBridgeFailure } from './helpers.js';
 import { ensureIdentity, identityPath } from '../../src/network/identity.js';
 import { createRoster, signRoster, verifyRoster } from '../../src/network/roster.js';
 import { openNetworkStore, insertConfig, readConfig, signedRosterOf } from '../../src/network/store.js';
@@ -23,6 +23,10 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
   const tree = await buildTree({ cli: true });
   const contexts: NetworkContext[] = [];
   const events: unknown[] = [];
+  const errors: unknown[] = [];
+  const close = (resource: { close(): void }) => {
+    try { resource.close(); } catch (error) { errors.push(error); }
+  };
   const hash = (file: string) => createHash('sha256').update(fs.readFileSync(file)).digest('hex');
   const run = (ctx: NetworkContext, args: string[], expectedExit: number | 'revoked-start' = 0, session?: string) => new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [tree.cli, session ? 'message' : 'network', ...args], { cwd: root,
@@ -66,22 +70,28 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     contexts.forEach((ctx, i) => {
       // Deliberately retain the pre-upgrade graph config as the no-resurrection canary.
       for (const file of [ctx.dbPath, networkMetadataPath(ctx.dataDir)]) {
-        const db = openNetworkStore(file); insertConfig(db, configs[i], Date.now());
-        db.pragma('wal_checkpoint(TRUNCATE)'); db.close();
+        const db = openNetworkStore(file);
+        try {
+          insertConfig(db, configs[i], Date.now());
+          db.pragma('wal_checkpoint(TRUNCATE)');
+        } finally { close(db); }
       }
       graphHashes.push(hash(ctx.dbPath)); keyHashes.push(hash(identityPath(ctx.dataDir)));
       const store = new ConversationMessages({ file: path.join(ctx.dataDir, 'messages.db'), machine: names[i] });
-      store.register({ id: `local-${i}`, host: 'codex', machine: names[i], pid: process.pid, wake: {} });
-      const sent = store.send(`local-${i}`, { recipient: `local-${i}`, kind: 'result', body: `LOCAL HISTORY ${i}🙂` });
-      if (!sent.accepted) throw new Error('Local seed rejected'); messageIds.push(sent.message.id); store.close();
+      try {
+        store.register({ id: `local-${i}`, host: 'codex', machine: names[i], pid: process.pid, wake: {} });
+        const sent = store.send(`local-${i}`, { recipient: `local-${i}`, kind: 'result', body: `LOCAL HISTORY ${i}🙂` });
+        if (!sent.accepted) throw new Error('Local seed rejected');
+        messageIds.push(sent.message.id);
+      } finally { close(store); }
     });
     const [a, b, c] = contexts;
     for (const ctx of contexts) await run(ctx, ['up']);
     await wait(() => contexts.every(ctx => Boolean(readStatus(ctx.dataDir)?.direct_addresses.length)), 'addresses');
     contexts.forEach((ctx, i) => {
       const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-      contexts.forEach((peer, j) => { if (i !== j) rememberPeer(db, ids[j].machineId, null, readStatus(peer.dataDir)!.direct_addresses, Date.now()); });
-      db.close();
+      try { contexts.forEach((peer, j) => { if (i !== j) rememberPeer(db, ids[j].machineId, null, readStatus(peer.dataDir)!.direct_addresses, Date.now()); }); }
+      finally { close(db); }
     });
     const bridgePids = contexts.map(ctx => readStatus(ctx.dataDir)!.pid);
     expect(await run(a, ['leave'], 1)).toContain('Owner departure is not supported');
@@ -100,42 +110,62 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     expect(repeated).toMatchObject({ roster_version: 3, already_removed: true });
     // Simulate the retained stale disk state of an offline member, not a new join.
     const stale = openNetworkStore(networkMetadataPath(b.dataDir));
-    insertConfig(stale, configs[1], Date.now());
-    rememberPeer(stale, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now()); stale.close();
+    try {
+      insertConfig(stale, configs[1], Date.now());
+      rememberPeer(stale, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now());
+    } finally { close(stale); }
     await run(b, ['up'], 'revoked-start');
     await wait(async () => (await probeBridge(b.dataDir)).kind === 'not-running', 'offline-return-self-status-stop');
     expect(JSON.parse(await run(b, ['status', '--json']))).toEqual({ joined: false });
     for (const [i, ctx] of contexts.entries()) {
       expect(hash(ctx.dbPath)).toBe(graphHashes[i]); expect(hash(identityPath(ctx.dataDir))).toBe(keyHashes[i]);
       const store = new ConversationMessages({ file: path.join(ctx.dataDir, 'messages.db'), machine: names[i] });
-      expect(store.read(`local-${i}`, messageIds[i])?.body).toBe(`LOCAL HISTORY ${i}🙂`); store.close();
+      try { expect(store.read(`local-${i}`, messageIds[i])?.body).toBe(`LOCAL HISTORY ${i}🙂`); }
+      finally { close(store); }
       expect(JSON.parse(await run(ctx, ['read', '--message-id', messageIds[i]], 0, `local-${i}`)).message.body).toBe(`LOCAL HISTORY ${i}🙂`);
       expect(JSON.parse(await run(ctx, ['status', '--message-id', messageIds[i], '--json'], 0, `local-${i}`)).messages[0].id).toBe(messageIds[i]);
       if (i) {
         const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-        for (const table of ['agent_network_config', 'agent_network_invites', 'agent_network_peers']) expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
-        db.close();
+        try {
+          for (const table of ['agent_network_config', 'agent_network_invites', 'agent_network_peers']) expect(db.prepare(`SELECT COUNT(*) AS n FROM ${table}`).get()).toEqual({ n: 0 });
+        } finally { close(db); }
       }
     }
     const owner = openNetworkStore(networkMetadataPath(a.dataDir));
-    expect(verifyRoster(signedRosterOf(readConfig(owner)!), ids[0].machineId, roster.network_id).members.map(m => m.machine_id)).toEqual([ids[0].machineId]); owner.close();
+    try { expect(verifyRoster(signedRosterOf(readConfig(owner)!), ids[0].machineId, roster.network_id).members.map(m => m.machine_id)).toEqual([ids[0].machineId]); }
+    finally { close(owner); }
     await run(a, ['down']);
     // Owner offline: an unconfirmed caller retains membership and the helper
     // restores the original stopped state, rather than falsely claiming leave.
     const pending = openNetworkStore(networkMetadataPath(b.dataDir));
-    insertConfig(pending, configs[1], Date.now());
-    rememberPeer(pending, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now()); pending.close();
+    try {
+      insertConfig(pending, configs[1], Date.now());
+      rememberPeer(pending, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now());
+    } finally { close(pending); }
     expect(await run(b, ['leave', '--json'], 1)).toMatch(/membership|connect|timed out/i);
     expect((await probeBridge(b.dataDir)).kind).toBe('not-running');
     const retained = openNetworkStore(networkMetadataPath(b.dataDir));
-    expect(readConfig(retained)).toEqual(configs[1]); retained.close();
+    try { expect(readConfig(retained)).toEqual(configs[1]); }
+    finally { close(retained); }
     expect(hash(b.dbPath)).toBe(graphHashes[1]);
     events.push({ bridgePids, graphHashes, keyHashes, historyPreserved: true });
-  } finally {
-    for (const ctx of contexts) {
-      try { events.push({ stop: await stopBridge(ctx) }); } catch (error) { events.push({ cleanupError: String(error) }); }
-    }
+  } catch (error) {
+    errors.unshift(error);
+  }
+  const directories = contexts.map(ctx => ctx.dataDir);
+  const hadFailure = errors.length > 0;
+  if (hadFailure) reportBridgeFailure(directories);
+  for (const [index, ctx] of contexts.entries()) {
+    try { events.push({ context: index + 1, stop: await stopBridge(ctx) }); }
+    catch (error) { errors.push(error); events.push({ context: index + 1, cleanupFailed: true }); }
+  }
+  try {
     fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ root, events }, null, 2), { mode: 0o600, flag: 'wx' });
     console.log(`Membership synthetic evidence: ${root}/result.json`);
+  } catch (error) {
+    errors.push(error);
   }
+  if (!hadFailure && errors.length) reportBridgeFailure(directories);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Membership CLI test and cleanup failures', { cause: errors[0] });
 }, 120_000);

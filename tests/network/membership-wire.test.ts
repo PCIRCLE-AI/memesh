@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { expect, it } from 'vitest';
-import { buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome } from './helpers.js';
+import { buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, reportBridgeFailure } from './helpers.js';
 import { bindEndpoint, deadline, toBytes } from '../../src/network/endpoint.js';
 import { ensureIdentity } from '../../src/network/identity.js';
 import { createRoster, signRoster } from '../../src/network/roster.js';
@@ -24,19 +24,21 @@ it('real management lost ACK is idempotent and NET/2 counts only proven nonmembe
   const roster = { ...createRoster('c'.repeat(32), members[0]), members };
   const signed = signRoster(owner, roster);
   const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-  insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: owner.machineId, machine_name: 'alpha', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
-  const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
-  const iroh = loadIrohForTest(runtime);
-  const client = await bindEndpoint(iroh, peer.secret, 'off', []);
-  const connections: Array<Awaited<ReturnType<typeof client.connect>>> = [];
+  const errors: unknown[] = [];
+  const close: Array<() => void | Promise<void>> = [() => db.close()];
   let started: Awaited<ReturnType<typeof startBridge>> | undefined;
   try {
+    insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: owner.machineId, machine_name: 'alpha', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
+    const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
+    const iroh = loadIrohForTest(runtime);
+    const client = await bindEndpoint(iroh, peer.secret, 'off', []);
+    close.unshift(() => client.close());
     started = await startBridge(ctx);
     await expect.poll(() => readStatus(ctx.dataDir)?.direct_addresses.length ?? 0, { timeout: 5000 }).toBeGreaterThan(0);
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(owner.machineId), null, readStatus(ctx.dataDir)!.direct_addresses);
     const open = async (alpn = MEMBERSHIP_ALPN) => {
       const connection = await deadline(client.connect(address, toBytes(alpn)), 20_000, 'test native connect');
-      connections.push(connection);
+      close.unshift(() => connection.close(0n, toBytes('test cleanup')));
       return { connection, stream: await deadline(connection.openBi(), 5000, 'test open stream') };
     };
     const call = async (request: unknown) => {
@@ -44,7 +46,9 @@ it('real management lost ACK is idempotent and NET/2 counts only proven nonmembe
       try {
         await stream.send.writeAll(toBytes(JSON.stringify(request))); await stream.send.finish();
         return parseMembershipAck(Buffer.from(await deadline(stream.recv.readToEnd(512), 5000, 'test membership ACK')), roster.network_id);
-      } finally { connection.close(0n, toBytes('test done')); }
+      } finally {
+        try { connection.close(0n, toBytes('test done')); } catch (error) { errors.push(error); }
+      }
     };
     const request = { version: 1, op: 'leave-self', network_id: roster.network_id };
     const lost = await open();
@@ -67,15 +71,25 @@ it('real management lost ACK is idempotent and NET/2 counts only proven nonmembe
     await malformed.stream.send.writeAll(toBytes('{}')); await malformed.stream.send.finish();
     expect(await deadline(malformed.connection.closed(), 5000, 'invalid roster closure')).not.toContain('not_a_member');
     expect(readStatus(ctx.dataDir)!.non_member_refused).toBe(1);
-  } finally {
-    for (const connection of connections) connection.close(0n, toBytes('test cleanup'));
-    await client.close();
+  } catch (error) {
+    errors.unshift(error);
+  }
+  const hadFailure = errors.length > 0;
+  if (hadFailure) reportBridgeFailure([ctx.dataDir]);
+  for (const dispose of close) {
+    try { await dispose(); } catch (error) { errors.push(error); }
+  }
+  try {
     const stopped = await stopBridge(ctx);
     if (started) expect(stopped).toEqual({ stopped: true, pid: started.pid });
     fs.writeFileSync(path.join(home, 'membership-wire-result.json'), JSON.stringify({ pid: started?.pid, stopped, status: readStatus(ctx.dataDir) }), { mode: 0o600, flag: 'wx' });
     console.log(`Membership wire evidence: ${home}/membership-wire-result.json`);
-    db.close();
+  } catch (error) {
+    errors.push(error);
   }
+  if (!hadFailure && errors.length) reportBridgeFailure([ctx.dataDir]);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Membership wire test and cleanup failures', { cause: errors[0] });
 }, 120_000);
 
 it('a verified self-removal learned through NET/2 also stops local networking', async () => {
@@ -89,27 +103,41 @@ it('a verified self-removal learned through NET/2 also stops local networking', 
   const signed = signRoster(owner, roster);
   const removed = signRoster(owner, { ...roster, version: 2, members: [members[0]] });
   const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-  insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: member.machineId, machine_name: 'beta', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
-  const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
-  const iroh = loadIrohForTest(runtime);
-  const client = await bindEndpoint(iroh, owner.secret, 'off', []);
-  let connection: Awaited<ReturnType<typeof client.connect>> | undefined;
+  const errors: unknown[] = [];
+  const close: Array<() => void | Promise<void>> = [() => db.close()];
   let started: Awaited<ReturnType<typeof startBridge>> | undefined;
   try {
+    insertConfig(db, { network_id: roster.network_id, owner_id: owner.machineId, machine_id: member.machineId, machine_name: 'beta', person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
+    const runtime = installRuntimeOnce(tree); linkRuntime(ctx, runtime);
+    const iroh = loadIrohForTest(runtime);
+    const client = await bindEndpoint(iroh, owner.secret, 'off', []);
+    close.unshift(() => client.close());
     started = await startBridge(ctx);
     await expect.poll(() => readStatus(ctx.dataDir)?.direct_addresses.length ?? 0, { timeout: 5000 }).toBeGreaterThan(0);
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(member.machineId), null, readStatus(ctx.dataDir)!.direct_addresses);
-    connection = await deadline(client.connect(address, toBytes(NET_ALPN)), 20_000, 'signed self removal connect');
+    const connection = await deadline(client.connect(address, toBytes(NET_ALPN)), 20_000, 'signed self removal connect');
+    close.unshift(() => connection.close(0n, toBytes('test cleanup')));
     const stream = await deadline(connection.openBi(), 5000, 'signed self removal stream');
     await expect(exchangeRosterStream(stream, removed, offered => offered, 5000)).rejects.not.toThrow(/timed out/);
     await expect.poll(() => readConfig(db), { timeout: 5000 }).toBeNull();
     await expect.poll(async () => (await probeBridge(ctx.dataDir)).kind, { timeout: 5000 }).toBe('not-running');
     expect(readStatus(ctx.dataDir)?.membership_departure).toEqual({ network_id: roster.network_id, owner_id: owner.machineId, machine_id: member.machineId });
-  } finally {
-    connection?.close(0n, toBytes('test cleanup')); await client.close();
+  } catch (error) {
+    errors.push(error);
+  }
+  const hadFailure = errors.length > 0;
+  if (hadFailure) reportBridgeFailure([ctx.dataDir]);
+  for (const dispose of close) {
+    try { await dispose(); } catch (error) { errors.push(error); }
+  }
+  try {
     const stopped = await stopBridge(ctx);
     fs.writeFileSync(path.join(home, 'membership-revoke-result.json'), JSON.stringify({ pid: started?.pid, stopped, status: readStatus(ctx.dataDir) }), { mode: 0o600, flag: 'wx' });
     console.log(`Membership NET2 revocation evidence: ${home}/membership-revoke-result.json`);
-    db.close();
+  } catch (error) {
+    errors.push(error);
   }
+  if (!hadFailure && errors.length) reportBridgeFailure([ctx.dataDir]);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Membership revocation test and cleanup failures', { cause: errors[0] });
 }, 120_000);

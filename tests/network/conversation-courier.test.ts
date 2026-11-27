@@ -12,7 +12,7 @@ import { rememberPeer } from '../../src/network/courier.js';
 import { stopBridge } from '../../src/network/bridge-control.js';
 import { readStatus } from '../../src/network/bridge-state.js';
 import { networkMetadataPath, type NetworkContext } from '../../src/network/types.js';
-import { installRuntimeOnce, linkRuntime, type Tree } from './helpers.js';
+import { installRuntimeOnce, linkRuntime, reportBridgeFailure, type Tree } from './helpers.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
 
 // Actual compiled public CLI, two native iroh processes on this machine, relay off.
@@ -24,6 +24,7 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
   const contexts: NetworkContext[] = [];
   const pids: number[] = [];
   const events: unknown[] = [];
+  const errors: unknown[] = [];
   const run = (ctx: NetworkContext, entry: string, args: string[], input = '', session = '') => new Promise<string>((resolve, reject) => {
     const child = spawn(process.execPath, [entry, ...args], { cwd: root, env: { ...ctx.env, MEMESH_DIR: ctx.dataDir,
       MEMESH_DB_PATH: ctx.dbPath, CODEX_THREAD_ID: session, CLAUDE_CODE_SESSION_ID: '', CODEX_PLUGIN_ROOT: repo }, stdio: ['pipe','pipe','pipe'] });
@@ -62,20 +63,24 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
     const graphHashes: string[] = [];
     contexts.forEach((ctx, i) => {
       const db = openNetworkStore(ctx.dbPath);
-      insertConfig(db, { network_id: roster.network_id, owner_id: identities[0].machineId, machine_id: identities[i].machineId,
-        machine_name: members[i].name, person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
-      db.exec("CREATE TABLE memory_canary (body TEXT); INSERT INTO memory_canary VALUES ('PRIVATE_MEMORY_MUST_NOT_CROSS')");
-      db.pragma('wal_checkpoint(TRUNCATE)'); db.close();
+      try {
+        insertConfig(db, { network_id: roster.network_id, owner_id: identities[0].machineId, machine_id: identities[i].machineId,
+          machine_name: members[i].name, person: 'synthetic', relay_url: 'off', roster_json: signed.roster_json, roster_signature: signed.signature }, Date.now());
+        db.exec("CREATE TABLE memory_canary (body TEXT); INSERT INTO memory_canary VALUES ('PRIVATE_MEMORY_MUST_NOT_CROSS')");
+        db.pragma('wal_checkpoint(TRUNCATE)');
+      } finally { try { db.close(); } catch (error) { errors.push(error); } }
       graphHashes.push(createHash('sha256').update(fs.readFileSync(ctx.dbPath)).digest('hex'));
       const store = new ConversationMessages({ file: path.join(ctx.dataDir, 'messages.db'), machine: members[i].name });
-      store.register({ id: i ? 'session-b' : 'session-a', host: 'codex', machine: members[i].name, pid: process.pid, wake: {} }); store.close();
+      try { store.register({ id: i ? 'session-b' : 'session-a', host: 'codex', machine: members[i].name, pid: process.pid, wake: {} }); }
+      finally { try { store.close(); } catch (error) { errors.push(error); } }
     });
     // Public up migrates the old metadata once; serving processes use only the new file.
     for (const ctx of contexts) await run(ctx, tree.cli, ['network', 'up']);
     await wait(async () => contexts.every(c => Boolean(readStatus(c.dataDir)?.direct_addresses.length)), 'addresses');
     contexts.forEach((ctx, i) => {
       const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-      rememberPeer(db, identities[1-i].machineId, null, readStatus(contexts[1-i].dataDir)!.direct_addresses, Date.now()); db.close();
+      try { rememberPeer(db, identities[1-i].machineId, null, readStatus(contexts[1-i].dataDir)!.direct_addresses, Date.now()); }
+      finally { try { db.close(); } catch (error) { errors.push(error); } }
     });
     await wait(async () => (await cli(a, 'session-a', ['discover'])).conversations.some((c: {address: string}) => c.address === 'session-b@beta'), 'presence-a');
     await wait(async () => (await cli(b, 'session-b', ['discover'])).conversations.some((c: {address: string}) => c.address === 'session-a@alpha'), 'presence-b');
@@ -104,18 +109,34 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
       expect(after).toBe(graphHashes[i]);
       expect(fs.readFileSync(path.join(path.dirname(ctx.dataDir), 'frames.jsonl'), 'utf8')).not.toContain('PRIVATE_MEMORY_MUST_NOT_CROSS');
     });
-  } finally {
-    for (const ctx of contexts) {
-      const pid = readStatus(ctx.dataDir)?.pid;
-      try {
-        const stopped = await stopBridge(ctx);
-        let terminal = pid === undefined;
-        if (pid) { try { process.kill(pid,0); } catch (e) { terminal = (e as NodeJS.ErrnoException).code === 'ESRCH'; } }
-        events.push({ bridgePid: pid, stopped, terminal });
+  } catch (error) {
+    errors.unshift(error);
+  }
+  const directories = contexts.map(ctx => ctx.dataDir);
+  const hadFailure = errors.length > 0;
+  if (hadFailure) reportBridgeFailure(directories);
+  for (const [index, ctx] of contexts.entries()) {
+    const pid = readStatus(ctx.dataDir)?.pid;
+    try {
+      const stopped = await stopBridge(ctx);
+      let terminal = pid === undefined;
+      if (pid) {
+        try { process.kill(pid, 0); }
+        catch (error) { terminal = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
       }
-      catch (error) { events.push({ bridgePid: pid, cleanupError: String(error) }); }
+      events.push({ context: index + 1, bridgePid: pid, stopped, terminal });
+    } catch (error) {
+      errors.push(error);
+      events.push({ context: index + 1, bridgePid: pid, cleanupFailed: true });
     }
+  }
+  try {
     fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ events, pids, root }), { mode: 0o600, flag: 'wx' });
     console.log(`Private courier evidence: ${root}/result.json`);
+  } catch (error) {
+    errors.push(error);
   }
+  if (!hadFailure && errors.length) reportBridgeFailure(directories);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'Courier test and cleanup failures', { cause: errors[0] });
 }, 180_000);

@@ -2303,9 +2303,9 @@ describe('the Hermes copy: what is kept, what is put back, what is cleaned up', 
       if (process.platform === 'win32') windowsAclFixture(provider, 'deny-read');
       else fs.chmodSync(provider, 0o000);
       expect(() => fs.readFileSync(provider)).toThrow(/EACCES|EPERM/);
-      expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringContaining('EACCES') });
+      expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringMatching(/EACCES|EPERM/) });
       const out = refreshInstalls(input('# v2\n', '2.0.0'));
-      expect(out).toMatchObject([{ outcome: 'failed', reason: expect.stringContaining('EACCES') }]);
+      expect(out).toMatchObject([{ outcome: 'failed', reason: expect.stringMatching(/EACCES|EPERM/) }]);
       expect(out[0].reason).not.toContain('changed after MeMesh installed it');
       expect(out[0].reason).not.toContain('not installed by MeMesh');
     } finally {
@@ -2316,7 +2316,7 @@ describe('the Hermes copy: what is kept, what is put back, what is cleaned up', 
       if (process.platform === 'win32') windowsAclFixture(marker, 'deny-read');
       else fs.chmodSync(marker, 0o000);
       expect(() => fs.readFileSync(marker)).toThrow(/EACCES|EPERM/);
-      expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringContaining('EACCES') });
+      expect(inspectInstall(target)).toMatchObject({ state: 'unreadable', why: expect.stringMatching(/EACCES|EPERM/) });
     } finally {
       if (process.platform === 'win32') windowsAclFixture(marker, 'restore-read');
       else fs.chmodSync(marker, 0o644);

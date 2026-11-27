@@ -1,3 +1,6 @@
+import { execFileSync } from 'node:child_process';
+import path from 'node:path';
+import { build } from 'esbuild';
 import { describe, it, expect } from 'vitest';
 import { getDatabase } from '../../src/db.js';
 import { forget, learn, remember } from '../../src/core/operations.js';
@@ -5,7 +8,7 @@ import { computePatterns } from '../../src/core/patterns.js';
 import { compressWeeklyNoise } from '../../src/core/lifecycle.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
-useTestDatabase('memesh-patterns-');
+const fixture = useTestDatabase('memesh-patterns-');
 
 describe('computePatterns', () => {
   it('returns all pattern categories for empty database', () => {
@@ -350,19 +353,34 @@ describe('computePatterns: each rule holds on its own', () => {
     expect(computePatterns(getDatabase(), ['learningAreas']).learningAreas.map((l) => l.tag).sort()).toEqual(['from-bug-fix', 'from-lesson', 'from-mistake']);
   });
 
-  it('hour and weekday are in local time', () => {
-    const before = process.env.TZ;
-    process.env.TZ = 'Asia/Taipei';
-    try {
-      remember({ name: 'late', type: 'concept', observations: ['x'] });
-      // 23:30 UTC on Sunday 2026-03-01 is 07:30 on Monday 2026-03-02 in Taipei.
-      getDatabase().exec("UPDATE entities SET created_at = '2026-03-01 23:30:00' WHERE name = 'late'");
-      const s = computePatterns(getDatabase(), ['workSchedule']).workSchedule;
-      expect(s.hourDistribution).toEqual([{ hour: 7, count: 1 }]);
-      expect(s.dayDistribution).toEqual([{ dayNum: 1, count: 1 }]);
-    } finally {
-      if (before === undefined) delete process.env.TZ; else process.env.TZ = before;
-    }
+  it('hour and weekday are in local time', async () => {
+    remember({ name: 'late', type: 'concept', observations: ['x'] });
+    // Sunday 23:30 UTC is Monday 07:30 at UTC+8.
+    getDatabase().exec("UPDATE entities SET created_at = '2026-03-01 23:30:00' WHERE name = 'late'");
+    const { outputFiles } = await build({
+      stdin: {
+        resolveDir: path.resolve(import.meta.dirname, '../..'),
+        contents: `
+          import { DatabaseSync } from 'node:sqlite';
+          import { computePatterns } from './src/core/patterns.ts';
+          const db = new DatabaseSync(process.argv[2], { readOnly: true });
+          try {
+            console.log(JSON.stringify(computePatterns(db, ['workSchedule']).workSchedule));
+          } finally {
+            db.close();
+          }
+        `,
+      },
+      bundle: true, platform: 'node', format: 'esm', write: false,
+    });
+    // SQLite reads local time via the C runtime. Give it a fixed offset at process startup.
+    const output = execFileSync(process.execPath, ['--input-type=module', '-', fixture.dbPath], {
+      env: { ...process.env, TZ: 'TPE-8' },
+      input: outputFiles[0].text, encoding: 'utf8', timeout: 10_000,
+    });
+    const s = JSON.parse(output);
+    expect(s.hourDistribution).toEqual([{ hour: 7, count: 1 }]);
+    expect(s.dayDistribution).toEqual([{ dayNum: 1, count: 1 }]);
   });
 
   it('each category is returned when asked for alone, and an empty list means all', () => {

@@ -39,7 +39,7 @@ describe('empty briefing: the first-memory sentence and a read-only briefing', (
   });
   afterEach(() => {
     removeTempDir(home);
-    for (const repo of repos.splice(0)) fs.rmSync(path.dirname(repo), { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    for (const repo of repos.splice(0)) removeTempDir(path.dirname(repo));
   });
 
   function env(h: string, level = 'minimal'): NodeJS.ProcessEnv {

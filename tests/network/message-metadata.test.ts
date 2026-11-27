@@ -18,7 +18,7 @@ import { bridgeUp } from '../../src/network/operations.js';
 import { serve } from '../../src/network/bridge-serve.js';
 import { stopBridge } from '../../src/network/bridge-control.js';
 import { readStatus } from '../../src/network/bridge-state.js';
-import { installRuntimeOnce, linkRuntime, type Tree } from './helpers.js';
+import { installRuntimeOnce, linkRuntime, reportBridgeFailure, type Tree } from './helpers.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
 import { expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 
@@ -159,19 +159,31 @@ it('ordinary SessionStart bootstraps joined legacy metadata in a short-lived pub
   const f = fixture();
   const repo = path.resolve('.');
   const tree: Tree = {root:repo,assetsDir:path.join(repo,'dist/network'),bridgeEntry:path.join(repo,'dist/network/bridge.js'),cli:path.join(repo,'dist/transports/cli/cli.js')};
-  const runtime = installRuntimeOnce(tree);
-  const db = openNetworkStore(f.ctx.dbPath); db.prepare('UPDATE agent_network_config SET machine_id=?,machine_name=?').run(f.owner.machineId,'owner'); db.close();
   const env = buildIsolatedRuntimeEnv(process.env,{runtimeHome:f.root,memeshDir:f.root,dbPath:f.ctx.dbPath});
   Object.assign(env,{MEMESH_AUTO_UPDATE:'off',MEMESH_SKIP_UPDATE_CHECK:'1',MEMESH_AUTO_CAPTURE:'false'});
-  const ctx = {...f.ctx,bridgeEntry:tree.bridgeEntry,assetsDir:tree.assetsDir,env}; linkRuntime(ctx,runtime);
+  const ctx = {...f.ctx,bridgeEntry:tree.bridgeEntry,assetsDir:tree.assetsDir,env};
+  const errors: unknown[] = [];
   try {
+    const runtime = installRuntimeOnce(tree);
+    const db = openNetworkStore(f.ctx.dbPath);
+    try { db.prepare('UPDATE agent_network_config SET machine_id=?,machine_name=?').run(f.owner.machineId,'owner'); }
+    finally { try { db.close(); } catch (error) { errors.push(error); } }
+    linkRuntime(ctx,runtime);
     const run = spawnSync(process.execPath,[path.join(repo,'scripts/hooks/messages.js')],{env:{...env,CODEX_PLUGIN_ROOT:repo,MEMESH_HOOK_HOST:'codex'},
       encoding:'utf8',timeout:3000,input:JSON.stringify({session_id:'auto',hook_event_name:'SessionStart'})});
     expect(run.status,run.stderr).toBe(0);
     await expect.poll(() => readStatus(f.root)?.state,{timeout:10000}).toBe('running');
     expect(readPublicNetworkContext(f.root)?.self.id).toBe(f.owner.machineId);
     expect(fs.readFileSync(path.join(f.root,'hook-outcomes.jsonl'),'utf8')).toContain('network-starting');
-  } finally { await stopBridge(ctx); }
+  } catch (error) {
+    errors.unshift(error);
+  }
+  const hadFailure = errors.length > 0;
+  if (hadFailure) reportBridgeFailure([ctx.dataDir]);
+  try { await stopBridge(ctx); } catch (error) { errors.push(error); }
+  if (!hadFailure && errors.length) reportBridgeFailure([ctx.dataDir]);
+  if (errors.length === 1) throw errors[0];
+  if (errors.length > 1) throw new AggregateError(errors, 'SessionStart test and cleanup failures', { cause: errors[0] });
 },60000);
 
 it('presence is complete byte-bounded batches and does not delete earlier or offline registrations', () => {

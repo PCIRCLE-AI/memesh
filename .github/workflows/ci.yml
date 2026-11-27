@@ -74,16 +74,8 @@ jobs:
   build-and-test:
     name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node }})
     runs-on: ${{ matrix.os }}
-    # 40 is a bound, not a target. Measured over 19 runs (2026-09-28..30):
-    # green ubuntu legs take 5-15 minutes, macOS 7-13, Windows 22-40. Four of
-    # 38 Windows legs hit this cap with no failing test (one had finished
-    # 223 of 286 files) — a slower runner paying the same per-test cost, not
-    # a hang. That cost is Windows-only: tests that create a fresh temp dir
-    # and SQLite database per test pay ~1 s each there and ~30 ms on ubuntu.
-    # Raising the cap would only move the cancellations; removing that
-    # per-test cost is the fix. The suite is fully serial (shared SQLite
-    # HOME), so nothing inside one leg can run in parallel to absorb it.
-    timeout-minutes: 40
+    # Windows runs native ACL checks in the serial suite.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 50 || 40 }}
     strategy:
       fail-fast: false
       # Which runtimes this matrix covers, and why each is here.

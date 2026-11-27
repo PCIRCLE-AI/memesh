@@ -9,6 +9,7 @@ import { build } from 'esbuild';
 import { ensureRuntime } from '../../src/network/runtime.js';
 import { ensureNetworkDir } from '../../src/network/identity.js';
 import type { IrohModule } from '../../src/network/iroh-types.js';
+import { logPath, readStatus } from '../../src/network/bridge-state.js';
 import { runtimeDir, type NetworkContext } from '../../src/network/types.js';
 
 const repoRoot = path.resolve(import.meta.dirname, '..', '..');
@@ -89,4 +90,47 @@ if (process.env.ARGV_LOG) fs.appendFileSync(process.env.ARGV_LOG, JSON.stringify
 
 export function removeTree(target: string): void {
   fs.rmSync(target, { recursive: true, force: true, maxRetries: 5, retryDelay: 200 });
+}
+
+/** Read only the case's own directories and print stage names, never log payloads. */
+export function reportBridgeFailure(dataDirs: readonly string[]): void {
+  const events = new Set([
+    'running', 'stopped', 'exit_already_running', 'exit_holder_unresponsive', 'exit_database',
+    'exit_not_joined', 'exit_identity', 'exit_native', 'exit_bind', 'control_problem',
+    'control_socket_unreadable', 'control_socket_lost', 'status_write_failed', 'close_failed',
+    'presence_unreachable', 'courier_failed', 'connection_failed', 'frame_received', 'frame_sent',
+  ]);
+  for (const [index, dataDir] of dataDirs.entries()) {
+    const status = readStatus(dataDir);
+    const logTail: string[] = [];
+    try {
+      const fd = fs.openSync(logPath(dataDir), 'r');
+      try {
+        const size = fs.fstatSync(fd).size;
+        const buffer = Buffer.alloc(Math.min(size, 4096));
+        const bytes = fs.readSync(fd, buffer, 0, buffer.length, size - buffer.length);
+        for (const line of buffer.toString('utf8', 0, bytes).split('\n').slice(-13)) {
+          if (line.startsWith('The network bridge failed before it could start:')) {
+            logTail.push('failed_before_start');
+          } else {
+            try {
+              const event = JSON.parse(line)?.event;
+              if (events.has(event)) logTail.push(event);
+            } catch { /* the tail can start or end in the middle of a line */ }
+          }
+        }
+      } finally { fs.closeSync(fd); }
+    } catch { /* diagnostic I/O must not replace the test failure */ }
+    console.error('Bridge failure evidence:', JSON.stringify({
+      context: index + 1,
+      status: status ? {
+        state: ['starting', 'running', 'stopped', 'failed'].find(state => state === status.state),
+        reportedPid: Number.isSafeInteger(status.pid) ? status.pid : null,
+        directAddressCount: Array.isArray(status.direct_addresses) ? status.direct_addresses.length : null,
+        framesReceived: Number.isSafeInteger(status.frames_received) ? status.frames_received : null,
+        hasLastError: Boolean(status.last_error),
+      } : null,
+      logTail,
+    }));
+  }
 }

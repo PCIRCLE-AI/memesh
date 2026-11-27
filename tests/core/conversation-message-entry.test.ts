@@ -6,6 +6,7 @@ import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { installLegacyMessageSchema, seedLegacyMessage, seedLegacyReceipt } from '../helpers/agent-session-fixture.js';
 import { LEGACY_CONVERSATION_TABLES } from '../../src/core/conversation-message-migration.js';
+import { withWindowsPermissionTrace } from '../helpers/windows-permission-trace.js';
 
 const NOW = Date.parse('2026-11-13T12:00:00.000Z');
 const roots: string[] = [];
@@ -124,7 +125,7 @@ it('explicit destination without source ignores an ambient invalid graph, while 
   expect(f.open({ file: path.join(f.root, 'explicit.db') }).status()).toEqual([]);
   expect(fs.readFileSync(f.graph, 'utf8')).toBe('not SQLite');
   fs.unlinkSync(f.graph);
-  expect(f.open().status()).toEqual([]);
+  expect(withWindowsPermissionTrace(() => f.root, () => f.open()).status()).toEqual([]);
   expect(fs.existsSync(f.graph)).toBe(false);
 });
 

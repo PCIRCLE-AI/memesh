@@ -8,6 +8,7 @@ import { databaseFiles, requirePrivateWritableDirectory } from '../../src/core/f
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { windowsAclFixture } from '../helpers/permissions.js';
+import { withWindowsPermissionTrace } from '../helpers/windows-permission-trace.js';
 import { parseTraceLine, traceScript } from '../../scripts/diagnose-windows-messages-entry.mjs';
 import { claimWindowsHookState, prepareWindowsHookState, windowsHookStateDeadline } from '../../scripts/hooks/_shared.js';
 
@@ -119,41 +120,6 @@ describe('Windows permissions bridge', () => {
 
 const fixture = windowsAclFixture;
 
-function withFailureTrace<T>(action: () => T): T {
-  let traceFile: string | undefined;
-  let exec: ReturnType<typeof vi.spyOn> | undefined;
-  const inherited = process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE;
-  try {
-    traceFile = path.join(directory(), '.windows-acl-trace');
-    fs.writeFileSync(traceFile, '', { mode: 0o600, flag: 'wx' });
-    process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE = traceFile;
-    const original = childProcess.execFileSync;
-    exec = vi.spyOn(childProcess, 'execFileSync').mockImplementation(((command, args, options) => {
-      const argv = Array.isArray(args) ? args : [];
-      const index = argv.indexOf('-EncodedCommand');
-      let traced: string | null = null;
-      try { traced = index >= 0 ? traceScript(String(argv[index + 1])) : null; } catch {}
-      return original(command, traced ? [...argv.slice(0, index + 1), traced, ...argv.slice(index + 2)] : argv, options);
-    }) as typeof childProcess.execFileSync);
-  } catch { /* observation setup must leave an already-created trace cleanable */ }
-  try {
-    return action();
-  } catch (error) {
-    try {
-      if (traceFile) {
-        const events = fs.readFileSync(traceFile, 'utf8').split(/\r?\n/).map(parseTraceLine).filter(Boolean).slice(-40);
-        process.stderr.write(`MEMESH_WINDOWS_ACL_TRACE ${JSON.stringify(events)}\n`);
-      }
-    } catch { /* observation cannot replace the original failure */ }
-    throw error;
-  } finally {
-    try { exec?.mockRestore(); } catch {}
-    try { if (traceFile) fs.rmSync(traceFile, { force: true }); } catch {}
-    if (inherited === undefined) delete process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE;
-    else process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE = inherited;
-  }
-}
-
 describe('Windows permission diagnostic projection', () => {
   it('instruments the separate protection persist and reread phases', () => {
     vi.stubEnv('SystemRoot', 'C:\\Windows');
@@ -180,7 +146,7 @@ describe('Windows permission diagnostic projection', () => {
     if (fault === 'setup') vi.spyOn(fs, 'writeFileSync').mockImplementationOnce(() => { throw new Error('trace setup failed'); });
     else vi.spyOn(fs, 'rmSync').mockImplementationOnce(() => { throw new Error('trace cleanup failed'); });
     let caught: unknown;
-    try { withFailureTrace(() => { throw error; }); } catch (failure) { caught = failure; }
+    try { withWindowsPermissionTrace(directory, () => { throw error; }); } catch (failure) { caught = failure; }
     expect(caught).toBe(error);
     expect(process.env.MEMESH_WINDOWS_MESSAGES_PHASE_FILE).toBe(prior);
     expect(vi.isMockFunction(childProcess.execFileSync)).toBe(false);
@@ -252,7 +218,7 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
     try {
       const before = fixture(dir, 'read').rules.filter(rule => rule.type === 'Deny');
       expect(before.length).toBeGreaterThan(0);
-      expect(() => withFailureTrace(() => requirePrivateWritableDirectory(dir, 'messages must remain owner-private'))).toThrow(/Cannot verify private Windows permissions/);
+      expect(() => withWindowsPermissionTrace(directory, () => requirePrivateWritableDirectory(dir, 'messages must remain owner-private'))).toThrow(/Cannot verify private Windows permissions/);
       expect(fixture(dir, 'read').rules.filter(rule => rule.type === 'Deny')).toEqual(before);
       expect(fs.readdirSync(dir)).toEqual([]);
     } finally { fixture(dir, 'restore'); }
@@ -264,7 +230,7 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
     fs.writeFileSync(db, 'fixture');
     fs.chmodSync(db, 0o444);
     try {
-      withFailureTrace(() => {
+      withWindowsPermissionTrace(directory, () => {
         makeWindowsPathsPrivate([db]);
         expect(fs.statSync(db).mode & 0o200).toBe(0);
       });
@@ -281,7 +247,7 @@ describe.runIf(process.platform === 'win32')('actual Windows private paths', () 
       const before = fixture(dir, 'read');
       expect(before.protected).toBe(false);
       expect(before.rules).toContainEqual(expect.objectContaining({ sid: 'S-1-1-0', type: 'Allow' }));
-      withFailureTrace(() => {
+      withWindowsPermissionTrace(directory, () => {
         store = new ConversationMessages({ file: path.join(dir, 'messages.db') });
         const acl = fixture(dir, 'read');
         expect(acl.protected).toBe(true);
