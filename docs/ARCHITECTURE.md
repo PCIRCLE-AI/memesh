@@ -36,7 +36,7 @@ and credential redaction is a heuristic rather than a guarantee.
 The package is intentionally local-first and inspectable:
 - one SQLite database under the user's control
 - no cloud service required
-- Claude Code hook integration for session-start, pre-edit recall, waiting-message reminders, post-commit capture, session-summary learning, and pre-compact save
+- Claude Code hook integration for session-start, pre-edit recall, waiting-message reminders, post-commit capture and conversation capture on Stop
 - deterministic capture rules and local FTS5 retrieval with no provider setup
 
 This repository is the standalone local package. Hosted workspace and enterprise operating-system products are intentionally out of scope for this package architecture.
@@ -450,9 +450,9 @@ Foreign key cascades: deleting an entity automatically deletes its observations,
 
 ## Hook Architecture
 
-Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares its commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field. It includes the shared `messages.js` command and adds two Codex-only PostToolUse commands (`codex-busy-message-notice.js` and `codex-plan-activity.js`); a parity test checks the shared commands.
+Hook commands are defined in `hooks/hooks.json`: nine run at Claude Code lifecycle events, while the separate Codex SessionStart/SessionEnd lifecycle registers and retires eligible ordinary Codex CLI sessions. The Codex plugin declares its commands inline in `.codex-plugin/plugin.json` so it does not parse Claude's Mod-only `modules` field. It includes the shared `messages.js` command and adds two Codex-only PostToolUse commands (`codex-busy-message-notice.js` and `codex-plan-activity.js`); a parity test checks the shared commands.
 
-### Hook Commands (11 hooks)
+### Hook Commands (9 hooks)
 
 | Hook | Event | Purpose |
 |------|-------|---------|
@@ -460,10 +460,8 @@ Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifec
 | session-start.js | SessionStart | Auto-recall + record injected IDs + noise compression + archive of unused auto-captured memories + channel-flag warning; records the session of its `claude` process and, on `/clear`, links the new id to the old one (#497) |
 | messages.js | SessionStart, UserPromptSubmit | Deliver complete queued conversation messages; keep them queued if stdout fails |
 | post-commit.js | PostToolUse (Bash) | Record git commits with diff stats |
-| decision-nudge.js | PostToolUse (ExitPlanMode/AskUserQuestion) | Remind the model to `remember` a decision just made — once per tool per session |
-| session-summary.js | Stop | Auto-capture session knowledge + recall effectiveness tracking |
+| session-summary.js | Stop | Capture assistant replies, import notes and track recall use |
 | stop-message-gate.js | Stop | Claude-only: block with complete pending conversation envelopes, record delivery after output, and retain bounded repeat/pipe-failure safeguards; Codex skips |
-| pre-compact.js | PreCompact | Save knowledge before compaction |
 | user-prompt-intent.js | UserPromptSubmit | Capture accepted user prompt text with secret redaction; the separate message hook supplies conversation envelopes |
 | prompt-recall.js | UserPromptSubmit | Bring content for at most two matching memories, at most one assistant conversation, within a 4 KiB UTF-8 context budget; opening title indexes do not suppress content |
 | guard-check.js | PreToolUse (Bash) | Fire accepted lesson-guards against the command about to run (warn-only; fires counted) |
@@ -509,18 +507,12 @@ Hook commands are defined in `hooks/hooks.json`: eleven run at Claude Code lifec
 - **Matcher**: `Bash` (filters for git commit commands)
 - **Behavior**: Detects git commit messages from tool output, creates a `commit` entity with the commit subject as its title and first observation, tags with the project name; includes diff stats (files changed, insertions, deletions). Like every hook write (`captureEntity` in `_shared.js`), credential-shaped text in the title and observations is replaced with `***REDACTED***` before it is stored (#523)
 
-### Decision Nudge (`scripts/hooks/decision-nudge.js`)
-
-- **Trigger**: `PostToolUse` event on `ExitPlanMode` and `AskUserQuestion` tools
-- **Matcher**: `ExitPlanMode|AskUserQuestion`
-- **Behavior**: The read side of MeMesh is automatic; the write side was not (#277) — an agent could make several decisions in a session and store none of them until the user asked. This hook fires at the two tool calls where a decision most likely just happened (a plan got approved, a question got answered) and emits a one-line `additionalContext` reminder to call `remember` for the decision, and to record the goal and next step with `task_state` if it changes what the agent is working on. Rate-limited to once per tool per session via a private flag file under `~/.memesh/decision-nudge-flags/`. Never opens the database — it only reminds, it does not capture — so it stays fast and cannot be slowed by lock contention. Fails silently (exit 0, no output) on malformed input or a missing/unsafe `session_id`.
-
-### Session Summary (`scripts/hooks/session-summary.js`)
+### Stop Conversation Capture (`scripts/hooks/session-summary.js`)
 
 - **Trigger**: `Stop` event (when Claude finishes responding)
 - **Matcher**: `*` (all sessions)
 - **Behavior**: Captures the assistant reply as described below. Recall-use accounting selects the exact session and project injection record under the database directory's `sessions/` folder. It credits timestamp-eligible assistant `[mem:id]` citations or tool-result `[mem-fetched:id]` retrievals for injected IDs once during the active counting window. Resumes retain prior credit; expiry after 24 hours of inactivity allows a new window without replaying old transcript rows. `recall_misses` stays unchanged because absence of a marker is not proof that the memory was unused. Opt-out via `MEMESH_AUTO_CAPTURE=false`
-- **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files and, separately, prints a remember nudge. The folder holds what the user and the agent wrote there; its notes are stored trusted (`ingestNoteDirectory({ trusted: true })`), and only when the folder belongs to the project of the payload's cwd (`memoryDirBelongsTo`: the folder is the one of the directory the session started in, which the transcript records); otherwise ingestion is skipped with its reason. A rewrite keeps a stored note's trust. A folder an earlier version had already read is read once more, so the notes stored then are made trusted in place by the same rule as a new note (a decision needs its `Why:`; a note whose file is gone is left) — after a verified copy of the database, `core/db-copy.ts`, with a `.json` record of the ids beside it (never removed); with no copy none is made trusted and the hook records an error. Each memory is made trusted this way once at most (`note_trust_lifted:<dirId>`, written before the copy), so an undo lasts. A `--notes <dir>` ingestion stays untrusted. `ingestNoteDirectory` takes `trusted` with no default, and `memesh import --notes` passes it only with `--trust`. Opening the database changes no note's trust: a note stored untrusted becomes trusted only through that Stop read, after the copy. `source:` tags are reserved: `remember` over MCP, HTTP and the CLI refuses them (`refineRemember` in `transports/schemas.ts`). Only the ingestion is a write, and only it is gated on `MEMESH_AUTO_CAPTURE=false`; the nudge sits outside that check.
+- **On the same Stop (#324)**, `scripts/hooks/_stop-notes.js` also ingests the project's memory directory as note files. The folder holds what the user and the agent wrote there; its notes are stored trusted (`ingestNoteDirectory({ trusted: true })`), and only when the folder belongs to the project of the payload's cwd (`memoryDirBelongsTo`: the folder is the one of the directory the session started in, which the transcript records); otherwise ingestion is skipped with its reason. A rewrite keeps a stored note's trust. A folder an earlier version had already read is read once more, so the notes stored then are made trusted in place by the same rule as a new note (a decision needs its `Why:`; a note whose file is gone is left) — after a verified copy of the database, `core/db-copy.ts`, with a `.json` record of the ids beside it (never removed); with no copy none is made trusted and the hook records an error. Each memory is made trusted this way once at most (`note_trust_lifted:<dirId>`, written before the copy), so an undo lasts. A `--notes <dir>` ingestion stays untrusted. `ingestNoteDirectory` takes `trusted` with no default, and `memesh import --notes` passes it only with `--trust`. Opening the database changes no note's trust: a note stored untrusted becomes trusted only through that Stop read, after the copy. `source:` tags are reserved: `remember` over MCP, HTTP and the CLI refuses them (`refineRemember` in `transports/schemas.ts`). Ingestion respects `MEMESH_AUTO_CAPTURE=false`.
 - **Also on the same Stop**, the hook stores the last assistant reply as a project- and session-tagged `conversation`, with credential redaction and copied agent-message prose omitted. If the payload lacks the reply, it falls back to the transcript tail. It retains the full cleaned reply and does not replace a project `session-handoff` row. Existing handoff rows remain ordinary memories under normal trust, archive and project rules. SessionStart and core `briefing` select the latest trusted active assistant conversation for up to three sessions across project aliases, ordered by observation id. Each rendered tail including header and handle fits 600 UTF-8 bytes; old and unknown ages remain visible. Stop capture omits prose copied verbatim from agent-message payloads in the last 256 KiB of the transcript, matching at least 24 consecutive characters; shorter or reworded quotes are not detected (#469).
 
 ### Stop Message Gate (`scripts/hooks/stop-message-gate.js`) (#468)
@@ -534,12 +526,6 @@ The Codex Bash PostToolUse hook emits complete pending conversation envelopes as
 ### Legacy identity helpers and channel warning
 
 Conversation hooks use registered native session IDs. The old router, detached Codex companion and principal inbox instructions are retired. SessionStart warns about missing or mistyped Claude Channel flags; this warning does not establish message delivery.
-
-### Pre-Compact (`scripts/hooks/pre-compact.js`)
-
-- **Trigger**: `PreCompact` event (before context compaction)
-- **Matcher**: `*` (all sessions)
-- **Behavior**: Saves a snapshot of session knowledge before context is compacted, ensuring memories are not lost during long sessions; opt-out via `MEMESH_AUTO_CAPTURE=false`. A payload whose `session_id` or `cwd` is missing, blank or not text is skipped and the reason recorded, rather than filed under a shared session or the hook's own directory. The compaction reason is redacted before it is cut into the title
 
 ### User Prompt Intent (`scripts/hooks/user-prompt-intent.js`)
 
@@ -561,10 +547,9 @@ Conversation hooks use registered native session IDs. The old router, detached C
 
 A heartbeat (`hook_runs`) proves a hook ran; it cannot tell a hook that decided
 there was nothing to save from a hook whose capture path is broken. So the
-capture hooks (`post-commit`, `session-summary`, `pre-compact`,
-`pre-edit-recall`, `user-prompt-intent`, `prompt-recall`, `decision-nudge`, `guard-check`,
-`session-start`, `stop-message-gate`) — and the Stop hook's `note-ingest`,
-`remember-nudge` and `handoff-capture` parts and the Codex
+capture hooks (`post-commit`, `session-summary`,
+`pre-edit-recall`, `user-prompt-intent`, `prompt-recall`, `guard-check`,
+`session-start`, `stop-message-gate`) — plus `note-ingest` and the Codex
 `codex-busy-message-notice` and `codex-plan-activity` hooks — also append one outcome record per run to
 `hook-outcomes.jsonl` beside the database, through `recordHookOutcome` in
 `scripts/hooks/_shared.js`:
@@ -595,10 +580,7 @@ The verdict lives in `src/core/capture-liveness.ts`, a leaf module that
 `scripts/generate-hook-core.mjs` copies next to the hooks, so `memesh doctor`
 and the SessionStart banner reach the same verdict from the same code. Doctor
 adds the database side (auto-capture entities per type, week over week, and the
-`hook_runs` heartbeats); the banner reads only the JSONL. Only post-commit,
-session-summary and pre-compact can be "silent", because only their triggers
-imply a write is due; only session-summary can FAIL, because only its trigger
-(a session ending) is guaranteed. A hook with an `error` record among its 5
+`hook_runs` heartbeats); the banner reads only the JSONL. Only commit and Stop capture are checked for silence. A Stop without an assistant reply does not count toward silence. A hook with an `error` record among its 5
 most recent triggered runs makes the verdict PASS_WITH_CONCERNS; the one with
 the most is named in doctor and the banner, ahead of silence (#555). The `--json` shape is in
 [API_REFERENCE.md](api/API_REFERENCE.md#memesh-doctor--capture-liveness).
@@ -608,7 +590,7 @@ Two gates keep this honest. `npm run audit:hook-outcomes`
 exit in a capture hook has no outcome record before it, or when session-start
 writes to stdout anywhere but its single `output()` funnel. `npm run
 qa:post-release` runs the shipped hooks against a throwaway graph after a
-release and requires one captured commit and one captured session insight.
+release and requires one captured commit and one captured assistant conversation.
 The broader `npm run qa:live-journey -- --core-only` composes the daily memory,
 SessionStart, quiet-commit, Stop, and packed-upgrade paths into a v4 receipt.
 Real Codex and Claude release receipts run the same five rows before their
@@ -768,7 +750,7 @@ Session with errors
 | Component | File | Purpose |
 |-----------|------|---------|
 | Lesson Engine | `src/core/lesson-engine.ts` | Structured lesson CRUD + upsert dedup |
-| Stop Hook Integration | `scripts/hooks/session-summary.js` | Captures bounded session evidence with deterministic rules |
+| Stop Hook Integration | `scripts/hooks/session-summary.js` | Captures the redacted assistant reply and imports project notes |
 | Proactive Warnings | `scripts/hooks/session-start.js` | Shows known lessons at session start |
 | Learn Tool | All transports | Explicit lesson creation (MCP tool) |
 

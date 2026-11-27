@@ -246,27 +246,16 @@ function utf8Length(text: string): number {
  */
 export const SILENT_HOOK_MIN_RUNS = 5;
 
-/**
- * Every hook that records an outcome. Doctor reports a row for each, and a
- * record naming any other hook is rejected on read (see parseHookOutcomeLine).
- */
+/** Active outcome writers. The parser also recognizes retired hook history. */
 export const CAPTURE_HOOKS = [
   'messages',
   'post-commit',
   'session-summary',
-  'pre-compact',
   'pre-edit-recall',
   'user-prompt-intent',
-  'decision-nudge',
   'guard-check',
   'session-start',
-  // #324: the two halves of Stop-side note work, recorded by the Stop hook
-  // (scripts/hooks/_stop-notes.js) under their own names so their skips do
-  // not dilute session-summary's window. Neither is SILENT_ELIGIBLE: most
-  // Stops correctly ingest nothing (no note changed) and nudge nothing (the
-  // turn made no decision), so "ran and did not write" is their normal state.
   'note-ingest',
-  'remember-nudge',
   // Claude Code's Stop gate (#468): blocks the stop once per waiting message
   // id not yet blocked for in this session, so a session that never polls
   // still learns a message is waiting. Fires on every Stop and correctly does
@@ -290,12 +279,14 @@ export const CAPTURE_HOOKS = [
   'prompt-recall',
 ] as const;
 
+const RETIRED_HOOKS = new Set(['pre-compact', 'decision-nudge', 'remember-nudge']);
+
 /**
  * The FAIL-eligible subset, and why it is ONE hook.
  *
  * A FAIL has to mean "this should have happened and did not". Only
  * session-summary's trigger is guaranteed: every session ends. post-commit
- * fires on a commit and pre-compact on a compaction, and a user who makes no
+ * fires on a commit, and a user who makes no
  * commits through the agent for a fortnight is not broken — reading their
  * silence as death would put a permanent unfixable red on an install that
  * works. Their silence caps at the PASS_WITH_CONCERNS the run counts
@@ -307,8 +298,8 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  * The hooks whose silence can mean anything.
  *
  * "Ran N times and wrote nothing" is only a signal when running implies a
- * write is due. That holds for post-commit (a commit happened), pre-compact
- * (a compaction happened), and session-summary (a session ended). It does NOT
+ * write is due. That holds for post-commit (a commit happened) and the Stop
+ * hook (assistant reply supplied or recoverable). It does NOT
  * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
  * which fire on every Bash call and skip almost every one of them BY DESIGN,
  * or for user-prompt-intent, which fires on every prompt and only reminds
@@ -316,7 +307,7 @@ export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
  * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
  * its job.
  */
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'] as const;
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary'] as const;
 
 /**
  * Skip reasons shared between the hooks that record them and the verdict
@@ -624,7 +615,7 @@ function valueEnd(s: string, i: number): number {
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-  'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+  'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows, SKIP_REASONS.noAssistantText],
   'session-start': [SKIP_REASONS.noSessionId],
   // #324: the Stop-side pair. Both fire on EVERY Stop, i.e. every turn, and
   // both correctly do nothing on most of them — a turn that edited no note
@@ -664,10 +655,8 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
  */
 export const UNCLASSIFIED_SKIP_HOOKS = [
   'messages',
-  'pre-compact',
   'pre-edit-recall',
   'user-prompt-intent',
-  'decision-nudge',
   'guard-check',
   'stop-message-gate',
   'codex-plan-activity',
@@ -729,7 +718,7 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   // shared directory, so this file can be PLANTED; its text reaches the
   // doctor report, the SessionStart banner and a pasted issue. A record for
   // a hook that does not exist is foreign by definition.
-  if (typeof rec.hook !== 'string' || !(CAPTURE_HOOKS as readonly string[]).includes(rec.hook)) return null;
+  if (typeof rec.hook !== 'string' || (!(CAPTURE_HOOKS as readonly string[]).includes(rec.hook) && !RETIRED_HOOKS.has(rec.hook))) return null;
   if (typeof rec.at !== 'string') return null;
   // An outcome this version does not know discards the WHOLE record — which
   // is why `notified` has to be readable before any hook emits it. Records
@@ -1009,7 +998,7 @@ export function summarizeTypeTrends(
   rows: Array<{ type: string; last7: number; prev7: number }>,
 ): TypeTrend[] {
   return rows
-    .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 }))
+    .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 && r.type !== 'session-insight' && r.type !== 'session-summary' }))
     .sort((a, b) => a.type.localeCompare(b.type));
 }
 
@@ -1061,7 +1050,7 @@ export function captureLivenessVerdict(input: CaptureLivenessInput): CaptureLive
   // #555: a recorded error is a failure the user may need to act on; it used
   // to be counted and never read, so a failing hook showed as healthy.
   // Only a hook still failing: one old error followed by clean runs is history.
-  const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+  const erroring = input.hooks.filter((h) => h.recentErrors > 0 && !RETIRED_HOOKS.has(h.hook))
     .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
 
   let status: CaptureLivenessStatus = 'PASS';

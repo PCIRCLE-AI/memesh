@@ -67508,7 +67508,7 @@ function parseHookOutcomeLine(line) {
   if (!parsed || typeof parsed !== "object")
     return null;
   const rec = parsed;
-  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook))
+  if (typeof rec.hook !== "string" || !CAPTURE_HOOKS.includes(rec.hook) && !RETIRED_HOOKS.has(rec.hook))
     return null;
   if (typeof rec.at !== "string")
     return null;
@@ -67669,7 +67669,7 @@ function summarizeOne(hook, records) {
   };
 }
 function summarizeTypeTrends(rows) {
-  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 })).sort((a, b) => a.type.localeCompare(b.type));
+  return rows.map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 && r.type !== "session-insight" && r.type !== "session-summary" })).sort((a, b) => a.type.localeCompare(b.type));
 }
 function captureLivenessVerdict(input2) {
   const withRecords = new Set(input2.hooks.filter((h) => h.runs > 0).map((h) => h.hook));
@@ -67677,7 +67677,7 @@ function captureLivenessVerdict(input2) {
   const deadHooks = graceOver ? (input2.neverRanHooks ?? []).filter((h) => FAIL_ELIGIBLE_HOOKS.includes(h) && !withRecords.has(h)).sort() : [];
   const silent = input2.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
   const stoppedTypes = input2.types.filter((t) => t.stopped);
-  const erroring = input2.hooks.filter((h) => h.recentErrors > 0).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
+  const erroring = input2.hooks.filter((h) => h.recentErrors > 0 && !RETIRED_HOOKS.has(h.hook)).sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
   let status = "PASS";
   if (deadHooks.length > 0)
     status = "FAIL";
@@ -67685,7 +67685,7 @@ function captureLivenessVerdict(input2) {
     status = "PASS_WITH_CONCERNS";
   return { status, silentHook: silent[0] ?? null, erroringHook: erroring[0] ?? null, stoppedTypes, deadHooks };
 }
-var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS, NOT_STORED_REASONS;
+var HOOK_OUTCOMES_FILENAME, HOOK_OUTCOMES_PER_HOOK, HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK, HOOK_OUTCOMES_ROTATE_BYTES, SILENT_HOOK_MIN_RUNS, CAPTURE_HOOKS, RETIRED_HOOKS, FAIL_ELIGIBLE_HOOKS, SILENT_ELIGIBLE_HOOKS, SKIP_REASONS, KNOWN_SKIP_REASONS, UNRECOGNISED_REASON, NOT_TRIGGERED_SKIP_REASONS, NEVER_RAN_GRACE_HOURS, RECORD_TEXT_MAX, FIXED_ERROR_REASONS, RECENT_ERROR_RUNS, NOT_STORED_REASONS;
 var init_capture_liveness = __esm({
   "dist/core/capture-liveness.js"() {
     "use strict";
@@ -67698,21 +67698,19 @@ var init_capture_liveness = __esm({
       "messages",
       "post-commit",
       "session-summary",
-      "pre-compact",
       "pre-edit-recall",
       "user-prompt-intent",
-      "decision-nudge",
       "guard-check",
       "session-start",
       "note-ingest",
-      "remember-nudge",
       "stop-message-gate",
       "codex-plan-activity",
       "codex-busy-message-notice",
       "prompt-recall"
     ];
+    RETIRED_HOOKS = /* @__PURE__ */ new Set(["pre-compact", "decision-nudge", "remember-nudge"]);
     FAIL_ELIGIBLE_HOOKS = ["session-summary"];
-    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary", "pre-compact"];
+    SILENT_ELIGIBLE_HOOKS = ["post-commit", "session-summary"];
     SKIP_REASONS = {
       messageIdentityUnavailable: "conversation-identity-unavailable",
       messageNoPending: "no-pending-messages",
@@ -67812,7 +67810,7 @@ var init_capture_liveness = __esm({
     UNRECOGNISED_REASON = "unrecognised reason";
     NOT_TRIGGERED_SKIP_REASONS = {
       "post-commit": [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-      "session-summary": [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+      "session-summary": [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows, SKIP_REASONS.noAssistantText],
       "session-start": [SKIP_REASONS.noSessionId],
       "note-ingest": [SKIP_REASONS.noNoteChanged],
       "remember-nudge": [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove]
@@ -68191,7 +68189,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir3, hosts, 
   if (!settingsParsed.ok) {
     return createCheck("hook-wiring", "Hooks wired into Claude Code", "fail", `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring \u2014 including memesh.`, `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) \u2014 memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: "hook-wiring.settings-invalid", params: { path: String(marker.settings_path) } });
   }
-  const CAPTURE_EVENTS = /* @__PURE__ */ new Set(["Stop", "PostToolUse", "PreCompact"]);
+  const CAPTURE_EVENTS = /* @__PURE__ */ new Set(["Stop", "PostToolUse"]);
   const hooks = settingsParsed.value.hooks;
   let hasMemeshHook = false;
   let hasCaptureHook = false;
@@ -68250,10 +68248,9 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
     const since = db2.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
     const measuringHours = since !== void 0 ? hoursSince(since) : null;
     const SKEW_TOLERANCE_H = 5 / 60;
-    const KNOWN_HOOKS = /* @__PURE__ */ new Set(["session-summary", "post-commit", "pre-compact"]);
     const ages = /* @__PURE__ */ new Map();
     for (const r of rows) {
-      if (!KNOWN_HOOKS.has(r.hook))
+      if (!CAPTURE_HEARTBEAT_HOOKS.has(r.hook))
         continue;
       const age = hoursSince(r.last_run_at);
       ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
@@ -68316,7 +68313,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
       return createCheck("hook-activity", TITLE, "warn", `No hook has stamped the heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? "y" : "ies"} landed since tracking began \u2014 hooks from a version before heartbeat tracking are probably still running.`, "Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.", { code: "hook-activity.never-ran-legacy", params: { captured: legacyCaptured } });
     }
     if (!wiringPresent) {
-      return createCheck("hook-activity", TITLE, "warn", "No capture hook has ever run \u2014 and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.", "If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.", { code: "hook-activity.not-wired" });
+      return createCheck("hook-activity", TITLE, "warn", "No capture hook has ever run \u2014 and no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing to run.", "If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.", { code: "hook-activity.not-wired" });
     }
     return createCheck("hook-activity", TITLE, "fail", `No capture hook has run since tracking began ${formatHoursAgo(measuringHours)}. Hook wiring is in place, so they should be executing and are not \u2014 nothing is being remembered.`, "Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.", { code: "hook-activity.never-ran", params: { hours: Math.round(measuringHours) } });
   } catch (err) {
@@ -68440,7 +68437,7 @@ function inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hoo
       prev7: Number(r.prev7) || 0
     })));
     const tablePresent = !!db2.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
-    const heartbeats = tablePresent ? db2.prepare("SELECT hook, last_run_at FROM hook_runs").all() : [];
+    const heartbeats = tablePresent ? db2.prepare("SELECT hook, last_run_at FROM hook_runs").all().filter(({ hook }) => CAPTURE_HEARTBEAT_HOOKS.has(hook)) : [];
     const stamped = new Set(heartbeats.map((r) => r.hook));
     stampedCount = stamped.size;
     for (const r of heartbeats) {
@@ -68486,7 +68483,7 @@ function inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hoo
     const hook = verdict.deadHooks[0];
     if (!captureWired) {
       return {
-        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
+        check: createCheck("capture-liveness", TITLE, "warn", `The ${hook} hook has never run \u2014 but no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing that should be running.`, "If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.", { code: "capture-liveness.not-wired", params: { hook } }),
         report: { ...report, status: "PASS_WITH_CONCERNS" }
       };
     }
@@ -69463,7 +69460,7 @@ function formatDoctorReport(result, packageVersion2) {
   }
   return lines;
 }
-var EXPECTED_HOOK_TYPES, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NODE_TOO_OLD_SEE_DATABASE_ROW, NoDatabaseYetError, MCP_PLACEHOLDER, NO_HOST_NEXT_STEP, CODEX_NEXT_STEP, CODEX_NO_COMMAND_NEXT_STEP, CODEX_MCP_ONLY_NOTE, GEMINI_NEXT_STEP, NOT_WIRED_CODES;
+var CAPTURE_HEARTBEAT_HOOKS, EXPECTED_HOOK_TYPES, LOCALE_README_FILES, LOCALE_H2_TOLERANCE, NODE_TOO_OLD_SEE_DATABASE_ROW, NoDatabaseYetError, MCP_PLACEHOLDER, NO_HOST_NEXT_STEP, CODEX_NEXT_STEP, CODEX_NO_COMMAND_NEXT_STEP, CODEX_MCP_ONLY_NOTE, GEMINI_NEXT_STEP, NOT_WIRED_CODES;
 var init_doctor = __esm({
   "dist/core/doctor.js"() {
     "use strict";
@@ -69495,7 +69492,8 @@ var init_doctor = __esm({
     init_capture_liveness();
     init_guards();
     init_doctor_journey();
-    EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop", "PreCompact"];
+    CAPTURE_HEARTBEAT_HOOKS = /* @__PURE__ */ new Set(["session-summary", "post-commit"]);
+    EXPECTED_HOOK_TYPES = ["PreToolUse", "SessionStart", "PostToolUse", "Stop"];
     LOCALE_README_FILES = [
       "README.zh-TW.md"
     ];

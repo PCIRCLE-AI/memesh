@@ -259,14 +259,14 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     expect.soft(meta('citation_sessions_cited')).toBe('0');
   });
 
-  it('accounts a low-tool session without bypassing the capture activity guard', () => {
+  it('accounts recalled citations even when the transcript contains no assistant reply', () => {
     inject('short-session');
     stop('short-session', [tool(`[mem-fetched:${ids[0]}]`)], 1);
     expect.soft(hits(ids[0]), 'a single fetch is a valid use even below the capture threshold').toBe(1);
     expect.soft(meta('citation_sessions_total')).toBe('1');
     expect(read<{ n: number }>("SELECT COUNT(*) AS n FROM entities WHERE type = 'session-insight'").n).toBe(0);
     const outcomes = fs.readFileSync(path.join(home, 'hook-outcomes.jsonl'), 'utf8');
-    expect(outcomes).toContain(SKIP_REASONS.tooLittleActivity);
+    expect(outcomes).toContain(SKIP_REASONS.noAssistantText);
   });
 
   it('uses a new accounting stamp instead of mixing citation-v2 counters', () => {

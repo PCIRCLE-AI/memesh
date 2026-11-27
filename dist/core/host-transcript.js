@@ -1,11 +1,6 @@
 function record(value) {
     return value !== null && typeof value === 'object' && !Array.isArray(value) ? value : null;
 }
-export function isCodexToolRequest(entry) {
-    const row = record(entry);
-    const payload = record(row?.payload);
-    return row?.type === 'response_item' && (payload?.type === 'function_call' || payload?.type === 'custom_tool_call');
-}
 export function codexAssistantText(entry) {
     const row = record(entry);
     const payload = record(row?.payload);

@@ -20,13 +20,13 @@ import { runChild } from '../helpers/run-child.js';
 
 const require = createRequire(import.meta.url);
 const { openHookDb } = require('../../scripts/hooks/_shared.js');
-const HOOK = path.resolve('scripts/hooks/pre-compact.js');
+const HOOK = path.resolve('scripts/hooks/session-summary.js');
 const HOOKS = 10;
 const ROUNDS = 30;
 
 function runHook(root: string, dbPath: string, loader: string, start: number, n: number): Promise<{ code: number | null; stderr: string }> {
   const env = { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_TEST_START: String(start) };
-  return runChild(['--import', pathToFileURL(loader).href, HOOK], env, JSON.stringify({ session_id: `concurrent-${n}`, cwd: root, trigger: 'auto' }));
+  return runChild(['--import', pathToFileURL(loader).href, HOOK], env, JSON.stringify({ session_id: `concurrent-${n}`, cwd: root, last_assistant_message: 'Captured concurrently' }));
 }
 
 describe('hooks started together on a fresh data folder', () => {

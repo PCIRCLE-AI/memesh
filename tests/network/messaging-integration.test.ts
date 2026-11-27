@@ -327,12 +327,14 @@ describe.skipIf(!supported || process.platform === 'win32')('messages between tw
   }, 80_000);
 
   it('rejects an unknown conversation with an audit, not a retired project_unknown requirement', () => {
-    const before = withMessages(beta, s => s.status());
+    // Receipt acknowledgements for earlier messages can still arrive here.
+    const before = messageDb(beta, db => db.prepare('SELECT * FROM messages ORDER BY id').all());
     const result = send('Do not route by a shared project', 'unknown-session@beta');
     expect(result.accepted).toBe(false);
     expect(status(alpha, result.message.id)[0].state).toBe('rejected');
     expect(status(alpha, result.message.id)[0].events.some(e => e.event === 'rejected')).toBe(true);
-    expect(withMessages(beta, s => s.status())).toEqual(before);
+    expect(messageDb(beta, db => db.prepare('SELECT * FROM messages ORDER BY id').all())).toEqual(before);
+    expect(status(beta, result.message.id)).toEqual([]);
   });
 
   it('exposes conversation identity but never remote process routes or memory summaries', () => {

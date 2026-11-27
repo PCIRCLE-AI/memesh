@@ -1986,14 +1986,14 @@ memory layer saved anything lately, and if not, why not". `memesh doctor --json`
   plus its last 5 not-triggered ones (so a flood of irrelevant runs cannot push
   the evidence out). `runs` counts the runs in that window (records that share a `run` id count once; a record without one counts as one run); `triggeredRuns` leaves out skips where the hook's
   trigger did not apply (post-commit on a Bash call that is not a git commit).
-  `silent` is true only for post-commit, session-summary and pre-compact, when
+  `silent` is true only for commit and Stop capture, when
   `triggeredRuns` is at least 5 and `writes` is 0.
   `notifies` counts runs that told someone something and stored nothing, so
   `runs` is not `writes + skips + errors`. It does not rescue a hook from `silent`
   either, and none of these hooks that `silent` applies to ever notifies.
 - `types` — auto-capture entities per type, this week (`last7`) against the
   week before (`prev7`); `stopped` means the type wrote last week and nothing
-  this week. Historical `session-handoff` records remain identifiable in producer counts.
+  this week. Retired activity summaries and pre-compaction snapshots remain in the counts without triggering this warning.
 - `neverRan` — session-summary when it has neither an outcome record nor a
   heartbeat 72 hours after tracking began.
 

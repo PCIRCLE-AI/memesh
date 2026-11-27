@@ -145,10 +145,9 @@ describe('a memory folder is read only for the project it belongs to', () => {
   };
   const stop = async (transcript: string, cwd: string) => {
     closeDatabase();
-    const run = await runStopNotes({ session_id: 'session-1', transcript_path: transcript, cwd }, {
+    await runStopNotes({ session_id: 'session-1', transcript_path: transcript, cwd }, {
       captureEnabled: true, project: getProjectName(cwd), metaUrl, env: { ...process.env, MEMESH_DIR: root, MEMESH_DB_PATH: dbPath },
     });
-    run.settle?.(false);
     openDatabase(dbPath);
   };
   const stored = () => getDatabase().prepare(

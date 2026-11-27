@@ -32,7 +32,8 @@ import { autoCaptureDecision } from './capture-flag.js';
 import { captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends, FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS, } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
 import { journeyEnv, journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
-const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
+const CAPTURE_HEARTBEAT_HOOKS = new Set(['session-summary', 'post-commit']);
+const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop'];
 const LOCALE_README_FILES = [
     'README.zh-TW.md',
 ];
@@ -393,7 +394,7 @@ function inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir, hosts, i
     if (!settingsParsed.ok) {
         return createCheck('hook-wiring', 'Hooks wired into Claude Code', 'fail', `${marker.settings_path} is no longer valid JSON, so nothing can read your hook wiring — including memesh.`, `Repair the JSON, or move the file aside (\`mv ${shellQuote(String(marker.settings_path))} ${shellQuote(`${marker.settings_path}.broken`)}\`) — memesh keeps timestamped \`.bak-pre-memesh-*\` copies next to it. Then run \`memesh install-hooks\`.`, { code: 'hook-wiring.settings-invalid', params: { path: String(marker.settings_path) } });
     }
-    const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse', 'PreCompact']);
+    const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse']);
     const hooks = settingsParsed.value.hooks;
     let hasMemeshHook = false;
     let hasCaptureHook = false;
@@ -455,10 +456,9 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
         const since = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'hook_runs_since'").get()?.value;
         const measuringHours = since !== undefined ? hoursSince(since) : null;
         const SKEW_TOLERANCE_H = 5 / 60;
-        const KNOWN_HOOKS = new Set(['session-summary', 'post-commit', 'pre-compact']);
         const ages = new Map();
         for (const r of rows) {
-            if (!KNOWN_HOOKS.has(r.hook))
+            if (!CAPTURE_HEARTBEAT_HOOKS.has(r.hook))
                 continue;
             const age = hoursSince(r.last_run_at);
             ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
@@ -526,7 +526,7 @@ function inspectHookActivity(openDatabaseImpl, closeDatabaseImpl, existsSyncImpl
             return createCheck('hook-activity', TITLE, 'warn', `No hook has stamped the heartbeat, but ${legacyCaptured} auto-capture memor${legacyCaptured === 1 ? 'y' : 'ies'} landed since tracking began — hooks from a version before heartbeat tracking are probably still running.`, 'Update the memesh hooks to the current version (plugin installs: `/plugin update memesh`; npm installs: `memesh install-hooks`), then restart your agent.', { code: 'hook-activity.never-ran-legacy', params: { captured: legacyCaptured } });
         }
         if (!wiringPresent) {
-            return createCheck('hook-activity', TITLE, 'warn', 'No capture hook has ever run — and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.', 'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.', { code: 'hook-activity.not-wired' });
+            return createCheck('hook-activity', TITLE, 'warn', 'No capture hook has ever run — and no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing to run.', 'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.', { code: 'hook-activity.not-wired' });
         }
         return createCheck('hook-activity', TITLE, 'fail', `No capture hook has run since tracking began ${formatHoursAgo(measuringHours)}. ` +
             'Hook wiring is in place, so they should be executing and are not — nothing is being remembered.', 'Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.', { code: 'hook-activity.never-ran', params: { hours: Math.round(measuringHours) } });
@@ -668,6 +668,7 @@ function inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hoo
         const tablePresent = !!db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'").get();
         const heartbeats = tablePresent
             ? db.prepare('SELECT hook, last_run_at FROM hook_runs').all()
+                .filter(({ hook }) => CAPTURE_HEARTBEAT_HOOKS.has(hook))
             : [];
         const stamped = new Set(heartbeats.map((r) => r.hook));
         stampedCount = stamped.size;
@@ -716,7 +717,7 @@ function inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hoo
         const hook = verdict.deadHooks[0];
         if (!captureWired) {
             return {
-                check: createCheck('capture-liveness', TITLE, 'warn', `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`, 'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.', { code: 'capture-liveness.not-wired', params: { hook } }),
+                check: createCheck('capture-liveness', TITLE, 'warn', `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing that should be running.`, 'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.', { code: 'capture-liveness.not-wired', params: { hook } }),
                 report: { ...report, status: 'PASS_WITH_CONCERNS' },
             };
         }

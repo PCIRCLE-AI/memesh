@@ -102,7 +102,7 @@ tokens('.codex-plugin/plugin.json', ['"name": "memesh"', '"version"', '"mcpServe
 tokens('.codex-plugin/mcp.json', ['"mcpServers"', '"memesh"', '"command": "node"', '"args": ["./dist/mcp/server.js"]', '"cwd": "."']);
 tokens('.claude-plugin/marketplace.json', ['"name": "pcircle-memesh"', '"version"']);
 if (fs.existsSync(path.join(root, '.mcp.json'))) missing.push('.mcp.json (must not exist: Claude discovers it as project-scoped)');
-tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'pre-compact.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'messages.js']);
+tokens('hooks/hooks.json', ['session-start.js', 'session-summary.js', 'user-prompt-intent.js', 'prompt-recall.js', 'pre-edit-recall.js', 'guard-check.js', 'post-commit.js', 'messages.js']);
 for (const file of ['hooks/hooks.json', '.codex-plugin/plugin.json']) {
   if (read(file).includes('dist/host-runtime/codex-session.js')) missing.push(`${file} (retired Codex companion must not be wired)`);
 }

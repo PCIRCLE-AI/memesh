@@ -1297,32 +1297,6 @@ syncBuiltinESMExports();
       expect(result).toBe('');
     });
 
-    it('(F6) SESSION_SNAPSHOT_TYPES covers every snapshot type literal the producers write', () => {
-      const { SESSION_SNAPSHOT_TYPES } = require('../../scripts/hooks/_shared.js');
-
-      // Path constants declared separately (not inline in the readFileSync
-      // call) so this reads as what it is — extracting the LITERAL type
-      // strings two producers write, to check a structural invariant
-      // against them — not a snippet asserting source text as behavior.
-      const preCompactPath = path.resolve('scripts/hooks/pre-compact.js');
-      const sessionSummaryPath = path.resolve('scripts/hooks/session-summary.js');
-
-      // pre-compact.js: object-literal `type: '...'` passed to captureEntity.
-      const preCompactSrc = fs.readFileSync(preCompactPath, 'utf8');
-      const preCompactTypes = [...preCompactSrc.matchAll(/captureEntity\(db,\s*\{[^}]*?type:\s*'([\w-]+)'/gs)].map(m => m[1]);
-      expect(preCompactTypes.length).toBeGreaterThan(0);
-
-      // session-summary.js: positional `storeMemory(name, 'TYPE', ...)` calls.
-      const sessionSummarySrc = fs.readFileSync(sessionSummaryPath, 'utf8');
-      const storeMemoryTypes = [...sessionSummarySrc.matchAll(/storeMemory\(\s*[^,]+,\s*'([\w-]+)'/g)].map(m => m[1]);
-      expect(storeMemoryTypes.length).toBeGreaterThan(0);
-
-      const allProducerTypes = new Set([...preCompactTypes, ...storeMemoryTypes]);
-      for (const t of allProducerTypes) {
-        expect(SESSION_SNAPSHOT_TYPES.has(t), `producer writes type "${t}" — not in SESSION_SNAPSHOT_TYPES`).toBe(true);
-      }
-    });
-
     it('(F3) resolves a symlinked directory to its real path before deriving the project', () => {
       const repo = makeGitRepo();
       const linkParent = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-recall-link-'));

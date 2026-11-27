@@ -11,6 +11,8 @@ are not part of a published npm release yet.
 - Remembering a forgotten memory under the same name now keeps only the new text and tags. Explicit backup restoration still respects its chosen merge strategy.
 - Decisions are stored even without a reason and shown as "no reason recorded".
 - Hermes stores both sides of every primary conversation turn in full after secret masking. Compression and session end no longer generate activity summaries.
+- Claude Code and Codex retain raw conversation capture. Stop still imports Claude Code memory notes. Activity summaries, pre-compaction snapshots, and automatic decision reminders have been retired.
+
 - Hermes automatic recall now shares the 4 KiB content budget, excludes the current session and other projects/hosts, and invalidates its cache on session switches.
 
 

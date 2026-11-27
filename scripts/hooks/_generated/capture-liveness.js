@@ -88,21 +88,19 @@ export const CAPTURE_HOOKS = [
     'messages',
     'post-commit',
     'session-summary',
-    'pre-compact',
     'pre-edit-recall',
     'user-prompt-intent',
-    'decision-nudge',
     'guard-check',
     'session-start',
     'note-ingest',
-    'remember-nudge',
     'stop-message-gate',
     'codex-plan-activity',
     'codex-busy-message-notice',
     'prompt-recall',
 ];
+const RETIRED_HOOKS = new Set(['pre-compact', 'decision-nudge', 'remember-nudge']);
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact'];
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary'];
 export const SKIP_REASONS = {
     messageIdentityUnavailable: 'conversation-identity-unavailable',
     messageNoPending: 'no-pending-messages',
@@ -264,17 +262,15 @@ function valueEnd(s, i) {
 }
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-    'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+    'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows, SKIP_REASONS.noAssistantText],
     'session-start': [SKIP_REASONS.noSessionId],
     'note-ingest': [SKIP_REASONS.noNoteChanged],
     'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
     'messages',
-    'pre-compact',
     'pre-edit-recall',
     'user-prompt-intent',
-    'decision-nudge',
     'guard-check',
     'stop-message-gate',
     'codex-plan-activity',
@@ -309,7 +305,7 @@ export function parseHookOutcomeLine(line) {
     if (!parsed || typeof parsed !== 'object')
         return null;
     const rec = parsed;
-    if (typeof rec.hook !== 'string' || !CAPTURE_HOOKS.includes(rec.hook))
+    if (typeof rec.hook !== 'string' || (!CAPTURE_HOOKS.includes(rec.hook) && !RETIRED_HOOKS.has(rec.hook)))
         return null;
     if (typeof rec.at !== 'string')
         return null;
@@ -504,7 +500,7 @@ function summarizeOne(hook, records) {
 }
 export function summarizeTypeTrends(rows) {
     return rows
-        .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 }))
+        .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 && r.type !== 'session-insight' && r.type !== 'session-summary' }))
         .sort((a, b) => a.type.localeCompare(b.type));
 }
 export function captureLivenessVerdict(input) {
@@ -517,7 +513,7 @@ export function captureLivenessVerdict(input) {
         : [];
     const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
     const stoppedTypes = input.types.filter((t) => t.stopped);
-    const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+    const erroring = input.hooks.filter((h) => h.recentErrors > 0 && !RETIRED_HOOKS.has(h.hook))
         .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
     let status = 'PASS';
     if (deadHooks.length > 0)

@@ -199,7 +199,8 @@ interface ClaudePluginEntries {
   entries: Array<Record<string, unknown>>;
 }
 
-const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
+const CAPTURE_HEARTBEAT_HOOKS = new Set(['session-summary', 'post-commit']);
+const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop'];
 
 // Locale READMEs that MUST stay in lockstep with README.md. Order matters
 // only for the doctor output — alphabetised for readability.
@@ -1042,7 +1043,7 @@ function inspectHookWiring(
   // nothing about whether a capture hook should ever execute — and
   // hook-activity's never-ran FAIL says "they should be executing", so it
   // must key on capture wiring specifically, not on wiring at all.
-  const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse', 'PreCompact']);
+  const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse']);
   const hooks = (settingsParsed.value as { hooks?: Record<string, unknown> }).hooks;
   let hasMemeshHook = false;
   let hasCaptureHook = false;
@@ -1130,10 +1131,9 @@ function inspectHookWiring(
  * as proof of automation. That is why the count can never be trusted with
  * the verdict again.)
  *
- * Three hooks stamp, but only one is load-bearing: `session-summary` fires
+ * Two hooks stamp, but only one is load-bearing: `session-summary` fires
  * on every session's Stop (its low-signal bails stamp too), so its silence
- * is meaningful. `post-commit` and `pre-compact` fire only when the user
- * commits or a session compacts — their absence proves nothing, so their
+ * is meaningful. `post-commit` fires only for a commit, an optional event, so its
  * STALENESS caps at warn, never fail. The two ways they can still drive a
  * red are both positive evidence, not absence: a corrupt/future timestamp
  * (stale-unknown — the row itself is lying), and the stop-silent warn when
@@ -1228,10 +1228,9 @@ function inspectHookActivity(
     // timestamp as liveness evidence would let one foreign row turn a dead
     // capture loop permanently green (four independent reviews converged on
     // this). Foreign rows are simply not evidence, in either direction.
-    const KNOWN_HOOKS = new Set(['session-summary', 'post-commit', 'pre-compact']);
     const ages = new Map<string, number | null>();
     for (const r of rows) {
-      if (!KNOWN_HOOKS.has(r.hook)) continue;
+      if (!CAPTURE_HEARTBEAT_HOOKS.has(r.hook)) continue;
       const age = hoursSince(r.last_run_at);
       ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
     }
@@ -1302,8 +1301,7 @@ function inspectHookActivity(
           { code: 'hook-activity.stale-unconfirmed', params: { hook: 'session-summary', hours: Math.ceil(ssAge) } });
       }
 
-      // Only the event-driven hooks (post-commit / pre-compact) have stamped.
-      // Their triggers depend on user behaviour — no commits means no
+      // Only post-commit has stamped. Its trigger depends on user behaviour — no commits means no
       // post-commit run, dead or alive — so their staleness caps at WARN,
       // never fail: evidence from hooks the user may simply not be
       // triggering cannot prove death, only invite a look.
@@ -1390,10 +1388,10 @@ function inspectHookActivity(
       // wire capture hooks (MCP-only hosts, recall-only wirings) it would be
       // a permanent unfixable red. Note "capture hook", not "wired at all":
       // a SessionStart-only wiring passes the wiring row but proves nothing
-      // about Stop/PostToolUse/PreCompact ever executing, so it must not
+      // about Stop/PostToolUse ever executing, so it must not
       // arm the never-ran FAIL below.
       return createCheck('hook-activity', TITLE, 'warn',
-        'No capture hook has ever run — and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.',
+        'No capture hook has ever run — and no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing to run.',
         'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
         { code: 'hook-activity.not-wired' });
     }
@@ -1640,7 +1638,8 @@ function inspectRecordedCaptureLiveness(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'",
     ).get();
     const heartbeats = tablePresent
-      ? db.prepare('SELECT hook, last_run_at FROM hook_runs').all() as Array<{ hook: string; last_run_at: string }>
+      ? (db.prepare('SELECT hook, last_run_at FROM hook_runs').all() as Array<{ hook: string; last_run_at: string }>)
+        .filter(({ hook }) => CAPTURE_HEARTBEAT_HOOKS.has(hook))
       : [];
     const stamped = new Set(heartbeats.map((r) => r.hook));
     stampedCount = stamped.size;
@@ -1710,7 +1709,7 @@ function inspectRecordedCaptureLiveness(
     if (!captureWired) {
       return {
         check: createCheck('capture-liveness', TITLE, 'warn',
-          `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`,
+          `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing that should be running.`,
           'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
           { code: 'capture-liveness.not-wired', params: { hook } }),
         report: { ...report, status: 'PASS_WITH_CONCERNS' },
@@ -3764,7 +3763,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // place — otherwise the wiring row above already tells the story, and an
   // MCP-only install would carry a permanent unfixable FAIL.
   // never-ran's FAIL claims "capture hooks should be executing" — that needs
-  // a capture event (Stop/PostToolUse/PreCompact) confirmed wired, not just
+  // a capture event (Stop/PostToolUse) confirmed wired, not just
   // any wiring. A plugin-marketplace pass carries no walk result and wires
   // every event through hooks.json, so it counts as capture-wired; a
   // settings-walk pass counts only when the walk saw a capture event.

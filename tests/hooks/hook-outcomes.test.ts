@@ -578,8 +578,8 @@ DatabaseSync.prototype.prepare = function(sql) {
   });
 
   it.each([
-    'post-commit', 'pre-compact', 'guard-check', 'pre-edit-recall',
-    'decision-nudge', 'session-summary', 'user-prompt-intent', 'prompt-recall',
+    'post-commit', 'guard-check', 'pre-edit-recall',
+    'session-summary', 'user-prompt-intent', 'prompt-recall',
   ])('%s persists an error LABEL, never the exception message (#327 S2)', (hook) => {
     // V8's JSON errors quote the text they choked on, so a message-as-reason
     // copies the payload — here a planted marker — into a permanent,
@@ -604,74 +604,55 @@ DatabaseSync.prototype.prepare = function(sql) {
 
   // ── session-summary ──────────────────────────────────────────────────────
 
-  it('session-summary records a SKIPPED for each of its named bails', () => {
-    runHook('session-summary', { session_id: 's1', cwd: repoDir, was_in_agentic_loop: false });
-    runHook('session-summary', { session_id: 's2', cwd: repoDir });
+  it('session-summary records why a Stop cannot capture an assistant reply', () => {
+    const empty = path.join(testDir, 'empty.jsonl');
+    fs.writeFileSync(empty, '');
+    runHook('session-summary', { session_id: 'no-path', cwd: repoDir });
     runHook('session-summary', {
-      session_id: 's3', cwd: repoDir, transcript_path: path.join(testDir, 'gone.jsonl'),
+      session_id: 'missing-file', cwd: repoDir, transcript_path: path.join(testDir, 'gone.jsonl'),
     });
+    runHook('session-summary', { session_id: 'empty-file', cwd: repoDir, transcript_path: empty });
+    runHook('session-summary', { session_id: 'no-project', last_assistant_message: 'Reply' });
+    runHook('session-summary', { cwd: repoDir, last_assistant_message: 'Reply' });
     const rows = records('session-summary');
     expect(rows.map((r) => r.reason)).toEqual([
-      'the Stop payload and the transcript held no assistant message',
-      'not an agentic loop',
-      'the Stop payload and the transcript held no assistant message',
-      'transcript_path absent',
-      'the Stop payload and the transcript held no assistant message',
-      'the transcript file named by the payload is gone',
+      SKIP_REASONS.transcriptPathAbsent,
+      SKIP_REASONS.transcriptGone,
+      SKIP_REASONS.noAssistantText,
+      SKIP_REASONS.noRecallSessionRecord,
+      SKIP_REASONS.cwdAbsent,
+      SKIP_REASONS.noSessionId,
     ]);
     expect(rows.every((r) => r.outcome === 'skipped')).toBe(true);
   });
 
-  it('session-summary records a WROTE naming the session entity', () => {
-    const transcript = path.join(testDir, 't.jsonl');
-    let nextId = 0;
-    const toolUse = (name: string, input: object) => {
-      const id = `completed-${++nextId}`;
-      return [
-        { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } },
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
-      ].map((entry) => JSON.stringify(entry)).join('\n');
-    };
-    fs.writeFileSync(transcript, [
-      toolUse('Edit', { file_path: path.join(repoDir, 'a.ts') }),
-      toolUse('Edit', { file_path: path.join(repoDir, 'b.ts') }),
-      toolUse('Bash', { command: 'npm test' }),
-      toolUse('Bash', { command: 'npm run build' }),
-    ].join('\n'));
-    runHook('session-summary', {
-      session_id: 'sess-write', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,
+  it('session-summary records a WROTE naming the stored assistant conversation', () => {
+    const reply = 'Recorded the result.\nThe full reply is preserved.';
+    runHook('session-summary', { session_id: 'sess-write', cwd: repoDir, last_assistant_message: reply });
+    const [record] = records('session-summary');
+    expect(record).toMatchObject({
+      outcome: 'wrote',
+      reason: 'stored assistant conversation; assistant text from payload',
+      entity: expect.stringMatching(/^conversation-/),
     });
-    const rows = records('session-summary');
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-    const last = rows[rows.length - 1];
-    expect(last.outcome, `expected a write, got ${JSON.stringify(last)}`).toBe('wrote');
-    // Only 4 tool calls (2 edits + 2 Bash), no error — only Rule 1 (`-files`)
-    // matches; Rule 2 needs an error and Rule 3 needs 20+ calls. `entity`
-    // names whichever entity actually landed the write, not a fixed guess
-    // at which of the three this Stop touched (round-4 fix: the previous
-    // hardcoded `-summary` here named an entity this scenario never wrote).
-    expect(last.entity).toBe('session-sess-write-files');
-  });
-
-  // ── pre-compact ──────────────────────────────────────────────────────────
-
-  it('pre-compact records a WROTE, and a SKIPPED when the payload is not a compaction', () => {
-    runHook('pre-compact', { session_id: 'pc-1', cwd: repoDir, trigger: 'manual' });
-    runHook('pre-compact', { trigger: 'auto' });
-    const rows = records('pre-compact');
-    expect(rows.length).toBe(2);
-    expect(rows[0].outcome).toBe('wrote');
-    expect(rows[0].entity).toBe('pre-compact-pc-1');
-    expect(rows[1].outcome).toBe('skipped');
-    expect(rows[1].reason).toBe('neither session_id nor transcript_path in the payload');
+    const db = new DatabaseSync(path.join(memeshDir, 'knowledge-graph.db'), { readOnly: true });
+    try {
+      expect(db.prepare(`SELECT e.type, o.content FROM entities e
+        JOIN observations o ON o.entity_id = e.id WHERE e.name = ?`).all(record.entity!))
+        .toEqual([{ type: 'conversation', content: reply }]);
+    } finally {
+      db.close();
+    }
   });
 
   it('capture stays off-limits when auto-capture is disabled, and the record says so', () => {
-    runHook('pre-compact', { session_id: 'pc-2', cwd: repoDir }, { MEMESH_AUTO_CAPTURE: 'false' });
-    const rows = records('pre-compact');
+    runHook('session-summary', {
+      session_id: 'opted-out', cwd: repoDir, last_assistant_message: 'Do not retain this reply.',
+    }, { MEMESH_AUTO_CAPTURE: 'false' });
+    const rows = records('session-summary');
     expect(rows.length).toBe(1);
-    expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe('auto-capture is turned off');
+    expect(rows[0]).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff });
+    expect(fs.existsSync(path.join(memeshDir, 'knowledge-graph.db'))).toBe(false);
   });
 
   it('redacts a secret before the 200-character reason cap', () => {
@@ -699,11 +680,6 @@ DatabaseSync.prototype.prepare = function(sql) {
     }
   });
 
-  // ── the remaining five hooks ─────────────────────────────────────────────
-  // post-commit, session-summary and pre-compact are covered above; these
-  // five record on every path too, and each needs its own "remove the
-  // record(...) call and this goes red" pin.
-
   it('pre-edit-recall records a SKIPPED when the tool input has no file path', () => {
     runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
     const rows = records('pre-edit-recall');
@@ -718,17 +694,6 @@ DatabaseSync.prototype.prepare = function(sql) {
     expect(rows.length).toBe(1);
     expect(rows[0].outcome).toBe('skipped');
     expect(rows[0].reason).toBe('conversation cwd or session absent');
-  });
-
-  it('decision-nudge records a NOTIFIED naming the nudged tool', () => {
-    // Not `wrote`: the nudge is the only effect this hook has, and doctor's
-    // `writes` answers "is memory capture still alive". A nudge is the
-    // opposite of a write — it is what memesh says when nothing was stored.
-    runHook('decision-nudge', { tool_name: 'ExitPlanMode', session_id: 'nudge-1' });
-    const rows = records('decision-nudge');
-    expect(rows.length).toBe(1);
-    expect(rows[0].outcome).toBe('notified');
-    expect(rows[0].entity).toBe('nudge:ExitPlanMode');
   });
 
   it('guard-check records a SKIPPED when the payload has no Bash command', () => {
@@ -786,41 +751,40 @@ DatabaseSync.prototype.prepare = function(sql) {
     // time) would NOT catch an RMW regression — it never overlaps — so this
     // fans 40 real hook processes out at once and asserts every line lands.
     const inputs: Array<[string, object]> = [];
-    for (let i = 0; i < 20; i++) inputs.push(['pre-compact', { trigger: 'auto' }]);
+    for (let i = 0; i < 20; i++) inputs.push(['pre-edit-recall', { tool_name: 'Edit', tool_input: {} }]);
     // A TRIGGERED skip (tool_name absent): a not-triggered one would be
     // windowed down to HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK by the reader.
     for (let i = 0; i < 20; i++) inputs.push(['post-commit', { tool_input: {} }]);
     await Promise.all(inputs.map(([hook, payload]) => runHookAsync(hook, payload)));
     const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
     expect(raw.trim().split('\n')).toHaveLength(40);
-    expect(records('pre-compact')).toHaveLength(20);
+    expect(records('pre-edit-recall')).toHaveLength(20);
     expect(records('post-commit')).toHaveLength(20);
   });
 
   it('tolerates a torn last line instead of losing the history', () => {
-    runHook('pre-compact', { session_id: 'torn-1', cwd: repoDir });
+    runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
     const file = path.join(memeshDir, HOOK_OUTCOMES_FILENAME);
-    fs.appendFileSync(file, '{"hook":"pre-comp');
-    const rows = parseHookOutcomes(fs.readFileSync(file, 'utf8')).hooks['pre-compact'] ?? [];
+    fs.appendFileSync(file, '{"hook":"pre-edit');
+    const rows = parseHookOutcomes(fs.readFileSync(file, 'utf8')).hooks['pre-edit-recall'] ?? [];
     expect(rows, 'a hook killed mid-write must cost one record, not the file').toHaveLength(1);
   });
 
   it('the file is bounded: rotation keeps the last 20 PER HOOK', () => {
     const file = path.join(memeshDir, HOOK_OUTCOMES_FILENAME);
-    // Drive it past the size trigger through the real hook, so the bound is
-    // proven on the path that actually writes. A storm of post-commit skips
-    // must not push the single pre-compact record out of the window.
-    for (let i = 0; i < 260; i++) {
-      fs.appendFileSync(file, serializeHookOutcome({
-        hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
-        outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
-      }));
-    }
-    runHook('pre-compact', { trigger: 'auto' });
-    const parsed = parseHookOutcomes(fs.readFileSync(file, 'utf8'));
+    runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
+    const line = serializeHookOutcome({
+      hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
+      outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
+    });
+    fs.appendFileSync(file, line.repeat(Math.ceil(HOOK_OUTCOMES_ROTATE_BYTES / Buffer.byteLength(line))));
+    expect(fs.statSync(file).size).toBeGreaterThan(HOOK_OUTCOMES_ROTATE_BYTES);
+    runHook('post-commit', { tool_input: {} });
+    const raw = fs.readFileSync(file, 'utf8');
+    expect(Buffer.byteLength(raw)).toBeLessThan(HOOK_OUTCOMES_ROTATE_BYTES);
+    const parsed = parseHookOutcomes(raw);
     expect(parsed.hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
-    // The quiet hook wrote through the real process and its record survives.
-    expect(parsed.hooks['pre-compact']).toHaveLength(1);
+    expect(parsed.hooks['pre-edit-recall']).toHaveLength(1);
   });
 
   it('a summary window never grows with the file', () => {

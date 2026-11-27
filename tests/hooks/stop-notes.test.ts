@@ -1,14 +1,4 @@
-/**
- * #324 pieces C (hook path) and D, against the REAL spawned Stop hook
- * (scripts/hooks/session-summary.js → scripts/hooks/_stop-notes.js).
- *
- * D: the nudge fires on a turn with a decision-shaped move and nothing
- *    written; stays silent when a `remember` happened, when a note file
- *    changed, and on a trivial turn; judges each Stop only on what happened
- *    since the previous one; never exits non-zero; prints a valid envelope.
- * C: the Claude Code memory directory next to the transcript is ingested,
- *    and an unchanged directory costs no second ingestion.
- */
+// Exercise note ingestion through the real Stop hook.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
 import { createHash } from 'crypto';
@@ -18,17 +8,16 @@ import path from 'path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { noteDirId } from '../../src/core/note-dirs.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
-import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 import { canDenyReads } from '../helpers/permissions.js';
 
 const HOOK = path.resolve('scripts/hooks/session-summary.js');
 
-describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
+describe('Stop note ingestion', () => {
   let home: string;
   let projectDir: string;
   let transcript: string;
   let memoryDir: string;
-  const sessionId = 'nudge-session-1';
+  const sessionId = 'stop-notes-session-1';
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-stop-notes-'));
@@ -252,73 +241,60 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
       realReadError: 'EACCES', failedStateUnchanged: failedState === beforeState, recovered: true, goodRowsUnchanged: true, noteBytesMtimeUnchanged: true }));
   }, 60_000);
 
-  it('nudges once on a turn with a plan approved and nothing written', () => {
-    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
-    const r = run();
-    expect(r.status).toBe(0);
-    const v = expectValidHookOutput(r.stdout, 'session-summary.js nudge');
-    expect(v.kind).toBe('json');
-    expect(Object.keys(v.parsed!)).toEqual(['systemMessage']);
-    expect(v.parsed!.systemMessage).toMatch(/1 decision-shaped move\(s\) \(a plan was approved\) and stored no memory/);
-    // `notified`, not `wrote` — the nudge stores nothing, and is precisely
-    // what memesh says when nothing has been stored.
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'notified' });
-
-    // The next Stop sees only what was appended since: a trivial turn → silent.
-    append(reads(1));
-    const again = run();
-    expect(again.status).toBe(0);
-    expect(again.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/trivial turn/);
-  }, 60_000);
-
-  it('counts a commit and a test that went red then green', () => {
-    write([
-      ...reads(2),
-      ...toolCall('Bash', { command: 'npm test' }, { error: true }),
-      ...toolCall('Bash', { command: 'npm test' }),
-      ...toolCall('Bash', { command: 'git commit -m "fix"' }),
-    ]);
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).systemMessage).toMatch(/2 decision-shaped move\(s\) \(a test went red then green, a commit\)/);
-  }, 60_000);
-
-  it('is silent when a remember call happened in the turn', () => {
-    write([...reads(4), ...toolCall('ExitPlanMode', {}), ...toolCall('mcp__plugin_memesh_memesh__remember', { note: 'x' })]);
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/memory was written/);
-  }, 60_000);
-
-  it('is silent when a note file changed during the turn', () => {
-    write([...reads(4), ...toolCall('AskUserQuestion', {})]);
+  it.each(['claude-code', 'codex'])('a heavy %s Stop saves the raw reply and notes without a snapshot or reminder', (host) => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'x.md'), 'just a scratch note\n');
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/note file changed/);
-  }, 60_000);
+    const note = path.join(memoryDir, 'a.md');
+    fs.writeFileSync(note,
+      '---\nname: retained_note\nmetadata:\n  type: fact\n---\n\nThe note stays searchable.\n');
+    const beforeTurn = new Date(Date.now() - 120_000);
+    fs.utimesSync(note, beforeTurn, beforeTurn);
+    const reply = 'The final assistant reply.\nIt keeps every paragraph.';
+    if (host === 'codex') {
+      const commands = Array.from({ length: 22 }, (_, index) => ({
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'exec_command', call_id: 'tool-' + index, arguments: '{"cmd":"git status"}' },
+      }));
+      write([
+        ...commands,
+        { type: 'event_msg', payload: { type: 'item_completed', item: {
+          type: 'CommandExecution', id: 'committed', command: ['/bin/zsh', '-lc', 'git commit -m fixture'],
+          exit_code: 0, status: 'completed',
+        } } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: reply }] } },
+      ]);
+    } else {
+      write([
+        ...reads(22),
+        ...toolCall('ExitPlanMode', { plan: 'do X' }),
+        ...toolCall('Edit', { file_path: '/repo/retired-summary.ts' }),
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } },
+      ]);
+    }
+    const result = run({ MEMESH_HOOK_HOST: host });
+    expect(result.status, result.stderr).toBe(0);
+    expect.soft(result.stdout).toBe('');
+    expect.soft(fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8')).not.toContain('remember-nudge');
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'), { readOnly: true });
+    try {
+      expect(db.prepare("SELECT name FROM entities WHERE type IN ('session-summary', 'session-insight')").all()).toEqual([]);
+      expect(db.prepare("SELECT e.type, o.content FROM entities e JOIN observations o ON o.entity_id = e.id WHERE e.type = 'conversation'").all()).toEqual([
+        { type: 'conversation', content: reply },
+      ]);
+      expect(db.prepare("SELECT name FROM entities WHERE name = 'retained_note'").get()).toBeDefined();
+    } finally { db.close(); }
+  });
 
-  it('is silent on a trivial turn, and on a busy turn with no decision-shaped move', () => {
-    write([...toolCall('ExitPlanMode', {})]);
-    expect(run().stdout.trim()).toBe('');
-    append(reads(6));
-    expect(run().stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/no decision-shaped move/);
-  }, 60_000);
-
-  it('still nudges with auto-capture off, but does not ingest', () => {
+  it('capture opt-out skips both raw reply and note ingestion', () => {
     fs.mkdirSync(memoryDir);
-    fs.utimesSync(memoryDir, new Date(0), new Date(0));
-    write([...reads(4), ...toolCall('ExitPlanMode', {})]);
-    const r = run({ MEMESH_AUTO_CAPTURE: 'false' });
-    expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).systemMessage).toMatch(/stored no memory/);
+    fs.writeFileSync(path.join(memoryDir, 'note.md'), '---\nname: optout_note\n---\n\nbody\n');
+    write(reads(1));
+    const result = run({ MEMESH_AUTO_CAPTURE: 'false' }, { last_assistant_message: 'Opted out' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'auto-capture is turned off' });
-  }, 60_000);
+    expect(fs.existsSync(path.join(home, '.memesh', 'knowledge-graph.db'))).toBe(false);
+  });
 
   it('ingests the memory directory next to the transcript, then skips it while unchanged', () => {
     fs.mkdirSync(memoryDir);
@@ -448,31 +424,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
   }, 60_000);
 
-  it('a plan approved across a Stop boundary is still a decision-shaped move', () => {
-    // The pending tool_use → kind map was rebuilt from scratch each Stop, so a
-    // call in one window and its result in the next were never paired. The
-    // nudge then reported "no decision-shaped move since the last Stop" — a
-    // miss whose stated reason is entirely plausible, which is what makes it
-    // expensive: nothing about the output says a pairing was dropped.
-    const id = 'tu_split_1';
-    write([
-      ...reads(5),
-      { type: 'assistant', timestamp: at(60_000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'ExitPlanMode', input: { plan: 'do X' } }] } },
-    ]);
-    // First Stop: the plan is open, no result yet, so nothing to nudge about.
-    expect(run().stdout.trim()).toBe('');
-
-    // Second Stop: only the result arrives — five more reads keep the window
-    // above the trivial-turn floor.
-    append([
-      { type: 'user', timestamp: at(30_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
-      ...reads(5),
-    ]);
-    const second = run();
-    expect(second.status).toBe(0);
-    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
-  }, 60_000);
-
   it('a run that refused every file does not report that nothing needed storing', () => {
     // `changed` counts only stored things, so a Stop whose only event was a
     // refusal recorded `note files were read and nothing new needed storing`
@@ -488,47 +439,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     const last = outcomes('note-ingest').at(-1)!;
     expect(last.outcome).toBe('skipped');
     expect(last.reason).toBe('a note file was a symbolic link and was not imported');
-  }, 60_000);
-
-  it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {
-    // The outcome used to be recorded inside runStopNotes, before the line
-    // had been written. Piping this hook's stdout into a process that exits
-    // immediately gave exit 0, empty stderr and `{"outcome":"wrote"}` while
-    // the user saw nothing — and the transcript offset advanced too, so the
-    // window was never reconsidered and the moves it described were never
-    // mentioned again.
-    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
-
-    const childEnv: Record<string, string | undefined> = {
-      ...process.env, HOME: home, USERPROFILE: home,
-      // The hook path reaches `sh` as an environment value, read back as
-      // "$STOP_HOOK". Interpolating it into the command string instead —
-      // even through JSON.stringify, which is not shell quoting — puts a
-      // path this process does not control into a shell word, and breaks
-      // outright on a checkout whose directory name carries a metacharacter.
-      STOP_HOOK: HOOK,
-    };
-    delete childEnv.MEMESH_DB_PATH;
-    delete childEnv.MEMESH_DIR;
-    // `true` exits before the hook reaches its write, so writeSync(1) gets
-    // EPIPE — a host that stopped listening, reproduced exactly.
-    const r = spawnSync('sh', ['-c', 'node "$STOP_HOOK" | true'], {
-      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
-      env: childEnv,
-      encoding: 'utf8',
-      timeout: 20_000,
-    });
-    expect(r.status).toBe(0);
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
-      outcome: 'error',
-      reason: 'the host closed stdout before the nudge could be written',
-    });
-
-    // The window was kept: a second Stop with nothing appended still finds
-    // the same approved plan and says so.
-    const second = run();
-    expect(second.status).toBe(0);
-    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
   }, 60_000);
 
   // A Stop whose transcript has no memory folder beside it, or whose payload names no
@@ -554,8 +464,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     // project — and a note filed under NO project is not recoverable later
     // either: note-ingest fast-paths an unchanged file, so the tag backfill
     // is never reached unless the user edits the note again.
-    //
-    // The nudge half must still run: it writes nothing and needs no project.
     fs.mkdirSync(memoryDir);
     fs.writeFileSync(path.join(memoryDir, 'a.md'),
       '---\nname: nocwd_note\ndescription: No cwd\nmetadata:\n  type: decision\n---\n\nbody\n');
@@ -583,15 +491,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
       db.close();
     }
     expect(stored, 'a note was stored with no project tag it can never gain').toBeUndefined();
-
-    // The nudge half still ran and reached its own verdict — it is silenced
-    // here by the note file this test just wrote, which is its normal rule,
-    // not by the missing cwd. What matters is that skipping ingestion did not
-    // take the nudge down with it.
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
-      outcome: 'skipped',
-      reason: 'a note file changed since the last Stop',
-    });
 
     // And with cwd present the same directory ingests normally.
     fs.utimesSync(path.join(memoryDir, 'a.md'), new Date(), new Date());
@@ -691,63 +590,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/50 created/);
     expect(stored()).toBe(150);
   }, 120_000);
-
-  it('F8: a rejected plan is not an approved one — with or without is_error', () => {
-    const declined = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
-    write([...reads(4), ...toolCall('ExitPlanMode', {}, { error: true, content: declined })]);
-    expect(run().stdout.trim()).toBe('');
-    append([...reads(4), ...toolCall('ExitPlanMode', {}, { content: declined })]);
-    expect(run().stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/no decision-shaped move/);
-  }, 60_000);
-
-  it('a commit is `git commit` in command position, not a search for the words', () => {
-    write([...reads(4), ...toolCall('Bash', { command: 'grep -rn "git commit" docs' }), ...toolCall('Bash', { command: 'git commit-tree abc' })]);
-    expect(run().stdout.trim()).toBe('');
-    append([...reads(4), ...toolCall('Bash', { command: 'cd repo && git -C . commit -m "x"' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-  }, 60_000);
-
-  it('F7: offset files of sessions idle for 30 days are pruned; recent ones kept', () => {
-    const dir = path.join(home, '.memesh', 'remember-nudge');
-    fs.mkdirSync(dir, { recursive: true });
-    const old = path.join(dir, 'old-session.json');
-    const recent = path.join(dir, 'recent-session.json');
-    fs.writeFileSync(old, '{"offset":0}');
-    fs.writeFileSync(recent, '{"offset":0}');
-    const longAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    fs.utimesSync(old, longAgo, longAgo);
-    write(reads(1));
-    expect(run().status).toBe(0);
-    expect(fs.existsSync(old)).toBe(false);
-    expect(fs.existsSync(recent)).toBe(true);
-    expect(fs.existsSync(path.join(dir, `${sessionId}.json`))).toBe(true);
-  }, 60_000);
-
-  it('P2-b: "rejected"/"declined" in ordinary output does not cancel a real move', () => {
-    write([
-      ...reads(4),
-      ...toolCall('Bash', { command: 'git commit -m "fix: handle rejected payments"' }, { content: '[main abc1234] fix: handle rejected payments' }),
-    ]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([
-      ...reads(3),
-      ...toolCall('Bash', { command: 'npx vitest run' }, { error: true, content: 'AssertionError: expected promise to be rejected' }),
-      ...toolCall('Bash', { command: 'npx vitest run' }, { content: 'Tests 3 passed; expected promise to be rejected ✓' }),
-    ]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a test went red then green/);
-    append([...reads(4), ...toolCall('ExitPlanMode', { plan: 'x' }, { content: 'User has approved your plan. Handle declined cards first.' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a plan was approved/);
-  }, 60_000);
-
-  it('P3-b: commit detection covers quoted -C paths, env prefixes and sudo', () => {
-    write([...reads(4), ...toolCall('Bash', { command: 'git -C "/a b/c" commit -m x' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([...reads(4), ...toolCall('Bash', { command: 'GIT_EDITOR=true git commit --amend' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([...reads(4), ...toolCall('Bash', { command: 'sudo git commit -m y' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-  }, 60_000);
 
   it('a move and a returning file are writes, not "nothing new" (#324)', () => {
     fs.mkdirSync(memoryDir);

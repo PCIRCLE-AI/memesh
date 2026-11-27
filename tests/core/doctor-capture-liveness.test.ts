@@ -509,6 +509,25 @@ describe('doctor: capture-liveness', () => {
     expect(check.params?.reason).toBe(SKIP_REASONS.commitLineMissing);
   });
 
+  it('keeps retired outcomes and counts in diagnostics without treating retirement as a failure', async () => {
+    memeshDirWith([
+      { hook: 'pre-compact', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'error' },
+      { hook: 'decision-nudge', at: '2026-09-09T01:00:01.000Z', host: 'claude-code', outcome: 'error' },
+      { hook: 'remember-nudge', at: '2026-09-09T01:00:02.000Z', host: 'claude-code', outcome: 'error' },
+    ]);
+    const result = await run({ typeTrends: [
+      { type: 'session-insight', last7: 0, prev7: 4 },
+      { type: 'session-summary', last7: 0, prev7: 2 },
+    ] });
+    expect(result.capture?.status).toBe('PASS');
+    expect(result.capture?.hooks).toEqual(expect.arrayContaining([
+      expect.objectContaining({ hook: 'pre-compact', errors: 1 }),
+    ]));
+    expect(result.capture?.types).toEqual(expect.arrayContaining([
+      expect.objectContaining({ type: 'session-summary', prev7: 2, stopped: false }),
+    ]));
+  });
+
   it('PASS_WITH_CONCERNS — a type that was being written stopped being written', async () => {
     memeshDirWith([
       { hook: 'session-summary', at: '2026-09-09T01:00:00.000Z', host: 'claude-code', outcome: 'wrote', entity: 'session-s1-summary' },
@@ -542,6 +561,7 @@ describe('doctor: capture-liveness', () => {
   });
 
   it('never-ran on an MCP-only install is not a failure — no capture hook is wired', async () => {
+    pinHosts({});
     // A Codex / Gemini / Cursor install wires no capture hook. Past the
     // grace, session-summary has never run — but there is nothing that
     // should be running, so a FAIL here would be a permanent unfixable red.

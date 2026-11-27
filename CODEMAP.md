@@ -102,15 +102,13 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 | `messages.js` | SessionStart / UserPromptSubmit | register the host conversation, output pending message batches, and record delivery after output succeeds |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
-| `session-summary.js` | Stop | captures the last assistant reply for later conversation tails; note ingest + remember nudge (`_stop-notes`) |
+| `session-summary.js` | Stop | captures the last assistant reply for later conversation tails; note ingestion (`_stop-notes`) |
 | `stop-message-gate.js` | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
-| `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
-| `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
 | `user-prompt-intent.js` | UserPromptSubmit | waiting-message reminder, private marker renewal |
 | `prompt-recall.js` | UserPromptSubmit | inject up to two eligible keyword-search results with titles, content and `[mem:id]`, within a shared 4096 UTF-8 byte rendered block |
 
-`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_codex-rollout.js` and `_stop-notes.js`
+`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js` and `_stop-notes.js`
 are helpers, not hook commands. Conversation hooks bind the actual host session and read complete pending messages from `messages.db`; successful output records delivery. Opening context reads eligible project conversation tails. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless
 automatic updates are off, and by `memesh update` when asked by hand; there is no consent step. It is not registered in the manifest.
 

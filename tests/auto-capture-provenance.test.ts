@@ -35,7 +35,6 @@ const read = (rel: string) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
 const CAPTURE_WRITERS = [
   'src/core/extractor.ts',
   'scripts/hooks/session-summary.js',
-  'scripts/hooks/pre-compact.js',
   'scripts/hooks/post-commit.js',
 ] as const;
 

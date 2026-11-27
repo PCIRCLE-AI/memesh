@@ -483,7 +483,7 @@ describe('live-journey report contract', () => {
       'memory-round-trip',
       'session-start-briefing',
       'quiet-commit-capture',
-      'stop-session-insight',
+      'stop-conversation',
       'packed-upgrade',
     ]);
     for (const host of ['codex', 'claude'] as const) {

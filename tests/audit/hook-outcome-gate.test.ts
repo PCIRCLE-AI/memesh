@@ -239,7 +239,7 @@ describe('the gate reads the real hook list (#324 H3)', () => {
     expect(names.length).toBeGreaterThanOrEqual(10);
     // These two are record NAMES, not files — the drift that started this.
     expect(names).toContain('note-ingest');
-    expect(names).toContain('remember-nudge');
+    expect(names).not.toContain('remember-nudge');
     // Prose in the block carries apostrophes ("session-summary's window");
     // none of them may come back as a hook name.
     for (const n of names) expect(n, `parsed a sentence as a hook name: ${n}`).toMatch(/^[a-z][a-z-]*$/);

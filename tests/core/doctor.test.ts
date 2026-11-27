@@ -195,7 +195,6 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
       SessionStart: [{ hooks: [{ command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js' }] }],
       PostToolUse: [{ hooks: [{ command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js' }] }],
       Stop: [{ hooks: [{ command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-summary.js' }] }],
-      PreCompact: [{ hooks: [{ command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.js' }] }],
     },
   });
 
@@ -212,7 +211,6 @@ function createPackageRoot(root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-
     'scripts/hooks/session-start.js',
     'scripts/hooks/post-commit.js',
     'scripts/hooks/session-summary.js',
-    'scripts/hooks/pre-compact.js',
   ]) {
     const fullPath = path.join(root, file);
     fs.mkdirSync(path.dirname(fullPath), { recursive: true });
@@ -5193,7 +5191,7 @@ describe('doctor rows that had no assertion', () => {
       const check = row(await runDoctorImpl(options(packageRoot)), 'hooks-config');
       expect(check.status).toBe('pass');
       expect(check.code, 'a passing row must not carry a failure code').toBeUndefined();
-      expect(check.summary).toContain('5 hook types');
+      expect(check.summary).toContain('4 hook types');
     });
 
     it('fails when hooks.json is missing entirely', async () => {

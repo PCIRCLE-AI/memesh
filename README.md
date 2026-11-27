@@ -105,7 +105,7 @@ MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit p
 
 ---
 
-The Claude Code plugin ships **11 hooks**; the Codex plugin also registers two Codex-only commands. MeMesh does not classify saving intent by
+The Claude Code plugin ships **9 hooks**; the Codex plugin also registers two Codex-only commands. MeMesh does not classify saving intent by
 keywords: conversations are captured by default, and the agent can store structured memories. Sessions start with a bounded
 memory overview and recent user conversation titles. When a prompt matches
 stored memory, up to two memories bring their content along, within one 4 KiB

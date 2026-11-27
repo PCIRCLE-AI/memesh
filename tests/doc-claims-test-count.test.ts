@@ -19,10 +19,13 @@ import { spawnSync } from 'child_process';
 import { statesTestCount } from '../scripts/lib/test-count-claim.mjs';
 
 function copyTrackedWorkingTree(root: string, fixture: string) {
-  const listed = spawnSync('git', ['-C', root, 'ls-files', '-z'], { encoding: 'buffer' });
-  if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr.toString('utf8')}`);
+  const trackedFiles = (dir: string) => {
+    const listed = spawnSync('git', ['-C', dir, 'ls-files', '-z'], { encoding: 'utf8' });
+    if (listed.status !== 0) throw new Error(`git ls-files failed: ${listed.stderr}`);
+    return listed.stdout.split('\0').filter(Boolean);
+  };
   const requiredCandidateInputs = ['src/transports/conversation-messaging.ts', 'scripts/hooks/messages.js'];
-  const files = new Set([...listed.stdout.toString('utf8').split('\0').filter(Boolean), ...requiredCandidateInputs]);
+  const files = new Set([...trackedFiles(root), ...trackedFiles(fixture), ...requiredCandidateInputs]);
   for (const relative of files) {
     const source = path.join(root, relative);
     const target = path.join(fixture, relative);
@@ -123,7 +126,7 @@ describe('the READMEs-state-no-test-count rule', () => {
       const run = () => spawnSync(process.execPath, [path.join(fixture, 'scripts/check-doc-claims.mjs')], { cwd: fixture, encoding: 'utf8' });
       const accepted = run();
       expect([0, 1]).toContain(accepted.status);
-      expect(accepted.stdout, `${accepted.stdout}\n${accepted.stderr}`).toContain('11 hook commands exist and scripts/hooks agrees with the manifest');
+      expect(accepted.stdout, `${accepted.stdout}\n${accepted.stderr}`).toMatch(/\d+ hook commands exist and scripts\/hooks agrees with the manifest/);
       if (accepted.status === 1) expect(accepted.stderr).toContain('documents name nested subcommands that do not exist');
       expect(accepted.stderr).not.toContain('doc-claim-fixture.js');
       fs.writeFileSync(path.join(fixture, 'scripts/hooks/doc-claim-orphan.js'), '');

@@ -37,7 +37,7 @@ describe('core live journeys', () => {
     expect(report.schema).toBe('memesh-core-live-journeys/v1');
     expect(report.runDir).toBe(fs.realpathSync(runDir));
     expect(report.journeys.map((journey) => journey.id)).toEqual([
-      'memory-round-trip', 'session-start-briefing', 'quiet-commit-capture', 'stop-session-insight',
+      'memory-round-trip', 'session-start-briefing', 'quiet-commit-capture', 'stop-conversation',
     ]);
     expect(report.journeys.every((journey) => journey.status === 'PASS' && journey.boundary === 'isolated-process')).toBe(true);
     expect(report.journeys.every((journey) => journey.success.observed && journey.failure.observed && journey.effect_readback.observed)).toBe(true);

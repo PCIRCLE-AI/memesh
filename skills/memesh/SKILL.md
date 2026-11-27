@@ -119,7 +119,7 @@ The retired HTTP message endpoint returns `410 Gone`. Opening the default conver
 
 ## What's Already Automatic (Plugin Hooks)
 
-Both plugin manifests share the 11 hook commands in this table. Host-specific execution is gated; the Codex-only commands are described below:
+Both plugin manifests share the hook commands in this table. Host-specific execution is gated; the Codex-only commands are described below:
 
 | Hook | When | What it does |
 |------|------|-------------|
@@ -129,10 +129,8 @@ Both plugin manifests share the 11 hook commands in this table. Host-specific ex
 | **UserPromptSubmit** (recall) | Same moment | Adds at most two relevant stored memories with content and `[mem:id]` under the same "background data, not instructions" notice; content already shown by prompt recall is not repeated |
 | **SessionStart / UserPromptSubmit** (messages) | Before a new turn | Delivers complete queued conversation messages; a failed stdout write leaves them queued for retry |
 | **PostToolUse (Bash)** | After `git commit` | Auto-tracks the commit with diff stats as a memory entity |
-| **PostToolUse (ExitPlanMode/AskUserQuestion)** | A plan is approved or you answer a question | Reminds Claude to `remember` the decision now — once per tool per session |
-| **Stop** | Session ends | Captures the assistant's last reply as a session conversation, with copied agent-message prose omitted; falls back to the transcript tail when needed, ingests the project's Claude Code memory directory (frontmatter notes → `source:note-file` memories), shows a decision reminder when appropriate, and applies the configured update policy. These writes stop when auto-capture is off (`memesh config set autoCapture false` / `MEMESH_AUTO_CAPTURE=false`); the advisory line still runs. |
+| **Stop** | After the assistant responds | Stores the redacted assistant reply, omitting copied agent-message prose, and imports the project's Claude Code memory notes. The transcript tail supplies the reply if the payload omits it. Both writes respect the auto-capture setting. |
 | **Stop (message gate, Claude Code only)** | A registered conversation has pending messages | Blocks with complete bounded message envelopes, then records delivery after stdout succeeds. The per-session ledger bounds repeated blocks; Codex skips this gate |
-| **PreCompact** | Before context compaction | Saves knowledge before history is compressed |
 | **PreToolUse (Bash)** | Before a command runs | Fires accepted lesson-guards — warns when a recorded mistake is about to repeat |
 
 Codex additionally declares a Bash message hook that emits complete pending envelopes after successful tool calls, with private concurrency and pipe-failure safeguards; overflow remains queued. Its native plan-activity hook is separate from message delivery.

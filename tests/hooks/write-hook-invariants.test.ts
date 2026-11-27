@@ -278,28 +278,8 @@ describe('write-hook invariants (fake-working gates)', () => {
     }
   });
 
-  it('every write hook caps its title through the shared truncateTitle', () => {
-    // The display side never falls back to `name`, so a hook that stops
-    // titling quietly reverts its entities to the pre-UX-1 look. That a
-    // title actually LANDS is pinned end-to-end per hook (post-commit.test.ts,
-    // session-summary.test.ts, pre-compact.test.ts assert the written row);
-    // this grep only guards the shared length cap, which the row assertions
-    // cannot see unless the fixture text happens to be long.
-    // COUNTED, not merely present. `session-summary.js` writes three titles
-    // — the edited-files entity, the fixes entity, the heavy-session summary
-    // — and a single `toMatch(/truncateTitle\(/)` is satisfied by any one of
-    // them, so two could lose the cap with this test green.
-    //
-    // The expected count is written down per hook rather than derived from
-    // the source, because every derivation available here is a second regex
-    // over the same file and would drift with it. A hook that grows a fourth
-    // title is a visible edit HERE, which is the point: the number is the
-    // reviewer's checklist, not a computed tautology.
-    const TITLE_SITES: Record<string, number> = {
-      'session-summary.js': 3,
-      'post-commit.js': 1,
-      'pre-compact.js': 1,
-    };
+  it('post-commit caps its title through the shared truncateTitle', () => {
+    const TITLE_SITES: Record<string, number> = { 'post-commit.js': 1 };
     for (const [hook, expected] of Object.entries(TITLE_SITES)) {
       const src = fs.readFileSync(path.join('scripts/hooks', hook), 'utf8');
       const capped = (src.match(/truncateTitle\(/g) ?? []).length;
@@ -380,15 +360,10 @@ describe('write-hook invariants (fake-working gates)', () => {
     }
   });
 
-  it('every write hook routes through captureEntity and hand-rolls no entity writes', () => {
-    // These three hooks persist entities. If any of them writes rows directly
-    // instead of via captureEntity, it can drop the FTS/observation steps the
-    // helper guarantees — exactly the drift that made session memories
-    // unrecallable. A new write hook must be added here too.
-    const writeHooks = ['session-summary.js', 'post-commit.js', 'pre-compact.js'];
-    for (const hook of writeHooks) {
+  it('each capture hook routes persistence through the shared writer', () => {
+    for (const [hook, writer] of [['session-summary.js', 'captureConversation'], ['post-commit.js', 'captureEntity']]) {
       const src = fs.readFileSync(path.join('scripts/hooks', hook), 'utf8');
-      expect(src, `${hook} must use the shared captureEntity() write helper`).toMatch(/captureEntity\(/);
+      expect(src).toContain(writer + '(');
       expect(
         src,
         `${hook} must not hand-roll "INSERT INTO observations" (bypasses captureEntity's FTS reindex)`,
@@ -545,13 +520,11 @@ describe('write-hook invariants (fake-working gates)', () => {
     // invisible: capture works, and doctor slowly decides the loop is dead.
     // The inverse matters just as much: a `hook:` option handed back to
     // openHookDb would quietly move the stamp to before capture again.
-    for (const hook of ['session-summary.js', 'post-commit.js', 'pre-compact.js']) {
+    for (const hook of ['session-summary.js', 'post-commit.js']) {
       const src = fs.readFileSync(path.join('scripts/hooks', hook), 'utf8');
-      const name = hook.replace(/\.js$/, '');
-      expect(
-        src,
-        `${hook} must call recordHookRun(db, '${name}') at its successful exit, or doctor cannot tell it ever ran`,
-      ).toContain(`recordHookRun(db, '${name}')`);
+      expect(src).toContain(hook === 'session-summary.js'
+        ? "stampHookRunOnly(process.env, 'session-summary')"
+        : "recordHookRun(db, 'post-commit')");
       expect(
         src,
         `${hook} passes hook: to openHookDb — the open-time stamp reported crashed hooks as alive`,

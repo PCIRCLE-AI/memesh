@@ -184,17 +184,6 @@ const HOOK_CASES: HookCase[] = [
     },
   },
   {
-    file: 'pre-compact.js',
-    boundEvent: 'PreCompact',
-    input: {
-      session_id: 'contract-6',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'PreCompact',
-      transcript_path: '',
-      reason: 'auto',
-    },
-  },
-  {
     file: 'user-prompt-intent.js',
     boundEvent: 'UserPromptSubmit',
     input: {
@@ -212,17 +201,6 @@ const HOOK_CASES: HookCase[] = [
       cwd: '/tmp/contract-project',
       hook_event_name: 'UserPromptSubmit',
       prompt: 'hello there',
-    },
-  },
-  {
-    file: 'decision-nudge.js',
-    boundEvent: 'PostToolUse',
-    input: {
-      session_id: 'contract-8',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'PostToolUse',
-      tool_name: 'ExitPlanMode',
-      tool_input: { plan: 'Ship the decision-nudge hook' },
     },
   },
   {
@@ -411,6 +389,16 @@ describe('Feature: Claude Code hook-output contract', () => {
     expect(additionalContext, 'session-start.js emitted no additionalContext — the seed likely does not match its real project tag').toBeTruthy();
     expect(additionalContext).toContain('Always validate the OAuth state parameter');
     expect(additionalContext).toMatch(/- \[decision\] Use WAL mode for concurrent reads — Why: readers must not block the writer; revisit if we move off SQLite \[mem:\d+\]/);
+  });
+
+  it('both plugin manifests retire pre-compaction capture and post-plan reminders', () => {
+    const claude = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8')).hooks;
+    const codex = JSON.parse(fs.readFileSync('.codex-plugin/plugin.json', 'utf8')).hooks.hooks;
+    for (const hooks of [claude, codex]) {
+      expect(hooks.PreCompact).toBeUndefined();
+      const matchers = hooks.PostToolUse.map((group: { matcher: string }) => group.matcher);
+      expect(matchers).not.toContain('ExitPlanMode|AskUserQuestion');
+    }
   });
 
   it('Scenario: PreCompact has no hookSpecificOutput variant (regression guard for #53)', () => {

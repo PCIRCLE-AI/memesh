@@ -132,14 +132,6 @@ describe.each([false, true])('Feature: hooks on a Node below the floor (database
     expect(r.stdout).toBe('');
   });
 
-  it('decision-nudge does not send the agent to the remember tool, and records why', () => {
-    const home = freshHome(`dn-${withDb}`, withDb);
-    const r = runHook('decision-nudge.js', { ...common, hook_event_name: 'PostToolUse', cwd: home, tool_name: 'ExitPlanMode', tool_input: {}, tool_response: {} }, home);
-    expectNodeTooOld(r, 'decision-nudge');
-    expect(r.stdout).toBe('');
-    expect(r.stderr).toContain(SENTENCE);
-  });
-
   it('user-prompt-intent stays silent and records why', () => {
     const home = freshHome(`ui-${withDb}`, withDb);
     const r = runHook('user-prompt-intent.js', { ...common, hook_event_name: 'UserPromptSubmit', cwd: home, prompt: 'hello there' }, home);

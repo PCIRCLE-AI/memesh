@@ -10,6 +10,7 @@
  *     silently narrowing what the gate covers.
  */
 import { describe, it, expect } from 'vitest';
+import { spawnSync, type SpawnSyncOptions } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -305,7 +306,7 @@ describe('every memesh a shell would resolve', () => {
 });
 
 describe('capture receipt on the shipped hooks', () => {
-  it('captures a commit and a session insight against a throwaway graph', () => {
+  it('captures a commit and a complete assistant reply against a throwaway graph', () => {
     const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-'));
     try {
       const install = {
@@ -317,7 +318,27 @@ describe('capture receipt on the shipped hooks', () => {
       expect(result.id).toBe('capture');
       expect(result.ok, result.detail).toBe(true);
       expect(result.detail).toContain('commit-');
-      expect(result.detail).toContain('session-capture-1');
+      expect(result.detail).toContain('conversation-');
+      expect(result.detail).toContain('session capture-1');
+    } finally {
+      fs.rmSync(home, { recursive: true, force: true });
+    }
+  });
+
+  it('fails the receipt when Stop succeeds but only part of the reply is saved', () => {
+    const home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-capture-receipt-partial-'));
+    try {
+      const install = { home, packageRoot: path.resolve('.'), env: { ...process.env, HOME: home } };
+      const result = captureReceipt(install, (file, args, options) => {
+        if (path.basename(args?.[0] ?? '') !== 'session-summary.js') return spawnSync(file, args, options);
+        const payload = JSON.parse(String((options as SpawnSyncOptions | undefined)?.input));
+        payload.last_assistant_message = payload.last_assistant_message.split('\n')[0];
+        const stop = spawnSync(file, args, { ...options, input: JSON.stringify(payload) });
+        expect(stop.status, String(stop.stderr)).toBe(0);
+        return stop;
+      });
+      expect(result).toMatchObject({ id: 'capture', ok: false });
+      expect(result.detail).toContain('Stop did not capture the complete assistant reply for session capture-1');
     } finally {
       fs.rmSync(home, { recursive: true, force: true });
     }

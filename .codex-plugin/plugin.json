@@ -73,16 +73,6 @@
               "timeout": 5
             }
           ]
-        },
-        {
-          "matcher": "ExitPlanMode|AskUserQuestion",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/decision-nudge.js",
-              "timeout": 5
-            }
-          ]
         }
       ],
       "Stop": [
@@ -98,18 +88,6 @@
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/stop-message-gate.js",
               "timeout": 5
-            }
-          ]
-        }
-      ],
-      "PreCompact": [
-        {
-          "matcher": "*",
-          "hooks": [
-            {
-              "type": "command",
-              "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.js",
-              "timeout": 10
             }
           ]
         }

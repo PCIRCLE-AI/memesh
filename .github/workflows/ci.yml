@@ -163,10 +163,14 @@ jobs:
         env:
           TEMP: ${{ runner.temp }}
           TMP: ${{ runner.temp }}
-        run: >-
-          node scripts/run-tests-isolated.mjs tests/core/windows-permissions.test.ts tests/core/conversation-message-entry.test.ts
-          tests/hooks/stop-handoff.test.ts tests/network/conversation-courier.test.ts
-          --testNamePattern "compares split and combined Windows allows|explicit destination without source|keeps locked quote reads|CLI copy remains queued"
+        run: |
+          node scripts/run-tests-isolated.mjs tests/core/windows-permissions.test.ts --testNamePattern compares.split.and.combined.Windows.allows
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests-isolated.mjs tests/core/conversation-message-entry.test.ts --testNamePattern explicit.destination.without.source
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests-isolated.mjs tests/hooks/stop-handoff.test.ts --testNamePattern keeps.locked.quote.reads
+          if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
+          node scripts/run-tests-isolated.mjs tests/network/conversation-courier.test.ts --testNamePattern CLI.copy.remains.queued
 
       - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
         # Temp folders on the runner's own temp disk. On Windows, TEMP points

@@ -203,9 +203,6 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
 - **PreToolUse (Edit|Write)** surfaces memories related to the file being
   edited.
 - **PostToolUse (Bash)** records git commits with diff stats.
-- **PostToolUse (ExitPlanMode|AskUserQuestion)** reminds you to `remember` a
-  decision just made — once per tool per session. It only reminds; unlike
-  the hooks above, it writes nothing to the graph itself.
 - **Stop** captures the assistant's last reply as a `conversation` for its
   session, after redaction and omission of copied agent-message prose. If the
   payload lacks the reply, it can fall back to the transcript tail. Older
@@ -215,26 +212,18 @@ Under Claude Code with the MeMesh plugin, hooks capture automatically:
   (`~/.claude/projects/<slug>/memory/*.md` — one memory per file with
   `name`/`description`/`metadata.type` frontmatter, tagged `source:note-file`
   (tags that start with `source:` are reserved for MeMesh: `remember` refuses them);
-  a file that disappears is tagged `source:note-file:missing`, never deleted),
-  and when the turn since the last Stop approved a plan, answered a question,
-  committed, or turned a test red then green — with no `remember`/`learn` call
-  and no note-file change — it shows one line suggesting a `remember`. Both
-  the session capture and the note-directory ingestion are writes, so both
-  stop when auto-capture is off (`memesh config set autoCapture false`, or
-  `MEMESH_AUTO_CAPTURE=false`); the reminder line still runs either way.
-- **PreCompact** saves knowledge before history is compressed.
+  a file that disappears is tagged `source:note-file:missing`).
+  Both writes respect `memesh config set autoCapture false` and
+  `MEMESH_AUTO_CAPTURE=false`.
 - **UserPromptSubmit** tells you about messages waiting for this session; it does not read your words for a request to save.
 - **PreToolUse (Bash)** fires accepted lesson-guards: a fenced warning
   citing the source lesson (`[mem:id]`) when a command matches a mistake
   the graph has recorded. Heed it, and cite the lesson if it changes what
   you do.
 
-So under Claude Code: skip step 1 of the loop (the topology is already
-injected), and do not `remember` commits or session summaries by hand. A
-decision made via `ExitPlanMode`/`AskUserQuestion` gets a reminder, not a
-write — act on it with a real `remember` call. Manual calls are still how
-decisions, preferences, their rationale, lessons, and user-stated task state
-actually get stored.
+Under Claude Code with the plugin, the injected briefing and automatic commit
+capture already cover those steps. Use `remember` for decisions and preferences,
+`learn` for lessons, and `task_state` for user-stated task state.
 
 On a host with no hooks (Gemini CLI, Cursor, an MCP-only setup, …) the loop is
 fully manual, and it is worth running.

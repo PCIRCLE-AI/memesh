@@ -1,28 +1,8 @@
-// Stop-side note work (#324): note-directory ingestion and the
-// "this session decided things and stored nothing" nudge.
-//
-// Not a hook (the `_` prefix): session-summary.js — the Stop hook — calls
-// `runStopNotes()` once per Stop. Both halves live apart from the capture
-// path on purpose: the capture path bails early on quiet sessions, on
-// already-captured sessions and when auto-capture is off, and neither half
-// may inherit those exits by accident.
-//
-// Contract:
-//   - NEVER blocks the host. Everything is bounded (ingestion reads at most
-//     INGEST_MAX_FILES files per Stop, the nudge reads only the transcript
-//     bytes appended since the previous Stop) and every failure is recorded
-//     and swallowed. The only output is at most one `systemMessage` line,
-//     which the caller prints.
-//   - Every path records an outcome (`recordHookOutcome`) under its own hook
-//     name — `note-ingest` and `remember-nudge` — so their skips do not dilute
-//     session-summary's capture-liveness window.
-//   - Ingestion WRITES memories and is therefore gated on auto-capture; the
-//     nudge writes nothing and is not.
+// Import the project memory notes on Stop.
 
 import {
   closeSync,
   existsSync,
-  fstatSync,
   lstatSync,
   openSync,
   readFileSync,
@@ -32,7 +12,6 @@ import {
   unlinkSync,
 } from 'fs';
 import { createHash } from 'crypto';
-import { isCodexToolRequest } from './_generated/host-transcript.js';
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
 import {
   ensurePrivateDir,
@@ -42,18 +21,13 @@ import {
   SKIP_REASONS,
   hookErrorReason,
   importFromPluginRoot,
-  isGitCommitCommand,
   recordHookOutcome,
   resolvePluginRoot,
   writePrivateJson,
 } from './_shared.js';
 
-/** Fewer tool calls than this since the last Stop is a trivial turn: no nudge. */
-export const NUDGE_MIN_TOOL_CALLS = 5;
 /** Files ingestion may read in one Stop. The rest wait for the next Stop. */
 export const INGEST_MAX_FILES = 100;
-/** Most transcript bytes the nudge reads in one Stop (the newest ones). */
-const MAX_WINDOW_BYTES = 16 * 1024 * 1024;
 /** A session id safe to use as a file name. */
 export const SESSION_ID_RE = /^[A-Za-z0-9_-]{1,128}$/;
 
@@ -67,23 +41,6 @@ export function recallListName(sessionId, agentId) {
   return `${createHash('sha256').update(agentId ? `${sessionId}\n${agentId}` : sessionId).digest('hex').slice(0, 32)}.json`;
 }
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
-
-const MEMORY_WRITE_TOOL_RE = /(?:^|__)(?:remember|learn)$/;
-const MEMORY_WRITE_BASH_RE = /\bmemesh\s+(?:remember|learn)\b/;
-const TEST_RE = /\b(?:vitest|jest|pytest|go\s+test|cargo\s+test|npm\s+(?:run\s+)?test|run-tests[\w-]*)\b/;
-// The sentence Claude Code puts in a tool_result block when the user turned
-// the call down ("The user doesn't want to proceed with this tool use. The
-// tool use was rejected …"). Matched as that sentence, and only on
-// plan/question results: the bare words "rejected"/"declined" appear in
-// ordinary commit and test output, and in approved plans.
-const DECLINED_RE = /The user doesn't want to proceed with this tool use/;
-/** Days a per-session nudge offset file is kept after its last Stop. */
-const NUDGE_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
-/** Most stale offset files one Stop removes — the pruning stays bounded. */
-const NUDGE_PRUNE_PER_RUN = 50;
-const NOTE_PATH_RE = /(?:^|[\\/])(?:memory|\.remember)[\\/][^\\/]+\.md$/;
-/** Unresolved tool_use ids carried into the next Stop window (newest kept). */
-const PENDING_CARRY_MAX = 200;
 
 /**
  * Claude Code keeps a project's memory directory next to its transcripts:
@@ -299,154 +256,12 @@ export async function runNoteIngestion({ memoryDir, project, metaUrl }) {
   return { ...primary, entity: changed ? touched : undefined, additionalOutcomes: skipped };
 }
 
-/**
- * Read the transcript bytes appended since `offset`, whole lines only.
- * A file smaller than the offset was replaced; it is read from the start.
- */
-export function readTranscriptWindow(transcriptPath, offset) {
-  const fd = openSync(transcriptPath, 'r');
-  try {
-    const size = fstatSync(fd).size;
-    let start = Number.isInteger(offset) && offset >= 0 && offset <= size ? offset : 0;
-    if (size - start > MAX_WINDOW_BYTES) start = size - MAX_WINDOW_BYTES;
-    const buf = Buffer.alloc(size - start);
-    let got = 0;
-    while (got < buf.length) {
-      const n = readSync(fd, buf, got, buf.length - got, start + got);
-      if (n === 0) break;
-      got += n;
-    }
-    const lastNewline = buf.lastIndexOf(0x0a, got - 1);
-    if (lastNewline < 0) return { text: '', nextOffset: start };
-    return { text: buf.subarray(0, lastNewline + 1).toString('utf8'), nextOffset: start + lastNewline + 1 };
-  } finally {
-    closeSync(fd);
-  }
-}
-
-/**
- * What a transcript window shows: how many tool calls, which decision-shaped
- * moves (the rules' own triggers — a plan approved, a question answered, a
- * commit, a test made red then green), and whether a memory was written
- * (`remember`/`learn` via MCP or the CLI, or a write to a note file).
- *
- * `carry` seeds the tool_use → kind map with calls whose RESULT had not
- * arrived when the previous window ended, and the returned `pending` is what
- * this window leaves for the next one. Without it a plan approved either side
- * of a Stop was never paired: the tool_use fell in one window and the
- * tool_result in the next, and the hook reported "no decision-shaped move
- * since the last Stop" — a miss that looks exactly like a quiet turn.
- *
- * How often a pair actually straddles a Stop is NOT known. This comment used
- * to claim a scan of 1090 real transcripts had found every ExitPlanMode pair
- * adjacent. No command for that scan is recorded anywhere in this repository —
- * `git log -S"1090 real transcripts"` reaches the commit that introduced the
- * sentence and it carries no scan either — and the number appears nowhere but
- * in this paragraph. It is written down here as unmeasured rather than deleted,
- * because a reader who wants the frequency should know it is still open and
- * not go looking for a result that does not exist. Two comments on this branch
- * had the same shape — each named a function nobody wrote.
- *
- * The carry does not depend on that frequency. It costs one bounded map, and
- * the failure it prevents is silent and gives a plausible reason, which is the
- * combination that makes a rare miss expensive rather than tolerable.
- *
- * The map is capped (PENDING_CARRY_MAX, newest kept) so a session that opens
- * calls it never closes cannot grow the state file without bound.
- */
-export function scanTranscriptWindow(text, carry = null) {
-  const pending = new Map(); // tool_use_id → kind
-  if (carry && typeof carry === 'object') {
-    for (const [id, kind] of Object.entries(carry)) {
-      if (typeof id === 'string' && typeof kind === 'string') pending.set(id, kind);
-    }
-  }
-  const moves = [];
-  let toolCalls = 0;
-  let wroteMemory = false;
-  let firstTimestamp = null;
-  let testWentRed = false;
-  let testWentGreen = false;
-  for (const line of String(text ?? '').split('\n')) {
-    if (!line.trim()) continue;
-    let entry;
-    try { entry = JSON.parse(line); } catch { continue; } // torn/foreign line: not evidence either way
-    if (firstTimestamp === null && typeof entry?.timestamp === 'string') {
-      const t = Date.parse(entry.timestamp);
-      if (!Number.isNaN(t)) firstTimestamp = t;
-    }
-    // Codex: a tool request is a function_call / custom_tool_call row (the same
-    // count the session summary uses); what came of a command or a memory tool is
-    // in the completed item beside it, so there is nothing to pair across windows.
-    if (isCodexToolRequest(entry)) {
-      toolCalls++;
-      continue;
-    }
-    if (entry?.type === 'event_msg' && entry.payload?.type === 'item_completed') {
-      const item = entry.payload.item;
-      if (item?.type === 'McpToolCall') {
-        if (item.status === 'completed' && MEMORY_WRITE_TOOL_RE.test(String(item.tool ?? ''))) wroteMemory = true;
-      } else if (item?.type === 'CommandExecution') {
-        const cmd = String(Array.isArray(item.command) ? item.command[item.command.length - 1] : item.command ?? '');
-        // The same rule the rollout reader uses for success: completed, with exit code 0.
-        const failed = !(item.status === 'completed' && item.exit_code === 0);
-        if (MEMORY_WRITE_BASH_RE.test(cmd)) {
-          if (!failed) wroteMemory = true;
-        } else if (isGitCommitCommand(cmd)) {
-          if (!failed) moves.push('a commit');
-        } else if (TEST_RE.test(cmd)) {
-          if (failed) testWentRed = true;
-          else if (testWentRed && !testWentGreen) { testWentGreen = true; moves.push('a test went red then green'); }
-        }
-      }
-      continue;
-    }
-    const content = entry?.message?.content;
-    if (!Array.isArray(content)) continue;
-    for (const block of content) {
-      if (entry.type === 'assistant' && block?.type === 'tool_use') {
-        toolCalls++;
-        const name = typeof block.name === 'string' ? block.name : '';
-        const input = block.input ?? {};
-        if (MEMORY_WRITE_TOOL_RE.test(name)) pending.set(block.id, 'memory');
-        else if (name === 'ExitPlanMode') pending.set(block.id, 'plan');
-        else if (name === 'AskUserQuestion') pending.set(block.id, 'question');
-        else if ((name === 'Write' || name === 'Edit') && NOTE_PATH_RE.test(String(input.file_path ?? ''))) pending.set(block.id, 'memory');
-        else if (name === 'Bash') {
-          const cmd = String(input.command ?? '');
-          if (MEMORY_WRITE_BASH_RE.test(cmd)) pending.set(block.id, 'memory');
-          else if (isGitCommitCommand(cmd)) pending.set(block.id, 'commit');
-          else if (TEST_RE.test(cmd)) pending.set(block.id, 'test');
-        }
-      } else if (entry.type === 'user' && block?.type === 'tool_result') {
-        const kind = pending.get(block.tool_use_id);
-        if (!kind) continue;
-        pending.delete(block.tool_use_id);
-        const resultText = typeof block.content === 'string' ? block.content : JSON.stringify(block.content ?? '');
-        const declined = (kind === 'plan' || kind === 'question') && DECLINED_RE.test(resultText);
-        const failed = block.is_error === true || declined;
-        if (kind === 'test') {
-          if (failed) testWentRed = true;
-          else if (testWentRed && !testWentGreen) { testWentGreen = true; moves.push('a test went red then green'); }
-          continue;
-        }
-        if (failed) continue;
-        if (kind === 'memory') wroteMemory = true;
-        else if (kind === 'plan') moves.push('a plan was approved');
-        else if (kind === 'question') moves.push('a question was answered');
-        else if (kind === 'commit') moves.push('a commit');
-      }
-    }
-  }
-  // Newest last: Map preserves insertion order, so the tail is the most
-  // recent unresolved calls — the ones whose result is still plausibly coming.
-  const carried = [...pending.entries()].slice(-PENDING_CARRY_MAX);
-  return { toolCalls, moves, wroteMemory, firstTimestamp, pending: Object.fromEntries(carried) };
-}
+const SESSION_STATE_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const SESSION_STATE_PRUNE_PER_RUN = 50;
 
 /**
  * Remove per-session state files not touched for 30 days. One file per
- * session would otherwise accumulate forever. At most NUDGE_PRUNE_PER_RUN
+ * session would otherwise accumulate forever. At most SESSION_STATE_PRUNE_PER_RUN
  * removals per call, so a long backlog is worked off over several runs
  * rather than in one.
  */
@@ -463,11 +278,11 @@ export function pruneSessionState(dir, now, onFault) {
     return removed;
   }
   for (const name of names) {
-    if (removed >= NUDGE_PRUNE_PER_RUN) break;
+    if (removed >= SESSION_STATE_PRUNE_PER_RUN) break;
     if (!name.endsWith('.json')) continue;
     const file = join(dir, name);
     try {
-      if (now - lstatSync(file).mtimeMs > NUDGE_STATE_MAX_AGE_MS) {
+      if (now - lstatSync(file).mtimeMs > SESSION_STATE_MAX_AGE_MS) {
         unlinkSync(file);
         removed++;
       }
@@ -482,91 +297,14 @@ export function pruneSessionState(dir, now, onFault) {
   return removed;
 }
 
-export function buildNudge(moves) {
-  const kinds = [...new Set(moves)].join(', ');
-  return `MeMesh: this session made ${moves.length} decision-shaped move(s) (${kinds}) and stored no memory — \`remember\` them.`;
-}
-
-/**
- * Decide the nudge for this Stop, so each Stop judges only what happened
- * since the previous one.
- *
- * Returns `{ message, reason, commit }`; `message` is null when silent.
- *
- * `commit` advances the per-session offset and is NOT called here. The offset
- * used to move the moment the window was read, which meant a nudge that never
- * reached the user was still paid for: the window was consumed, the next Stop
- * saw only what came after it, and the decision-shaped moves the user was
- * supposed to be told about were never mentioned again. Deciding and
- * committing are separate so the caller can advance the offset only once the
- * line has actually been written. The paths that return before the window is
- * read have no `commit` — there is nothing to advance.
- */
-export function decideNudge({ transcriptPath, sessionId, memoryDir }) {
-  if (typeof sessionId !== 'string' || !SESSION_ID_RE.test(sessionId)) return { message: null, reason: SKIP_REASONS.noSessionId };
-  if (typeof transcriptPath !== 'string' || !transcriptPath || !existsSync(transcriptPath)) {
-    return { message: null, reason: SKIP_REASONS.noTranscript };
-  }
-  const dir = join(getMemeshDirFromDbPath(), 'remember-nudge');
-  ensurePrivateDir(dir);
-  pruneSessionState(dir, Date.now());
-  const statePath = join(dir, `${sessionId}.json`);
-  const state = readJson(statePath) ?? {};
-  const { text, nextOffset } = readTranscriptWindow(transcriptPath, state.offset);
-  const now = Date.now();
-  const scan = scanTranscriptWindow(text, state.pending);
-  // The unresolved calls travel with the offset: both describe where this
-  // session's reading got to, and committing one without the other would
-  // either lose a pairing or replay one.
-  const commit = () => writeJsonAtomic(statePath, { offset: nextOffset, lastStopAt: now, pending: scan.pending });
-
-  if (scan.toolCalls < NUDGE_MIN_TOOL_CALLS) return { message: null, reason: SKIP_REASONS.trivialTurn, commit };
-  if (scan.moves.length === 0) return { message: null, reason: SKIP_REASONS.noDecisionMove, commit };
-  if (scan.wroteMemory) return { message: null, reason: SKIP_REASONS.memoryWritten, commit };
-  const since = typeof state.lastStopAt === 'number' ? state.lastStopAt : scan.firstTimestamp;
-  if (memoryDir && typeof since === 'number' && newestNoteMtime(memoryDir) >= since) {
-    return { message: null, reason: SKIP_REASONS.noteFileChanged, commit };
-  }
-  return { message: buildNudge(scan.moves), reason: scan.moves.join('; '), commit };
-}
-
-/**
- * Both halves. Ingestion runs first so a note written this turn is already
- * searchable when the turn ends; the nudge judges "was a note written" by the
- * note files' mtimes rather than by what ingestion wrote, because the first
- * ingestion after install imports every OLD note and would otherwise silence
- * a nudge the session earned.
- *
- * Returns `{ message, settle }`. `message` is the one advisory line to print,
- * or null. `settle(delivered)` MUST be called once the caller has tried to
- * print it: it records the nudge's outcome — which is the delivery's verdict,
- * not a prediction of it — and advances the per-session transcript offset only
- * when the line actually went out. A caller that never settles leaves no
- * record, which is the silent skip this whole module exists to avoid.
- */
 export async function runStopNotes(payload, { captureEnabled, project, metaUrl, env = process.env }) {
-  // `claudeMemoryDir` throws on anything that is not "no such directory"
-  // (EACCES, EIO). That is an error for ingestion — capture is being LOST,
-  // not declined — but it must not take the nudge down with it, so it is
-  // caught here rather than left to either half's try block. The nudge then
-  // runs with no memory directory, which only costs it the note-file check.
-  let memoryDir = null;
-  let memoryDirError = null;
-  try {
-    memoryDir = claudeMemoryDir(payload?.transcript_path);
-  } catch (err) {
-    memoryDirError = err;
+  if (!captureEnabled) {
+    recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
+    return;
   }
   try {
-    if (!captureEnabled) {
-      // Ordered before the directory error on purpose: with ingestion turned
-      // off there was never going to be a read, so a fault in a directory
-      // this run would not have opened is not this run's news.
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff, payload });
-    } else if (memoryDirError) {
-      try { process.stderr.write(`[memesh note-ingest] cannot read the memory directory: ${memoryDirError?.message || memoryDirError}\n`); } catch { /* stderr gone */ }
-      recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(memoryDirError), payload });
-    } else if (project === undefined || project === null) {
+    const memoryDir = claudeMemoryDir(payload?.transcript_path);
+    if (project === undefined || project === null) {
       // No `cwd` in the payload, so the caller could not resolve a project.
       // Ingesting anyway files every note under NO project, and unlike a
       // missed capture that is not recoverable: `note-ingest` fast-paths a
@@ -577,7 +315,6 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
       // says why — better to miss one capture than to file it under the
       // wrong project. A note with no project at all is the same mistake
       // with a worse ending, so ingestion waits for a Stop that has a cwd.
-      // The nudge below is unaffected: it writes nothing and needs no project.
       recordHookOutcome(env, { hook: 'note-ingest', outcome: 'skipped', reason: SKIP_REASONS.cwdAbsent, payload });
     } else if (memoryDir && !memoryDirBelongsTo(memoryDir, { transcriptPath: payload?.transcript_path, cwd: payload?.cwd, project })) {
       // No folder (memoryDir null) is runNoteIngestion's own recorded skip, below.
@@ -590,40 +327,5 @@ export async function runStopNotes(payload, { captureEnabled, project, metaUrl, 
   } catch (err) {
     try { process.stderr.write(`[memesh note-ingest] ${err?.message || err}\n`); } catch { /* stderr gone */ }
     recordHookOutcome(env, { hook: 'note-ingest', outcome: 'error', reason: hookErrorReason(err), payload });
-  }
-
-  try {
-    const n = decideNudge({ transcriptPath: payload?.transcript_path, sessionId: payload?.session_id, memoryDir });
-    return {
-      message: n.message,
-      settle: (delivered) => {
-        // The outcome is the DELIVERY's verdict, not a prediction of it.
-        // It used to be recorded here, before the line had been written:
-        // piping this hook's stdout into a process that exits immediately
-        // gave exit 0, empty stderr and a `wrote` record, with the user
-        // having seen nothing. The offset moved too, so the window was
-        // never reconsidered and the moves it described were never
-        // mentioned again.
-        if (n.message && !delivered) {
-          recordHookOutcome(env, {
-            hook: 'remember-nudge',
-            outcome: 'error',
-            reason: 'the host closed stdout before the nudge could be written',
-            payload,
-          });
-          return; // Offset not advanced: the next Stop judges this window again.
-        }
-        // `notified`, never `wrote`: the nudge stores nothing. It is what
-        // memesh says when nothing HAS been stored, so counting it towards
-        // doctor's `writes` let the one hook that fires because capture is
-        // quiet report that capture is alive.
-        recordHookOutcome(env, { hook: 'remember-nudge', outcome: n.message ? 'notified' : 'skipped', reason: n.reason, payload });
-        n.commit?.();
-      },
-    };
-  } catch (err) {
-    try { process.stderr.write(`[memesh remember-nudge] ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    recordHookOutcome(env, { hook: 'remember-nudge', outcome: 'error', reason: hookErrorReason(err), payload });
-    return { message: null, settle: () => {} };
   }
 }

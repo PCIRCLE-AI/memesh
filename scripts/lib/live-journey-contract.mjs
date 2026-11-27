@@ -9,7 +9,7 @@ export const CORE_JOURNEY_IDS = Object.freeze([
   'memory-round-trip',
   'session-start-briefing',
   'quiet-commit-capture',
-  'stop-session-insight',
+  'stop-conversation',
   'packed-upgrade',
 ]);
 
@@ -17,7 +17,7 @@ export const CORE_JOURNEY_BOUNDARIES = Object.freeze({
   'memory-round-trip': 'isolated-process',
   'session-start-briefing': 'isolated-process',
   'quiet-commit-capture': 'isolated-process',
-  'stop-session-insight': 'isolated-process',
+  'stop-conversation': 'isolated-process',
   'packed-upgrade': 'packed-consumer',
 });
 

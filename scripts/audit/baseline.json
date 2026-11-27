@@ -361,11 +361,6 @@
       "reason": "One test reads src/core/lesson-slug.ts and scripts/audit/memory-invariants.mjs and compares the two lessonSlug bodies: the .mjs cannot import TypeScript, so the function is mirrored, and this pin is what keeps the mirror honest (a comment is not a gate). The slug BEHAVIOUR is tested separately (lesson-engine.test.ts, and the shared-slug case in this file). The .toContain calls the detector saw are stdout assertions on the audit script's report, not source text.",
       "triaged": "2026-08-30 v4.8.2 graph repair"
     },
-    "C1 tests/hooks/decision-nudge.test.ts": {
-      "class": "SAFE",
-      "reason": "emptiness assertions (non-target tool, malformed JSON, rate-limited second call emit nothing) are paired in the same file with positive assertions that ExitPlanMode and AskUserQuestion emit the nudge line; the mutation that disables the rate limit turns the emptiness test red",
-      "triaged": "2026-09-02"
-    },
     "C1 tests/upgrade-plugin-cache-sweep.test.ts": {
       "class": "SAFE",
       "reason": "the one emptiness assertion ('is a no-op on an empty cache root', toEqual([])) is the genuinely-expected outcome of sweeping an empty directory -- there is no vacuity risk to guard against, because the setup creates zero entries on purpose and the test is pinning that the sweep does not fabricate a failure or create anything. Every other test in the file pins real content (toEqual(['4.8.4']), file-existence checks) after seeding non-empty fixtures, so the file is not relying on an empty-by-accident setup anywhere.",

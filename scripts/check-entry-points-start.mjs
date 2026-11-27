@@ -389,11 +389,6 @@ async function main() {
         tool_input: { plan: [{ step: 'entry-point gate smoke', status: 'in_progress' }] },
       })),
     },
-    'scripts/hooks/decision-nudge.js': {
-      run: (abs, env) => assertHookStarts(abs, env, 'PostToolUse', hookPayload({
-        hook_event_name: 'PostToolUse', tool_name: 'ExitPlanMode', tool_input: { plan: 'entry-point gate smoke' },
-      })),
-    },
     'scripts/hooks/session-summary.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'Stop', hookPayload({
         hook_event_name: 'Stop', transcript_path: '',
@@ -402,11 +397,6 @@ async function main() {
     'scripts/hooks/stop-message-gate.js': {
       run: (abs, env) => assertHookStarts(abs, env, 'Stop', hookPayload({
         hook_event_name: 'Stop', transcript_path: '', stop_hook_active: false,
-      })),
-    },
-    'scripts/hooks/pre-compact.js': {
-      run: (abs, env) => assertHookStarts(abs, env, 'PreCompact', hookPayload({
-        hook_event_name: 'PreCompact', transcript_path: '', reason: 'auto',
       })),
     },
     'scripts/hooks/user-prompt-intent.js': {

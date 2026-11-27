@@ -67,10 +67,7 @@ export function readCaptureHooks() {
 }
 
 /**
- * Hook names that are NOT files. `note-ingest` and `remember-nudge` are
- * recorded by `_stop-notes.js`, which the Stop hook calls once per Stop;
- * there is no `note-ingest.js` to look for, and looking for one is the wrong
- * fix — it makes the gate fail on a file that was never meant to exist.
+ * The Stop hook records note-ingest through its helper.
  *
  * Declared, not inferred: a name with no file must be claimed by a named
  * owner here, so the next recording helper cannot pass by simply having no
@@ -79,7 +76,6 @@ export function readCaptureHooks() {
  */
 const HELPER_OWNED_HOOKS = {
   'note-ingest': '_stop-notes.js',
-  'remember-nudge': '_stop-notes.js',
 };
 
 /**
@@ -93,7 +89,7 @@ const HELPER_OWNED_HOOKS = {
  * it would sail through an exit-shaped check.
  */
 const RETURNING_DECISION_FUNCTIONS = {
-  '_stop-notes.js': ['runNoteIngestion', 'decideNudge'],
+  '_stop-notes.js': ['runNoteIngestion'],
   '_clear-alias.js': ['recordSessionLauncher'],
 };
 
