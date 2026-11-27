@@ -17,7 +17,7 @@ import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { networkMetadataPath, type NetworkContext } from '../../src/network/types.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
 
-// Real CLI/control/iroh on one Mac or Linux host, relay off. Not three-host proof.
+// Real CLI/control/iroh on one host, relay off. Not three-host discovery proof.
 it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejects returning stale membership', async () => {
   const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'mm-')));
   const tree = await buildTree({ cli: true });
@@ -54,7 +54,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
       const dataDir = path.join(home, 'data'); fs.mkdirSync(dataDir, { mode: 0o700 });
       const dbPath = path.join(dataDir, 'knowledge-graph.db');
       const env = buildIsolatedRuntimeEnv(process.env, { runtimeHome: home, memeshDir: dataDir, dbPath });
-      Object.assign(env, { MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1', MEMESH_AUTO_CAPTURE: 'false' });
+      Object.assign(env, { MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1', MEMESH_AUTO_CAPTURE: 'false', MEMESH_TEST_NETWORK_BIND: '127.0.0.1:0' });
       fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ autoUpdate: 'off', updateCheck: false, autoCapture: false }), { mode: 0o600 });
       const ctx = { dataDir, dbPath, env, bridgeEntry: tree.bridgeEntry, assetsDir: tree.assetsDir };
       contexts.push(ctx); linkRuntime(ctx, runtime);
@@ -87,10 +87,11 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     });
     const [a, b, c] = contexts;
     for (const ctx of contexts) await run(ctx, ['up']);
-    await wait(() => contexts.every(ctx => Boolean(readStatus(ctx.dataDir)?.direct_addresses.length)), 'addresses');
+    const addresses = (ctx: NetworkContext) => readStatus(ctx.dataDir)?.bind_addresses?.filter(address => /^127\.0\.0\.1:[1-9]\d{0,4}$/.test(address)) ?? [];
+    await wait(() => contexts.every(ctx => addresses(ctx).length === 1), 'loopback-bindings');
     contexts.forEach((ctx, i) => {
       const db = openNetworkStore(networkMetadataPath(ctx.dataDir));
-      try { contexts.forEach((peer, j) => { if (i !== j) rememberPeer(db, ids[j].machineId, null, readStatus(peer.dataDir)!.direct_addresses, Date.now()); }); }
+      try { contexts.forEach((peer, j) => { if (i !== j) rememberPeer(db, ids[j].machineId, null, addresses(peer), Date.now()); }); }
       finally { close(db); }
     });
     const bridgePids = contexts.map(ctx => readStatus(ctx.dataDir)!.pid);
@@ -112,7 +113,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     const stale = openNetworkStore(networkMetadataPath(b.dataDir));
     try {
       insertConfig(stale, configs[1], Date.now());
-      rememberPeer(stale, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now());
+      rememberPeer(stale, ids[0].machineId, null, addresses(a), Date.now());
     } finally { close(stale); }
     await run(b, ['up'], 'revoked-start');
     await wait(async () => (await probeBridge(b.dataDir)).kind === 'not-running', 'offline-return-self-status-stop');
@@ -140,7 +141,7 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     const pending = openNetworkStore(networkMetadataPath(b.dataDir));
     try {
       insertConfig(pending, configs[1], Date.now());
-      rememberPeer(pending, ids[0].machineId, null, readStatus(a.dataDir)!.direct_addresses, Date.now());
+      rememberPeer(pending, ids[0].machineId, null, addresses(a), Date.now());
     } finally { close(pending); }
     expect(await run(b, ['leave', '--json'], 1)).toMatch(/membership|connect|timed out/i);
     expect((await probeBridge(b.dataDir)).kind).toBe('not-running');

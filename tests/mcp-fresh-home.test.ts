@@ -84,7 +84,10 @@ describe('the packaged MCP server on a fresh HOME', () => {
     const env = buildIsolatedRuntimeEnv(process.env, {
       runtimeHome: home, memeshDir: path.join(home, 'data'), dbPath: path.join(home, 'data', 'graph.db'),
     });
+    const errors: unknown[] = [];
     try {
+      fs.mkdirSync(path.join(home, 'data'));
+      fs.writeFileSync(path.join(home, 'data', 'config.json'), JSON.stringify({ updateCheck: false }));
       const initialize = { jsonrpc: '2.0', id: 1, method: 'initialize', params: {
         protocolVersion: '2024-11-05', capabilities: {}, clientInfo: { name: 'eof-fixture', version: '1' },
       } };
@@ -93,7 +96,8 @@ describe('the packaged MCP server on a fresh HOME', () => {
         const request = { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name, arguments: args } };
         const input = [initialize, initialized, request].map(message => JSON.stringify(message)).join('\n') + '\n';
         const result = spawnSync(process.execPath, [path.resolve('dist/mcp/server.js')], {
-          cwd: home, env: { ...env, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
+          // A Windows process working directory must not hold the fixture being removed.
+          cwd: path.dirname(home), env: { ...env, MEMESH_PROJECT_ROOT: home, MEMESH_AUTO_UPDATE: 'off', MEMESH_SKIP_UPDATE_CHECK: '1' },
           input, encoding: 'utf8', timeout: 10_000, killSignal: 'SIGKILL',
         });
         expect(result.error).toBeUndefined();
@@ -112,9 +116,14 @@ describe('the packaged MCP server on a fresh HOME', () => {
       const recalled = call('recall', { query: observation, project: false });
       expect(recalled).toContain(name);
       expect(recalled).toContain(observation);
+    } catch (error) {
+      errors.push(error);
     } finally {
-      fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      try { fs.rmSync(home, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); }
+      catch (error) { errors.push(error); }
     }
+    if (errors.length === 1) throw errors[0];
+    if (errors.length) throw new AggregateError(errors, 'Buffered MCP request or cleanup failed');
   }, 30_000);
 
   it('answers real calls and creates no install.json', async () => {
