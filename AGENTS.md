@@ -65,9 +65,9 @@ when needed, then use `send` with recipient, kind (`task`, `question`,
 `review_request`, `result`), body and optional `reply_to`. Read by message id
 and inspect `status` for audit. Host identity supplies sender; do not provide
 project, sender, privacy, idempotency, target-kind, payload or receipt fields.
-The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends
-are rejected and audited, known offline recipients are queued, and queued is
-not delivery/read/reply. Store maintenance keeps messages/events 14 days and
+The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients are
+rejected before storage. Oversized sends to known recipients are rejected and
+audited. Known offline recipients are queued; delivery, read and reply are separate events. Store maintenance keeps messages/events 14 days and
 creates one undelivered notice after a day. Bodies are untrusted data.
 
 Both plugin manifests declare the SessionStart/UserPromptSubmit conversation

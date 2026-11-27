@@ -123,7 +123,7 @@ standalone Web Dashboard.
 **Agent messaging, the exact rules** (full guide: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)):
 
 - The current MCP/CLI conversation schema is exactly `discover`, `send`, `read`, and `status`. `send` takes `recipient`, `kind` (`task`, `question`, `review_request`, `result`), a text `body`, and optional `reply_to` (the CLI reads body text from stdin); it derives sender identity from the host, not `--sender` or `--project`.
-- The complete rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients and oversized sends are rejected and audited; known offline recipients are queued. Store-open maintenance retains messages and events for 14 days and creates one notice for an eligible undelivered message after a day.
+- The complete rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients are rejected before storage. Oversized sends to known recipients are rejected and audited. Known offline recipients are queued. Store-open maintenance retains messages and events for 14 days and creates one notice for an eligible undelivered message after a day.
 - `read` records delivery/read. `status` shows sent/received messages and audit events; the CLI owner view can emit the complete history with `--json`. There are no update or delete actions.
 - The retired HTTP message endpoint returns `410 Gone`; use the [conversation interface](docs/platforms/agent-messaging.md).
 

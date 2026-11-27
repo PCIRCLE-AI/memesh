@@ -135,6 +135,7 @@ export declare class ConversationMessages {
     private outboundMessage;
     private receiptKey;
     private receiptAcknowledged;
+    private unknownRecipient;
     private now;
     private findRegistration;
     private registration;

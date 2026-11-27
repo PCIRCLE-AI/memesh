@@ -37,15 +37,15 @@ describe('four conversation message actions', () => {
     for (const action of ['delete', 'update', 'poll', 'fetch', 'intake', 'receipts']) expect(ConversationMessageActionSchema.safeParse({ action }).success).toBe(false);
     for (const key of ['sender', 'owner', 'project', 'hostSession']) expect(ConversationMessageActionSchema.safeParse({ action: 'status', [key]: 'A' }).success).toBe(false);
   });
-  it('returns an error while preserving rejected sends for the owner audit', async () => {
+  it('rejects unknown recipients before storage and audits oversized sends', async () => {
     const dispatch = vi.spyOn(wake, 'wakeConversationMessage');
-    await expect(executeConversationMessageAction({ action: 'send', recipient: 'missing', kind: 'task', body: 'audit me' }, { session: 'A' })).rejects.toThrow('unknown_recipient');
+    await expect(executeConversationMessageAction({ action: 'send', recipient: 'missing', kind: 'task', body: 'do not save' }, { session: 'A' })).rejects.toThrow(/unknown_recipient.*message discover/);
+    expect(await executeConversationMessageAction({ action: 'status' }, { owner: true })).toEqual({ messages: [] });
     await expect(executeConversationMessageAction({ action: 'send', recipient: 'B', kind: 'task', body: '密'.repeat(8_000) }, { session: 'A' })).rejects.toThrow('message_too_large');
     expect(dispatch).not.toHaveBeenCalled();
     const status = await executeConversationMessageAction({ action: 'status' }, { owner: true }) as { messages: Array<{ body: string | null; state: string }> };
-    expect(status.messages.map(row => row.state)).toEqual(['rejected', 'rejected']);
-    expect(status.messages[0].body).toBe('audit me');
-    expect(status.messages[1].body).toBeNull();
+    expect(status.messages.map(row => row.state)).toEqual(['rejected']);
+    expect(status.messages[0].body).toBeNull();
   });
   it('MCP uses host context and cannot promote itself to owner audit', async () => {
     const sent = await handleTool('message', { action: 'send', recipient: 'B', kind: 'task', body: 'native marker' }, 'codex-mcp-client', undefined, { hostSession: 'A' });

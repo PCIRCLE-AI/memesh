@@ -174,7 +174,7 @@ describe('messages.db authenticated cross-machine copy and receipts', () => {
     expect(() => f.b.receiveFrom(ids.a, { ...w, message: { ...w.message, reply_to: wrongParent } })).toThrow('Wrong network reply binding');
     expect(() => f.b.receiveFrom(ids.c, w)).toThrow();
     expect(f.b.status()).toEqual(before);
-    expect(f.a.send('same-id', { recipient: 'missing@dgx', kind: 'task', body: 'rejected audit' })).toMatchObject({ accepted: false, reason: 'unknown_recipient' });
+    expect(() => f.a.send('same-id', { recipient: 'missing@dgx', kind: 'task', body: 'rejected body' })).toThrow('unknown_recipient');
     expect(f.a.send('same-id', { recipient: 'same-id@dgx', kind: 'task', body: 'x'.repeat(8000) })).toMatchObject({ accepted: false, message: { body: null } });
   });
 
@@ -225,7 +225,7 @@ describe('messages.db authenticated cross-machine copy and receipts', () => {
     expect(other.status('same-id', w.message.id)).toHaveLength(1);
     const revoked = f.open('b', { network_id: networkId, self: renamed[1], members: renamed.slice(1) });
     expect(revoked.read('same-id', w.message.id).body).toBe(w.message.body);
-    expect(revoked.send('same-id', { recipient: 'same-id@mac', kind: 'result', body: 'refused after revoke', reply_to: w.message.id })).toMatchObject({ accepted: false, reason: 'unknown_recipient' });
+    expect(() => revoked.send('same-id', { recipient: 'same-id@mac', kind: 'result', body: 'refused after revoke', reply_to: w.message.id })).toThrow('unknown_recipient');
     expect(() => revoked.receiveFrom(ids.a, w)).toThrow();
     f.shut(revoked);
     const left = f.open('b', null);
@@ -248,7 +248,7 @@ describe('messages.db authenticated cross-machine copy and receipts', () => {
     expect(() => f.a.replaceRemoteRegistrations('d'.repeat(64), [])).toThrow();
     f.a.replaceRemoteRegistrations(ids.b, []);
     expect(f.a.discover().filter(r => r.machine === 'dgx')).toEqual([]);
-    expect(f.a.send('same-id', { recipient: 'offline@dgx', kind: 'task', body: 'no longer registered' }).accepted).toBe(false);
+    expect(() => f.a.send('same-id', { recipient: 'offline@dgx', kind: 'task', body: 'no longer registered' })).toThrow('unknown_recipient');
   });
 
   it('keeps pre-join local read/reply local even when another member later takes the old hostname', () => {

@@ -108,7 +108,7 @@ Plugin Claude Code có **9 hook**; plugin Codex có thêm 2 hook dành riêng ch
 ## Quy tắc nhắn tin
 
 - Giao diện hội thoại MCP/CLI chỉ có `discover`, `send`, `read`, `status`. Danh tính người gửi do host cung cấp; MCP nhận chuỗi `body`, CLI đọc nội dung từ stdin.
-- Toàn bộ envelope đã render có giới hạn 8.000 byte UTF-8. Người nhận không xác định và tin quá lớn bị từ chối, có audit; người nhận đã đăng ký nhưng offline được đưa vào hàng đợi.
+- Toàn bộ envelope đã render có giới hạn 8.000 byte UTF-8. Tin nhắn gửi đến người nhận không xác định bị từ chối trước khi lưu. Tin nhắn quá lớn gửi đến người nhận đã đăng ký bị từ chối và ghi vào nhật ký kiểm toán. Tin nhắn gửi đến người nhận đã đăng ký nhưng ngoại tuyến được đưa vào hàng đợi.
 - Khi mở kho tin lần tiếp theo, maintenance xóa tin và sự kiện đã đủ 14 ngày, đồng thời tạo một thông báo cho tin còn đủ điều kiện mà chưa được giao sau một ngày. `queued` không có nghĩa đã giao, đã đọc, đã trả lời hoặc đã hoàn tất.
 - `read` ghi nhận giao/đọc; `status` hiển thị audit và CLI `--json` xuất đầy đủ lịch sử của chủ sở hữu. HTTP cũ được giữ riêng; các trường project/poll/fetch/biên nhận của nó không áp dụng cho công cụ hội thoại mới. Xem [hướng dẫn nhắn tin](docs/platforms/agent-messaging.md).
 

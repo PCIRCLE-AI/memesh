@@ -278,10 +278,12 @@ export class ConversationMessages {
         if (input.reply_to !== undefined && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(input.reply_to)) {
             throw new Error('Invalid reply_to message id');
         }
-        const recipient = identifier(pieces[0]);
         let machine = pieces[1] ? identifier(pieces[1]).toLowerCase() : this.machine;
         let remoteId = pieces[1] && machine !== this.machine ? this.network?.members.find(m => m.name.toLowerCase() === machine)?.id : undefined;
         let local = !pieces[1] || machine === this.machine;
+        if (pieces[0].includes('/'))
+            throw this.unknownRecipient(!local && !remoteId);
+        const recipient = identifier(pieces[0]);
         const original = input.reply_to ? this.findMessage(input.reply_to) : undefined;
         if (original) {
             if (!original.recipient_local || original.recipient !== from.id || original.sender !== recipient || this.rejected(original.id)) {
@@ -304,18 +306,20 @@ export class ConversationMessages {
             }
         }
         const to = local ? this.findRegistration(recipient) : remoteId ? this.remoteRegistration(remoteId, recipient) : undefined;
+        if (!to)
+            throw this.unknownRecipient(!local && !remoteId);
         return this.db.transaction(() => {
             const message = {
                 id: randomUUID(), sender: from.id, sender_host: from.host, sender_machine: this.machine,
-                recipient, recipient_host: to?.host ?? null, recipient_machine: machine,
+                recipient, recipient_host: to.host, recipient_machine: machine,
                 kind: input.kind, body: input.body, body_bytes: Buffer.byteLength(input.body, 'utf8'),
                 reply_to: input.reply_to ?? null, sent_at: this.now(),
             };
             const tooLarge = Buffer.byteLength(renderConversationMessage(message), 'utf8') > MESSAGE_MAX_BYTES;
-            const reason = tooLarge ? 'message_too_large' : !to ? 'unknown_recipient' : undefined;
+            const reason = tooLarge ? 'message_too_large' : undefined;
             if (tooLarge)
                 message.body = null;
-            this.insert(message, { sender_local: 1, recipient_local: local && Boolean(to) ? 1 : 0,
+            this.insert(message, { sender_local: 1, recipient_local: local ? 1 : 0,
                 network_id: !local ? this.network?.network_id ?? null : null,
                 sender_machine_id: !local ? this.network?.self.id ?? null : null, recipient_machine_id: remoteId ?? null });
             this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });
@@ -562,6 +566,15 @@ export class ConversationMessages {
     receiptAcknowledged(receipt) {
         return Boolean(this.db.prepare("SELECT 1 FROM events WHERE message_id=? AND event='network_receipt_acked' AND json_extract(detail,'$.receipt')=?")
             .get(receipt.message_id, this.receiptKey(receipt)));
+    }
+    unknownRecipient(unknownMachine) {
+        return new Error(JSON.stringify({
+            state: 'rejected',
+            error: 'unknown_recipient',
+            recipients: this.discover().map(row => row.machine === this.machine ? row.id : `${row.id}@${row.machine}`),
+            ...(unknownMachine ? { machines: this.network?.members.map(member => member.name) ?? [this.machine] } : {}),
+            hint: 'Run message discover and send to a registered conversation address.',
+        }));
     }
     now() { return new Date(this.clock()).toISOString(); }
     findRegistration(id) {

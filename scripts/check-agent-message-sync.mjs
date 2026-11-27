@@ -78,7 +78,8 @@ if (!/session:\s*conversationSession\(["']send["']\)/.test(publicCli)) missing.p
 for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {
   tokens(file, ['MESSAGE_MAX_BYTES = 8_000', "Buffer.byteLength(renderConversationMessage(message), 'utf8') > MESSAGE_MAX_BYTES", "'message_too_large'", "'unknown_recipient'", 'message.body = null', "reason ? 'rejected' : 'queued'", '14 * DAY', 'requirePrivateWritableDirectory', '0o700', '0o600']);
   pattern(file, /requirePrivateWritableDirectory\(path\.dirname\(file\),\s*'messages must remain owner-private'\)/, 'owner-private directory guard call');
-  pattern(file, /const tooLarge = Buffer\.byteLength\(renderConversationMessage\(message\), 'utf8'\) > MESSAGE_MAX_BYTES;\s*const reason = tooLarge \? 'message_too_large' : !to \? 'unknown_recipient' : undefined;\s*if \(tooLarge\)\s*message\.body = null;/, 'rendered-byte limit and rejection branch');
+  pattern(file, /const to = [^;]+;\s*if \(!to\)\s*throw this\.unknownRecipient\(!local && !remoteId\);\s*return this\.db\.transaction/, 'unknown recipient rejection before the send transaction');
+  pattern(file, /const tooLarge = Buffer\.byteLength\(renderConversationMessage\(message\), 'utf8'\) > MESSAGE_MAX_BYTES;\s*const reason = tooLarge \? 'message_too_large' : undefined;\s*if \(tooLarge\)\s*message\.body = null;/, 'rendered-byte limit and rejection branch');
   pattern(file, /this\.insert\(message(?:,\s*\{[^;{}]*\})?\);\s*this\.event\(message\.id, reason \? 'rejected' : 'queued', \{ actor: from\.id, \.\.\.\(reason \? \{ reason \} : \{\}\) \}\);\s*if \(reason\)\s*return \{ message, accepted: false, reason,/, 'send insert and rejected audit event');
   if (/\b(?:UPDATE|DELETE FROM)\s+(?:messages|events)\b/i.test(withoutRoutingBackfill(read(file)).replace(/DELETE FROM messages WHERE sent_at <= \?/g, ''))) missing.push(`${file} (message/event mutation outside expiry)`);
 }

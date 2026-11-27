@@ -47,8 +47,9 @@ describe("CLI conversation messages", () => {
     const read = run(root, "receiver", ["message", "read", "--message-id", message.message_id]);
     expect(read.status).toBe(0); expect(JSON.parse(read.stdout).message.body).toBe("START\nMID\nEND");
     const status = run(root, undefined, ["message", "status", "--json"]);
-    expect(status.status).toBe(0); expect(JSON.parse(status.stdout).messages[0]).toMatchObject({ id: message.message_id, state: "read" });
-    expect(JSON.parse(status.stdout).messages[0].events.map((event: { event: string }) => event.event)).toEqual(["queued", "delivered", "read"]);
+    expect(status.status).toBe(0); const rows = JSON.parse(status.stdout).messages;
+    expect(rows).toHaveLength(1); expect(rows[0]).toMatchObject({ id: message.message_id, state: "read" });
+    expect(rows[0].events.map((event: { event: string }) => event.event)).toEqual(["queued", "delivered", "read"]);
   });
   it("passes oversized stdin to core so its rejection remains auditable", () => {
     const { root, store } = fixture(); store.close(); stores.pop();
@@ -72,16 +73,14 @@ describe("CLI conversation messages", () => {
     const audit = new ConversationMessages({ file: path.join(root, "messages.db"), machine: os.hostname() });
     try { expect(audit.status()).toEqual([]); } finally { audit.close(); }
   });
-  it("records an unknown recipient rejection in the owner-private audit", () => {
+  it("rejects an unknown address and leaves the owner audit empty", () => {
     const { root, store } = fixture(); store.close(); stores.pop();
-    const sent = run(root, "sender", ["message", "send", "--recipient", "missing", "--kind", "task", "--payload-stdin"], "audit body");
-    expect(sent.status).toBe(1); expect(sent.stderr).toContain("unknown_recipient");
+    const sent = run(root, "sender", ["message", "send", "--recipient", "missing", "--kind", "task", "--payload-stdin"], "do not save");
+    expect(sent.status).toBe(1); expect(sent.stderr).toMatch(/unknown_recipient.*message discover/);
     const status = run(root, undefined, ["message", "status", "--json"]);
     expect(status.status).toBe(0);
     const rows = JSON.parse(status.stdout).messages;
-    expect(rows).toHaveLength(1);
-    expect(rows[0]).toMatchObject({ sender: "sender", recipient: "missing", body: "audit body", state: "rejected" });
-    expect(rows[0].events.map((event: { event: string }) => event.event)).toEqual(["rejected"]);
+    expect(rows).toEqual([]);
     if (process.platform !== "win32") expect(fs.statSync(path.join(root, "messages.db")).mode & 0o077).toBe(0);
   });
   it("refuses a send with no host identity before writing a message", () => {

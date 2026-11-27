@@ -2,17 +2,17 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
-import { ConversationMessages, MESSAGE_MAX_BYTES, renderConversationMessage } from '../../src/core/conversation-messages.js';
+import { ConversationMessages, MESSAGE_MAX_BYTES, renderConversationMessage, type ConversationNetworkSnapshot } from '../../src/core/conversation-messages.js';
 import { DatabaseSync } from '../../src/storage/sqlite.js';
 
 const roots: string[] = [];
 const stores: ConversationMessages[] = [];
 const DAY = 86_400_000;
-function fixture() {
+function fixture(network?: ConversationNetworkSnapshot) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-conversation-messages-'));
   roots.push(root);
   let now = Date.parse('2026-11-13T00:00:00.000Z');
-  const options = { file: path.join(root, 'messages.db'), machine: 'MAC', clock: () => now,
+  const options = { file: path.join(root, 'messages.db'), machine: 'MAC', clock: () => now, network,
     processAlive: (pid: number) => pid === 101 };
   const open = () => {
     const store = new ConversationMessages(options);
@@ -112,8 +112,8 @@ describe('conversation message store', () => {
       expect(db.prepare('SELECT * FROM events WHERE message_id=?').all(original)).toEqual([]);
       expect(db.prepare('SELECT * FROM messages WHERE id=?').all(original)).toEqual([]);
     } finally { db.close(); }
-    expect(store.send('B', { recipient: 'missing', kind: 'result', body: 'still unknown', reply_to: original }))
-      .toMatchObject({ accepted: false, reason: 'unknown_recipient' });
+    expect(() => store.send('B', { recipient: 'missing', kind: 'result', body: 'still unknown', reply_to: original }))
+      .toThrow('unknown_recipient');
     expect(() => store.send('unknown', { recipient: 'A', kind: 'result', body: 'still unregistered', reply_to: original }))
       .toThrow();
   });
@@ -127,20 +127,33 @@ describe('conversation message store', () => {
     expect(store.status('A')[0].state).toBe('queued');
   });
 
-  it('records unknown-recipient and oversize failures durably, with no oversize body', () => {
+  it('rejects unknown machines and unregistered addresses without writing either table', () => {
+    const self = { id: 'a'.repeat(64), name: 'mac' };
+    const { store, root } = fixture({
+      network_id: '1'.repeat(32), self, members: [self, { id: 'b'.repeat(64), name: 'dgx' }],
+    });
+    const send = (recipient: string) => () => store.send('A', { recipient, kind: 'task', body: 'rejected body' });
+    expect(send('A@typo')).toThrow(/"error":"unknown_recipient".*"machines":\["mac","dgx"\].*message discover/);
+    expect(send('missing@dgx')).toThrow(/"error":"unknown_recipient".*"recipients":\["A","B","C"\].*message discover/);
+    expect(send('kt/claude-code@dgx')).toThrow(/"error":"unknown_recipient".*message discover/);
+    const db = new DatabaseSync(path.join(root, 'messages.db'), { readOnly: true });
+    try {
+      expect(db.prepare('SELECT * FROM messages').all()).toEqual([]);
+      expect(db.prepare('SELECT * FROM events').all()).toEqual([]);
+    } finally { db.close(); }
+  });
+
+  it('records oversized failures durably without the body', () => {
     const { store, open } = fixture();
-    const unknown = store.send('A', { recipient: 'missing', kind: 'task', body: 'keep for audit' });
-    expect(unknown).toMatchObject({ accepted: false, reason: 'unknown_recipient', recipients: ['A', 'B', 'C'] });
     const long = store.send('A', { recipient: 'B', kind: 'review_request', body: '密'.repeat(8_000) });
     expect(long).toMatchObject({ accepted: false, reason: 'message_too_large' });
     expect(long.message.body).toBeNull();
     expect(long.message.body_bytes).toBe(24_000);
     expect(store.hookBatch('B')).toEqual({ text: '', ids: [] });
     const rows = open().status('A');
-    expect(rows.map(row => row.state)).toEqual(['rejected', 'rejected']);
-    expect(rows[0].body).toBe('keep for audit');
-    expect(rows[1].body).toBeNull();
-    expect(rows[1].events[0].detail).toContain('message_too_large');
+    expect(rows.map(row => row.state)).toEqual(['rejected']);
+    expect(rows[0].body).toBeNull();
+    expect(rows[0].events[0].detail).toContain('message_too_large');
   });
 
   it('rejects malformed addresses and unbounded reply headers before persisting', () => {
@@ -199,7 +212,8 @@ describe('conversation message store', () => {
 
   it('does not notify for rejected or already-delivered messages', () => {
     const { store, advance, open } = fixture();
-    store.send('A', { recipient: 'missing', kind: 'task', body: 'rejected' });
+    const oversized = store.send('A', { recipient: 'B', kind: 'task', body: 'x'.repeat(MESSAGE_MAX_BYTES) });
+    expect(oversized).toMatchObject({ accepted: false, reason: 'message_too_large' });
     const delivered = store.send('A', { recipient: 'B', kind: 'question', body: 'read' });
     store.read('B', delivered.message.id);
     advance(2);

@@ -111,7 +111,7 @@ Claude Code 插件共有 9 個 hook 指令；Codex 插件另有 2 個 Codex 專�
 ## 細節
 
 - MCP／CLI 對話介面只有 `discover`、`send`、`read`、`status`。寄件身分來自 host；MCP 以 `body` 傳文字，CLI 從 stdin 讀取。
-- 完整 rendered envelope 上限為 8,000 UTF-8 bytes。未知收件者與超量訊息會拒絕並留下稽核紀錄；已登記但離線的收件者會排隊。
+- 完整 rendered envelope 上限為 8,000 UTF-8 bytes。未知收件者的訊息會在儲存前遭拒。寄給已登記收件者的超量訊息會遭拒並留下稽核紀錄。已登記但離線的收件者會排隊。
 - 下次開啟訊息庫時，維護會清除已滿 14 天的訊息與事件，並對仍符合條件、滿一天未交付的訊息建立一次通知。`queued` 不代表已交付、已讀、已回覆或已完成。
 - `read` 記錄交付／已讀；`status` 顯示稽核，CLI 的 `--json` 可輸出完整擁有者紀錄。舊 HTTP 訊息端點已退役並回傳 `410 Gone`。見[訊息指南](docs/platforms/agent-messaging.md)。
 

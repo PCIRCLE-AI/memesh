@@ -32,7 +32,7 @@ memesh message status --message-id <uuid> --json
 
 ## States, limits, and retention
 
-The whole rendered envelope is limited to 8,000 UTF-8 bytes. This is not a body-only allowance: metadata is included. An oversized send is rejected and audited; its audit record preserves the original body byte count, not a claim that the rendered envelope byte count was stored. An unknown recipient is also rejected and audited. A known offline recipient is queued.
+The whole rendered envelope is limited to 8,000 UTF-8 bytes. This is not a body-only allowance: metadata is included. An oversized send to a known recipient is rejected and audited with the original body byte count. An unknown recipient is rejected before storage. Run `message discover` to find a registered address. A known offline recipient is queued.
 
 `queued` means storage accepted the request. It does **not** mean delivery, reading, reply, completion, or host wakeup. `read` records the delivered/read transition; a reply that names `reply_to` records the reply relationship. There are no update or delete actions.
 
@@ -58,7 +58,6 @@ Use two registered conversations:
 2. Send a short synthetic body to that address with kind `question`.
 3. Trigger the recipient's next prompt hook and inspect the delivered body.
 4. Reply to its sender with `reply_to`; inspect both conversations' status.
-5. Confirm that an unknown address and an oversized envelope produce rejected
-   audit events. A queued message has not yet been delivered or read.
+5. Confirm that an unknown address produces an error and leaves the stored messages unchanged. Send an oversized envelope to a known recipient and confirm the rejection appears in the audit. A queued message has not yet been delivered or read.
 
 Use the original message ID to inspect migrated history with `memesh message status --message-id <uuid> --json`.

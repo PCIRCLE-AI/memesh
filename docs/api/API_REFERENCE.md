@@ -1022,7 +1022,7 @@ The MCP conversation action is one of `discover`, `send`, `read`, or `status`. H
 | `read` | `message_id` | Return one message for this host and record delivery/read. |
 | `status` | optional `message_id` | Return sent/received messages and full audit events. |
 
-The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown and oversized sends are rejected and audited; oversized audit preserves original body byte count. A known offline recipient is queued. Queued is not delivery, read, reply, completion, wakeup, or model acceptance.
+The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients are rejected before storage with guidance to run `message discover`. For an unknown machine, the error also lists the verified machine names. Oversized sends to known recipients are rejected and audited with the original body byte count. A known offline recipient is queued. Queued is not delivery, read, reply, completion, wakeup, or model acceptance.
 
 Messages/events are maintained for 14 days when the store next opens; maintenance creates one undelivered notice after a day. No update/delete actions exist. CLI owner status can list its complete retained audit via `--json`; MCP does not grant owner-wide status.
 
@@ -1727,7 +1727,7 @@ printf '%s' 'Please review this change.' | memesh message send \
   --recipient reviewer --kind review_request --payload-stdin
 ```
 
-Do not use legacy project, sender, target-kind, privacy, idempotency, payload, or receipt flags. The rendered envelope is limited to 8,000 UTF-8 bytes; unknown/oversized sends are rejected and audited, known offline recipients are queued. Queued is not delivered, read, replied, or completed. The retired HTTP `POST /v1/message` returns `410 Gone`.
+Do not use legacy project, sender, target-kind, privacy, idempotency, payload, or receipt flags. The rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients are rejected before storage. Oversized sends to known recipients are rejected and audited. Known offline recipients are queued. Queued is not delivered, read, replied, or completed. The retired HTTP `POST /v1/message` returns `410 Gone`.
 
 ### memesh feedback
 

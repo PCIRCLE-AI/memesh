@@ -693,12 +693,8 @@ try {
   assert.equal(refused[0].body_bytes, Buffer.byteLength(oversized, 'utf8'));
   assert.deepEqual(refused[0].events.map((event) => event.event), ['rejected']);
   assert.ok(Buffer.byteLength(JSON.stringify(refused[0]), 'utf8') < 2000, 'oversized audit retained unbounded content');
-  rejected(await message({ ...sendArgs, recipient: 'unknown-conversation' }, 'A'), /unknown_recipient/, 'unknown recipient');
-  const unknownAudit = value(await message({ action: 'status' }, 'A'), 'unknown recipient audit').messages
-    .find(row => row.recipient === 'unknown-conversation');
-  assert.equal(unknownAudit.body, body);
-  assert.equal(unknownAudit.state, 'rejected');
-  assert.deepEqual(unknownAudit.events.map(event => event.event), ['rejected']);
+  rejected(await message({ ...sendArgs, recipient: 'unknown-conversation' }, 'A'), /unknown_recipient.*message discover/, 'unknown recipient');
+  assert.deepEqual(value(await message({ action: 'status' }, 'A'), 'status after unknown recipient').messages, audit.messages);
   assert.deepEqual(value(await message({ action: 'status' }, 'C'), 'unrelated conversation status').messages, []);
 } finally {
   await client.close();
@@ -796,18 +792,19 @@ const installedCliEntry = path.join(installedRoot,
     const offline = value(call(['send','--recipient',offlineSession,'--kind','question','--payload-stdin'],sessionA,'offline body'));
     assert.equal(offline.state,'queued');
     assert.deepEqual(status().find(row=>row.id===offline.message_id).events.map(e=>e.event),['queued']);
-    rejected(call(['send','--recipient','unknown-conversation','--kind','task','--payload-stdin'],sessionA,'unknown body'),/unknown_recipient/);
+    const beforeUnknown = status();
+    rejected(call(['send','--recipient','unknown-conversation','--kind','task','--payload-stdin'],sessionA,'unknown body'),/unknown_recipient.*message discover/);
+    assert.deepEqual(status(),beforeUnknown);
     const oversized = '密'.repeat(8000);
     rejected(call(args,sessionA,oversized),/message_too_large/);
     const refused = status().filter(row=>row.state==='rejected');
-    assert.equal(refused.length,2);
+    assert.equal(refused.length,1);
     const large = refused.find(row=>row.body===null);
     assert.equal(large.body_bytes,Buffer.byteLength(oversized));
     assert.ok(Buffer.byteLength(JSON.stringify(large))<2000);
     assert.ok(refused.every(row=>row.events.length===1&&row.events[0].event==='rejected'));
-    assert.equal(refused.find(row=>row.recipient==='unknown-conversation').body,'unknown body');
     for (const action of ['update','delete','poll','fetch','intake','storage']) rejected(call([action],sessionA),/unknown command/);
-    assert.equal(status().length,5,'unsupported public action changed messages');
+    assert.equal(status().length,4,'unsupported public action changed messages');
 
     // Installed clock seeds only this separate private fixture. The real CLI
     // open below must retain 13-day data, notify once, and remove 15-day data.

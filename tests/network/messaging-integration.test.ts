@@ -326,15 +326,13 @@ describe.skipIf(!supported || process.platform === 'win32')('messages between tw
     await expect.poll(() => status(alpha, old.id)[0].state, { timeout: 20_000 }).toBe('read');
   }, 80_000);
 
-  it('rejects an unknown conversation with an audit, not a retired project_unknown requirement', () => {
-    // Receipt acknowledgements for earlier messages can still arrive here.
-    const before = messageDb(beta, db => db.prepare('SELECT * FROM messages ORDER BY id').all());
-    const result = send('Do not route by a shared project', 'unknown-session@beta');
-    expect(result.accepted).toBe(false);
-    expect(status(alpha, result.message.id)[0].state).toBe('rejected');
-    expect(status(alpha, result.message.id)[0].events.some(e => e.event === 'rejected')).toBe(true);
-    expect(messageDb(beta, db => db.prepare('SELECT * FROM messages ORDER BY id').all())).toEqual(before);
-    expect(status(beta, result.message.id)).toEqual([]);
+  it('rejects an unknown conversation without saving a message on either machine', () => {
+    const messages = (ctx: NetworkContext) => messageDb(ctx, db => db.prepare('SELECT * FROM messages ORDER BY id').all());
+    const beforeAlpha = messages(alpha);
+    const beforeBeta = messages(beta);
+    expect(() => send('Do not route by a shared project', 'unknown-session@beta')).toThrow(/unknown_recipient.*message discover/);
+    expect(messages(alpha)).toEqual(beforeAlpha);
+    expect(messages(beta)).toEqual(beforeBeta);
   });
 
   it('exposes conversation identity but never remote process routes or memory summaries', () => {
