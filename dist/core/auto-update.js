@@ -539,8 +539,9 @@ export function backupDatabase(dbPath, tag) {
     if (!fs.existsSync(dbPath))
         return null;
     guardDatabaseFiles(dbPath);
-    const backupDir = backupDirectoryFor(dbPath);
-    ensureOwnerDir(backupDir);
+    let backupDir = backupDirectoryFor(dbPath);
+    if (process.platform !== 'win32')
+        ensureOwnerDir(backupDir);
     let target;
     const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
@@ -548,6 +549,8 @@ export function backupDatabase(dbPath, tag) {
         if (copy.kind === 'failed')
             throw new Error(copy.reason);
         target = copy.path;
+        if (process.platform === 'win32')
+            backupDir = path.dirname(target);
     }
     finally {
         db.close();

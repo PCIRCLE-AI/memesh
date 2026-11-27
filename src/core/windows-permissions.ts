@@ -128,16 +128,16 @@ try {
 `;
 
 /** Windows mode bits cannot establish privacy; verify the actual DACL. */
-export function makeWindowsPathsPrivate(targets: string[], writableDirectory?: string): void {
-  runWindowsPermissionCheck(targets, writableDirectory, false);
+export function makeWindowsPathsPrivate(targets: string[], writableDirectory?: string, timeout?: number): void {
+  runWindowsPermissionCheck(targets, writableDirectory, false, timeout);
 }
 
 /** Validate an existing Windows DACL without changing it or probing writes. */
-export function verifyWindowsPathsPrivate(targets: string[]): void {
-  runWindowsPermissionCheck(targets, undefined, true);
+export function verifyWindowsPathsPrivate(targets: string[], timeout?: number): void {
+  runWindowsPermissionCheck(targets, undefined, true, timeout);
 }
 
-function runWindowsPermissionCheck(targets: string[], writableDirectory: string | undefined, readOnly: boolean): void {
+function runWindowsPermissionCheck(targets: string[], writableDirectory: string | undefined, readOnly: boolean, timeout = 15_000): void {
   const paths: string[] = [];
   for (const target of targets) {
     if (fs.statSync(target, { throwIfNoEntry: false }) !== undefined) paths.push(fs.realpathSync(target));
@@ -145,6 +145,7 @@ function runWindowsPermissionCheck(targets: string[], writableDirectory: string 
   if (paths.length === 0 && writableDirectory === undefined) return;
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   try {
+    if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('Invalid Windows permissions check timeout');
     if (!systemRoot || !path.win32.isAbsolute(systemRoot)) throw new Error('Windows system directory unavailable');
     const output = childProcess.execFileSync(
       path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
@@ -152,7 +153,7 @@ function runWindowsPermissionCheck(targets: string[], writableDirectory: string 
       {
         input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString('base64') + '\n',
         encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-        timeout: 15_000, maxBuffer: 4096,
+        timeout, maxBuffer: 4096,
       },
     );
     if (JSON.parse(output.trim()).ok !== true) throw new Error('ACL verification failed');

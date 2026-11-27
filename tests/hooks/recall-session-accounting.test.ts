@@ -9,6 +9,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { isTriggeredRecord, SKIP_REASONS as CORE_SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName, SKIP_REASONS, writePrivateJsonAtomic } = require('../../scripts/hooks/_shared.js');
@@ -29,6 +30,7 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     dbPath = path.join(home, 'graph.db');
     sessions = path.join(home, 'sessions');
     fs.mkdirSync(sessions);
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessions]);
     const db = openDatabase(dbPath);
     ids = ['first', 'third', 'foreign'].map((name) => {
       const result = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'note');

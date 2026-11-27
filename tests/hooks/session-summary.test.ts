@@ -9,6 +9,8 @@ import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { withoutHostIdentity } from '../helpers/host-env.js';
 import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
+import { expectPrivateFile } from '../helpers/permissions.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
@@ -167,14 +169,16 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     // ignores arguments), which runHook sets to dbPath; mirror that here.
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'cite-session', projectName), JSON.stringify({
+    const record = recallSessionPath(sessionsDir, 'cite-session', projectName);
+    fs.writeFileSync(record, JSON.stringify({
       sessionId: 'cite-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
       entityIds: [citedId, silentId],
       entityNames: ['cited-decision', 'silent-decision'],
       injectedContext: 'unused-by-the-accounting',
-    }));
+    }), { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessionsDir, record]);
 
     // A transcript that (a) clears the low-signal guard, (b) carries the
     // silent entity's handle INSIDE a hook echo only, (c) cites the other.
@@ -195,6 +199,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     ]);
 
     runHook({ session_id: 'cite-session', transcript_path: transcriptPath, cwd });
+    expectPrivateFile(record);
+    expect(JSON.parse(fs.readFileSync(record, 'utf8'))).toMatchObject({ creditedIds: [citedId], sessionCounted: true });
 
     const check = new Database(dbPath, { readOnly: true });
     try {
@@ -240,7 +246,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session', projectName), JSON.stringify({
+    const record = recallSessionPath(sessionsDir, 'era-session', projectName);
+    fs.writeFileSync(record, JSON.stringify({
       sessionId: 'era-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
@@ -248,6 +255,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       entityNames: ['era-decision'],
       injectedContext: 'unused-by-the-accounting',
     }));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessionsDir, record]);
     writeTranscript([
       { type: 'user', message: { role: 'user', content: 'fix the parser' } },
       ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
@@ -278,7 +286,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     // Idempotent: a second session in the SAME era keeps counting. It needs
     // its own SID-bound injected-set record; Stop retains the first session.
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session-2', projectName), JSON.stringify({
+    const secondRecord = recallSessionPath(sessionsDir, 'era-session-2', projectName);
+    fs.writeFileSync(secondRecord, JSON.stringify({
       sessionId: 'era-session-2',
       injectedAt: new Date().toISOString(),
       project: projectName,
@@ -286,6 +295,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       entityNames: ['era-decision'],
       injectedContext: 'unused-by-the-accounting',
     }));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([secondRecord]);
     // These are this second synthetic session's events, after its injection.
     writeTranscript(fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').map(line => {
       const entry = JSON.parse(line);

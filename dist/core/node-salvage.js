@@ -1,6 +1,8 @@
-import { openSync, closeSync } from 'node:fs';
+import { openSync, closeSync, statSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { hasPagesWaiting, immutableAddress, refuseMismatchedSidecars } from './file-mode.js';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 const q = (s) => '"' + s.replaceAll('"', '""') + '"';
 const MIN = -(1n << 63n), MAX = (1n << 63n) - 1n;
 function corrupt(e) {
@@ -28,7 +30,14 @@ export function salvageWithNode(sourcePath, outputPath) {
         if (master.some(t => t.type === 'trigger'))
             throw new Error('Unsupported triggers in salvage source');
         closeSync(openSync(outputPath, 'wx', 0o600));
-        dst = new MemeshDatabase(outputPath);
+        if (process.platform === 'win32') {
+            dst = new MemeshDatabase(`${pathToFileURL(outputPath).href}?mode=rw`);
+            makeWindowsPathsPrivate([outputPath]);
+            statSync(outputPath);
+        }
+        else {
+            dst = new MemeshDatabase(outputPath);
+        }
         dst.exec('PRAGMA foreign_keys=OFF; PRAGMA trusted_schema=OFF; BEGIN');
         for (const t of tables)
             dst.prepare(String(t.sql)).run();

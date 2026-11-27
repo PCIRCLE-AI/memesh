@@ -6,8 +6,9 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { pathToFileURL } from 'node:url';
-import { expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { recallListName } from '../../scripts/hooks/_stop-notes.js';
 
 const require = createRequire(import.meta.url);
@@ -488,7 +489,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(result.stdout).toContain('auth-decision');
     const errors = outcomesOf().filter((o) => o.outcome === 'error');
     expect(errors).toHaveLength(1);
-    expect(errors[0].reason).toContain('EISDIR');
+    expect(errors[0].reason).toContain(process.platform === 'win32' ? 'MEMESH_PRIVATE_PATH' : 'EISDIR');
   });
 
   it('#521: a per-session list that cannot be written leaves an error outcome and a stderr line', () => {
@@ -552,6 +553,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     fs.mkdirSync(dir, { recursive: true });
     const stale = path.join(dir, 'old-session.json');
     fs.writeFileSync(stale, '[]');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, stale]);
     const day = 24 * 60 * 60;
     fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
     // Parallel hooks scan the same folder: make this one lose the race for the stale list.
@@ -666,6 +668,7 @@ syncBuiltinESMExports();
     const recent = path.join(dir, 'recent-session.json');
     fs.writeFileSync(stale, '[]', 'utf8');
     fs.writeFileSync(recent, '[]', 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, stale, recent]);
     const day = 24 * 60 * 60;
     fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
     fs.utimesSync(recent, Date.now() / 1000 - 29 * day, Date.now() / 1000 - 29 * day);
@@ -688,6 +691,7 @@ syncBuiltinESMExports();
 
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir]);
     // Make the hook's directory read fail with EPERM, only for that directory.
     const loader = path.join(testDir, 'fault.mjs');
     fs.writeFileSync(loader, `import fs from 'node:fs';
@@ -742,6 +746,40 @@ syncBuiltinESMExports();
 
     const throttlePath = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
     expectPrivateFile(throttlePath);
+  });
+
+  it.skipIf(process.platform !== 'win32')('ignores a shared list without overwriting it or dropping Edit guards', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(
+      'edit-guard', 'lesson_learned', JSON.stringify({ guard: {
+        enabled: true, tool: 'Edit', pattern: 'auth[.]ts', message: 'Use the guarded auth edit', action: 'warn',
+      } }),
+    );
+    const id = addEntity(db, 'auth-before-edit', 'Change authentication through the public API');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'file:auth.ts');
+    db.close();
+
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir);
+    const list = path.join(dir, recallListName('session-a'));
+    const original = JSON.stringify(['/src/auth.ts']);
+    fs.writeFileSync(list, original);
+    makeWindowsPathsPrivate([dir, list]);
+    const before = makeWindowsAclPublic(list);
+    const result = spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Use the guarded auth edit');
+    expect(result.stdout).toContain('auth-before-edit');
+    expect(outcomesOf().filter((outcome) => outcome.outcome === 'error')).toEqual([
+      expect.objectContaining({ reason: expect.stringContaining('MEMESH_PRIVATE_PATH') }),
+    ]);
+    expect(fs.readFileSync(list, 'utf8')).toBe(original);
+    expect(readWindowsAcl(list)).toEqual(before);
   });
 
   it('should return empty when no file_path in tool_input', () => {

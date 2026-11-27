@@ -261,13 +261,13 @@ try {
   exit 1
 }
 `;
-function makeWindowsPathsPrivate(targets, writableDirectory) {
-  runWindowsPermissionCheck(targets, writableDirectory, false);
+function makeWindowsPathsPrivate(targets, writableDirectory, timeout) {
+  runWindowsPermissionCheck(targets, writableDirectory, false, timeout);
 }
-function verifyWindowsPathsPrivate(targets) {
-  runWindowsPermissionCheck(targets, void 0, true);
+function verifyWindowsPathsPrivate(targets, timeout) {
+  runWindowsPermissionCheck(targets, void 0, true, timeout);
 }
-function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
+function runWindowsPermissionCheck(targets, writableDirectory, readOnly, timeout = 15e3) {
   const paths = [];
   for (const target of targets) {
     if (fs.statSync(target, { throwIfNoEntry: false }) !== void 0)
@@ -277,6 +277,8 @@ function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
     return;
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   try {
+    if (!Number.isSafeInteger(timeout) || timeout <= 0)
+      throw new Error("Invalid Windows permissions check timeout");
     if (!systemRoot || !path3.win32.isAbsolute(systemRoot))
       throw new Error("Windows system directory unavailable");
     const output = childProcess.execFileSync(path3.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SCRIPT, "utf16le").toString("base64")], {
@@ -284,7 +286,7 @@ function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
       encoding: "utf8",
       stdio: ["pipe", "pipe", "pipe"],
       windowsHide: true,
-      timeout: 15e3,
+      timeout,
       maxBuffer: 4096
     });
     if (JSON.parse(output.trim()).ok !== true)

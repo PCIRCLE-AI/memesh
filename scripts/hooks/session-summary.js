@@ -15,6 +15,11 @@ import {
   extractCitedMemoryIds,
   recallSessionPath,
   writePrivateJsonAtomic,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  prepareWindowsSessionStateWrite,
+  windowsHookStateDeadline,
+  writeWindowsSessionState,
   getMemeshDirFromDbPath,
   getProjectName,
   isAutoCaptureEnabled,
@@ -293,11 +298,16 @@ function accountRecallUse(sessionId, project, rawTranscript) {
     record('skipped', SKIP_REASONS.noSessionId);
     return;
   }
-  if (!existsSync(filePath)) {
+  const windowsState = process.platform === 'win32'
+    ? prepareWindowsHookState(filePath, windowsHookStateDeadline(10000))
+    : null;
+  if (windowsState ? !windowsState.file : !existsSync(filePath)) {
     record('skipped', SKIP_REASONS.noRecallSessionRecord);
     return;
   }
-  const injection = JSON.parse(readFileSync(filePath, 'utf8'));
+  const fd = windowsState ? openWindowsHookState(windowsState, 'r') : openSync(filePath, 'r');
+  let injection;
+  try { injection = JSON.parse(readFileSync(fd, 'utf8')); } finally { closeSync(fd); }
   if (injection.sessionId !== sessionId || injection.project !== project) {
     record('skipped', SKIP_REASONS.noRecallSessionRecord);
     return;
@@ -308,12 +318,15 @@ function accountRecallUse(sessionId, project, rawTranscript) {
   if (!eligible) {
     // Keep a live record fresh even when the transcript has only old rows.
     // A rebuilt record must never replay the transcript before its injection.
-    writePrivateJsonAtomic(filePath, injection);
+    if (windowsState) writeWindowsSessionState(windowsState, injection);
+    else writePrivateJsonAtomic(filePath, injection);
     record('skipped', SKIP_REASONS.noEligibleRecallRows);
     return;
   }
-  const { db } = openHookDb(process.env, { fts: true });
+  const write = windowsState ? prepareWindowsSessionStateWrite(windowsState) : null;
+  let db;
   try {
+    ({ db } = openHookDb(process.env, { fts: true }));
     db.transaction(() => {
       const priorMode = db.prepare("SELECT value FROM memesh_metadata WHERE key = 'recall_accounting_mode'").get()?.value;
       if (priorMode && priorMode !== ACCOUNTING_MODE) {
@@ -344,11 +357,12 @@ function accountRecallUse(sessionId, project, rawTranscript) {
       }
       if (!(current && injection.sessionCounted)) bump.run('citation_sessions_total');
       if (!hadCredit && credited.size > 0) bump.run('citation_sessions_cited');
-      writePrivateJsonAtomic(filePath, { ...injection, accountingMode: ACCOUNTING_MODE,
-        creditedIds: [...credited], sessionCounted: true });
+      const next = { ...injection, accountingMode: ACCOUNTING_MODE, creditedIds: [...credited], sessionCounted: true };
+      if (write) write.publish(next);
+      else writePrivateJsonAtomic(filePath, next);
     })();
   } finally {
-    db.close();
+    try { db?.close(); } finally { write?.discard(); }
   }
 }
 

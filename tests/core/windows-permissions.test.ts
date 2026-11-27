@@ -9,6 +9,7 @@ import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { windowsAclFixture } from '../helpers/permissions.js';
 import { parseTraceLine, traceScript } from '../../scripts/diagnose-windows-messages-entry.mjs';
+import { claimWindowsHookState, prepareWindowsHookState, windowsHookStateDeadline } from '../../scripts/hooks/_shared.js';
 
 const roots: string[] = [];
 function directory(): string {
@@ -67,6 +68,52 @@ describe('Windows permissions bridge', () => {
     verifyWindowsPathsPrivate([dir]);
     const frame = String((exec.mock.calls[0][2] as { input: string }).input);
     expect(JSON.parse(Buffer.from(frame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [dir], readOnly: true });
+  });
+
+  it('passes a shorter hook timeout through to both permission subprocesses', () => {
+    const dir = directory();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue('{"ok":true}');
+    verifyWindowsPathsPrivate([dir], 1200);
+    makeWindowsPathsPrivate([dir], undefined, 450);
+    expect(exec.mock.calls.map(call => call[2])).toEqual([
+      expect.objectContaining({ timeout: 1200 }),
+      expect.objectContaining({ timeout: 450 }),
+    ]);
+  });
+
+  it.each([0, -1, NaN, Infinity])('refuses an invalid timeout without starting PowerShell: %s', timeout => {
+    const dir = directory();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync');
+    expect(() => verifyWindowsPathsPrivate([dir], timeout)).toThrow(/Cannot verify private Windows permissions/);
+    expect(exec).not.toHaveBeenCalled();
+  });
+
+  it('retries a first-time Windows hook state leaf after a transient ACL timeout', () => {
+    const root = fs.realpathSync.native(directory());
+    const leaf = path.join(root, 'decision-nudge-flags');
+    const file = path.join(leaf, 'first-ExitPlanMode.flag');
+    vi.stubEnv('MEMESH_DB_PATH', path.join(root, 'test.db'));
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const readOnlyChecks: boolean[] = [];
+    vi.spyOn(childProcess, 'execFileSync').mockImplementation(((_, __, options: { input: string }) => {
+      const request = JSON.parse(Buffer.from(options.input.trim(), 'base64').toString());
+      readOnlyChecks.push(request.readOnly);
+      if (readOnlyChecks.length === 1) throw Object.assign(new Error('controlled ACL timeout'), { code: 'ETIMEDOUT' });
+      if (request.readOnly) throw new Error('controlled inherited ACL rejection');
+      return '{"ok":true}';
+    }) as typeof childProcess.execFileSync);
+
+    const prepare = () => prepareWindowsHookState(file, windowsHookStateDeadline(5000), true);
+    expect(prepare).toThrow(expect.objectContaining({
+      code: 'MEMESH_PRIVATE_PATH', cause: expect.objectContaining({ code: 'ETIMEDOUT' }),
+    }));
+    expect(fs.existsSync(leaf)).toBe(false);
+    const state = prepare();
+    expect(claimWindowsHookState(state, '123')).toBe(true);
+    expect(fs.readFileSync(file, 'utf8')).toBe('123');
+    expect(readOnlyChecks).toEqual([false, false, false]);
   });
 });
 

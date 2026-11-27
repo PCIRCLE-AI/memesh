@@ -32961,31 +32961,272 @@ var KnowledgeGraph = class {
 var NAMESPACES = ["personal", "team", "global"];
 
 // dist/core/lifecycle.js
-import fs3 from "node:fs";
+import fs4 from "node:fs";
 
 // dist/core/db-copy.js
+import fs3 from "node:fs";
+import path3 from "node:path";
+import { randomUUID } from "node:crypto";
+import { pathToFileURL } from "node:url";
+
+// dist/core/windows-permissions.js
 import fs2 from "node:fs";
 import path2 from "node:path";
-import { randomUUID } from "node:crypto";
+import childProcess from "node:child_process";
+var SCRIPT = String.raw`
+$ErrorActionPreference = 'Stop'
+try {
+  $null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
+  $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
+  $frame = $reader.ReadLine()
+  if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
+  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json
+  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
+  $self = $identity.User.Value
+  $admin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+  $sidType = [Security.Principal.SecurityIdentifier]
+  $allow = [Security.AccessControl.AccessControlType]::Allow
+  function Read-Acl($file) {
+    $attributes = [IO.File]::GetAttributes($file)
+    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'path changed' }
+    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return [IO.Directory]::GetAccessControl($file) }
+    return [IO.File]::GetAccessControl($file)
+  }
+  function Check-Acl($acl) {
+    $owner = $acl.GetOwner($sidType).Value
+    if ($owner -ne $self -and -not ($admin -and $owner -eq 'S-1-5-32-544')) { throw 'foreign owner' }
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    if ($null -eq $raw.DiscretionaryAcl) { throw 'null DACL' }
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
+          ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -and
+           $ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessDenied)) { throw 'unsupported ACE' }
+    }
+  }
+  function Trusted-Allow($rule) {
+    $sid = $rule.IdentityReference.Value
+    return $sid -in @($self, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4') -or
+      ($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
+  }
+  function Assert-Private($acl) {
+    Check-Acl $acl
+    foreach ($rule in $acl.GetAccessRules($true, $true, $sidType)) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
+    }
+  }
+  function Rule-Key($rule) {
+    return '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value, $rule.AccessControlType,
+      [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags
+  }
+  function Ace-Key($ace) {
+    return '{0}|Allow|{1}|{2}|{3}' -f $ace.SecurityIdentifier.Value, [int]$ace.AccessMask,
+      [int]$ace.InheritanceFlags, [int]$ace.PropagationFlags
+  }
+  function Rule-Keys($acl, $isContainer) {
+    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
+    $allows = [Security.AccessControl.RawAcl]::new($raw.DiscretionaryAcl.Revision, 0)
+    foreach ($ace in $raw.DiscretionaryAcl) {
+      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
+      $copy = $ace.Copy()
+      $copy.AceFlags = [Security.AccessControl.AceFlags](([int]$copy.AceFlags) -band (-bnot [int][Security.AccessControl.AceFlags]::Inherited))
+      $allows.InsertAce($allows.Count, $copy)
+    }
+    $canonical = [Security.AccessControl.DiscretionaryAcl]::new($isContainer, $false, $allows)
+    if (-not $canonical.IsCanonical) { throw 'rights changed' }
+    $allowKeys = (@($canonical | ForEach-Object { Ace-Key $_ } | Sort-Object) -join ';')
+    $denyKeys = (@($acl.GetAccessRules($true, $true, $sidType) | Where-Object { $_.AccessControlType -ne $allow } | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
+    return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'
+  }
+  foreach ($file in $request.paths) {
+    if ($request.readOnly) {
+      $verifyAcl = Read-Acl $file
+      Assert-Private $verifyAcl
+      continue
+    }
+    $acl = Read-Acl $file
+    Check-Acl $acl
+    $owner = $acl.GetOwner($sidType).Value
+    $isContainer = [IO.Directory]::Exists($file)
+    $needsProtection = -not $acl.AreAccessRulesProtected
+    if ($needsProtection) {
+      $originalKeys = Rule-Keys $acl $isContainer
+      $acl.SetAccessRuleProtection($true, $true)
+      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
+      else { [IO.File]::SetAccessControl($file, $acl) }
+      $acl = Read-Acl $file
+      Check-Acl $acl
+      if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
+      $protectedKeys = Rule-Keys $acl $isContainer
+      if ($protectedKeys -ne $originalKeys) { throw 'rights changed' }
+    }
+    $changed = $false
+    foreach ($rule in @($acl.GetAccessRules($true, $true, $sidType))) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) {
+        $acl.RemoveAccessRuleSpecific($rule)
+        $changed = $true
+      }
+    }
+    $expected = Rule-Keys $acl $isContainer
+    if ($changed) {
+      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
+      else { [IO.File]::SetAccessControl($file, $acl) }
+    }
+    $actual = Read-Acl $file
+    Check-Acl $actual
+    if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
+    foreach ($rule in $actual.GetAccessRules($true, $true, $sidType)) {
+      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
+    }
+    $keys = Rule-Keys $actual $isContainer
+    if ($keys -ne $expected) { throw 'rights changed' }
+  }
+  if ($request.writableDirectory) {
+    $probe = [IO.Path]::Combine($request.writableDirectory, '.memesh-write-' + [Guid]::NewGuid().ToString('N'))
+    $stream = $null
+    try {
+      $stream = [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
+        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), 4096, [IO.FileOptions]::DeleteOnClose)
+      $stream.WriteByte(0)
+    } finally { if ($null -ne $stream) { $stream.Dispose() } }
+  }
+  [Console]::Out.Write('{"ok":true}')
+} catch {
+  [Console]::Out.Write('{"ok":false}')
+  exit 1
+}
+`;
+function makeWindowsPathsPrivate(targets, writableDirectory, timeout) {
+  runWindowsPermissionCheck(targets, writableDirectory, false, timeout);
+}
+function verifyWindowsPathsPrivate(targets, timeout) {
+  runWindowsPermissionCheck(targets, void 0, true, timeout);
+}
+function runWindowsPermissionCheck(targets, writableDirectory, readOnly, timeout = 15e3) {
+  const paths = [];
+  for (const target of targets) {
+    if (fs2.statSync(target, { throwIfNoEntry: false }) !== void 0)
+      paths.push(fs2.realpathSync(target));
+  }
+  if (paths.length === 0 && writableDirectory === void 0)
+    return;
+  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
+  try {
+    if (!Number.isSafeInteger(timeout) || timeout <= 0)
+      throw new Error("Invalid Windows permissions check timeout");
+    if (!systemRoot || !path2.win32.isAbsolute(systemRoot))
+      throw new Error("Windows system directory unavailable");
+    const output2 = childProcess.execFileSync(path2.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SCRIPT, "utf16le").toString("base64")], {
+      input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString("base64") + "\n",
+      encoding: "utf8",
+      stdio: ["pipe", "pipe", "pipe"],
+      windowsHide: true,
+      timeout,
+      maxBuffer: 4096
+    });
+    if (JSON.parse(output2.trim()).ok !== true)
+      throw new Error("ACL verification failed");
+  } catch (cause) {
+    throw Object.assign(new Error("Cannot verify private Windows permissions; use a writable folder owned by your Windows account.", { cause }), { code: "MEMESH_PRIVATE_PATH" });
+  }
+}
+
+// dist/core/db-copy.js
 var DB_COPIES_KEPT = 3;
 function backupDirectoryFor(dbPath) {
-  return path2.join(path2.dirname(dbPath), "backups");
+  return path3.join(path3.dirname(dbPath), "backups");
+}
+function requireSameEntry(file2, expected) {
+  const actual = fs3.lstatSync(file2, { bigint: true });
+  const expectedType = expected.isDirectory() ? actual.isDirectory() : actual.isFile() && actual.nlink === 1n;
+  if (!expectedType || actual.isSymbolicLink() || actual.ino === 0n || actual.ino !== expected.ino || actual.dev !== expected.dev)
+    throw new Error("Backup path changed or is unsafe: " + file2);
+}
+function prepareWindowsBackupDirectory(directory) {
+  const parent = path3.dirname(directory);
+  for (let ancestor = parent; ; ancestor = path3.dirname(ancestor)) {
+    const entry = fs3.lstatSync(ancestor);
+    if (!entry.isDirectory() || entry.isSymbolicLink())
+      throw new Error("Unsafe backup ancestor: " + ancestor);
+    if (path3.dirname(ancestor) === ancestor)
+      break;
+  }
+  if (path3.relative(parent, fs3.realpathSync(parent)) !== "")
+    throw new Error("Unsafe backup parent: " + parent);
+  let created = false;
+  try {
+    fs3.mkdirSync(directory, { mode: 448 });
+    created = true;
+  } catch (error62) {
+    if (error62.code !== "EEXIST")
+      throw error62;
+  }
+  const leaf = fs3.lstatSync(directory, { bigint: true });
+  if (!leaf.isDirectory() || leaf.isSymbolicLink() || leaf.ino === 0n || path3.relative(directory, fs3.realpathSync(directory)) !== "")
+    throw new Error("Unsafe backup directory: " + directory);
+  try {
+    if (created)
+      makeWindowsPathsPrivate([directory]);
+    else
+      verifyWindowsPathsPrivate([directory]);
+    requireSameEntry(directory, leaf);
+  } catch (error62) {
+    if (created) {
+      try {
+        requireSameEntry(directory, leaf);
+        fs3.rmdirSync(directory);
+      } catch {
+      }
+    }
+    throw error62;
+  }
+  return leaf;
 }
 function copyDatabaseBefore(db2, prefix, inCopy) {
   const location = db2.location();
   if (!location)
     return { kind: "failed", reason: "the database has no file path, so no copy can be made" };
-  const directory = backupDirectoryFor(location);
+  const windows = process.platform === "win32";
+  const directory = windows ? path3.resolve(backupDirectoryFor(location)) : backupDirectoryFor(location);
   const stamp = (/* @__PURE__ */ new Date()).toISOString().replace(/[:.]/g, "-");
   const unique = randomUUID().slice(0, 8);
-  const finalPath = path2.join(directory, `${prefix}-${stamp}-${unique}.db`);
-  const partialPath = path2.join(directory, `.partial-${prefix}-${process.pid}-${unique}.db`);
+  const finalPath = path3.join(directory, `${prefix}-${stamp}-${unique}.db`);
+  const partialPath = path3.join(directory, `.partial-${prefix}-${process.pid}-${unique}.db`);
+  const journalPath = `${partialPath}-journal`;
+  let leaf;
+  let ownedPartial;
+  let mayHaveJournal = false;
   try {
-    fs2.mkdirSync(directory, { recursive: true, mode: 448 });
+    if (windows) {
+      if (path3.dirname(finalPath) !== directory || path3.dirname(partialPath) !== directory)
+        throw new Error("Backup paths must be inside the backups directory");
+      leaf = prepareWindowsBackupDirectory(directory);
+    } else {
+      fs3.mkdirSync(directory, { recursive: true, mode: 448 });
+    }
     removeInterruptedCopies(directory, prefix);
     const expected = db2.prepare("SELECT COUNT(*) AS n FROM entities").get().n;
-    db2.prepare("VACUUM INTO ?").run(partialPath);
-    fs2.chmodSync(partialPath, 384);
+    let destination = partialPath;
+    if (leaf) {
+      requireSameEntry(directory, leaf);
+      const fd = fs3.openSync(partialPath, "wx", 384);
+      try {
+        ownedPartial = fs3.fstatSync(fd, { bigint: true });
+      } finally {
+        fs3.closeSync(fd);
+      }
+      requireSameEntry(partialPath, ownedPartial);
+      makeWindowsPathsPrivate([partialPath]);
+      requireSameEntry(partialPath, ownedPartial);
+      if (fs3.lstatSync(journalPath, { throwIfNoEntry: false }))
+        throw new Error("Backup journal already exists");
+      destination = `${pathToFileURL(partialPath).href}?mode=rw`;
+      mayHaveJournal = true;
+    }
+    db2.prepare("VACUUM INTO ?").run(destination);
+    if (ownedPartial)
+      requireSameEntry(partialPath, ownedPartial);
+    else
+      fs3.chmodSync(partialPath, 384);
     db2.prepare("ATTACH DATABASE ? AS db_copy_check").run(partialPath);
     let found;
     try {
@@ -32997,20 +33238,35 @@ function copyDatabaseBefore(db2, prefix, inCopy) {
     }
     if (found < expected)
       throw new Error(`the copy holds ${found} memories, fewer than the ${expected} the database had`);
-    fs2.renameSync(partialPath, finalPath);
+    if (leaf && ownedPartial) {
+      requireSameEntry(directory, leaf);
+      requireSameEntry(partialPath, ownedPartial);
+    }
+    fs3.renameSync(partialPath, finalPath);
   } catch (error62) {
     try {
-      for (const name of [partialPath, `${partialPath}-journal`])
-        fs2.rmSync(name, { force: true });
+      if (!windows) {
+        for (const name of [partialPath, journalPath])
+          fs3.rmSync(name, { force: true });
+      } else if (leaf && ownedPartial) {
+        requireSameEntry(directory, leaf);
+        requireSameEntry(partialPath, ownedPartial);
+        fs3.rmSync(partialPath, { force: true });
+        const journal = mayHaveJournal ? fs3.lstatSync(journalPath, { throwIfNoEntry: false }) : void 0;
+        if (journal?.isFile() && !journal.isSymbolicLink() && journal.nlink === 1)
+          fs3.rmSync(journalPath, { force: true });
+      }
     } catch {
     }
     return { kind: "failed", reason: `the copy to ${directory} failed (${error62 instanceof Error ? error62.message : String(error62)})` };
   }
   try {
-    const made = path2.basename(finalPath);
-    const older = fs2.readdirSync(directory).filter((name) => name !== made && copyName(prefix).test(name)).sort();
+    if (leaf)
+      requireSameEntry(directory, leaf);
+    const made = path3.basename(finalPath);
+    const older = fs3.readdirSync(directory).filter((name) => name !== made && copyName(prefix).test(name)).sort();
     for (const name of older.slice(0, Math.max(0, older.length - (DB_COPIES_KEPT - 1))))
-      fs2.rmSync(path2.join(directory, name), { force: true });
+      fs3.rmSync(path3.join(directory, name), { force: true });
   } catch {
   }
   return { kind: "ready", path: finalPath };
@@ -33019,10 +33275,10 @@ var escaped = (text2) => text2.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 var copyName = (prefix) => new RegExp(`^${escaped(prefix)}-\\d{4}-\\d{2}-\\d{2}T[\\d-]+Z(?:-[0-9a-f]{8})?\\.db$`);
 function removeInterruptedCopies(directory, prefix) {
   const partial2 = new RegExp(`^\\.partial-${escaped(prefix)}-(\\d+)-[0-9a-f]{8}\\.db(?:-journal)?$`);
-  for (const name of fs2.readdirSync(directory)) {
+  for (const name of fs3.readdirSync(directory)) {
     const pid = Number(partial2.exec(name)?.[1]);
     if (pid && !processRuns(pid))
-      fs2.rmSync(path2.join(directory, name), { force: true });
+      fs3.rmSync(path3.join(directory, name), { force: true });
   }
 }
 function processRuns(pid) {
@@ -33252,7 +33508,7 @@ function backfillCompressionMarkers(db2) {
       }
     });
     if (!done && backupPath && !readKey(COMPRESSION_MARKER_KEY)) {
-      fs3.rmSync(backupPath, { force: true });
+      fs4.rmSync(backupPath, { force: true });
       process.stderr.write(`MeMesh: removed ${backupPath}: the marking did not happen, so the database is unchanged; the next attempt makes a new copy.
 `);
     }
@@ -33263,168 +33519,7 @@ function backfillCompressionMarkers(db2) {
 
 // dist/core/file-mode.js
 import fs5 from "fs";
-import { pathToFileURL } from "url";
-
-// dist/core/windows-permissions.js
-import fs4 from "node:fs";
-import path3 from "node:path";
-import childProcess from "node:child_process";
-var SCRIPT = String.raw`
-$ErrorActionPreference = 'Stop'
-try {
-  $null = Import-Module -Name ([IO.Path]::Combine($PSHOME, 'Modules\Microsoft.PowerShell.Utility\Microsoft.PowerShell.Utility.psd1')) -ErrorAction Stop
-  $reader = [IO.StreamReader]::new([Console]::OpenStandardInput(), [Text.Encoding]::ASCII, $false, 1024, $false)
-  $frame = $reader.ReadLine()
-  if ([string]::IsNullOrWhiteSpace($frame)) { throw 'missing stdin frame' }
-  $request = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String($frame)) | ConvertFrom-Json
-  $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
-  $self = $identity.User.Value
-  $admin = ([Security.Principal.WindowsPrincipal]::new($identity)).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
-  $sidType = [Security.Principal.SecurityIdentifier]
-  $allow = [Security.AccessControl.AccessControlType]::Allow
-  function Read-Acl($file) {
-    $attributes = [IO.File]::GetAttributes($file)
-    if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) { throw 'path changed' }
-    if (($attributes -band [IO.FileAttributes]::Directory) -ne 0) { return [IO.Directory]::GetAccessControl($file) }
-    return [IO.File]::GetAccessControl($file)
-  }
-  function Check-Acl($acl) {
-    $owner = $acl.GetOwner($sidType).Value
-    if ($owner -ne $self -and -not ($admin -and $owner -eq 'S-1-5-32-544')) { throw 'foreign owner' }
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    if ($null -eq $raw.DiscretionaryAcl) { throw 'null DACL' }
-    foreach ($ace in $raw.DiscretionaryAcl) {
-      if ($ace -isnot [Security.AccessControl.CommonAce] -or $ace.IsCallback -or
-          ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed -and
-           $ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessDenied)) { throw 'unsupported ACE' }
-    }
-  }
-  function Trusted-Allow($rule) {
-    $sid = $rule.IdentityReference.Value
-    return $sid -in @($self, 'S-1-5-18', 'S-1-5-32-544', 'S-1-3-4') -or
-      ($sid -eq 'S-1-3-0' -and ($rule.PropagationFlags -band [Security.AccessControl.PropagationFlags]::InheritOnly) -ne 0)
-  }
-  function Assert-Private($acl) {
-    Check-Acl $acl
-    foreach ($rule in $acl.GetAccessRules($true, $true, $sidType)) {
-      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
-    }
-  }
-  function Rule-Key($rule) {
-    return '{0}|{1}|{2}|{3}|{4}' -f $rule.IdentityReference.Value, $rule.AccessControlType,
-      [int]$rule.FileSystemRights, [int]$rule.InheritanceFlags, [int]$rule.PropagationFlags
-  }
-  function Ace-Key($ace) {
-    return '{0}|Allow|{1}|{2}|{3}' -f $ace.SecurityIdentifier.Value, [int]$ace.AccessMask,
-      [int]$ace.InheritanceFlags, [int]$ace.PropagationFlags
-  }
-  function Rule-Keys($acl, $isContainer) {
-    $raw = [Security.AccessControl.RawSecurityDescriptor]::new($acl.GetSecurityDescriptorBinaryForm(), 0)
-    $allows = [Security.AccessControl.RawAcl]::new($raw.DiscretionaryAcl.Revision, 0)
-    foreach ($ace in $raw.DiscretionaryAcl) {
-      if ($ace.AceQualifier -ne [Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
-      $copy = $ace.Copy()
-      $copy.AceFlags = [Security.AccessControl.AceFlags](([int]$copy.AceFlags) -band (-bnot [int][Security.AccessControl.AceFlags]::Inherited))
-      $allows.InsertAce($allows.Count, $copy)
-    }
-    $canonical = [Security.AccessControl.DiscretionaryAcl]::new($isContainer, $false, $allows)
-    if (-not $canonical.IsCanonical) { throw 'rights changed' }
-    $allowKeys = (@($canonical | ForEach-Object { Ace-Key $_ } | Sort-Object) -join ';')
-    $denyKeys = (@($acl.GetAccessRules($true, $true, $sidType) | Where-Object { $_.AccessControlType -ne $allow } | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
-    return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'
-  }
-  foreach ($file in $request.paths) {
-    if ($request.readOnly) {
-      $verifyAcl = Read-Acl $file
-      Assert-Private $verifyAcl
-      continue
-    }
-    $acl = Read-Acl $file
-    Check-Acl $acl
-    $owner = $acl.GetOwner($sidType).Value
-    $isContainer = [IO.Directory]::Exists($file)
-    $needsProtection = -not $acl.AreAccessRulesProtected
-    if ($needsProtection) {
-      $originalKeys = Rule-Keys $acl $isContainer
-      $acl.SetAccessRuleProtection($true, $true)
-      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
-      else { [IO.File]::SetAccessControl($file, $acl) }
-      $acl = Read-Acl $file
-      Check-Acl $acl
-      if (-not $acl.AreAccessRulesProtected -or $acl.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
-      $protectedKeys = Rule-Keys $acl $isContainer
-      if ($protectedKeys -ne $originalKeys) { throw 'rights changed' }
-    }
-    $changed = $false
-    foreach ($rule in @($acl.GetAccessRules($true, $true, $sidType))) {
-      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) {
-        $acl.RemoveAccessRuleSpecific($rule)
-        $changed = $true
-      }
-    }
-    $expected = Rule-Keys $acl $isContainer
-    if ($changed) {
-      if ([IO.Directory]::Exists($file)) { [IO.Directory]::SetAccessControl($file, $acl) }
-      else { [IO.File]::SetAccessControl($file, $acl) }
-    }
-    $actual = Read-Acl $file
-    Check-Acl $actual
-    if (-not $actual.AreAccessRulesProtected -or $actual.GetOwner($sidType).Value -ne $owner) { throw 'ACL changed' }
-    foreach ($rule in $actual.GetAccessRules($true, $true, $sidType)) {
-      if ($rule.AccessControlType -eq $allow -and -not (Trusted-Allow $rule)) { throw 'public allow remains' }
-    }
-    $keys = Rule-Keys $actual $isContainer
-    if ($keys -ne $expected) { throw 'rights changed' }
-  }
-  if ($request.writableDirectory) {
-    $probe = [IO.Path]::Combine($request.writableDirectory, '.memesh-write-' + [Guid]::NewGuid().ToString('N'))
-    $stream = $null
-    try {
-      $stream = [IO.FileStream]::new($probe, [IO.FileMode]::CreateNew, [IO.FileAccess]::ReadWrite,
-        ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), 4096, [IO.FileOptions]::DeleteOnClose)
-      $stream.WriteByte(0)
-    } finally { if ($null -ne $stream) { $stream.Dispose() } }
-  }
-  [Console]::Out.Write('{"ok":true}')
-} catch {
-  [Console]::Out.Write('{"ok":false}')
-  exit 1
-}
-`;
-function makeWindowsPathsPrivate(targets, writableDirectory) {
-  runWindowsPermissionCheck(targets, writableDirectory, false);
-}
-function verifyWindowsPathsPrivate(targets) {
-  runWindowsPermissionCheck(targets, void 0, true);
-}
-function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
-  const paths = [];
-  for (const target of targets) {
-    if (fs4.statSync(target, { throwIfNoEntry: false }) !== void 0)
-      paths.push(fs4.realpathSync(target));
-  }
-  if (paths.length === 0 && writableDirectory === void 0)
-    return;
-  const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
-  try {
-    if (!systemRoot || !path3.win32.isAbsolute(systemRoot))
-      throw new Error("Windows system directory unavailable");
-    const output2 = childProcess.execFileSync(path3.win32.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe"), ["-NoLogo", "-NoProfile", "-NonInteractive", "-EncodedCommand", Buffer.from(SCRIPT, "utf16le").toString("base64")], {
-      input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString("base64") + "\n",
-      encoding: "utf8",
-      stdio: ["pipe", "pipe", "pipe"],
-      windowsHide: true,
-      timeout: 15e3,
-      maxBuffer: 4096
-    });
-    if (JSON.parse(output2.trim()).ok !== true)
-      throw new Error("ACL verification failed");
-  } catch (cause) {
-    throw Object.assign(new Error("Cannot verify private Windows permissions; use a writable folder owned by your Windows account.", { cause }), { code: "MEMESH_PRIVATE_PATH" });
-  }
-}
-
-// dist/core/file-mode.js
+import { pathToFileURL as pathToFileURL2 } from "url";
 function shellQuote(value) {
   const word = value.startsWith("-") ? `./${value}` : value;
   return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -33488,7 +33583,7 @@ function hasPagesWaiting(dbPath) {
   return holdsBytes(wal) || holdsBytes(`${real}-journal`);
 }
 function immutableAddress(file2) {
-  return `${pathToFileURL(file2).href}?immutable=1`;
+  return `${pathToFileURL2(file2).href}?immutable=1`;
 }
 function guardDatabaseFiles(dbPath) {
   for (const target of databaseFiles(dbPath))

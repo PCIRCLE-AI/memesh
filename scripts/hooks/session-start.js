@@ -4,7 +4,7 @@ import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { join, isAbsolute } from 'path';
 import { pathToFileURL } from 'url';
-import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, readdirSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
 import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
   hasBriefingContent,
@@ -61,6 +61,11 @@ import {
   HOOK_CONFIG_UNREADABLE_REASON,
   taskStateName,
   writePrivateJsonAtomic,
+  assertWindowsHookStateDirectory,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  windowsHookStateDeadline,
+  writeWindowsSessionState,
   recallSessionPath,
   openMemeshDb,
   sessionProjectLine,
@@ -1152,7 +1157,10 @@ process.stdin.on('end', async () => {
       const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
       if (sid && !data.agent_id) {
         const own = join(throttleDir, recallListName(sid));
-        if (existsSync(own)) unlinkSync(own);
+        if (process.platform === 'win32') {
+          const state = prepareWindowsHookState(own, windowsHookStateDeadline(10000));
+          if (state.file) unlinkSync(own);
+        } else if (existsSync(own)) unlinkSync(own);
       }
       // The old machine-wide list, from before #521.
       if (existsSync(legacyThrottlePath)) unlinkSync(legacyThrottlePath);
@@ -1580,16 +1588,21 @@ process.stdin.on('end', async () => {
 
         if (allInjected.length > 0) {
           const sessionsDir = join(memeshDir, 'sessions');
-          ensurePrivateDir(sessionsDir);
+          if (process.platform !== 'win32') ensurePrivateDir(sessionsDir);
 
           const sessionId = data.session_id;
           const sessionPath = recallSessionPath(sessionsDir, sessionId, projectName);
+          const windowsState = sessionPath && process.platform === 'win32'
+            ? prepareWindowsHookState(sessionPath, windowsHookStateDeadline(10000), true)
+            : null;
           if (sessionPath) {
             let prior = null;
             let priorFd;
             try {
-              priorFd = openSync(sessionPath, 'r');
-              if (Date.now() - fstatSync(priorFd).mtimeMs <= SESSION_RECORD_TTL_MS) {
+              priorFd = windowsState
+                ? windowsState.file && openWindowsHookState(windowsState, 'r')
+                : openSync(sessionPath, 'r');
+              if (priorFd !== undefined && Date.now() - fstatSync(priorFd).mtimeMs <= SESSION_RECORD_TTL_MS) {
                 const candidate = JSON.parse(readFileSync(priorFd, 'utf8'));
                 if (candidate.sessionId === sessionId && candidate.project === projectName) prior = candidate;
               }
@@ -1600,7 +1613,7 @@ process.stdin.on('end', async () => {
             }
             const injectedById = new Map((prior?.entityIds || []).map((id, i) => [id, prior.entityNames?.[i] ?? String(id)]));
             for (const entity of allInjected) injectedById.set(entity.id, entity.name);
-            writePrivateJsonAtomic(sessionPath, {
+            const next = {
               ...prior,
               sessionId,
               injectedAt: prior?.injectedAt || new Date().toISOString(),
@@ -1610,22 +1623,23 @@ process.stdin.on('end', async () => {
               injectedContext: String(memoryContext || summary).slice(0, 120),
               creditedIds: prior?.creditedIds || [],
               sessionCounted: prior?.sessionCounted === true,
-            });
+            };
+            if (windowsState) writeWindowsSessionState(windowsState, next);
+            else writePrivateJsonAtomic(sessionPath, next);
           } else {
             recordHookOutcome(process.env, { hook: 'session-start', outcome: 'skipped', reason: SKIP_REASONS.noSessionId, payload: data });
           }
 
           // Clean up old session files (>24h)
           try {
-            const files = require('fs').readdirSync(sessionsDir);
+            if (windowsState) assertWindowsHookStateDirectory(windowsState);
+            const files = process.platform !== 'win32' || windowsState ? readdirSync(sessionsDir) : [];
             const now = Date.now();
             for (const file of files) {
               if (!file.endsWith('.json')) continue;
               const filePath = join(sessionsDir, file);
-              const stats = require('fs').statSync(filePath);
-              if (now - stats.mtimeMs > SESSION_RECORD_TTL_MS) {
-                require('fs').unlinkSync(filePath);
-              }
+              const stats = statSync(filePath);
+              if (now - stats.mtimeMs > SESSION_RECORD_TTL_MS) unlinkSync(filePath);
             }
           } catch {}
         }

@@ -654,14 +654,15 @@ export function liveHostPids(dir: string): number[] | null {
 export function backupDatabase(dbPath: string, tag: string): string | null {
   if (!fs.existsSync(dbPath)) return null;
   guardDatabaseFiles(dbPath);
-  const backupDir = backupDirectoryFor(dbPath);
-  ensureOwnerDir(backupDir);
+  let backupDir = backupDirectoryFor(dbPath);
+  if (process.platform !== 'win32') ensureOwnerDir(backupDir);
   let target: string;
   const db = new MemeshDatabase(dbPath, { readOnly: true });
   try {
     const copy = copyDatabaseBefore(db, `pre-update-${tag}`);
     if (copy.kind === 'failed') throw new Error(copy.reason);
     target = copy.path;
+    if (process.platform === 'win32') backupDir = path.dirname(target);
   } finally {
     db.close();
   }

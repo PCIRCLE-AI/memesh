@@ -31,7 +31,7 @@
 
 import { openSync, closeSync, writeSync, constants as fsConstants } from 'fs';
 import { join } from 'path';
-import { ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookNodeProblem, NODE_TOO_OLD_REASON, SKIP_REASONS, recordHookOutcome } from './_shared.js';
+import { claimWindowsHookState, prepareWindowsHookState, windowsHookStateDeadline, ensurePrivateDir, getMemeshDirFromDbPath, hookErrorReason, hookNodeProblem, NODE_TOO_OLD_REASON, SKIP_REASONS, recordHookOutcome } from './_shared.js';
 
 // The only two tools this hook is wired to in hooks/hooks.json — kept as an
 // explicit allowlist (not "any PostToolUse call") so a future matcher typo
@@ -164,6 +164,10 @@ function buildNudge(toolName) {
 function claimNudge(sessionId, toolName) {
   const dir = join(getMemeshDirFromDbPath(), 'decision-nudge-flags');
   const flagPath = join(dir, `${sessionId}-${toolName}.flag`);
+  if (process.platform === 'win32') {
+    const state = prepareWindowsHookState(flagPath, windowsHookStateDeadline(5000), true);
+    return claimWindowsHookState(state, String(Date.now()));
+  }
   try {
     ensurePrivateDir(dir);
     const fd = openSync(flagPath, fsConstants.O_WRONLY | fsConstants.O_CREAT | fsConstants.O_EXCL, 0o600);

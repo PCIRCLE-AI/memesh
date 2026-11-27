@@ -11,7 +11,7 @@
 // dangerous every time.
 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { closeSync, existsSync, readFileSync, realpathSync } from 'fs';
 import {
   buildReferenceContext,
   containsFileNameLiterally,
@@ -22,6 +22,11 @@ import {
   HOOK_BUSY_TIMEOUT_MS,
   isTrustedForAutoContext,
   writePrivateJson,
+  assertWindowsHookStateDirectory,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  windowsHookStateDeadline,
+  writeWindowsHookStateInPlace,
   hookMatchExpression,
   hookPhraseExpression,
   loadActiveGuards,
@@ -141,21 +146,41 @@ function recallFile(data) {
       && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
       ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
       : null;
-    let seenFiles = [];
-    try {
-      if (throttleFile && existsSync(throttleFile)) {
-        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
-        seenFiles = Array.isArray(raw) ? raw : [];
-      }
-    } catch {
-      seenFiles = [];
-    }
-    const throttled = seenFiles.includes(fileKey);
-
     if (!existsSync(dbPath)) {
       record('skipped', SKIP_REASONS.noDatabaseForRecall);
       return pass();
     }
+
+    let seenFiles = [];
+    let windowsState;
+    let stateDenied = false;
+    try {
+      if (throttleFile && process.platform === 'win32') {
+        // Leave the time used by unthrottled repo/DB/guard work available
+        // even when the permissions subprocess consumes the read budget.
+        const state = prepareWindowsHookState(throttleFile, windowsHookStateDeadline(5000) - 3000);
+        windowsState = { ...state, deadline: windowsHookStateDeadline(5000) };
+        if (state.file) {
+          const fd = openWindowsHookState(state, 'r');
+          try {
+            const raw = JSON.parse(readFileSync(fd, 'utf8'));
+            seenFiles = Array.isArray(raw) ? raw : [];
+          } finally {
+            closeSync(fd);
+          }
+        }
+      } else if (throttleFile && existsSync(throttleFile)) {
+        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
+        seenFiles = Array.isArray(raw) ? raw : [];
+      }
+    } catch (err) {
+      if (process.platform === 'win32' && !(err instanceof SyntaxError)) {
+        stateDenied = true;
+        reportListError(throttleFile, err);
+      }
+      seenFiles = [];
+    }
+    const throttled = seenFiles.includes(fileKey);
 
     // Project used to scope RECALL — derived from the EDITED FILE's own
     // location, not cwd (#358 AC3): a file living in another repository
@@ -563,7 +588,7 @@ function recallFile(data) {
           // anything was shown) — but not after a fault: that run looked at
           // nothing, and marking the file seen would switch recall off for
           // the whole session.
-          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
+          if (!recallFault && throttleFile && !stateDenied) recordSeen(throttleFile, seenFiles, fileKey, windowsState);
         }
       }
     } finally {
@@ -725,7 +750,12 @@ function realpathNearestExisting(dir) {
   return { dir, tail: '' };
 }
 
-function recordSeen(throttleFile, seenFiles, fileKey) {
+function reportListError(throttleFile, err) {
+  try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+  record('error', `pre-edit list: ${hookErrorReason(err)}`);
+}
+
+function recordSeen(throttleFile, seenFiles, fileKey, windowsState) {
   // One ledger row per run, however many steps fail: a list that cannot be
   // kept means the next edit of the file shows its memories again, and that
   // must be queryable, not only a line on stderr.
@@ -739,11 +769,18 @@ function recordSeen(throttleFile, seenFiles, fileKey) {
     seenFiles.push(fileKey);
     // Cap at 100 to prevent unbounded growth
     if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
-    ensurePrivateDir(THROTTLE_DIR);
-    writePrivateJson(throttleFile, seenFiles);
+    if (windowsState) {
+      const state = windowsState.directory ? windowsState : prepareWindowsHookState(throttleFile, windowsState.deadline, true);
+      writeWindowsHookStateInPlace(state, seenFiles);
+      assertWindowsHookStateDirectory(state);
+    } else {
+      ensurePrivateDir(THROTTLE_DIR);
+      writePrivateJson(throttleFile, seenFiles);
+    }
   } catch (err) {
-    try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    fault(err);
+    reportListError(throttleFile, err);
+    faulted = true;
+    if (windowsState) return;
   }
   pruneSessionState(THROTTLE_DIR, Date.now(), fault);
 }

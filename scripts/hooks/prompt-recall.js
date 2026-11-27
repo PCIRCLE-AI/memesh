@@ -44,6 +44,10 @@ import {
   recordHookOutcome,
   writePrivateJson,
   writePrivateJsonAtomic,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  windowsHookStateDeadline,
+  writeWindowsSessionState,
 } from './_shared.js';
 import { SESSION_ID_RE, pruneSessionState, recallListName } from './_stop-notes.js';
 import { selectPromptRecall } from './_generated/prompt-recall.js';
@@ -82,12 +86,17 @@ function writeState(file, state) {
 function injectionRecord(sessionId, project) {
   const file = recallSessionPath(join(getMemeshDirFromDbPath(), 'sessions'), sessionId, project);
   if (!file) return { file: null, prior: null };
+  let windowsState;
   try {
-    const fd = openSync(file, 'r');
+    if (process.platform === 'win32') {
+      windowsState = prepareWindowsHookState(file, windowsHookStateDeadline(5000));
+      if (!windowsState.file) return { file, prior: null, windowsState };
+    }
+    const fd = windowsState ? openWindowsHookState(windowsState, 'r') : openSync(file, 'r');
     try {
-      if (Date.now() - fstatSync(fd).mtimeMs > SESSION_RECORD_TTL_MS) return { file, prior: null };
+      if (Date.now() - fstatSync(fd).mtimeMs > SESSION_RECORD_TTL_MS) return { file, prior: null, windowsState };
       const candidate = JSON.parse(readFileSync(fd, 'utf8'));
-      return { file, prior: candidate.sessionId === sessionId && candidate.project === project ? candidate : null };
+      return { file, prior: candidate.sessionId === sessionId && candidate.project === project ? candidate : null, windowsState };
     } finally {
       closeSync(fd);
     }
@@ -95,17 +104,17 @@ function injectionRecord(sessionId, project) {
     // No record, or one that cannot be read: the per-session list of ids shown
     // still prevents a repeat, and the prompt is never held up over it.
     if (err?.code !== 'ENOENT') logError(`injection record not read: ${err?.message || err}`);
-    return { file, prior: null };
+    return { file, prior: null, windowsState, stateError: process.platform === 'win32' && !windowsState ? err : null };
   }
 }
 
 /** Add the injected ids to the session's injection record, so a citation of one is credited. */
-function addToInjectionRecord({ file, prior }, sessionId, project, injected) {
+function addToInjectionRecord({ file, prior, windowsState, stateError }, sessionId, project, injected) {
   if (!file) return;
+  if (stateError) throw stateError;
   const byId = new Map((prior?.entityIds || []).map((id, i) => [id, prior.entityNames?.[i] ?? String(id)]));
   for (const { id, name } of injected) byId.set(id, name);
-  ensurePrivateDir(join(getMemeshDirFromDbPath(), 'sessions'));
-  writePrivateJsonAtomic(file, {
+  const next = {
     ...prior,
     sessionId,
     injectedAt: prior?.injectedAt || new Date().toISOString(),
@@ -115,7 +124,14 @@ function addToInjectionRecord({ file, prior }, sessionId, project, injected) {
     injectedContext: prior?.injectedContext ?? 'prompt-recall',
     creditedIds: prior?.creditedIds || [],
     sessionCounted: prior?.sessionCounted === true,
-  });
+  };
+  if (windowsState) {
+    const state = windowsState.directory ? windowsState : prepareWindowsHookState(file, windowsState.deadline, true);
+    writeWindowsSessionState(state, next);
+  } else {
+    ensurePrivateDir(join(getMemeshDirFromDbPath(), 'sessions'));
+    writePrivateJsonAtomic(file, next);
+  }
 }
 
 function logError(msg) {
@@ -169,7 +185,6 @@ export async function handlePrompt(data) {
       return null;
     }
     const project = typeof data.cwd === 'string' && data.cwd ? getProjectName(data.cwd) : null;
-    const injectionState = injectionRecord(sessionId, project);
     const shown = new Set(state?.ids ?? []);
 
     const db = openMemeshDb(dbPath, { readOnly: true });
@@ -196,6 +211,7 @@ export async function handlePrompt(data) {
     const names = new Map(result.scored.map((m) => [m.id, m.name]));
     let credited = true;
     try {
+      const injectionState = injectionRecord(sessionId, project);
       addToInjectionRecord(injectionState, sessionId, project, result.ids.map((id) => ({ id, name: names.get(id) ?? String(id) })));
     } catch (err) {
       credited = false;

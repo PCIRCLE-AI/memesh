@@ -10,6 +10,8 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
+import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 
 const require = createRequire(import.meta.url);
 const HOOK = path.resolve('scripts/hooks/prompt-recall.js');
@@ -261,6 +263,8 @@ describe('Feature: prompt-time recall hook', () => {
     const { decisionId } = seed();
     run(MATCHING);
     const dir = path.join(memeshDir, 'sessions');
+    expectPrivateDir(dir);
+    expectPrivateFile(path.join(dir, fs.readdirSync(dir)[0]));
     const records = fs.readdirSync(dir).map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
     expect(records).toHaveLength(1);
     expect(records[0].entityIds).toContain(decisionId);
@@ -273,12 +277,15 @@ describe('Feature: prompt-time recall hook', () => {
     fs.mkdirSync(sessions, { recursive: true });
     const { recallSessionPath, getProjectName } = require('../../scripts/hooks/_shared.js');
     const name = getProjectName(project);
-    fs.writeFileSync(recallSessionPath(sessions, 'sess-a', name), JSON.stringify({
+    const file = recallSessionPath(sessions, 'sess-a', name);
+    fs.writeFileSync(file, JSON.stringify({
       sessionId: 'sess-a', project: name, injectedAt: new Date().toISOString(),
       entityIds: [decisionId], entityNames: ['storage-driver-decision'], creditedIds: [], sessionCounted: false,
-    }));
+    }), { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessions, file]);
     const text = JSON.parse(run(MATCHING).stdout).hookSpecificOutput.additionalContext;
     expect(text).toContain('Why: the native build broke on three platforms');
+    expectPrivateFile(file);
     expect(run(MATCHING).stdout).toBe('');
     expect(lastOutcome()).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.promptAlreadyShown });
   });

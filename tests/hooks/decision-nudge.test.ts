@@ -22,7 +22,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { removeTempDir } from '../helpers/temp-dir.js';
-import { expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 
 const HOOK_PATH = path.resolve('scripts/hooks/decision-nudge.js');
@@ -201,9 +201,34 @@ describe('Feature: decision-nudge hook (PostToolUse ExitPlanMode|AskUserQuestion
     expectPrivateFile(flagPath);
   });
 
+  it.skipIf(process.platform !== 'win32')('refuses a shared flag directory without repairing it or claiming a flag', () => {
+    const dir = path.join(memeshDir, 'decision-nudge-flags');
+    fs.mkdirSync(dir);
+    const before = makeWindowsAclPublic(dir);
+    const result = runHook(payload('ExitPlanMode', 'shared'));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('Cannot verify private Windows permissions');
+    expect(fs.readdirSync(dir)).toEqual([]);
+    expect(readWindowsAcl(dir)).toEqual(before);
+  });
+
+  it.skipIf(process.platform !== 'win32')('rejects a junction from the flag directory to another directory', () => {
+    const outside = path.join(tmpHome, 'outside');
+    fs.mkdirSync(outside);
+    const before = readWindowsAcl(outside);
+    fs.symlinkSync(outside, path.join(memeshDir, 'decision-nudge-flags'), 'junction');
+    const result = runHook(payload('ExitPlanMode', 'junction'));
+    expect(result.status).toBe(0);
+    expect(result.stdout).toBe('');
+    expect(result.stderr).toContain('Unsafe Windows hook state path');
+    expect(fs.readdirSync(outside)).toEqual([]);
+    expect(readWindowsAcl(outside)).toEqual(before);
+  });
+
   it('finishes inside the hook budget', () => {
     const start = Date.now();
-    runHook(payload('ExitPlanMode', 'timing-session'));
+    expect(runHook(payload('ExitPlanMode', 'timing-session')).stdout).not.toBe('');
     expect(Date.now() - start).toBeLessThan(4000);
   });
 });

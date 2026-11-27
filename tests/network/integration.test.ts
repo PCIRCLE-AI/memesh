@@ -660,7 +660,12 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       const staleSocket = spawnSync(process.execPath, ['-e', `require('net').createServer().listen(${JSON.stringify(controlPath(ctx.dataDir))}, () => process.kill(process.pid, 'SIGKILL'));`]);
       expect(staleSocket.signal).toBe('SIGKILL');
       fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
-      const children = Array.from({ length: 8 }, () => spawn(process.execPath, [ctx.bridgeEntry, 'serve'], { env: childEnv(ctx), stdio: 'ignore' }));
+      const stderr = Array<string>(8).fill('');
+      const children = Array.from({ length: 8 }, (_, index) => {
+        const child = spawn(process.execPath, [ctx.bridgeEntry, 'serve'], { env: childEnv(ctx), stdio: ['ignore', 'ignore', 'pipe'] });
+        child.stderr.on('data', (chunk: Buffer) => { stderr[index] = (stderr[index] + chunk.toString()).slice(-16_384); });
+        return child;
+      });
       const started = Date.now();
       let holder: number | null = null;
       for (;;) {
@@ -683,7 +688,8 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
       }
       if (holder !== null) settled++;
       // Losing is exit 3. Anything else means two got as far as holding the socket, and the heartbeat had to clean up.
-      const held = children.filter((child) => child.pid !== holder && child.exitCode !== EXIT_ALREADY_RUNNING).map((child) => child.exitCode ?? child.signalCode);
+      const held = children.flatMap((child, index) => child.pid !== holder && child.exitCode !== EXIT_ALREADY_RUNNING
+        ? [{ pid: child.pid, exit: child.exitCode ?? child.signalCode, stderr: stderr[index] }] : []);
       if (held.length > 0) doubleHeld.push(`round ${round}: ${JSON.stringify(held)}`);
       await stopBridge(ctx).catch(() => undefined);
       for (const child of children) child.kill('SIGKILL');

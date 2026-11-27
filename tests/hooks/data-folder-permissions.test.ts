@@ -347,6 +347,7 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
       "core/database-repair.ts: const db = new MemeshDatabase(file);",
       "core/database-repair.ts: lock = new MemeshDatabase(source);",
       "core/node-salvage.ts: const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });",
+      "core/node-salvage.ts: dst = new MemeshDatabase(`${pathToFileURL(outputPath).href}?mode=rw`);",
       "core/node-salvage.ts: dst = new MemeshDatabase(outputPath);",
       "core/public-network-context.ts: const db = new MemeshDatabase(pending || consistentSnapshot ? file : immutableAddress(file), { readOnly: true });",
       "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",

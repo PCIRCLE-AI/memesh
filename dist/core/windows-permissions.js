@@ -123,13 +123,13 @@ try {
   exit 1
 }
 `;
-export function makeWindowsPathsPrivate(targets, writableDirectory) {
-    runWindowsPermissionCheck(targets, writableDirectory, false);
+export function makeWindowsPathsPrivate(targets, writableDirectory, timeout) {
+    runWindowsPermissionCheck(targets, writableDirectory, false, timeout);
 }
-export function verifyWindowsPathsPrivate(targets) {
-    runWindowsPermissionCheck(targets, undefined, true);
+export function verifyWindowsPathsPrivate(targets, timeout) {
+    runWindowsPermissionCheck(targets, undefined, true, timeout);
 }
-function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
+function runWindowsPermissionCheck(targets, writableDirectory, readOnly, timeout = 15_000) {
     const paths = [];
     for (const target of targets) {
         if (fs.statSync(target, { throwIfNoEntry: false }) !== undefined)
@@ -139,12 +139,14 @@ function runWindowsPermissionCheck(targets, writableDirectory, readOnly) {
         return;
     const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
     try {
+        if (!Number.isSafeInteger(timeout) || timeout <= 0)
+            throw new Error('Invalid Windows permissions check timeout');
         if (!systemRoot || !path.win32.isAbsolute(systemRoot))
             throw new Error('Windows system directory unavailable');
         const output = childProcess.execFileSync(path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'), ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')], {
             input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString('base64') + '\n',
             encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
-            timeout: 15_000, maxBuffer: 4096,
+            timeout, maxBuffer: 4096,
         });
         if (JSON.parse(output.trim()).ok !== true)
             throw new Error('ACL verification failed');

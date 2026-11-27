@@ -106,7 +106,7 @@ $ErrorActionPreference = 'Stop'
 $file = [Text.Encoding]::UTF8.GetString([Convert]::FromBase64String([Console]::ReadLine()))
 $share = [IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete
 $stream = [IO.FileStream]::new($file, [IO.FileMode]::Open, [IO.FileAccess]::ReadWrite, $share)
-$map = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile($stream, $null, 0,
+$map = [IO.MemoryMappedFiles.MemoryMappedFile]::CreateFromFile($stream, ('memesh-repair-' + [Guid]::NewGuid().ToString('N')), 0,
   [IO.MemoryMappedFiles.MemoryMappedFileAccess]::ReadWrite, [IO.HandleInheritability]::None, $true)
 $view = $map.CreateViewAccessor()
 try {

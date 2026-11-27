@@ -58,6 +58,8 @@ import {
 import { installProvider, inspectInstall, registryProblem, defaultInstallTarget, refreshInstalls, refreshTargets, registerInstall, staleInstalls, HERMES_REASONS, MARKER_FILE } from '../../src/core/hermes-provider.js';
 import { processStartTag } from '../../src/core/process-identity.js';
 import { npmInvocation } from '../../src/core/npm-launch.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
+import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 // A test that writes into the current directory (the repository) leaves files that get committed by accident: the
@@ -72,6 +74,11 @@ function tmp(): string {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-au-'));
   dirs.push(d);
   return d;
+}
+
+function createExistingBackups(directory: string): void {
+  fs.mkdirSync(directory, { recursive: true });
+  if (process.platform === 'win32') makeWindowsPathsPrivate([directory]);
 }
 
 /** A runner gets its data directory from its inherited environment; keep that
@@ -441,6 +448,8 @@ describe('the backup', () => {
     for (let i = 0; i < 5; i += 1) made.push(backupDatabase(dbPath, '4.12.0')!);
     const left = fs.readdirSync(path.join(d, 'backups'));
     expect(left).toHaveLength(3);
+    expectPrivateDir(path.join(d, 'backups'));
+    expectPrivateFile(made[4]);
     const copy = new DatabaseSync(made[4], { readOnly: true });
     expect(copy.prepare('SELECT v FROM t').get()).toEqual({ v: 'kept' });
     copy.close();
@@ -449,6 +458,7 @@ describe('the backup', () => {
   it('has nothing to back up when there is no database yet', () => {
     const d = tmp();
     expect(backupDatabase(path.join(d, 'missing.db'), '1.0.0')).toBeNull();
+    expect(fs.existsSync(path.join(d, 'backups'))).toBe(false);
   });
 });
 
@@ -901,7 +911,7 @@ describe('Hermes provider copies follow the verified update', () => {
     const registeredTarget = path.join(tmp(), 'provider');
     for (const target of [ownTarget, accountTarget, registeredTarget]) installProvider({ sourceDir: source, target, version: '4.12.0', force: false, backupRoot: path.join(data, 'backups'), now: new Date() });
     registerInstall(data, registeredTarget);
-    fs.mkdirSync(path.join(data, 'backups'), { recursive: true });
+    createExistingBackups(path.join(data, 'backups'));
     const savedProvider = path.join(data, 'backups', 'hermes-provider-existing'); fs.writeFileSync(savedProvider, 'saved provider');
     const accountBefore = fs.readFileSync(path.join(accountTarget, MARKER_FILE));
     expect(await runAutoUpdate(w.deps)).toMatchObject({ outcome: 'installed' });
@@ -1172,7 +1182,7 @@ describe('the pre-update backup rotation', () => {
     db.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY); CREATE TABLE t (v TEXT)');
     db.close();
     const backupDir = path.join(d, 'backups');
-    fs.mkdirSync(backupDir);
+    createExistingBackups(backupDir);
     // Three older backups taken on 4.9.x, oldest first by time.
     ['4.9.7', '4.9.8', '4.9.9'].forEach((v, i) => {
       const f = path.join(backupDir, `pre-update-${v}-2026-10-0${i + 1}.db`);
@@ -2388,7 +2398,7 @@ describe('the pre-update backup, when the directory holds something unreadable o
     const d = tmp();
     const dbPath = mkDb(d);
     const backupDir = path.join(d, 'backups');
-    fs.mkdirSync(backupDir);
+    createExistingBackups(backupDir);
     fs.symlinkSync(path.join(d, 'nowhere.db'), path.join(backupDir, 'pre-update-4.1.0-old.db'));
     for (let i = 1; i <= 3; i += 1) {
       const f = path.join(backupDir, `pre-update-4.1.0-${i}.db`);
@@ -2405,7 +2415,7 @@ describe('the pre-update backup, when the directory holds something unreadable o
     const d = tmp();
     const dbPath = mkDb(d);
     const backupDir = path.join(d, 'backups');
-    fs.mkdirSync(backupDir);
+    createExistingBackups(backupDir);
     for (let i = 1; i <= 3; i += 1) {
       const f = path.join(backupDir, `pre-update-4.1.0-${i}.db`);
       fs.writeFileSync(f, 'x');

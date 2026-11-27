@@ -5,7 +5,8 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { pathToFileURL } from 'node:url';
-import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateDir, expectPrivateFile, windowsAclFixture } from '../helpers/permissions.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 // The cap the hook itself imports — a literal here would drift from it.
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
@@ -956,6 +957,7 @@ describe('Feature: Session Start Hook', () => {
     const other = path.join(dir, recallListName('other-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
     fs.writeFileSync(other, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own, other]);
     const legacy = path.join(testDir, 'session-recalled-files.json');
     fs.writeFileSync(legacy, JSON.stringify(['/src/auth.ts']), 'utf8');
 
@@ -973,6 +975,7 @@ describe('Feature: Session Start Hook', () => {
     fs.mkdirSync(dir, { recursive: true });
     const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own]);
     const loader = path.join(testDir, 'fault.mjs');
     fs.writeFileSync(loader, `import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -1007,6 +1010,7 @@ syncBuiltinESMExports();
     fs.mkdirSync(dir, { recursive: true });
     const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own]);
 
     runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'x', source: 'compact' });
 
@@ -1035,12 +1039,30 @@ syncBuiltinESMExports();
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('permtest'));
     db.close();
 
-    runHook({ cwd: '/tmp/permtest' });
+    const input = { cwd: '/tmp/permtest', session_id: 'permtest' };
+    runHook(input);
 
     const [sessionFile] = fs.readdirSync(sessionsDir).filter((file) => file.endsWith('.json'));
     expect(sessionFile).toBeTruthy();
     expectPrivateDir(sessionsDir);
-    expectPrivateFile(path.join(sessionsDir, sessionFile));
+    const file = path.join(sessionsDir, sessionFile);
+    expectPrivateFile(file);
+    if (process.platform === 'win32') {
+      runHook(input);
+      expectPrivateFile(file);
+      const original = fs.readFileSync(file, 'utf8');
+      const acl = windowsAclFixture(file, 'deny');
+      try {
+        runHook(input);
+        expect(fs.readFileSync(file, 'utf8')).toBe(original);
+        expect(windowsAclFixture(file, 'read')).toEqual(acl);
+        expect(fs.readdirSync(sessionsDir)).toEqual([sessionFile]);
+        const outcomes = fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(outcomes).toContainEqual(expect.objectContaining({ hook: 'session-start', outcome: 'error', reason: expect.stringContaining('sessions-write:') }));
+      } finally {
+        windowsAclFixture(file, 'restore');
+      }
+    }
   });
 
   it('Scenario: Scoring — top entities by score appear first in the persisted entityNames list', () => {

@@ -243,8 +243,8 @@
     },
     {
       "path": "scripts/hooks/_generated/windows-permissions.js",
-      "sha256": "e604e9b6dc2ed6205c34c061764958dd977b2cbfeaf7006152cdea26b6db9a5e",
-      "bytes": 8658
+      "sha256": "e6191ba33663d428b338a737cec8018f61a4c127fa40cecd19f7ece20f8e0b16",
+      "bytes": 8838
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
@@ -253,8 +253,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "3b763d374608224258ea223c174d445145e16b39f56e24d273b69481c684549a",
-      "bytes": 112108
+      "sha256": "5303853a70c579855d0116119a7cf200b1fb7a52aa10ab4837f6c870f87bc7d4",
+      "bytes": 120532
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
@@ -278,8 +278,8 @@
     },
     {
       "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "c6199d04e3eda7653f86cf76b43630cbe1a3719e360d34c7bd8c688773a121e3",
-      "bytes": 9003
+      "sha256": "51d74990e13df4a81d2f375c0d91acc3b83b35a2391877ef80b2ab1d7d64b3da",
+      "bytes": 9271
     },
     {
       "path": "scripts/hooks/guard-check.js",
@@ -303,23 +303,23 @@
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "0b1cd5cf4f48c5a8c562d172fff5a6c9d0b54a22dbb6d07c81fdbbcc79b0a78b",
-      "bytes": 39657
+      "sha256": "ee4bb82fdcc7248de0973e803e8e0d56151a656b281693bbf720f3f2b360007f",
+      "bytes": 41205
     },
     {
       "path": "scripts/hooks/prompt-recall.js",
-      "sha256": "237cdb9ab1dcb892c97a202df82bf2eb2e39c14f99305b74cb38e7716d84066c",
-      "bytes": 9607
+      "sha256": "732ebc74d2fb7359b6dc13a4255c8aed95c75bb534d26e2999e3e6c2f6306808",
+      "bytes": 10396
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "a6ac836b949833ac3893708f3028f7453d92ee49bbdb7d614d84b425d721c657",
-      "bytes": 98547
+      "sha256": "13d77e06d43123f127390dfa23aa92264fcc02608fa290e39dd3eefbdcc03381",
+      "bytes": 99402
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "0fdf7be505438e0c28b8ee587222100ac38eebac4a7c34d9e270836e197c4505",
-      "bytes": 39829
+      "sha256": "f6e15f1d1db945e851d3d32959ac4673f25284e1a0827526ef114e4c06b99395",
+      "bytes": 40549
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",

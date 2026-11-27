@@ -1,8 +1,10 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
+import { performance } from 'node:perf_hooks';
 import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
 import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
-import { dirname, join } from 'path';
+import { basename, dirname, join, resolve } from 'path';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from './_generated/windows-permissions.js';
 import { hostname } from 'os';
 import { AGENT_TEXT_OMITTED, omitAgentMessageText } from './_generated/session-handoff.js';
 import { renderConversationMessage } from './_generated/conversation-messages.js';
@@ -1965,6 +1967,235 @@ export function writePrivateFile(filePath, content) {
 
 export function writePrivateJson(filePath, value) {
   writePrivateFile(filePath, JSON.stringify(value));
+}
+
+const WINDOWS_HOOK_STATE_NAMES = new Map([
+  ['decision-nudge-flags', /^[A-Za-z0-9_-]+-(ExitPlanMode|AskUserQuestion)\.flag$/],
+  ['pre-edit-recall', /^[a-f0-9]{32}\.json$/],
+  ['sessions', /^[a-f0-9]{64}\.json$/],
+]);
+
+export function windowsHookStateDeadline(hookTimeoutMs) {
+  // A child must finish in time for the hook to record its outcome.
+  return hookTimeoutMs - 500;
+}
+
+function windowsHookStateTimeout(deadline) {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining <= 0) throw windowsHookStateError('Windows hook state permissions check timed out');
+  return remaining;
+}
+
+function windowsHookStateError(message = 'Unsafe Windows hook state path') {
+  return Object.assign(new Error(message), { code: 'MEMESH_PRIVATE_PATH' });
+}
+
+function windowsHookStateStat(target, directory) {
+  const stat = lstatSync(target, { throwIfNoEntry: false, bigint: true });
+  if (stat && (stat.isSymbolicLink()
+    || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n)
+    || realpathSync.native(target).toLowerCase() !== target.toLowerCase())) {
+    throw windowsHookStateError();
+  }
+  return stat;
+}
+
+function windowsHookStateAncestor(target) {
+  const parent = dirname(target);
+  if (parent !== target && !windowsHookStateAncestor(parent)) return undefined;
+  return windowsHookStateStat(target, true);
+}
+
+function sameHookStateFile(expected, actual) {
+  return expected && actual && expected.dev === actual.dev && expected.ino === actual.ino;
+}
+
+export function assertWindowsHookStateDirectory(state) {
+  if (!sameHookStateFile(state.directory, windowsHookStateAncestor(state.dirPath))) {
+    throw windowsHookStateError('Windows hook state directory changed');
+  }
+}
+
+function assertWindowsHookStateFile(state) {
+  assertWindowsHookStateDirectory(state);
+  const actual = windowsHookStateStat(state.filePath, false);
+  if ((state.file || actual) && !sameHookStateFile(state.file, actual)) {
+    throw windowsHookStateError('Windows hook state file changed');
+  }
+}
+
+/** Guard exactly the three product-owned Windows state leaves. */
+export function prepareWindowsHookState(filePath, deadline, create = false) {
+  filePath = resolve(filePath);
+  const dirPath = dirname(filePath);
+  const root = resolve(getMemeshDirFromDbPath());
+  if (dirname(dirPath).toLowerCase() !== root.toLowerCase()
+    || !WINDOWS_HOOK_STATE_NAMES.get(basename(dirPath))?.test(basename(filePath))) {
+    throw windowsHookStateError();
+  }
+
+  if (!windowsHookStateAncestor(root)) {
+    if (!create) return { dirPath, filePath, deadline };
+    windowsHookStateTimeout(deadline);
+    mkdirSync(root, { recursive: true, mode: PRIVATE_DIR_MODE });
+    if (!windowsHookStateAncestor(root)) throw windowsHookStateError();
+  }
+
+  let created = false;
+  if (create && !windowsHookStateStat(dirPath, true)) {
+    windowsHookStateTimeout(deadline);
+    try {
+      mkdirSync(dirPath, { mode: PRIVATE_DIR_MODE });
+      created = true;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+    }
+  }
+  const directory = windowsHookStateStat(dirPath, true);
+  try {
+    const file = directory && windowsHookStateStat(filePath, false);
+    const state = { dirPath, directory, filePath, file, deadline };
+    if (!directory) {
+      if (create) throw windowsHookStateError();
+      return state;
+    }
+    if (created) {
+      if (readdirSync(dirPath).length !== 0) throw windowsHookStateError('New Windows hook state directory is not empty');
+      makeWindowsPathsPrivate([dirPath], undefined, windowsHookStateTimeout(deadline));
+    } else {
+      verifyWindowsPathsPrivate(file ? [dirPath, filePath] : [dirPath], windowsHookStateTimeout(deadline));
+    }
+    assertWindowsHookStateFile(state);
+    return state;
+  } catch (err) {
+    if (created && directory) {
+      // A failed first-time ACL check must leave an empty leaf retryable.
+      try {
+        if (sameHookStateFile(directory, windowsHookStateAncestor(dirPath))) rmdirSync(dirPath);
+      } catch { /* preserve the original error and any nonempty leaf */ }
+    }
+    throw err;
+  }
+}
+
+export function openWindowsHookState(state, flags) {
+  assertWindowsHookStateFile(state);
+  const fd = openSync(state.filePath, flags);
+  try {
+    const actual = fstatSync(fd, { bigint: true });
+    if (!sameHookStateFile(state.file, actual) || !actual.isFile() || actual.nlink !== 1n) throw windowsHookStateError();
+    return fd;
+  } catch (err) {
+    closeSync(fd);
+    throw err;
+  }
+}
+
+function createPrivateWindowsHookStateFile(state, filePath) {
+  assertWindowsHookStateDirectory(state);
+  windowsHookStateTimeout(state.deadline);
+  const fd = openSync(filePath, 'wx', PRIVATE_FILE_MODE);
+  let owned;
+  try {
+    owned = fstatSync(fd, { bigint: true });
+    if (!owned.isFile() || owned.nlink !== 1n || !sameHookStateFile(owned, windowsHookStateStat(filePath, false))) {
+      throw windowsHookStateError();
+    }
+    makeWindowsPathsPrivate([filePath], undefined, windowsHookStateTimeout(state.deadline));
+    assertWindowsHookStateDirectory(state);
+    if (!sameHookStateFile(owned, windowsHookStateStat(filePath, false))) throw windowsHookStateError();
+    return { fd, owned };
+  } catch (err) {
+    try { closeSync(fd); } catch { /* preserve the permissions error */ }
+    if (owned) removeNewWindowsHookState(state, filePath, owned);
+    throw err;
+  }
+}
+
+function writeNewWindowsHookState(state, content) {
+  const { fd, owned } = createPrivateWindowsHookStateFile(state, state.filePath);
+  let written = false;
+  try {
+    windowsHookStateTimeout(state.deadline);
+    writeFileSync(fd, content, 'utf8');
+    written = true;
+  } finally {
+    try { closeSync(fd); } finally {
+      if (!written) removeNewWindowsHookState(state, state.filePath, owned);
+    }
+  }
+}
+
+function removeNewWindowsHookState(state, filePath, owned) {
+  try {
+    assertWindowsHookStateDirectory(state);
+    if (sameHookStateFile(owned, windowsHookStateStat(filePath, false))) unlinkSync(filePath);
+  } catch { /* preserve the write error */ }
+}
+
+export function claimWindowsHookState(state, content) {
+  if (state.file) return false;
+  try {
+    writeNewWindowsHookState(state, content);
+    return true;
+  } catch (err) {
+    if (err?.code !== 'EEXIST') throw err;
+    // Another caller can claim this slot between verification and the open.
+    assertWindowsHookStateDirectory(state);
+    if (!windowsHookStateStat(state.filePath, false)) throw err;
+    return false;
+  }
+}
+
+export function writeWindowsHookStateInPlace(state, value) {
+  const content = JSON.stringify(value);
+  if (!state.file) {
+    writeNewWindowsHookState(state, content);
+    return;
+  }
+  windowsHookStateTimeout(state.deadline);
+  const fd = openWindowsHookState(state, 'r+');
+  try {
+    ftruncateSync(fd);
+    writeFileSync(fd, content, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Stop prepares this before opening the SQLite write transaction. The returned
+// operation can publish the JSON computed by that transaction without a child.
+export function prepareWindowsSessionStateWrite(state) {
+  if (state.file) closeSync(openWindowsHookState(state, 'r+'));
+  const tmpPath = `${state.filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  const temporary = createPrivateWindowsHookStateFile(state, tmpPath);
+  let fd = temporary.fd;
+  const close = () => {
+    if (fd === undefined) return;
+    const openFd = fd;
+    fd = undefined;
+    closeSync(openFd);
+  };
+  return {
+    publish(value) {
+      windowsHookStateTimeout(state.deadline);
+      assertWindowsHookStateFile(state);
+      if (!sameHookStateFile(temporary.owned, windowsHookStateStat(tmpPath, false))) throw windowsHookStateError();
+      writeFileSync(fd, JSON.stringify(value), 'utf8');
+      close();
+      assertWindowsHookStateFile(state);
+      if (!sameHookStateFile(temporary.owned, windowsHookStateStat(tmpPath, false))) throw windowsHookStateError();
+      renameSync(tmpPath, state.filePath);
+    },
+    discard() {
+      try { close(); } finally { removeNewWindowsHookState(state, tmpPath, temporary.owned); }
+    },
+  };
+}
+
+export function writeWindowsSessionState(state, value) {
+  const write = prepareWindowsSessionStateWrite(state);
+  try { write.publish(value); } finally { write.discard(); }
 }
 
 // Session identities are host data, never filesystem paths. Include the

@@ -1,6 +1,8 @@
-import { openSync, closeSync } from 'node:fs';
+import { openSync, closeSync, statSync } from 'node:fs';
+import { pathToFileURL } from 'node:url';
 import { MemeshDatabase, type SqlInputValue, type SqlOutputValue } from '../storage/sqlite.js';
 import { hasPagesWaiting, immutableAddress, refuseMismatchedSidecars } from './file-mode.js';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 
 const q = (s: string): string => '"' + s.replaceAll('"', '""') + '"';
 const MIN = -(1n << 63n), MAX = (1n << 63n) - 1n;
@@ -34,7 +36,15 @@ export function salvageWithNode(sourcePath: string, outputPath: string): {
     }
     if (master.some(t => t.type === 'trigger')) throw new Error('Unsupported triggers in salvage source');
     closeSync(openSync(outputPath, 'wx', 0o600));
-    dst = new MemeshDatabase(outputPath);
+    if (process.platform === 'win32') {
+      // SQLite opens the existing stub without sharing DELETE on Windows.
+      dst = new MemeshDatabase(`${pathToFileURL(outputPath).href}?mode=rw`);
+      makeWindowsPathsPrivate([outputPath]);
+      // The ACL helper skips optional paths that are absent.
+      statSync(outputPath);
+    } else {
+      dst = new MemeshDatabase(outputPath);
+    }
     dst.exec('PRAGMA foreign_keys=OFF; PRAGMA trusted_schema=OFF; BEGIN');
     for (const t of tables) dst.prepare(String(t.sql)).run();
     const reports: Array<{ name: string; copied: number; complete: boolean }> = [];

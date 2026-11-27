@@ -10,7 +10,8 @@ import path from 'node:path';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { copyDatabaseBefore, DB_COPIES_KEPT } from '../../src/core/db-copy.js';
-import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
+import * as windowsPermissions from '../../src/core/windows-permissions.js';
+import { expectPrivateDir, expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 
 const PREFIX = 'knowledge-graph-before-note-trust';
 let root: string;
@@ -34,6 +35,11 @@ afterEach(() => {
 
 /** A pid that is certainly not running: a child that has already exited. */
 const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid!;
+
+function createExistingBackups(): void {
+  fs.mkdirSync(backups, { recursive: true });
+  if (process.platform === 'win32') windowsPermissions.makeWindowsPathsPrivate([backups]);
+}
 
 describe('copyDatabaseBefore', () => {
   it('copies pending WAL through a genuinely read-only source and can ATTACH the copy for verification', () => {
@@ -82,7 +88,7 @@ describe('copyDatabaseBefore', () => {
   });
 
   it('the copy just made is never the one removed, even when the clock went back and older copies have later names', () => {
-    fs.mkdirSync(backups, { recursive: true });
+    createExistingBackups();
     const later = ['2099-01-01T00-00-00-001Z', '2099-01-01T00-00-00-002Z', '2099-01-01T00-00-00-003Z']
       .map((stamp) => `${PREFIX}-${stamp}-0000aaaa.db`);
     for (const name of later) fs.writeFileSync(path.join(backups, name), 'x');
@@ -145,7 +151,7 @@ describe('copyDatabaseBefore', () => {
   });
 
   it('removes what an interrupted copy left behind, and leaves a running copy alone', () => {
-    fs.mkdirSync(backups, { recursive: true });
+    createExistingBackups();
     const stale = `.partial-${PREFIX}-${deadPid()}-0000aaaa.db`;
     const running = `.partial-${PREFIX}-${process.ppid}-0000bbbb.db`;
     for (const name of [stale, `${stale}-journal`, running]) fs.writeFileSync(path.join(backups, name), 'x');
@@ -166,6 +172,80 @@ describe('copyDatabaseBefore', () => {
     }
   });
 
+  it.runIf(process.platform === 'win32')('refuses an existing public leaf before pruning or writing a backup', () => {
+    fs.mkdirSync(backups);
+    const acl = makeWindowsAclPublic(backups);
+    const rootAcl = readWindowsAcl(root);
+    const stale = `.partial-${PREFIX}-${deadPid()}-0000aaaa.db`;
+    fs.writeFileSync(path.join(backups, stale), 'interrupted');
+    const db = getDatabase();
+    db.prepare("INSERT INTO entities(name,type) VALUES('kept','note')").run();
+    const source = path.join(root, 'kg.db');
+    const before = [fs.readFileSync(source), fs.readFileSync(source + '-wal')];
+    const inCopy = vi.fn();
+    expect(copyDatabaseBefore(db, PREFIX, inCopy)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('Cannot verify private Windows permissions') });
+    expect(inCopy).not.toHaveBeenCalled();
+    expect(fs.readdirSync(backups)).toEqual([stale]);
+    expect(fs.readFileSync(path.join(backups, stale), 'utf8')).toBe('interrupted');
+    expect(readWindowsAcl(backups)).toEqual(acl);
+    expect(readWindowsAcl(root)).toEqual(rootAcl);
+    expect([fs.readFileSync(source), fs.readFileSync(source + '-wal')]).toEqual(before);
+  });
+
+  it.runIf(process.platform === 'win32')('retries after the first backup directory ACL check fails', () => {
+    const db = getDatabase();
+    db.prepare("INSERT INTO entities(name,type) VALUES('kept','note')").run();
+    const source = path.join(root, 'kg.db');
+    const before = [fs.readFileSync(source), fs.readFileSync(source + '-wal')];
+    const acl = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementationOnce((targets) => {
+      expect(targets).toEqual([backups]);
+      throw new Error('injected backup directory ACL timeout');
+    });
+    try {
+      expect(copyDatabaseBefore(db, PREFIX)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('injected backup directory ACL timeout') });
+      expect(fs.existsSync(backups)).toBe(false);
+      const retry = copyDatabaseBefore(db, PREFIX);
+      if (retry.kind !== 'ready') throw new Error(retry.reason);
+      expectPrivateDir(backups);
+      expectPrivateFile(retry.path);
+      const copy = new MemeshDatabase(retry.path, { readOnly: true });
+      try { expect(copy.prepare("SELECT name FROM entities WHERE name='kept'").get()).toEqual({ name: 'kept' }); }
+      finally { copy.close(); }
+      expect([fs.readFileSync(source), fs.readFileSync(source + '-wal')]).toEqual(before);
+    } finally { acl.mockRestore(); }
+  });
+
+  it.runIf(process.platform === 'win32')('does not clean or copy through a backup junction', () => {
+    const outside = path.join(root, 'outside');
+    fs.mkdirSync(outside);
+    const stale = `.partial-${PREFIX}-${deadPid()}-0000aaaa.db`;
+    fs.writeFileSync(path.join(outside, stale), 'outside bytes');
+    const acl = readWindowsAcl(outside);
+    fs.symlinkSync(outside, backups, 'junction');
+    expect(copyDatabaseBefore(getDatabase(), PREFIX)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('Unsafe backup directory') });
+    expect(fs.lstatSync(backups).isSymbolicLink()).toBe(true);
+    expect(fs.readdirSync(outside)).toEqual([stale]);
+    expect(fs.readFileSync(path.join(outside, stale), 'utf8')).toBe('outside bytes');
+    expect(readWindowsAcl(outside)).toEqual(acl);
+  });
+
+  it.runIf(process.platform === 'win32')('checks the empty owned partial before any backup bytes are written', () => {
+    const makePrivate = windowsPermissions.makeWindowsPathsPrivate;
+    let checked = false;
+    const acl = vi.spyOn(windowsPermissions, 'makeWindowsPathsPrivate').mockImplementation((targets, writableDirectory) => {
+      if (targets[0] === backups) return makePrivate(targets, writableDirectory);
+      expect(path.dirname(targets[0])).toBe(backups);
+      expect(fs.statSync(targets[0]).size).toBe(0);
+      checked = true;
+      throw new Error('injected partial ACL refusal');
+    });
+    try {
+      expect(copyDatabaseBefore(getDatabase(), PREFIX)).toMatchObject({ kind: 'failed', reason: expect.stringContaining('injected partial ACL refusal') });
+      expect(checked).toBe(true);
+      expect(fs.readdirSync(backups)).toEqual([]);
+    } finally { acl.mockRestore(); }
+  });
+
   it('a copy that fails before it is put in place leaves neither its partial file nor its journal', () => {
     let partial = '';
     vi.spyOn(fs, 'renameSync').mockImplementation(((from: fs.PathLike) => {
@@ -184,7 +264,7 @@ describe('copyDatabaseBefore', () => {
   });
 
   it('a partial copy of a process it may not signal (another user\'s, EPERM) is running, and is left alone', () => {
-    fs.mkdirSync(backups, { recursive: true });
+    createExistingBackups();
     const theirs = `.partial-${PREFIX}-424242-0000cccc.db`;
     fs.writeFileSync(path.join(backups, theirs), 'x');
     const realKill = process.kill.bind(process);
