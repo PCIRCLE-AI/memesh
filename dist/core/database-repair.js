@@ -10,6 +10,7 @@ import { repairCommand } from './database-diagnosis.js';
 import { backupDirectoryFor } from './db-copy.js';
 import { liveHostPids, updateControlDir } from './auto-update.js';
 import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory, refuseMismatchedSidecars, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
+import { acquireWindowsRepairGuard, WindowsReplacementUncertainError } from './windows-repair-guard.js';
 const SUFFIXES = ['', '-wal', '-shm'];
 function hash(file, keepOpen) {
     let fd;
@@ -193,17 +194,120 @@ function systemSalvage(source, output, executable) {
         fs.rmSync(sql, { force: true });
     }
 }
-function installRecovered(source, recovered, copy, expected, replace) {
+export class DatabaseReplacementOutcomeError extends Error {
+}
+function requireNoRegisteredHosts(cause) {
+    const alive = liveHostPids(updateControlDir());
+    if (alive === null || alive.length)
+        throw new Error('Close every AI tool and memesh serve before restoring this damaged header', { cause });
+}
+const isNotDatabase = (error) => /not a database|SQLITE_NOTADB/i.test(error instanceof Error ? error.message : String(error));
+function hasFileIdentity(file, original) {
+    try {
+        const current = fs.statSync(file, { bigint: true });
+        return current.ino !== 0n && current.ino === original.ino && current.dev === original.dev;
+    }
+    catch {
+        return false;
+    }
+}
+async function installWindows(source, recovered, rollback, expected, outcome, replace) {
+    const probes = [];
+    const createProbe = (suffix, contents) => {
+        const file = recovered + suffix;
+        fs.writeFileSync(file, contents, { flag: 'wx', mode: 0o600 });
+        probes.push(file);
+        return file;
+    };
+    try {
+        const from = createProbe('.guard-from', '1');
+        const to = createProbe('.guard-to', '0');
+        const unlink = createProbe('.guard-unlink', '');
+        const sidecars = ['-wal', '-shm'].filter(suffix => expected[suffix] !== null);
+        const guard = await acquireWindowsRepairGuard([source, ...sidecars.map(suffix => source + suffix), unlink], { from, to });
+        try {
+            if (fs.readFileSync(to, 'utf8') !== '1' || fs.existsSync(from))
+                throw new Error('Guarded Windows replacement preflight failed');
+            try {
+                fs.unlinkSync(unlink);
+                fs.closeSync(fs.openSync(unlink, 'wx', 0o600));
+                fs.unlinkSync(unlink);
+            }
+            catch (cause) {
+                throw new Error('This volume does not release guarded Windows journal paths on unlink', { cause });
+            }
+            if (!same(family(source), expected))
+                throw new Error('Database changed before the repair lock; stop other writers and retry');
+            for (const suffix of sidecars)
+                copyPrivate(source + suffix, rollback + suffix);
+            const removed = [];
+            const staged = fs.statSync(recovered, { bigint: true });
+            let installation;
+            const commit = () => installation ??= guard.replace(recovered, source).then(() => { outcome.rename = 'committed'; }, error => {
+                if (error instanceof WindowsReplacementUncertainError)
+                    outcome.rename = 'uncertain';
+                throw error;
+            });
+            try {
+                for (const suffix of sidecars) {
+                    fs.unlinkSync(source + suffix);
+                    removed.push(suffix);
+                }
+                if (replace)
+                    await replace(recovered, source, commit);
+                else
+                    await commit();
+                if (installation)
+                    await installation;
+                else if (hasFileIdentity(source, staged))
+                    outcome.rename = 'committed';
+                else
+                    throw new Error('Replacement did not run');
+            }
+            catch (error) {
+                if (installation)
+                    await installation.catch(() => { });
+                if (!outcome.rename) {
+                    if (hasFileIdentity(source, staged))
+                        outcome.rename = 'committed';
+                    else if (!hasFileIdentity(recovered, staged))
+                        outcome.rename = 'uncertain';
+                    else
+                        for (const suffix of removed)
+                            await guard.replace(rollback + suffix, source + suffix);
+                }
+                throw error;
+            }
+        }
+        finally {
+            await guard.release();
+        }
+    }
+    finally {
+        for (const probe of probes)
+            fs.rmSync(probe, { force: true });
+    }
+}
+async function installRecovered(source, recovered, copy, expected, outcome, replace, brokenHeader) {
     const rollback = `${recovered}.rollback`;
-    for (const suffix of SUFFIXES)
-        if (expected[suffix] !== null)
-            copyPrivate(copy + suffix, rollback + suffix);
+    if (process.platform !== 'win32') {
+        for (const suffix of SUFFIXES)
+            if (expected[suffix] !== null)
+                copyPrivate(copy + suffix, rollback + suffix);
+    }
     let opened = false;
+    let staged;
     let lock;
     const hashHandles = [];
     try {
         if (!same(family(source), expected))
             throw new Error('Database changed during salvage; stop other writers and retry');
+        if (process.platform === 'win32') {
+            if (brokenHeader)
+                requireNoRegisteredHosts(brokenHeader);
+            await installWindows(source, recovered, rollback, expected, outcome, replace);
+            return;
+        }
         try {
             refuseMismatchedSidecars(source);
             lock = new MemeshDatabase(source);
@@ -217,20 +321,36 @@ function installRecovered(source, recovered, copy, expected, replace) {
             lock.exec('ROLLBACK');
         }
         catch (error) {
-            const message = error instanceof Error ? error.message : String(error);
-            if (!/not a database|SQLITE_NOTADB/i.test(message))
+            if (!isNotDatabase(error))
                 throw error;
-            const alive = liveHostPids(updateControlDir());
-            if (alive === null || alive.length)
-                throw new Error('Close every AI tool and memesh serve before restoring this damaged header', { cause: error });
+            requireNoRegisteredHosts(error);
             opened = true;
         }
         for (const suffix of ['-wal', '-shm'])
             fs.rmSync(source + suffix, { force: true });
-        replace(recovered, source);
+        if (replace) {
+            staged = fs.statSync(recovered, { bigint: true });
+            const pending = replace(recovered, source, () => {
+                fs.renameSync(recovered, source);
+                outcome.rename = 'committed';
+            });
+            if (pending)
+                await pending;
+            if (!outcome.rename && !hasFileIdentity(source, staged))
+                throw new Error('Replacement did not run');
+        }
+        else
+            fs.renameSync(recovered, source);
+        outcome.rename = 'committed';
     }
     catch (error) {
-        if (opened) {
+        if (staged && !outcome.rename) {
+            if (hasFileIdentity(source, staged))
+                outcome.rename = 'committed';
+            else if (!hasFileIdentity(recovered, staged))
+                outcome.rename = 'uncertain';
+        }
+        if (opened && !outcome.rename) {
             for (const suffix of SUFFIXES) {
                 if (expected[suffix] === null)
                     fs.rmSync(source + suffix, { force: true });
@@ -251,11 +371,12 @@ function installRecovered(source, recovered, copy, expected, replace) {
         }
     }
 }
-export function repairDatabase(database, options = {}) {
+export async function repairDatabase(database, options = {}) {
     const source = fs.realpathSync(database);
     let before;
     let copy;
     let recovered;
+    const outcome = {};
     try {
         if (!options.fromBackup) {
             try {
@@ -279,12 +400,16 @@ export function repairDatabase(database, options = {}) {
         let method;
         let reason;
         let tables;
+        let brokenHeader;
         if (options.fromBackup) {
             let allowEmpty = false;
             try {
                 allowEmpty = inspect(copy).memories === 0;
             }
-            catch { }
+            catch (error) {
+                if (isNotDatabase(error))
+                    brokenHeader = error;
+            }
             const backup = typeof options.fromBackup === 'string' ? { file: options.fromBackup, ...inspect(options.fromBackup) } : usableMemoryBackups(source).find(item => item.memories > 0 || allowEmpty);
             if (!backup)
                 throw new Error('No usable memory backup is available');
@@ -305,7 +430,10 @@ export function repairDatabase(database, options = {}) {
                     db.close();
                 }
             }
-            catch { }
+            catch (error) {
+                if (isNotDatabase(error))
+                    brokenHeader = error;
+            }
             reason = systemSalvage(copy, recovered, options.sqliteExecutable ?? 'sqlite3');
             try {
                 if (reason)
@@ -327,19 +455,25 @@ export function repairDatabase(database, options = {}) {
             backup = usableMemoryBackups(source)[0];
         }
         catch { }
-        installRecovered(source, recovered, copy, before, options.replaceFile ?? fs.renameSync);
+        await installRecovered(source, recovered, copy, before, outcome, options.replaceFile, brokenHeader);
         recovered = undefined;
         return { status: 'repaired', method, reason: method === 'built-in' ? reason : undefined,
             damagedCopy: copy, tables, backup };
     }
     catch (error) {
+        const message = error instanceof Error ? error.message : String(error);
+        if (outcome.rename) {
+            const status = outcome.rename === 'committed'
+                ? 'Database replacement completed before this error.'
+                : 'Could not confirm whether the database replacement completed.';
+            throw new DatabaseReplacementOutcomeError(`${status} ${message} Check the database before retrying.${copy ? ` Damaged copy: ${copy}.` : ''}`, { cause: error });
+        }
         let unchanged = false;
         try {
             const after = family(source);
             unchanged = before === undefined || (after[''] === before[''] && after['-wal'] === before['-wal']);
         }
         catch { }
-        const message = error instanceof Error ? error.message : String(error);
         let advice;
         try {
             const backup = usableMemoryBackups(source).find(item => item.memories > 0);
@@ -354,7 +488,7 @@ export function repairDatabase(database, options = {}) {
         throw new Error(`${message}. ${unchanged ? 'The original database and WAL have not been changed.' : 'Repair stopped; inspect the preserved damaged copy before retrying.'}${copy ? ` Damaged copy: ${copy}.` : ''}${advice}`, { cause: error });
     }
     finally {
-        if (recovered)
+        if (recovered && !outcome.rename)
             removeNewFamily(recovered);
     }
 }

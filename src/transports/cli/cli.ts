@@ -9,7 +9,7 @@ import {
   openDatabase, closeDatabase, getDatabase, reindexFts, explainReadOnlyRefusal, failureMessage,
 } from '../../db.js';
 import { isUnsupportedNode, nodeProblem, type MemeshDatabase } from '../../storage/sqlite.js';
-import { repairDatabase } from '../../core/database-repair.js';
+import { DatabaseReplacementOutcomeError, repairDatabase } from '../../core/database-repair.js';
 import { copyDatabaseBefore } from '../../core/db-copy.js';
 import { repairCommand } from '../../core/database-diagnosis.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
@@ -408,10 +408,10 @@ program.command('repair')
   .description('Preserve the original, salvage readable memories and validate before replacement')
   .option('--database <path>', 'Database to repair', getDbPath())
   .option('--from-backup [path]', 'Use a verified memory backup (newest usable one when omitted)')
-  .action((opts) => {
+  .action(async (opts) => {
     try {
       closeDatabase();
-      const result = repairDatabase(opts.database, { fromBackup: opts.fromBackup });
+      const result = await repairDatabase(opts.database, { fromBackup: opts.fromBackup });
       if (result.status === 'healthy') { console.log('The database is healthy; nothing was changed.'); return; }
       console.log(result.method === 'built-in'
         ? `Repaired. Used MeMesh built-in salvage because system sqlite3 recovery did not succeed: ${result.reason}`
@@ -423,7 +423,8 @@ program.command('repair')
       if (result.backup) console.log(`Newest usable backup: ${result.backup.file} (${result.backup.at}, ${result.backup.memories} memories). To use it: ${repairCommand(opts.database, result.backup.file)}`);
       console.log('Restart every AI tool that was open during the repair.');
     } catch (error) {
-      console.error(`Repair stopped: ${cliErrorText(error)}`);
+      console.error(error instanceof DatabaseReplacementOutcomeError
+        ? cliErrorText(error) : `Repair stopped: ${cliErrorText(error)}`);
       process.exitCode = 1;
     }
   });

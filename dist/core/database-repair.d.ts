@@ -17,9 +17,13 @@ export interface RepairResult {
     backup?: RepairBackup;
 }
 export declare function usableMemoryBackups(database: string): RepairBackup[];
+type Replacement = (from: string, to: string, commit: () => void | Promise<void>) => void | Promise<void>;
+export declare class DatabaseReplacementOutcomeError extends Error {
+}
 export declare function repairDatabase(database: string, options?: {
     fromBackup?: string | true;
     sqliteExecutable?: string;
-    replaceFile?: (from: string, to: string) => void;
-}): RepairResult;
+    replaceFile?: Replacement;
+}): Promise<RepairResult>;
+export {};
 //# sourceMappingURL=database-repair.d.ts.map

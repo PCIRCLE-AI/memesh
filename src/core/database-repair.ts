@@ -10,6 +10,7 @@ import { repairCommand } from './database-diagnosis.js';
 import { backupDirectoryFor } from './db-copy.js';
 import { liveHostPids, updateControlDir } from './auto-update.js';
 import { hasPagesWaiting, immutableAddress, requirePrivateWritableDirectory, refuseMismatchedSidecars, SIDECAR_PERMISSIONS_CODE } from './file-mode.js';
+import { acquireWindowsRepairGuard, WindowsReplacementUncertainError } from './windows-repair-guard.js';
 
 const SUFFIXES = ['', '-wal', '-shm'] as const;
 type Family = Record<(typeof SUFFIXES)[number], string | null>;
@@ -157,16 +158,109 @@ function systemSalvage(source: string, output: string, executable: string): stri
   finally { if (fd !== undefined) fs.closeSync(fd); fs.rmSync(sql, { force: true }); }
 }
 
-/** Only this final phase opens the original writable. Rollback files are ready first. */
-function installRecovered(source: string, recovered: string, copy: string, expected: Family,
-  replace: (from: string, to: string) => void): void {
+type Replacement = (from: string, to: string, commit: () => void | Promise<void>) => void | Promise<void>;
+interface InstallOutcome { rename?: 'committed' | 'uncertain' }
+export class DatabaseReplacementOutcomeError extends Error {}
+
+function requireNoRegisteredHosts(cause: unknown): void {
+  const alive = liveHostPids(updateControlDir());
+  if (alive === null || alive.length) throw new Error('Close every AI tool and memesh serve before restoring this damaged header', { cause });
+}
+
+const isNotDatabase = (error: unknown) =>
+  /not a database|SQLITE_NOTADB/i.test(error instanceof Error ? error.message : String(error));
+
+function hasFileIdentity(file: string, original: fs.BigIntStats): boolean {
+  try {
+    const current = fs.statSync(file, { bigint: true });
+    return current.ino !== 0n && current.ino === original.ino && current.dev === original.dev;
+  } catch { return false; }
+}
+
+async function installWindows(source: string, recovered: string, rollback: string, expected: Family, outcome: InstallOutcome,
+  replace?: Replacement): Promise<void> {
+  const probes: string[] = [];
+  const createProbe = (suffix: string, contents: string): string => {
+    const file = recovered + suffix;
+    fs.writeFileSync(file, contents, { flag: 'wx', mode: 0o600 });
+    probes.push(file);
+    return file;
+  };
+  try {
+    const from = createProbe('.guard-from', '1');
+    const to = createProbe('.guard-to', '0');
+    const unlink = createProbe('.guard-unlink', '');
+    const sidecars = (['-wal', '-shm'] as const).filter(suffix => expected[suffix] !== null);
+    const guard = await acquireWindowsRepairGuard([source, ...sidecars.map(suffix => source + suffix), unlink], { from, to });
+    try {
+      if (fs.readFileSync(to, 'utf8') !== '1' || fs.existsSync(from)) throw new Error('Guarded Windows replacement preflight failed');
+      try {
+        fs.unlinkSync(unlink);
+        fs.closeSync(fs.openSync(unlink, 'wx', 0o600));
+        fs.unlinkSync(unlink);
+      } catch (cause) {
+        throw new Error('This volume does not release guarded Windows journal paths on unlink', { cause });
+      }
+      if (!same(family(source), expected)) throw new Error('Database changed before the repair lock; stop other writers and retry');
+
+      // Opening the salvage copy can rebuild an empty SHM. Stage rollback from
+      // the verified original sidecars while the Windows guard holds them.
+      for (const suffix of sidecars) copyPrivate(source + suffix, rollback + suffix);
+      const removed: typeof sidecars = [];
+      const staged = fs.statSync(recovered, { bigint: true });
+      let installation: Promise<void> | undefined;
+      const commit = () => installation ??= guard.replace(recovered, source).then(
+        () => { outcome.rename = 'committed'; },
+        error => {
+          if (error instanceof WindowsReplacementUncertainError) outcome.rename = 'uncertain';
+          throw error;
+        },
+      );
+      try {
+        for (const suffix of sidecars) {
+          fs.unlinkSync(source + suffix);
+          removed.push(suffix);
+        }
+        if (replace) await replace(recovered, source, commit);
+        else await commit();
+        if (installation) await installation;
+        else if (hasFileIdentity(source, staged)) outcome.rename = 'committed';
+        else throw new Error('Replacement did not run');
+      } catch (error) {
+        // A callback can throw after dispatching or completing the rename.
+        // An unconfirmed reply cannot authorize rollback over a new writer.
+        if (installation) await installation.catch(() => {});
+        if (!outcome.rename) {
+          if (hasFileIdentity(source, staged)) outcome.rename = 'committed';
+          else if (!hasFileIdentity(recovered, staged)) outcome.rename = 'uncertain';
+          else for (const suffix of removed) await guard.replace(rollback + suffix, source + suffix);
+        }
+        throw error;
+      }
+    } finally { await guard.release(); }
+  } finally {
+    for (const probe of probes) fs.rmSync(probe, { force: true });
+  }
+}
+
+/** Keep the original guarded until replacement or restoration is finished. */
+async function installRecovered(source: string, recovered: string, copy: string, expected: Family, outcome: InstallOutcome,
+  replace?: Replacement, brokenHeader?: unknown): Promise<void> {
   const rollback = `${recovered}.rollback`;
-  for (const suffix of SUFFIXES) if (expected[suffix] !== null) copyPrivate(copy + suffix, rollback + suffix);
+  if (process.platform !== 'win32') {
+    for (const suffix of SUFFIXES) if (expected[suffix] !== null) copyPrivate(copy + suffix, rollback + suffix);
+  }
   let opened = false;
+  let staged: fs.BigIntStats | undefined;
   let lock: MemeshDatabase | undefined;
   const hashHandles: number[] = [];
   try {
     if (!same(family(source), expected)) throw new Error('Database changed during salvage; stop other writers and retry');
+    if (process.platform === 'win32') {
+      if (brokenHeader) requireNoRegisteredHosts(brokenHeader);
+      await installWindows(source, recovered, rollback, expected, outcome, replace);
+      return;
+    }
     try {
       refuseMismatchedSidecars(source);
       lock = new MemeshDatabase(source);
@@ -184,16 +278,27 @@ function installRecovered(source: string, recovered: string, copy: string, expec
       lock.exec('ROLLBACK');
     } catch (error) {
       // A destroyed header cannot take a SQLite lock. Never guess while a host is registered.
-      const message = error instanceof Error ? error.message : String(error);
-      if (!/not a database|SQLITE_NOTADB/i.test(message)) throw error;
-      const alive = liveHostPids(updateControlDir());
-      if (alive === null || alive.length) throw new Error('Close every AI tool and memesh serve before restoring this damaged header', { cause: error });
+      if (!isNotDatabase(error)) throw error;
+      requireNoRegisteredHosts(error);
       opened = true;
     }
     for (const suffix of ['-wal', '-shm']) fs.rmSync(source + suffix, { force: true });
-    replace(recovered, source);
+    if (replace) {
+      staged = fs.statSync(recovered, { bigint: true });
+      const pending = replace(recovered, source, () => {
+        fs.renameSync(recovered, source);
+        outcome.rename = 'committed';
+      });
+      if (pending) await pending;
+      if (!outcome.rename && !hasFileIdentity(source, staged)) throw new Error('Replacement did not run');
+    } else fs.renameSync(recovered, source);
+    outcome.rename = 'committed';
   } catch (error) {
-    if (opened) {
+    if (staged && !outcome.rename) {
+      if (hasFileIdentity(source, staged)) outcome.rename = 'committed';
+      else if (!hasFileIdentity(recovered, staged)) outcome.rename = 'uncertain';
+    }
+    if (opened && !outcome.rename) {
       // Opening/closing SQLite can checkpoint WAL. Restore the exact pre-open bytes on failure.
       for (const suffix of SUFFIXES) {
         if (expected[suffix] === null) fs.rmSync(source + suffix, { force: true });
@@ -212,15 +317,16 @@ function installRecovered(source: string, recovered: string, copy: string, expec
   }
 }
 
-export function repairDatabase(database: string, options: {
+export async function repairDatabase(database: string, options: {
   fromBackup?: string | true;
   sqliteExecutable?: string;
-  replaceFile?: (from: string, to: string) => void;
-} = {}): RepairResult {
+  replaceFile?: Replacement;
+} = {}): Promise<RepairResult> {
   const source = fs.realpathSync(database);
   let before: Family | undefined;
   let copy: string | undefined;
   let recovered: string | undefined;
+  const outcome: InstallOutcome = {};
   try {
     if (!options.fromBackup) {
       try { inspect(source); return { status: 'healthy' }; } catch (error) {
@@ -238,9 +344,12 @@ export function repairDatabase(database: string, options: {
     let method: RepairResult['method'];
     let reason: string | undefined;
     let tables: RepairTable[];
+    let brokenHeader: unknown;
     if (options.fromBackup) {
       let allowEmpty = false;
-      try { allowEmpty = inspect(copy).memories === 0; } catch { /* unreadable is not empty */ }
+      try { allowEmpty = inspect(copy).memories === 0; } catch (error) {
+        if (isNotDatabase(error)) brokenHeader = error;
+      }
       const backup = typeof options.fromBackup === 'string' ? { file: options.fromBackup, ...inspect(options.fromBackup) } : usableMemoryBackups(source).find(item => item.memories > 0 || allowEmpty);
       if (!backup) throw new Error('No usable memory backup is available');
       // A valid backup is a standalone file; its source is never moved or modified.
@@ -253,7 +362,9 @@ export function repairDatabase(database: string, options: {
       try {
         const db = openReadOnly(copy);
         try { allowEmpty = memoryCount(db) === 0; } finally { db.close(); }
-      } catch { /* An unreadable main table must never masquerade as empty. */ }
+      } catch (error) {
+        if (isNotDatabase(error)) brokenHeader = error;
+      }
       reason = systemSalvage(copy, recovered, options.sqliteExecutable ?? 'sqlite3');
       try {
         if (reason) throw new Error(reason);
@@ -271,14 +382,20 @@ export function repairDatabase(database: string, options: {
     // Optional advice must not turn a completed replacement into an error afterwards.
     let backup: RepairBackup | undefined;
     try { backup = usableMemoryBackups(source)[0]; } catch { /* unavailable advice does not block salvage */ }
-    installRecovered(source, recovered, copy, before, options.replaceFile ?? fs.renameSync);
+    await installRecovered(source, recovered, copy, before, outcome, options.replaceFile, brokenHeader);
     recovered = undefined;
     return { status: 'repaired', method, reason: method === 'built-in' ? reason : undefined,
       damagedCopy: copy, tables, backup };
   } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    if (outcome.rename) {
+      const status = outcome.rename === 'committed'
+        ? 'Database replacement completed before this error.'
+        : 'Could not confirm whether the database replacement completed.';
+      throw new DatabaseReplacementOutcomeError(`${status} ${message} Check the database before retrying.${copy ? ` Damaged copy: ${copy}.` : ''}`, { cause: error });
+    }
     let unchanged = false;
     try { const after = family(source); unchanged = before === undefined || (after[''] === before[''] && after['-wal'] === before['-wal']); } catch { /* report without making a preservation claim */ }
-    const message = error instanceof Error ? error.message : String(error);
     let advice: string;
     try {
       const backup = usableMemoryBackups(source).find(item => item.memories > 0);
@@ -286,5 +403,5 @@ export function repairDatabase(database: string, options: {
       else advice = ' No usable memory backup is available.';
     } catch { advice = ' Could not inspect memory backups.'; }
     throw new Error(`${message}. ${unchanged ? 'The original database and WAL have not been changed.' : 'Repair stopped; inspect the preserved damaged copy before retrying.'}${copy ? ` Damaged copy: ${copy}.` : ''}${advice}`, { cause: error });
-  } finally { if (recovered) removeNewFamily(recovered); }
+  } finally { if (recovered && !outcome.rename) removeNewFamily(recovered); }
 }

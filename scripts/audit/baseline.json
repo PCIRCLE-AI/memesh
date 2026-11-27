@@ -1,6 +1,11 @@
 {
   "comment": "Recorded triage, not suppression: every entry is a hit somebody classified, with the reason. New hits fail the audit until they are fixed or land here with a classification. Full detail: the 2026-08-04 triage (two agent passes, lead-verified).",
   "hits": {
+    "C1 tests/core/windows-repair-guard.test.ts": {
+      "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
+      "reason": "Empty sidecar assertions are paired with seeded SQLite row counts, exact file bytes, denied writes while guarded and successful writes after release.",
+      "triaged": "2026-11-27"
+    },
     "C1 tests/hooks/messages.test.ts": {
       "class": "SAFE-EXACT-POSITIVE-ASSERTIONS",
       "reason": "The zero assertion is a child exit code, paired with the exact live Claude launcher PID, host registration and Channel acceptance. Existing cases also verify complete message bodies, IDs, delivery state and failed-output isolation.",
