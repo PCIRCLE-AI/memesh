@@ -100,9 +100,14 @@ export function reportBridgeFailure(dataDirs: readonly string[]): void {
     'control_socket_unreadable', 'control_socket_lost', 'status_write_failed', 'close_failed',
     'presence_unreachable', 'courier_failed', 'connection_failed', 'frame_received', 'frame_sent',
   ]);
+  const membershipOps = new Set(['leave-self', 'self-status', 'roster']);
+  const timingFields = [
+    'elapsedMs', 'remainingMs', 'preparedMs', 'connectedMs', 'openedMs', 'writtenMs', 'finishedMs', 'readMs',
+    'messageStoreStartedMs', 'messageStoreCompletedMs', 'messageStoreElapsedMs', 'acceptedMs', 'appliedMs', 'ackMs',
+  ];
   for (const [index, dataDir] of dataDirs.entries()) {
     const status = readStatus(dataDir);
-    const logTail: string[] = [];
+    const logTail: Array<string | Record<string, string | number>> = [];
     try {
       const fd = fs.openSync(logPath(dataDir), 'r');
       try {
@@ -116,7 +121,15 @@ export function reportBridgeFailure(dataDirs: readonly string[]): void {
             try {
               const entry = JSON.parse(line);
               const event = entry?.event;
-              if (events.has(event)) {
+              if (event === 'membership_request_failed' || event === 'membership_response_timing') {
+                const timing: Record<string, string | number> = { event };
+                if (membershipOps.has(entry.op)) timing.op = entry.op;
+                for (const field of timingFields) {
+                  const value = entry[field];
+                  if (typeof value === 'number' && Number.isFinite(value)) timing[field] = value;
+                }
+                logTail.push(timing);
+              } else if (events.has(event)) {
                 if (event === 'control_problem') {
                   const code = typeof entry.error === 'string'
                     ? /^Control (?:connection|socket) failed: (?:(?:read|write|connect|listen|accept|shutdown) )?(EPIPE|ECONNRESET|EACCES|EPERM|ENOENT|EINVAL|ECONNREFUSED|ETIMEDOUT|ENOTCONN|EADDRINUSE|ERR_STREAM_DESTROYED|ERR_STREAM_WRITE_AFTER_END|ERR_SOCKET_CLOSED)(?=$|[ :])/.exec(entry.error)?.[1]

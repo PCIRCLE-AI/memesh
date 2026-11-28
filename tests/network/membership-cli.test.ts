@@ -160,6 +160,10 @@ it('normal CLI leaves/removes, stops revoked peers, preserves history, and rejec
     try { events.push({ context: index + 1, stop: await stopBridge(ctx) }); }
     catch (error) { errors.push(error); events.push({ context: index + 1, cleanupFailed: true }); }
   }
+  if (hadFailure) {
+    console.error('Membership bridge evidence after cleanup:');
+    reportBridgeFailure(directories);
+  }
   try {
     fs.writeFileSync(path.join(root, 'result.json'), JSON.stringify({ root, events }, null, 2), { mode: 0o600, flag: 'wx' });
     console.log(`Membership synthetic evidence: ${root}/result.json`);

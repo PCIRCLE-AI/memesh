@@ -3340,8 +3340,11 @@ async function serve(dataDir2, dbPath) {
       }
     }
   };
+  let lastMessageStoreOpen;
   const requestMembership = async (target, frame, expected) => {
     const until = Date.now() + MEMBERSHIP_DEADLINE_MS;
+    const started = performance.now();
+    const elapsed = () => Math.round(performance.now() - started);
     const remaining = () => Math.max(1, until - Date.now());
     parseMembershipFrame(Buffer.from(JSON.stringify(frame)));
     membershipConfig(db, expected);
@@ -3349,6 +3352,12 @@ async function serve(dataDir2, dbPath) {
     const address = new iroh.EndpointAddr(iroh.EndpointId.fromString(target), route?.relay ?? (relayUrl === RELAY_OFF ? null : relayUrl), route?.addrs ?? []);
     let expired = false;
     let connection;
+    let connectedMs;
+    let openedMs;
+    let writtenMs;
+    let finishedMs;
+    let readMs;
+    const preparedMs = elapsed();
     const pending = endpoint.connect(address, toBytes(MEMBERSHIP_ALPN));
     void pending.then((c) => {
       if (expired)
@@ -3356,13 +3365,36 @@ async function serve(dataDir2, dbPath) {
     }, () => void 0);
     try {
       connection = await deadline(pending, remaining(), "connecting for membership");
+      connectedMs = elapsed();
       if (connection.remoteId().toString() !== target)
         throw new Error("Wrong membership peer");
       membershipConfig(db, expected);
       const stream = await deadline(connection.openBi(), remaining(), "opening membership request");
+      openedMs = elapsed();
       await deadline(stream.send.writeAll(toBytes(JSON.stringify(frame))), remaining(), "sending membership request");
+      writtenMs = elapsed();
       await deadline(stream.send.finish(), remaining(), "finishing membership request");
-      return parseMembershipAck(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_ACK_MAX_BYTES), remaining(), "receiving membership confirmation")), expected.network_id);
+      finishedMs = elapsed();
+      const bytes = await deadline(stream.recv.readToEnd(MEMBERSHIP_ACK_MAX_BYTES), remaining(), "receiving membership confirmation");
+      readMs = elapsed();
+      return parseMembershipAck(Buffer.from(bytes), expected.network_id);
+    } catch (error) {
+      const store = lastMessageStoreOpen;
+      appendLog(dataDir2, "membership_request_failed", {
+        op: frame.op,
+        elapsedMs: elapsed(),
+        remainingMs: Math.max(0, until - Date.now()),
+        preparedMs,
+        connectedMs,
+        openedMs,
+        writtenMs,
+        finishedMs,
+        readMs,
+        messageStoreStartedMs: store && Math.round(store.started - started),
+        messageStoreCompletedMs: store && Math.round(store.finished - started),
+        messageStoreElapsedMs: store && Math.round(store.finished - store.started)
+      });
+      throw error;
     } finally {
       expired = true;
       connection?.close(0n, toBytes("membership_done"));
@@ -3443,40 +3475,57 @@ async function serve(dataDir2, dbPath) {
     }
   };
   const answerMembership = async (connection, remoteId) => {
-    const stream = await deadline(connection.acceptBi(), MEMBERSHIP_DEADLINE_MS, "waiting for membership request");
-    const frame = parseMembershipFrame(Buffer.from(await deadline(stream.recv.readToEnd(MEMBERSHIP_MAX_BYTES), MEMBERSHIP_DEADLINE_MS, "reading membership request")));
-    const expected = joinedNow().config;
-    if (frame.network_id !== expected.network_id)
-      throw new Error("Wrong membership network");
-    let ack;
-    let departed = false;
-    if (frame.op === "roster") {
-      if (remoteId !== expected.owner_id)
-        throw new Error("Only the owner may push membership");
-      const accepted = receiveMembershipRoster(db, expected, frame.roster);
-      revokeConnections();
-      departed = !accepted.member;
-      ack = { version: 1, network_id: expected.network_id, roster_version: accepted.version, member: accepted.member };
-    } else {
-      if (!isOwner || identity.machineId !== expected.owner_id)
-        throw new Error("Membership request requires the owner");
-      if (frame.op === "leave-self") {
-        const changed = removeMember(db, identity, expected, remoteId);
-        revokeConnections();
-        void broadcastRoster(expected, changed.signed, changed.priorMembers, remoteId).then((unsynchronized) => {
-          appendLog(dataDir2, "membership_propagation", { version: verifyRoster(changed.signed, ownerId, expected.network_id).version, unsynchronized });
-        }).catch((error) => recordError("membership_propagation_failed", errorMessage(error)));
-      }
-      const current = joinedNow();
-      ack = { version: 1, network_id: expected.network_id, roster_version: current.roster.version, member: Boolean(findMember(current.roster, remoteId)) };
-    }
+    const entered = performance.now();
+    const elapsed = () => Math.round(performance.now() - entered);
+    let op;
+    let acceptedMs;
+    let readMs;
+    let appliedMs;
+    let ackMs;
     try {
-      await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), MEMBERSHIP_DEADLINE_MS, "answering membership");
-      await deadline(stream.send.finish(), MEMBERSHIP_DEADLINE_MS, "finishing membership answer");
-      await finishConnection(connection);
+      const stream = await deadline(connection.acceptBi(), MEMBERSHIP_DEADLINE_MS, "waiting for membership request");
+      acceptedMs = elapsed();
+      const bytes = await deadline(stream.recv.readToEnd(MEMBERSHIP_MAX_BYTES), MEMBERSHIP_DEADLINE_MS, "reading membership request");
+      readMs = elapsed();
+      const frame = parseMembershipFrame(Buffer.from(bytes));
+      op = frame.op;
+      const expected = joinedNow().config;
+      if (frame.network_id !== expected.network_id)
+        throw new Error("Wrong membership network");
+      let ack;
+      let departed = false;
+      if (frame.op === "roster") {
+        if (remoteId !== expected.owner_id)
+          throw new Error("Only the owner may push membership");
+        const accepted = receiveMembershipRoster(db, expected, frame.roster);
+        revokeConnections();
+        departed = !accepted.member;
+        ack = { version: 1, network_id: expected.network_id, roster_version: accepted.version, member: accepted.member };
+      } else {
+        if (!isOwner || identity.machineId !== expected.owner_id)
+          throw new Error("Membership request requires the owner");
+        if (frame.op === "leave-self") {
+          const changed = removeMember(db, identity, expected, remoteId);
+          revokeConnections();
+          void broadcastRoster(expected, changed.signed, changed.priorMembers, remoteId).then((unsynchronized) => {
+            appendLog(dataDir2, "membership_propagation", { version: verifyRoster(changed.signed, ownerId, expected.network_id).version, unsynchronized });
+          }).catch((error) => recordError("membership_propagation_failed", errorMessage(error)));
+        }
+        const current = joinedNow();
+        ack = { version: 1, network_id: expected.network_id, roster_version: current.roster.version, member: Boolean(findMember(current.roster, remoteId)) };
+      }
+      appliedMs = elapsed();
+      try {
+        await deadline(stream.send.writeAll(toBytes(JSON.stringify(ack))), MEMBERSHIP_DEADLINE_MS, "answering membership");
+        await deadline(stream.send.finish(), MEMBERSHIP_DEADLINE_MS, "finishing membership answer");
+        ackMs = elapsed();
+        await finishConnection(connection);
+      } finally {
+        if (departed)
+          finishDeparture();
+      }
     } finally {
-      if (departed)
-        finishDeparture();
+      appendLog(dataDir2, "membership_response_timing", { op, elapsedMs: elapsed(), acceptedMs, readMs, appliedMs, ackMs });
     }
   };
   let selfStatusBusy = false;
@@ -3509,15 +3558,20 @@ async function serve(dataDir2, dbPath) {
     const self = findMember(joined.roster, machineId);
     if (!self)
       throw new Error("This machine is no longer a network member");
-    return new ConversationMessages({
-      file: path14.join(dataDir2, "messages.db"),
-      busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
-      network: {
-        network_id: joined.config.network_id,
-        self: { id: machineId, name: self.name },
-        members: joined.roster.members.map((m) => ({ id: m.machine_id, name: m.name }))
-      }
-    });
+    const started = performance.now();
+    try {
+      return new ConversationMessages({
+        file: path14.join(dataDir2, "messages.db"),
+        busyTimeoutMs: BRIDGE_BUSY_TIMEOUT_MS,
+        network: {
+          network_id: joined.config.network_id,
+          self: { id: machineId, name: self.name },
+          members: joined.roster.members.map((m) => ({ id: m.machine_id, name: m.name }))
+        }
+      });
+    } finally {
+      lastMessageStoreOpen = { started, finished: performance.now() };
+    }
   };
   let lastPresenceAt = 0;
   const answer = async (frame, joined, remoteId) => {
