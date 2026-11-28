@@ -123,7 +123,28 @@ function npmGlobalInstall(specifier, prefix, env, mustFail = false) {
   if (failure) throw failure;
 }
 
-async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline, fromVersion }) {
+function windowsWithoutBash(env, rowRoot) {
+  const dirs = (env.PATH ?? env.Path ?? '').split(path.delimiter).filter(Boolean);
+  const bashNames = ['bash', 'bash.exe', 'bash.cmd', 'bash.bat', 'bash.com'];
+  const kept = dirs.filter(dir => !bashNames.some(name => fs.existsSync(path.join(dir, name))));
+  // Windows can keep tar.exe beside the WSL Bash launcher. Preserve the real prerequisite.
+  for (const name of ['git.exe', 'tar.exe']) {
+    if (kept.some(dir => fs.existsSync(path.join(dir, name)))) continue;
+    const found = dirs.map(dir => path.join(dir, name)).find(file => fs.existsSync(file));
+    assert.ok(found, `${name} is required to exercise the plugin repair branch`);
+    const bin = path.join(rowRoot, 'no-bash-tools');
+    fs.mkdirSync(bin, { recursive: true });
+    fs.copyFileSync(found, path.join(bin, name));
+    if (!kept.includes(bin)) kept.push(bin);
+  }
+  const isolated = { ...env, PATH: kept.join(path.delimiter) };
+  delete isolated.Path;
+  const bash = spawnSync('bash', ['--version'], { cwd: rowRoot, env: isolated, timeout: processTimeoutMs });
+  assert.equal(bash.error?.code, 'ENOENT', 'the Windows negative control must have no Bash');
+  return isolated;
+}
+
+async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline, fromVersion, noBashEnv }) {
   const stage = path.join(rowRoot, 'candidate-stage');
   npmSync(['install', '--prefix', stage, '--ignore-scripts', '--omit=dev', '--cache', env.npm_config_cache,
     '--userconfig', env.npm_config_userconfig, candidateTarball], {
@@ -137,7 +158,7 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
   const runner = path.join(candidateRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
   assert.ok(fs.existsSync(runner), 'packed candidate is missing its auto-update runner');
   const { runLocked } = await import(pathToFileURL(runner));
-  const { runAutoUpdate, readAutoUpdateState, AUTO_UPDATE_REASONS } = await import(
+  const { runAutoUpdate, readAutoUpdateState, AUTO_UPDATE_REASONS, defaultExec } = await import(
     pathToFileURL(path.join(candidateRoot, 'dist', 'core', 'auto-update.js')));
   const { npmInvocation } = await import(pathToFileURL(path.join(candidateRoot, 'dist', 'core', 'npm-launch.js')));
   const npmLaunch = npmInvocation([]);
@@ -206,19 +227,22 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
       if (cmd === process.execPath && argv[0] === '-e' && argv[2]?.startsWith('https://api.github.com/repos/PCIRCLE-AI/memesh/compare/')) {
         return { status: 0, stdout: `200\n${JSON.stringify({ status: 'ahead', merge_base_commit: { sha: fixtureCommit } })}`, stderr: '' };
       }
+      if (noBashEnv && cmd === 'bash') {
+        return defaultExec(cmd, argv, { ...opts, cwd: rowRoot, timeoutMs: processTimeoutMs });
+      }
       assert.equal(cmd, 'tar', 'unexpected command in upgrade fixture');
       const child = spawnSync(cmd, argv, { cwd: opts?.cwd, env: fixtureEnv, encoding: 'utf8', timeout: processTimeoutMs });
       return { status: child.status, stdout: child.stdout ?? '', stderr: child.stderr ?? '', startupError: child.error?.message };
     },
   };
   const lockPath = path.join(rowRoot, 'auto-update.lock');
-  const attempt = async () => {
+  const attempt = async (deps) => {
     let result;
     const code = await runLocked(lockPath, async context => (result = await runAutoUpdate({ ...deps, ...context })), 'auto');
     assert.equal(fs.existsSync(lockPath), false, 'automatic attempt left its lock behind');
     return { result, code };
   };
-  const off = await attempt();
+  const off = await attempt(deps);
   assert.equal(off.result.outcome, 'skipped');
   assert.equal(off.result.reason, AUTO_UPDATE_REASONS.policyOff);
   assert.equal(calls.length, 0, 'explicit off reached registry or install steps');
@@ -229,7 +253,16 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
   fs.writeFileSync(configPath, JSON.stringify({ ...JSON.parse(originalConfig.bytes), autoUpdate: 'major' }, null, 2));
   const permittedConfig = readFileSnapshot(configPath);
   try {
-    const failed = await attempt();
+    if (noBashEnv) {
+      const missing = await attempt({ ...deps, env: noBashEnv, channel: 'plugin-marketplace', pluginHost: 'claude-code' });
+      assert.equal(missing.code, 1);
+      assert.equal(missing.result.reason, AUTO_UPDATE_REASONS.installFailed);
+      const detail = readAutoUpdateState(deps.dir)?.detail;
+      assert.match(detail ?? '', /spawnSync bash ENOENT/);
+      assert.equal(deps.readInstalledVersion(), fromVersion);
+      console.log(`Windows automatic plugin update without Bash: exit=${missing.code} ${detail}`);
+    }
+    const failed = await attempt(deps);
     assert.equal(failed.code, 1);
     assert.equal(failed.result.reason, AUTO_UPDATE_REASONS.dependencyPinFailed, JSON.stringify(readAutoUpdateState(deps.dir)));
     assert.equal(forcedPins.length, 1);
@@ -239,7 +272,7 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
     runMcp(path.join(baseline.packageRoot, 'dist/mcp/server.js'), baseline.packageRoot, env, 'verify', ['remember', 'recall']);
     assert.deepEqual(readFileSnapshot(configPath), permittedConfig);
     fixtureEnv.MEMESH_UPGRADE_FORCE_FAILURE = '0';
-    const success = await attempt();
+    const success = await attempt(deps);
     assert.equal(success.code, 0);
     assert.equal(success.result.outcome, 'installed', JSON.stringify(readAutoUpdateState(deps.dir)));
     assert.equal(deps.readInstalledVersion(), candidateVersion);
@@ -341,6 +374,7 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
   const oldCliEntry = installedEntry(installed.packageRoot, 'dist/transports/cli/cli.js');
   const oldMcpEntry = installedEntry(installed.packageRoot, 'dist/mcp/server.js');
   assert.equal(run(process.execPath, [oldCliEntry, '--version'], { cwd: installed.packageRoot, env }).trim(), fromVersion);
+  let noBashEnv;
   if (process.platform === 'win32' && fromVersion === publishedLatest) {
     const directNpm = spawnSync('npm', ['--version'], { env, encoding: 'utf8', timeout: processTimeoutMs });
     console.log(`Windows direct npm launch: ${directNpm.error?.code ?? `exit ${directNpm.status}`}`);
@@ -353,6 +387,7 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
     assert.equal(readInstalledPackage(prefix, env).packageJson.version, fromVersion,
       'registry latest changed during the published CLI baseline');
     console.log(`published Windows update observation: version=${fromVersion} exit=${baseline.status} ${diagnostic}`);
+    noBashEnv = windowsWithoutBash(env, rowRoot);
   }
   runMcp(oldMcpEntry, installed.packageRoot, env, 'seed', ['remember', 'recall']);
   const retiredConfigMarker = crypto.randomBytes(32).toString('hex');
@@ -375,7 +410,7 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
   const configModeBeforeUpgrade = configBeforeUpgrade.mode;
   console.log(`baseline: version=${installed.packageJson.version} package=${installed.packageRoot}`);
 
-  await runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline: installed, fromVersion });
+  await runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline: installed, fromVersion, noBashEnv });
   installed = readInstalledPackage(prefix, env);
   assert.equal(installed.packageJson.version, candidateVersion,
     `npm did not replace the isolated global install with v${candidateVersion}`);
@@ -386,6 +421,17 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
   const candidateCliEntry = installedEntry(installed.packageRoot, 'dist/transports/cli/cli.js');
   const candidateMcpEntry = installedEntry(installed.packageRoot, 'dist/mcp/server.js');
   assert.equal(run(process.execPath, [candidateCliEntry, '--version'], { cwd: installed.packageRoot, env }).trim(), candidateVersion);
+  if (noBashEnv) {
+    const claudeHome = path.join(home, '.claude');
+    fs.mkdirSync(path.join(claudeHome, 'plugins', 'cache', 'pcircle-memesh', 'memesh', candidateVersion), { recursive: true });
+    const repair = spawnSync(process.execPath, [candidateCliEntry, 'upgrade-plugin'], {
+      cwd: rowRoot, env: { ...noBashEnv, CLAUDE_CONFIG_DIR: claudeHome }, encoding: 'utf8', timeout: processTimeoutMs,
+    });
+    assert.ifError(repair.error);
+    assert.equal(repair.status, 1, repair.stderr);
+    assert.match(repair.stderr, /bash is required/, repair.stderr);
+    console.log('Windows plugin repair without Bash: exit=1, Bash required');
+  }
   assert.match(run(process.execPath, [candidateCliEntry, '--help'], { cwd: installed.packageRoot, env }), /remember/,
     'candidate CLI help is not readable');
   const doctorOutput = run(process.execPath, [candidateCliEntry, 'doctor', '--json'], { cwd: installed.packageRoot, env });
