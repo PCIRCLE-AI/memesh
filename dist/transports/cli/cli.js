@@ -36492,8 +36492,8 @@ function assertLegacyPathsAreDifferent(sourceFile, targetFile) {
     throw new Error("Legacy source and target must be different files");
   let a, b;
   try {
-    a = fs29.statSync(sourceFile);
-    b = fs29.statSync(targetFile);
+    a = fs29.statSync(sourceFile, { bigint: true });
+    b = fs29.statSync(targetFile, { bigint: true });
   } catch (error62) {
     if (error62.code === "ENOENT")
       return;

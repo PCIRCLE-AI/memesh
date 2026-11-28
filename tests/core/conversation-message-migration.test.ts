@@ -1,10 +1,10 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, expect, it } from 'vitest';
+import { afterEach, expect, it, vi } from 'vitest';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
-import { importLegacyConversationMessages } from '../../src/core/conversation-message-migration.js';
+import { assertLegacyPathsAreDifferent, importLegacyConversationMessages } from '../../src/core/conversation-message-migration.js';
 
 const NOW = Date.parse('2026-11-13T12:00:00.000Z'), DAY = 86_400_000;
 const cleanup: Array<() => void> = [];
@@ -220,6 +220,42 @@ it('refuses two handles pointing at the same inode', () => {
   const alias = new MemeshDatabase(path.join(f.root, 'legacy.db'));
   try { expect(() => importLegacyConversationMessages(f.source, alias, { nowMs: NOW, localMachine: 'test-machine' })).toThrow('different files'); }
   finally { alias.close(); }
+});
+
+it('migrates distinct files whose large inode numbers round to the same Number', () => {
+  const f = fixture();
+  f.add('wide-inode');
+  const databasePath = (db: MemeshDatabase) =>
+    (db.prepare("SELECT file FROM pragma_database_list WHERE name = 'main'").get() as { file: string }).file;
+  const sourceFile = databasePath(f.source);
+  const targetFile = databasePath(f.target);
+  const sourceInode = 2n ** 53n + 4n;
+  const targetInode = sourceInode + 1n;
+  expect(Number(sourceInode)).toBe(Number(targetInode));
+  const before = f.rows();
+  const statSync = fs.statSync;
+  const stub = vi.spyOn(fs, 'statSync').mockImplementation(((file: fs.PathLike, options?: fs.StatSyncOptions) => {
+    const stat = statSync(file, options as never);
+    const ino = file === sourceFile ? sourceInode : file === targetFile ? targetInode : undefined;
+    return stat && ino !== undefined ? Object.assign(stat, { ino: options?.bigint ? ino : Number(ino) }) : stat;
+  }) as typeof fs.statSync);
+  try { expect(f.migrate()).toEqual({ imported: 1, alreadyImported: 0 }); }
+  finally { stub.mockRestore(); }
+  expect(f.rows()).toBe(before);
+  expect(f.store.status().map(message => message.id)).toEqual(['wide-inode']);
+});
+
+it('leaves a missing destination absent and propagates other stat errors', () => {
+  const f = fixture();
+  const sourceFile = path.join(f.root, 'legacy.db');
+  const missing = path.join(f.root, 'absent.db');
+  expect(() => assertLegacyPathsAreDifferent(sourceFile, missing)).not.toThrow();
+  expect(fs.existsSync(missing)).toBe(false);
+  const error = Object.assign(new Error('synthetic access denied'), { code: 'EACCES' });
+  const stub = vi.spyOn(fs, 'statSync').mockImplementationOnce(() => { throw error; });
+  try { expect(() => assertLegacyPathsAreDifferent(sourceFile, missing)).toThrow(error); }
+  finally { stub.mockRestore(); }
+  expect(fs.existsSync(missing)).toBe(false);
 });
 
 it.each(['same-path', 'hardlink', 'symlink'])('constructor refuses %s before changing source schema, data, journal or modes', kind => {

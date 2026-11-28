@@ -131,8 +131,9 @@ export function assertLegacyDestinationIsDifferent(source: MemeshDatabase, targe
 /** No filesystem mutation, including when neither path exists yet. */
 export function assertLegacyPathsAreDifferent(sourceFile: string, targetFile: string): void {
   if (path.resolve(sourceFile) === path.resolve(targetFile)) throw new Error('Legacy source and target must be different files');
-  let a: fs.Stats, b: fs.Stats;
-  try { a = fs.statSync(sourceFile); b = fs.statSync(targetFile); }
+  // File IDs can exceed Number's exact integer range.
+  let a: fs.BigIntStats, b: fs.BigIntStats;
+  try { a = fs.statSync(sourceFile, { bigint: true }); b = fs.statSync(targetFile, { bigint: true }); }
   catch (error) {
     if ((error as NodeJS.ErrnoException).code === 'ENOENT') return;
     throw error;
