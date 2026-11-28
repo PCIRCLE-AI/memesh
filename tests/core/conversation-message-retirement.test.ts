@@ -7,6 +7,7 @@ import { createSchema, migrateEntitiesSchema } from '../../src/storage/schema.js
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { LEGACY_CONVERSATION_TABLES, retireLegacyConversationTables } from '../../src/core/conversation-message-migration.js';
 import { installLegacyMessageSchema, seedLegacyMessage, seedLegacyReceipt } from '../helpers/agent-session-fixture.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const NOW = Date.parse('2026-11-16T12:00:00.000Z'), DAY = 86400000;
 const cleanup: Array<() => void> = [];
@@ -145,11 +146,11 @@ it('an invalid archive aborts the default opener before graph table retirement',
   const file = path.join(backups, 'agent-messages-expired.db');
   fs.closeSync(fs.openSync(file, 'wx', 0o600));
   const invalid = new MemeshDatabase(file); invalid.exec('CREATE TABLE unrelated(value TEXT)'); invalid.close();
-  const bytes = fs.readFileSync(file);
+  const { bytes } = readFileSnapshot(file);
   vi.stubEnv('MEMESH_DB_PATH', f.file); vi.stubEnv('MEMESH_DIR', f.root);
   expect(() => new ConversationMessages({ clock: () => NOW })).toThrow(/Invalid legacy archive/);
   expect(snapshot(f.source)).toEqual(before); expect(f.store.status()).toEqual([]);
-  expect(fs.readFileSync(file)).toEqual(bytes);
+  expect(readFileSnapshot(file).bytes).toEqual(bytes);
 });
 
 it('fresh memory schemas never recreate retired message tables', () => {

@@ -9,7 +9,7 @@ const LINK_MAX_CHARS = 8192;
 const LINK_MAX_ADDRESSES = 64;
 const SIGNATURE_DOMAIN = 'memesh-join-link-v1\n';
 const TOKEN_BYTES = 32;
-const ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:.%a-zA-Z]+\]):\d{1,5}$/;
+const ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-zA-Z:.%]+\]):\d{1,5}$/;
 export const DEFAULT_INVITE_TTL_HOURS = 24;
 export const MAX_INVITE_TTL_HOURS = 24 * 30;
 export function hashToken(token) {

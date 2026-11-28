@@ -31791,7 +31791,8 @@ function remoteLocatorAliases(remote) {
     return [];
   const bare = parts.path.replace(/\.git$/i, "");
   const out = /* @__PURE__ */ new Set();
-  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
+  const suffixes = /\.git$/i.test(bare) ? [".git"] : ["", ".git"];
+  for (const suffix of suffixes) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ["ssh-relative", "ssh-absolute"])
       out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
@@ -36941,13 +36942,14 @@ function cleanRevision(scope) {
 }
 function readOperation(file2, now) {
   try {
-    const stat2 = fs11.lstatSync(file2);
-    if (!stat2.isFile() || stat2.size > MAX_RECORD_BYTES)
-      return null;
     const fd = fs11.openSync(file2, fs11.constants.O_RDONLY | (fs11.constants.O_NOFOLLOW ?? 0) | (fs11.constants.O_NONBLOCK ?? 0));
     let data;
     try {
-      if (!fs11.fstatSync(fd).isFile())
+      const opened = fs11.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || opened.size > BigInt(MAX_RECORD_BYTES))
+        return null;
+      const entry = fs11.lstatSync(file2, { bigint: true });
+      if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino)
         return null;
       const buf = Buffer.alloc(MAX_RECORD_BYTES + 1);
       const size = fs11.readSync(fd, buf, 0, buf.length, 0);
@@ -40481,13 +40483,16 @@ function writeAttemptTime(file2, now, directory) {
   windowsControlEntry(parent, true, directory);
   let created;
   try {
-    if (!fs22.lstatSync(file2, { throwIfNoEntry: false })) {
+    try {
       const empty = fs22.openSync(file2, "wx", 384);
       try {
         created = fs22.fstatSync(empty, { bigint: true });
       } finally {
         fs22.closeSync(empty);
       }
+    } catch (error62) {
+      if (error62.code !== "EEXIST")
+        throw error62;
     }
     const entry = windowsControlEntry(file2, false, created);
     makeWindowsPathsPrivate([file2]);

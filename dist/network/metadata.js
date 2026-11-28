@@ -44,6 +44,7 @@ export async function migrateNetworkMetadata(ctx) {
     if (!source)
         return false;
     let temporary;
+    let temporaryFd;
     try {
         const hasConfig = source.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_network_config'").get();
         if (!hasConfig)
@@ -60,8 +61,9 @@ export async function migrateNetworkMetadata(ctx) {
             makeWindowsPathsPrivate([directory], directory);
         const check = openPublicNetworkDatabase(target);
         check?.close();
-        temporary = path.join(directory, `.metadata-${randomUUID()}.db`);
-        fs.closeSync(fs.openSync(temporary, 'wx', 0o600));
+        const stagingPath = path.join(directory, `.metadata-${randomUUID()}.db`);
+        temporaryFd = fs.openSync(stagingPath, 'wx', 0o600);
+        temporary = stagingPath;
         if (process.platform === 'win32')
             makeWindowsPathsPrivate([temporary]);
         const destination = new MemeshDatabase(temporary);
@@ -87,13 +89,9 @@ export async function migrateNetworkMetadata(ctx) {
         if (process.platform === 'win32')
             makeWindowsPathsPrivate([temporary, `${temporary}-wal`, `${temporary}-shm`, `${temporary}-journal`]);
         source.exec('COMMIT');
-        const fd = fs.openSync(temporary, 'r+');
-        try {
-            fs.fsyncSync(fd);
-        }
-        finally {
-            fs.closeSync(fd);
-        }
+        fs.fsyncSync(temporaryFd);
+        fs.closeSync(temporaryFd);
+        temporaryFd = undefined;
         try {
             fs.linkSync(temporary, target);
         }
@@ -117,6 +115,8 @@ export async function migrateNetworkMetadata(ctx) {
     }
     finally {
         source.close();
+        if (temporaryFd !== undefined)
+            fs.closeSync(temporaryFd);
         if (temporary)
             fs.unlinkSync(temporary);
     }

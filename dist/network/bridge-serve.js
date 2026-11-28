@@ -34,9 +34,26 @@ const SEND_CONNECT_DEADLINE_MS = 20_000;
 function appendLog(dataDir, event, detail = {}) {
     try {
         const file = logPath(dataDir);
-        if (fs.existsSync(file) && fs.statSync(file).size > LOG_MAX_BYTES)
-            fs.renameSync(file, `${file}.1`);
-        fs.appendFileSync(file, line(event, detail), { mode: 0o600 });
+        const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
+            | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+        let fd = fs.openSync(file, flags, 0o600);
+        try {
+            const stat = fs.fstatSync(fd);
+            if (!stat.isFile())
+                throw new Error('Unsafe bridge log file');
+            if (stat.size > LOG_MAX_BYTES) {
+                fs.renameSync(file, `${file}.1`);
+                const rotated = fd;
+                fd = fs.openSync(file, flags, 0o600);
+                fs.closeSync(rotated);
+                if (!fs.fstatSync(fd).isFile())
+                    throw new Error('Unsafe bridge log file');
+            }
+            fs.appendFileSync(fd, line(event, detail));
+        }
+        finally {
+            fs.closeSync(fd);
+        }
     }
     catch {
         try {

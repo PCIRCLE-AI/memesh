@@ -1,3 +1,4 @@
+import fs from 'node:fs';
 import { type MembershipAction, type MembershipResult } from './membership.js';
 export declare function controlPath(dataDir: string): string;
 export declare function controlPathFits(dataDir: string): boolean;
@@ -19,7 +20,12 @@ interface FileIdentity {
     ino: number;
 }
 export declare function identityOf(file: string): FileIdentity | null;
+export declare function readPidLock(lock: string): {
+    stat: fs.Stats;
+    raw: string;
+} | null;
 export declare function takeOverStaleLock(lock: string, judged: FileIdentity): void;
+export declare function processIsGone(pid: number): boolean;
 export declare function removeStaleSocket(target: string, judged: FileIdentity | null): void;
 export interface ControlHandlers {
     isReady(): boolean;

@@ -93,8 +93,8 @@
     },
     {
       "path": "scripts/hooks/_generated/continuation.js",
-      "sha256": "1723da3b319848abba4d2f82f11e90566a719b5876edb6b9307cb96d8262d937",
-      "bytes": 8500
+      "sha256": "2492efb5626a397e153a7d8145e64e395b9f5d89127699592ec6744dae1d087c",
+      "bytes": 8651
     },
     {
       "path": "scripts/hooks/_generated/conversation-message-migration.js",
@@ -108,8 +108,8 @@
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "4b71dab20ea696ee58d54fa56ae0a55100b963582a5d9ca691b46f72c07193d2",
-      "bytes": 26383
+      "sha256": "92d69a158e54cd569c5fd857de7fabcc92e38f9810d12e9c4721ab4c1906eb8b",
+      "bytes": 26414
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -253,8 +253,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "e30a83a5f8ec4aee55efa1eb5fc3e178a7b7cd9c2423fb2eefa8a78d42ede727",
-      "bytes": 126440
+      "sha256": "9b2b372902bb16069cf8efbef947d38cc26fb3a156b1959881640d69ffb3966c",
+      "bytes": 126557
     },
     {
       "path": "scripts/hooks/_stop-notes.js",

@@ -7,7 +7,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { describeChildDeath } from './bridge-control.js';
-import { identityOf, takeOverStaleLock } from './control-socket.js';
+import { identityOf, processIsGone, readPidLock, takeOverStaleLock } from './control-socket.js';
 import { ensureNetworkDir } from './identity.js';
 import { currentLibc, platformPackages } from './runtime-platform.js';
 import { NetworkError, SINGLE_MACHINE_NOTE, childEnv, runtimeDir, type NetworkContext } from './types.js';
@@ -148,16 +148,18 @@ function removeCreatedFolders(dataDir: string, directory: string, created: { net
 
 const sleepSync = (ms: number): void => { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); };
 
-function installLockIsStale(lock: string): boolean {
+function staleInstallLock(lock: string): fs.Stats | null {
   try {
-    const age = Date.now() - fs.statSync(lock).mtimeMs;
-    if (age >= INSTALL_LOCK_STALE_MS) return true;
-    const raw = fs.readFileSync(lock, 'utf8').trim();
-    if (!/^[1-9][0-9]*$/.test(raw)) return age >= INSTALL_LOCK_EMPTY_STALE_MS;
-    process.kill(Number(raw), 0);
-    return false;
+    const opened = readPidLock(lock);
+    if (!opened) return null;
+    const { stat, raw } = opened;
+    const age = Date.now() - stat.mtimeMs;
+    if (age >= INSTALL_LOCK_STALE_MS) return stat;
+    const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= INSTALL_LOCK_EMPTY_STALE_MS;
+    return stale ? stat : null;
   } catch (err) {
-    return (err as NodeJS.ErrnoException).code === 'ESRCH';
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return null;
+    throw err;
   }
 }
 
@@ -183,8 +185,8 @@ function withInstallLock<T>(dataDir: string, use: (waited: boolean) => T): T {
       break;
     } catch (err) {
       if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      const judged = identityOf(lock);
-      if (judged !== null && installLockIsStale(lock)) {
+      const judged = staleInstallLock(lock);
+      if (judged !== null) {
         takeOverStaleLock(lock, judged);
         continue;
       }

@@ -15,12 +15,19 @@ function appendWindowsFrameLog(file, folder, bytes) {
         const directory = windowsLogEntry(folder, true);
         verifyWindowsPathsPrivate([folder]);
         windowsLogEntry(folder, true, directory);
-        const existing = fs.lstatSync(file, { bigint: true, throwIfNoEntry: false });
-        if (existing)
-            windowsLogEntry(file, false, existing);
-        const create = existing ? 0 : fs.constants.O_CREAT | fs.constants.O_EXCL;
-        windowsLogEntry(folder, true, directory);
-        const fd = fs.openSync(file, fs.constants.O_WRONLY | fs.constants.O_APPEND | create, 0o600);
+        const append = fs.constants.O_WRONLY | fs.constants.O_APPEND;
+        let fd;
+        let existing;
+        try {
+            fd = fs.openSync(file, append | fs.constants.O_CREAT | fs.constants.O_EXCL, 0o600);
+        }
+        catch (error) {
+            if (error.code !== 'EEXIST')
+                throw error;
+            existing = windowsLogEntry(file, false);
+            windowsLogEntry(folder, true, directory);
+            fd = fs.openSync(file, append);
+        }
         try {
             const opened = fs.fstatSync(fd, { bigint: true });
             windowsLogEntry(folder, true, directory);

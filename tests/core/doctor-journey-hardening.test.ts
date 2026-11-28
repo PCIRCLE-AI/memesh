@@ -81,21 +81,21 @@ const killPidFile = (file: string): void => {
 };
 const pidWritten = (file: string): boolean => fs.existsSync(file) && fs.statSync(file).size > 0;
 
-/** A CLI entry that runs `behaviour` for one subcommand and is the real CLI otherwise. */
-function entryFor(match: string[], behaviour: string): string {
+const STEP_FIXTURE = path.join(import.meta.dirname, 'fixtures', 'doctor-journey-step.mjs');
+type StepBehaviour =
+  | { scenario: 'send-without-result' | 'split-output' }
+  | { scenario: 'hang'; pidFile?: string; gcFile?: string }
+  | { scenario: 'grandchild'; pidFile: string; detached: boolean }
+  | { scenario: 'exit-with-grandchild' | 'orphan'; pidFile: string }
+  | { scenario: 'late-success'; pidFile: string; deadline: number }
+  | { scenario: 'report-env'; report: string };
+
+function entryFor(match: string[], behaviour: StepBehaviour): string {
   const file = path.join(work, `entry-${match.join('-')}-${Math.random().toString(36).slice(2, 6)}.mjs`);
-  fs.writeFileSync(file, `
-import fs from 'node:fs';
-import { spawn } from 'node:child_process';
-const argv = process.argv.slice(2);
-if (${JSON.stringify(match)}.every((word, i) => argv[i] === word)) { ${behaviour} }
-const { spawnSync } = await import('node:child_process');
-const r = spawnSync(process.execPath, [${JSON.stringify(REAL_CLI)}, ...argv], { stdio: 'inherit', env: process.env });
-process.exit(r.status ?? 1);
-`);
+  fs.copyFileSync(STEP_FIXTURE, file);
+  fs.writeFileSync(`${file}.json`, JSON.stringify({ match, realCli: REAL_CLI, ...behaviour }));
   return file;
 }
-const HANG = `await new Promise(() => setInterval(() => {}, 1000));`;
 
 /** The environment of a CLI child: the throwaway HOME, and nothing that relocates data or a host's config unless `extra` says so. */
 const cliEnv = (home: string, extra: Record<string, string | undefined> = {}): NodeJS.ProcessEnv => {
@@ -427,7 +427,7 @@ describe('doctor and --journey', () => {
     vi.spyOn(console, 'log').mockImplementation(() => {});
     vi.spyOn(console, 'error').mockImplementation(() => {});
     const version = (JSON.parse(fs.readFileSync(path.join(PACKAGE_ROOT, 'package.json'), 'utf8')) as { version: string }).version;
-    await journey.runPostInstallJourney({ packageRoot: PACKAGE_ROOT, version, trigger: 'install-hooks' }, { cliEntry: entryFor(['message', 'send'], `console.log('{}'); process.exit(0);`) });
+    await journey.runPostInstallJourney({ packageRoot: PACKAGE_ROOT, version, trigger: 'install-hooks' }, { cliEntry: entryFor(['message', 'send'], { scenario: 'send-without-result' }) });
     const home = path.join(work, 'h-fixonce');
     fs.mkdirSync(home);
     const r = spawnSync(process.execPath, [REAL_CLI, 'doctor', '--json'], { encoding: 'utf8', env: cliEnv(home, { MEMESH_DIR: dir }), timeout: 60_000 });
@@ -492,17 +492,11 @@ describe('a journey leaves the process as it found it', () => {
 });
 
 describe.skipIf(!POSIX)('the 30-second budget is a hard limit', () => {
-  const grandchild = (pidFile: string, detached: boolean) => `
-    const gc = spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], { stdio: ['ignore', 'inherit', 'inherit'], detached: ${detached} });
-    if (${detached}) gc.unref();
-    await new Promise((r) => setTimeout(r, 200));
-    ${HANG}`;
-
   it('a grandchild holding stdout does not stretch the wait, and dies with its step', async () => {
     const pidFile = path.join(work, 'gc.pid');
     // A failure of this test must not leave a process that never ends behind.
     cleanups.push(() => { try { const pid = readPid(pidFile); if (pid) process.kill(pid, 'SIGKILL'); } catch { /* gone */ } });
-    const entry = entryFor(['remember'], grandchild(pidFile, false));
+    const entry = entryFor(['remember'], { scenario: 'grandchild', pidFile, detached: false });
     const started = Date.now();
     const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry, timeoutMs: 3_000 });
     expect(Date.now() - started).toBeLessThan(10_000);
@@ -516,7 +510,7 @@ describe.skipIf(!POSIX)('the 30-second budget is a hard limit', () => {
   it('a grandchild that left the process group still cannot hold the journey past its budget', async () => {
     const pidFile = path.join(work, 'gc2.pid');
     cleanups.push(() => killPidFile(pidFile));
-    const entry = entryFor(['remember'], grandchild(pidFile, true));
+    const entry = entryFor(['remember'], { scenario: 'grandchild', pidFile, detached: true });
     const started = Date.now();
     const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry, timeoutMs: 3_000 });
     expect(Date.now() - started).toBeLessThan(10_000);
@@ -536,11 +530,7 @@ describe.skipIf(!POSIX)('the 30-second budget is a hard limit', () => {
   it('a step that exits while a grandchild still holds stdout is not waited for', async () => {
     const pidFile = path.join(work, 'gc3.pid');
     cleanups.push(() => killPidFile(pidFile));
-    const entry = entryFor(['remember'], `
-      const gc = spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], { stdio: ['ignore', 'inherit', 'inherit'] });
-      await new Promise((r) => setTimeout(r, 300));
-      console.log('{"stored":false}');
-      process.exit(0);`);
+    const entry = entryFor(['remember'], { scenario: 'exit-with-grandchild', pidFile });
     const started = Date.now();
     const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry, timeoutMs: 20_000 });
     expect(Date.now() - started).toBeLessThan(8_000);
@@ -552,7 +542,7 @@ describe.skipIf(!POSIX)('the 30-second budget is a hard limit', () => {
     expect(journey.formatBudget(100)).toBe('0.1 s');
     expect(journey.formatBudget(1_500)).toBe('1.5 s');
     expect(journey.formatBudget(30_000)).toBe('30 s');
-    const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entryFor(['remember'], HANG), timeoutMs: 300 });
+    const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entryFor(['remember'], { scenario: 'hang' }), timeoutMs: 300 });
     expect(result.steps[0].reason).toContain('0.3 s');
     expect(result.steps[0].reason).not.toContain('0 s budget');
   }, 30_000);
@@ -563,15 +553,7 @@ describe('a relative TMPDIR and the step environment', () => {
     const cwd = path.join(work, 'cwd');
     fs.mkdirSync(path.join(cwd, 'reltmp'), { recursive: true });
     const report = path.join(work, 'child-report.json');
-    const entry = entryFor(['remember'], `
-      const dir = process.env.MEMESH_DIR;
-      const cfg = dir + '/config.json';
-      fs.writeFileSync(${JSON.stringify(report)}, JSON.stringify({
-        home: process.env.HOME, dir, auto: process.env.MEMESH_AUTO_CAPTURE, cwd: process.cwd(),
-        config: fs.existsSync(cfg) ? JSON.parse(fs.readFileSync(cfg, 'utf8')) : null,
-      }));
-      console.log('{"stored":false}');
-      process.exit(0);`);
+    const entry = entryFor(['remember'], { scenario: 'report-env', report });
     const original = process.cwd();
     process.chdir(cwd);
     cleanups.push(() => process.chdir(original));
@@ -867,9 +849,6 @@ describe.skipIf(!NOT_ROOT)('install-hooks that cannot write its marker leaves se
 
 describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
   const distUrl = pathToFileURL(path.join(PACKAGE_ROOT, 'dist/core/doctor-journey.js')).href;
-  const gcSleeper = (pidFile: string, detached: boolean, seconds: number) => `
-    const gc = spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, ${seconds * 1000});`)}], { stdio: ['ignore', 'inherit', 'inherit'], detached: ${detached} });
-    if (${detached}) gc.unref();`;
   const killAfter = (pidFile: string) => cleanups.push(() => killPidFile(pidFile));
 
   /** Runs a journey in its own process and reports when the verdict arrived and when the process was gone. */
@@ -893,18 +872,14 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
     killAfter(pidFile);
     // A process whose parent has already exited cannot be found through parent ids, so it
     // is the one thing still holding the output: only closing our end lets the process go.
-    const holder = `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 14000);`;
-    const middle = `require('child_process').spawn(process.execPath, ['-e', ${JSON.stringify(holder)}], { stdio: ['ignore', 'inherit', 'inherit'], detached: true }).unref();`;
-    const entry = entryFor(['remember'], `spawn(process.execPath, ['-e', ${JSON.stringify(middle)}], { stdio: ['ignore', 'inherit', 'inherit'] });
-      await new Promise((r) => setTimeout(r, 500));
-      ${HANG}`);
+    const entry = entryFor(['remember'], { scenario: 'orphan', pidFile });
     const r = inRunner('destroy', entry, 2_000);
     expect(r.resolved, r.stderr).toBeGreaterThan(1_500);
     expect(r.exited - r.resolved, `verdict at ${r.resolved} ms, process gone at ${r.exited} ms`).toBeLessThan(1_500);
   }, 90_000);
 
   it('a timed-out step does not keep the process alive for a second grace period', () => {
-    const r = inRunner('nograce', entryFor(['remember'], HANG), 1_500);
+    const r = inRunner('nograce', entryFor(['remember'], { scenario: 'hang' }), 1_500);
     expect(r.resolved, r.stderr).toBeGreaterThan(1_200);
     expect(r.exited - r.resolved, `verdict at ${r.resolved} ms, process gone at ${r.exited} ms`).toBeLessThan(250);
   }, 60_000);
@@ -916,10 +891,7 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
     // late enough that only the exit status, not the clock, can save it; early enough not to flake on a slow machine.
     const budget = 3_000;
     const deadline = Date.now() + budget - 250;
-    const entry = entryFor(['remember'], `${gcSleeper(pidFile, false, 14)}
-      await new Promise((r) => setTimeout(r, Math.max(0, ${deadline} - Date.now())));
-      console.log('{"stored":true,"name":"x"}');
-      process.exit(0);`);
+    const entry = entryFor(['remember'], { scenario: 'late-success', pidFile, deadline });
     const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry, timeoutMs: budget });
     expect(result.steps[0].ok, JSON.stringify(result.steps[0])).toBe(true);
     expect(result.steps[0].result).toBe('stored as "x"');
@@ -936,7 +908,7 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
   it('a step that cannot be stopped does not keep the process alive (a real step, a kill that does nothing)', async () => {
     const pidFile = path.join(work, 'unstoppable.pid');
     killAfter(pidFile);
-    const entry = entryFor(['remember'], `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${HANG}`);
+    const entry = entryFor(['remember'], { scenario: 'hang', pidFile });
     const runner = path.join(work, 'unstoppable.mjs');
     fs.writeFileSync(runner, `
       import cp from 'node:child_process';
@@ -972,14 +944,7 @@ describe.skipIf(!POSIX)('timing at the edges of the budget', () => {
   }, 60_000);
 
   it('output split inside a multi-byte character is read whole', async () => {
-    const entry = entryFor(['remember'], `
-      const bytes = Buffer.from('{"stored":true,"name":"\u00e9"}');
-      const cut = bytes.indexOf(0xc3) + 1;
-      process.stdout.write(bytes.subarray(0, cut));
-      await new Promise((r) => setTimeout(r, 150));
-      process.stdout.write(bytes.subarray(cut));
-      await new Promise((r) => setTimeout(r, 100));
-      process.exit(0);`);
+    const entry = entryFor(['remember'], { scenario: 'split-output' });
     const result = await journey.runInstallJourney({ packageRoot: PACKAGE_ROOT }, { cliEntry: entry });
     expect(result.steps[0].result).toBe('stored as "\u00e9"');
   }, 30_000);
@@ -991,9 +956,7 @@ describe.skipIf(!POSIX)('Ctrl-C, hang-up and kill leave nothing behind', () => {
       const pidFile = path.join(work, `hang-${signal}.pid`);
       const gcFile = path.join(work, `gc-${signal}.pid`);
       // The step starts a process of its own, as the CLI's detached helpers do.
-      const entry = entryFor(['remember'], `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid));
-        spawn(process.execPath, ['-e', ${JSON.stringify(`require('fs').writeFileSync(${JSON.stringify(gcFile)}, String(process.pid)); setInterval(() => {}, 1000);`)}], { stdio: 'ignore' });
-        ${HANG}`);
+      const entry = entryFor(['remember'], { scenario: 'hang', pidFile, gcFile });
       cleanups.push(() => { for (const f of [pidFile, gcFile]) killPidFile(f); });
       const runner = path.join(work, `runner-${signal}.mjs`);
       fs.writeFileSync(runner, `
@@ -1025,7 +988,7 @@ describe.skipIf(!POSIX)('Ctrl-C, hang-up and kill leave nothing behind', () => {
 describe.skipIf(!NOT_ROOT)('an interrupted journey that cannot remove its folder says so', () => {
   it('names the folder instead of claiming it was removed', async () => {
     const pidFile = path.join(work, 'hang-noremove.pid');
-    const entry = entryFor(['remember'], `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${HANG}`);
+    const entry = entryFor(['remember'], { scenario: 'hang', pidFile });
     cleanups.push(() => killPidFile(pidFile));
     const runner = path.join(work, 'runner-noremove.mjs');
     fs.writeFileSync(runner, `
@@ -1054,7 +1017,7 @@ describe.skipIf(!NOT_ROOT)('an interrupted journey that cannot remove its folder
 describe('re-raising the signal can fail (on Windows, ENOSYS)', () => {
   it('exits with 128 + the signal number instead', async () => {
     const pidFile = path.join(work, 'hang-enosys.pid');
-    const entry = entryFor(['remember'], `fs.writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); ${HANG}`);
+    const entry = entryFor(['remember'], { scenario: 'hang', pidFile });
     cleanups.push(() => killPidFile(pidFile));
     const realKill = process.kill.bind(process);
     const exitSpy = vi.spyOn(process, 'exit').mockImplementation((() => undefined) as never);

@@ -23,6 +23,7 @@ import {
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
 import { recordHookOutcome, sliceUtf16UnitsSurrogateSafe, hookErrorReason, hookCaughtReason } from '../../scripts/hooks/_shared.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 describe('SQLite lock outcome labels', () => {
   it('classifies primary and extended SQLite busy/locked codes without reading messages', () => {
@@ -780,7 +781,7 @@ DatabaseSync.prototype.prepare = function(sql) {
     fs.appendFileSync(file, line.repeat(Math.ceil(HOOK_OUTCOMES_ROTATE_BYTES / Buffer.byteLength(line))));
     expect(fs.statSync(file).size).toBeGreaterThan(HOOK_OUTCOMES_ROTATE_BYTES);
     runHook('post-commit', { tool_input: {} });
-    const raw = fs.readFileSync(file, 'utf8');
+    const raw = readFileSnapshot(file).bytes.toString('utf8');
     expect(Buffer.byteLength(raw)).toBeLessThan(HOOK_OUTCOMES_ROTATE_BYTES);
     const parsed = parseHookOutcomes(raw);
     expect(parsed.hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);

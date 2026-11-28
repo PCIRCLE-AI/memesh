@@ -5,6 +5,7 @@ import { afterEach, expect, it, vi } from 'vitest';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { assertLegacyPathsAreDifferent, importLegacyConversationMessages } from '../../src/core/conversation-message-migration.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const NOW = Date.parse('2026-11-13T12:00:00.000Z'), DAY = 86_400_000;
 const cleanup: Array<() => void> = [];
@@ -268,13 +269,16 @@ it.each(['same-path', 'hardlink', 'symlink'])('constructor refuses %s before cha
   // Deliberately retain a mode which destination privacy handling would change.
   fs.chmodSync(sourceFile, 0o640);
   f.source.exec('PRAGMA journal_mode=DELETE');
-  const snapshot = () => ({
-    schema: f.source.prepare('SELECT * FROM sqlite_master ORDER BY name').all(),
-    data: f.rows(), journal: f.source.prepare('PRAGMA journal_mode').get(),
-    mode: fs.statSync(sourceFile).mode & 0o777,
-    directoryMode: fs.statSync(f.root).mode & 0o777,
-    files: fs.readdirSync(f.root).sort(), bytes: fs.readFileSync(sourceFile),
-  });
+  const snapshot = () => {
+    const { stat, bytes } = readFileSnapshot(sourceFile);
+    return {
+      schema: f.source.prepare('SELECT * FROM sqlite_master ORDER BY name').all(),
+      data: f.rows(), journal: f.source.prepare('PRAGMA journal_mode').get(),
+      mode: stat.mode & 0o777,
+      directoryMode: fs.statSync(f.root).mode & 0o777,
+      files: fs.readdirSync(f.root).sort(), bytes,
+    };
+  };
   const before = snapshot();
   expect(() => new ConversationMessages({ file, legacySource: f.source, machine: 'test-machine', clock: () => NOW })).toThrow('different files');
   expect(snapshot()).toEqual(before);

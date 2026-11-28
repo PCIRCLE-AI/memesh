@@ -24,6 +24,7 @@ import { verifyRoster } from '../../src/network/roster.js';
 import type { Connection, IrohModule } from '../../src/network/iroh-types.js';
 import { buildIsolatedRuntimeEnv } from '../../scripts/lib/isolated-env.mjs';
 import { buildTree, contextFor, installRuntimeOnce, linkRuntime, loadIrohForTest, makeHome, removeTree, type Tree } from './helpers.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const lockText = fs.readFileSync(path.resolve(import.meta.dirname, '../../src/network/runtime-lock.json'), 'utf8');
 const supported = isPlatformSupported(lockText, process.platform, process.arch, process.platform === 'linux' ? 'glibc' : null);
@@ -431,8 +432,9 @@ describe.skipIf(!supported || process.platform === 'win32')('messages between tw
     for (const ctx of [alpha, beta]) {
       const file = ctx === alpha ? frameLog.alpha : frameLog.beta;
       expect(fs.statSync(path.dirname(file)).mode & 0o077).toBe(0);
-      expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-      const text = fs.readFileSync(file, 'utf8');
+      const { stat, bytes } = readFileSnapshot(file);
+      expect(stat.mode & 0o777).toBe(0o600);
+      const text = bytes.toString('utf8');
       expect(text).not.toContain(MARKER);
       expect(text).not.toContain('work_summary');
       const rows = text.trim().split('\n').map(line => {

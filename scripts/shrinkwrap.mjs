@@ -64,9 +64,19 @@ function main(argv) {
   if (mode !== 'write') { console.error('usage: shrinkwrap.mjs write|remove'); return 2; }
   const read = (name) => JSON.parse(fs.readFileSync(path.join(root, name), 'utf8'));
   try {
-    // A file here before this run is what an earlier pack left (it died before postpack): it is replaced, and said.
-    if (fs.existsSync(target)) console.error(`shrinkwrap: replacing a leftover ${SHRINKWRAP_FILE} from an earlier pack`);
-    fs.writeFileSync(target, `${JSON.stringify(buildShrinkwrap(read('package-lock.json'), read('package.json')), null, 2)}\n`);
+    const content = `${JSON.stringify(buildShrinkwrap(read('package-lock.json'), read('package.json')), null, 2)}\n`;
+    try {
+      fs.writeFileSync(target, content, { flag: 'wx' });
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw error;
+      console.error(`shrinkwrap: replacing a leftover ${SHRINKWRAP_FILE} from an earlier pack`);
+      const stage = fs.mkdtempSync(path.join(root, '.memesh-lock-'));
+      try {
+        const staged = path.join(stage, SHRINKWRAP_FILE);
+        fs.writeFileSync(staged, content, { flag: 'wx' });
+        fs.renameSync(staged, target);
+      } finally { fs.rmSync(stage, { recursive: true, force: true }); }
+    }
     return 0;
   } catch (err) {
     console.error(`shrinkwrap: ${err instanceof Error ? err.message : String(err)}`);

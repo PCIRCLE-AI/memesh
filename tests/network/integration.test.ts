@@ -677,8 +677,20 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
         }
         if (Date.now() - started > settleMs) {
           // Report how late it was, and what it looked like, rather than only that it was late.
-          const lockText = !fs.existsSync(lock) ? 'none' : fs.lstatSync(lock).isDirectory()
-            ? fs.readdirSync(lock).join(',') : fs.readFileSync(lock, 'utf8').trim();
+          let lockText: string;
+          try {
+            lockText = fs.readdirSync(lock).join(',');
+          } catch (error) {
+            const code = (error as NodeJS.ErrnoException).code;
+            lockText = code === 'ENOENT' ? 'none' : String(error);
+            if (code === 'ENOTDIR') {
+              try {
+                lockText = fs.readFileSync(lock, 'utf8').trim();
+              } catch (readError) {
+                lockText = String(readError);
+              }
+            }
+          }
           while (Date.now() - started < 20_000 && !(await probeBridge(ctx.dataDir, 500) as { ready?: boolean }).ready) {
             await new Promise((resolve) => setTimeout(resolve, 50));
           }

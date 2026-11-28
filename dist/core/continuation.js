@@ -49,13 +49,14 @@ function cleanRevision(scope) {
 }
 function readOperation(file, now) {
     try {
-        const stat = fs.lstatSync(file);
-        if (!stat.isFile() || stat.size > MAX_RECORD_BYTES)
-            return null;
         const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
         let data;
         try {
-            if (!fs.fstatSync(fd).isFile())
+            const opened = fs.fstatSync(fd, { bigint: true });
+            if (!opened.isFile() || opened.size > BigInt(MAX_RECORD_BYTES))
+                return null;
+            const entry = fs.lstatSync(file, { bigint: true });
+            if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino)
                 return null;
             const buf = Buffer.alloc(MAX_RECORD_BYTES + 1);
             const size = fs.readSync(fd, buf, 0, buf.length, 0);

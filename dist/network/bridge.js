@@ -2683,6 +2683,15 @@ function identityOf(file) {
   }
 }
 var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+function readPidLock(lock) {
+  const fd = fs11.openSync(lock, fs11.constants.O_RDONLY | (fs11.constants.O_NOFOLLOW ?? 0) | (fs11.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat2 = fs11.fstatSync(fd);
+    return stat2.isFile() ? { stat: stat2, raw: fs11.readFileSync(fd, "utf8").trim() } : null;
+  } finally {
+    fs11.closeSync(fd);
+  }
+}
 function removeStartupClaim(lock, owner) {
   try {
     fs11.unlinkSync(path12.join(lock, owner));
@@ -2721,11 +2730,13 @@ function clearDeadStartupLock(lock) {
         removeStartupClaim(lock, owner);
       return;
     }
-    const judged = identityOf(lock);
-    const age = Date.now() - fs11.statSync(lock).mtimeMs;
-    const raw = fs11.readFileSync(lock, "utf8").trim();
+    const opened = readPidLock(lock);
+    if (!opened)
+      return;
+    const { stat: judged, raw } = opened;
+    const age = Date.now() - judged.mtimeMs;
     const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= STARTUP_LOCK_EMPTY_STALE_MS;
-    if (judged !== null && stale && sameFile(identityOf(lock), judged))
+    if (stale && sameFile(identityOf(lock), judged))
       fs11.unlinkSync(lock);
   } catch (err) {
     const code = err.code;
@@ -2960,12 +2971,18 @@ function appendWindowsFrameLog(file, folder, bytes) {
     const directory = windowsLogEntry(folder, true);
     verifyWindowsPathsPrivate([folder]);
     windowsLogEntry(folder, true, directory);
-    const existing = fs12.lstatSync(file, { bigint: true, throwIfNoEntry: false });
-    if (existing)
-      windowsLogEntry(file, false, existing);
-    const create = existing ? 0 : fs12.constants.O_CREAT | fs12.constants.O_EXCL;
-    windowsLogEntry(folder, true, directory);
-    const fd = fs12.openSync(file, fs12.constants.O_WRONLY | fs12.constants.O_APPEND | create, 384);
+    const append = fs12.constants.O_WRONLY | fs12.constants.O_APPEND;
+    let fd;
+    let existing;
+    try {
+      fd = fs12.openSync(file, append | fs12.constants.O_CREAT | fs12.constants.O_EXCL, 384);
+    } catch (error) {
+      if (error.code !== "EEXIST")
+        throw error;
+      existing = windowsLogEntry(file, false);
+      windowsLogEntry(folder, true, directory);
+      fd = fs12.openSync(file, append);
+    }
     try {
       const opened = fs12.fstatSync(fd, { bigint: true });
       windowsLogEntry(folder, true, directory);
@@ -3077,9 +3094,24 @@ var SEND_CONNECT_DEADLINE_MS = 2e4;
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    if (fs13.existsSync(file) && fs13.statSync(file).size > LOG_MAX_BYTES)
-      fs13.renameSync(file, `${file}.1`);
-    fs13.appendFileSync(file, line(event, detail), { mode: 384 });
+    const flags = fs13.constants.O_WRONLY | fs13.constants.O_APPEND | fs13.constants.O_CREAT | (fs13.constants.O_NOFOLLOW ?? 0) | (fs13.constants.O_NONBLOCK ?? 0);
+    let fd = fs13.openSync(file, flags, 384);
+    try {
+      const stat2 = fs13.fstatSync(fd);
+      if (!stat2.isFile())
+        throw new Error("Unsafe bridge log file");
+      if (stat2.size > LOG_MAX_BYTES) {
+        fs13.renameSync(file, `${file}.1`);
+        const rotated = fd;
+        fd = fs13.openSync(file, flags, 384);
+        fs13.closeSync(rotated);
+        if (!fs13.fstatSync(fd).isFile())
+          throw new Error("Unsafe bridge log file");
+      }
+      fs13.appendFileSync(fd, line(event, detail));
+    } finally {
+      fs13.closeSync(fd);
+    }
   } catch {
     try {
       process.stderr.write(line(event, detail));

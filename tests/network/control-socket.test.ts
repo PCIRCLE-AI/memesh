@@ -14,6 +14,7 @@ import { bridgeUp, createLink, createNetwork, getNetworkStatus } from '../../src
 import { createRoster, signRoster } from '../../src/network/roster.js';
 import { insertConfig, openNetworkStore } from '../../src/network/store.js';
 import { childEnv, networkMetadataPath, type NetworkContext } from '../../src/network/types.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 import { buildTree, contextFor, makeHome, removeTree, type Tree } from './helpers.js';
 
 const NETWORK_ID = '0123456789abcdef0123456789abcdef';
@@ -398,12 +399,14 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
     it('a stale lock replaced by another starter while it is judged is not deleted (through the real start path)', async () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
       fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
+      const original = fs.statSync(lock);
       const realRead = fs.readFileSync;
       let swapped = false;
       // As this starter reads the dead pid, another starter takes the lock over and writes its own, live.
       const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
         const result = realRead(file, options as BufferEncoding);
-        if (file === lock && !swapped) {
+        const opened = typeof file === 'number' ? fs.fstatSync(file) : null;
+        if (opened?.dev === original.dev && opened.ino === original.ino && !swapped) {
           swapped = true;
           fs.writeFileSync(`${lock}.fresh`, `${process.pid}\n`, { mode: 0o600 });
           fs.renameSync(`${lock}.fresh`, lock);
@@ -425,13 +428,15 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
     it('a stale-lock judge never opens an acquisition gap in a replacement lock', async () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
       fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
+      const original = fs.statSync(lock);
       const realRead = fs.readFileSync;
       const realRename = fs.renameSync;
       let fresh: ReturnType<typeof identityOf> = null;
       let acquisitionGap = false;
       const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
         const result = realRead(file, options as BufferEncoding);
-        if (file === lock && fresh === null) {
+        const opened = typeof file === 'number' ? fs.fstatSync(file) : null;
+        if (opened?.dev === original.dev && opened.ino === original.ino && fresh === null) {
           fs.writeFileSync(`${lock}.fresh`, `${process.pid}\n`, { mode: 0o600 });
           realRename(`${lock}.fresh`, lock);
           fresh = identityOf(lock);
@@ -440,10 +445,14 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       }) as typeof fs.readFileSync);
       const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
         realRename(from, to);
-        if (from === lock && fresh !== null && !fs.existsSync(lock)) {
-          acquisitionGap = true;
+        if (from === lock && fresh !== null) {
           // A third starter can acquire the canonical path while the live lock is aside.
-          fs.writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+          try {
+            fs.writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+            acquisitionGap = true;
+          } catch (error) {
+            if (!['EEXIST', 'EISDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) throw error;
+          }
         }
       });
       try {
@@ -535,7 +544,7 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       fs.writeFileSync(lock, '222\n');
       const fresh = identityOf(lock);
       takeOverStaleLock(lock, { dev: judged.dev, ino: judged.ino + 1000000 });
-      expect(fs.readFileSync(lock, 'utf8')).toBe('222\n');
+      expect(readFileSnapshot(lock).bytes.toString('utf8')).toBe('222\n');
       expect(identityOf(lock)).toEqual(fresh);
       expect(fs.readdirSync(path.dirname(lock)).filter((name) => name.includes('.stale-'))).toEqual([]);
       fs.rmSync(lock);

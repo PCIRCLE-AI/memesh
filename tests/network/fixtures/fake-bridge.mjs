@@ -20,8 +20,17 @@ const status = (state) => {
 };
 status(ready ? 'running' : 'starting');
 const tokenFile = path.join(network, 'control.token');
-if (!fs.existsSync(tokenFile)) fs.writeFileSync(tokenFile, 'a'.repeat(64), { mode: 0o600 });
+try {
+  fs.writeFileSync(tokenFile, 'a'.repeat(64), { flag: 'wx', mode: 0o600 });
+} catch (error) {
+  if (error.code !== 'EEXIST') throw error;
+}
 const token = fs.readFileSync(tokenFile, 'utf8');
+const stop = mode === 'ignore-stop' ? () => {} : () => {
+  clearTimeout(transition);
+  clearInterval(keepAlive);
+  server.close();
+};
 const server = net.createServer((socket) => {
   socket.on('error', () => {});
   socket.on('data', (chunk) => {
@@ -33,15 +42,13 @@ const server = net.createServer((socket) => {
     }
     const { op } = request;
     socket.end(`${JSON.stringify({ data_dir: fs.realpathSync(dataDir), pid: process.pid, ready })}\n`);
-    if (op === 'stop' && mode !== 'ignore-stop') {
-      server.close();
-      process.exit(0);
-    }
+    if (op === 'stop') stop();
   });
 });
 fs.rmSync(path.join(network, 'bridge.sock'), { force: true }); // Stale from a killed stand-in.
 server.listen(path.join(network, 'bridge.sock'));
-setInterval(() => {}, 1000);
-if (mode === 'starting-then-running') setTimeout(() => { ready = true; status('running'); }, 1000);
-if (mode === 'slow-running') setTimeout(() => { ready = true; status('running'); }, 2500);
-if (mode === 'starting-then-die') setTimeout(() => process.exit(1), 1000);
+const keepAlive = setInterval(() => {}, 1000);
+let transition;
+if (mode === 'starting-then-running') transition = setTimeout(() => { ready = true; status('running'); }, 1000);
+if (mode === 'slow-running') transition = setTimeout(() => { ready = true; status('running'); }, 2500);
+if (mode === 'starting-then-die') transition = setTimeout(() => process.exit(1), 1000);

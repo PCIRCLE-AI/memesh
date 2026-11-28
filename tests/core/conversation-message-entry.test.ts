@@ -7,6 +7,7 @@ import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { installLegacyMessageSchema, seedLegacyMessage, seedLegacyReceipt } from '../helpers/agent-session-fixture.js';
 import { LEGACY_CONVERSATION_TABLES } from '../../src/core/conversation-message-migration.js';
 import { withWindowsPermissionTrace } from '../helpers/windows-permission-trace.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const NOW = Date.parse('2026-11-13T12:00:00.000Z');
 const roots: string[] = [];
@@ -72,13 +73,14 @@ it('bounds owned source and target timeouts while preserving defaults and borrow
 it('rejects invalid timeout budgets before creating or altering destination files', () => {
   const f = fixture(), existing = path.join(f.data, 'existing.db');
   fs.writeFileSync(existing, 'sentinel', { mode: 0o640 });
-  const before = { bytes: fs.readFileSync(existing), mode: fs.statSync(existing).mode };
+  const before = readFileSnapshot(existing);
   for (const busyTimeoutMs of [-1, 0.5, NaN, Infinity, 30001, Number.MAX_SAFE_INTEGER]) {
     expect(() => f.open({ file: path.join(f.root, 'absent', 'messages.db'), busyTimeoutMs })).toThrow('busyTimeoutMs');
     expect(() => f.open({ file: existing, busyTimeoutMs })).toThrow('busyTimeoutMs');
   }
   expect(fs.existsSync(path.join(f.root, 'absent'))).toBe(false);
-  expect({ bytes: fs.readFileSync(existing), mode: fs.statSync(existing).mode }).toEqual(before);
+  const after = readFileSnapshot(existing);
+  expect({ bytes: after.bytes, mode: after.stat.mode }).toEqual({ bytes: before.bytes, mode: before.stat.mode });
 });
 
 it('bounds an owned legacy source lock and closes it without changing the borrowed writer timeout', () => {
@@ -163,12 +165,14 @@ it.skipIf(process.platform === 'win32')('default opening keeps a private cross-d
   } finally { archive.exec('DETACH DATABASE fixture_source'); }
   archive.exec('CREATE TABLE archive_log(message_id TEXT PRIMARY KEY, archived_at_ms INTEGER NOT NULL)');
   archive.prepare('INSERT INTO archive_log VALUES (?,?)').run(archivedId, NOW - 2 * 86400000);
-  const archiveBefore = snapshot(archive), archiveBytes = fs.readFileSync(archivePath), archiveMode = fs.statSync(archivePath).mode;
+  const archiveBefore = snapshot(archive), beforeFile = readFileSnapshot(archivePath);
   expect(f.open().status().find(row => row.id === archivedId)).toMatchObject({
     body: 'complete age 13 body', sent_at: new Date(NOW - 13 * 86400000).toISOString(),
   });
-  expect(snapshot(archive)).toEqual(archiveBefore); expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
-  expect(fs.statSync(archivePath).mode).toBe(archiveMode); expectKeptState(source, before);
+  expect(snapshot(archive)).toEqual(archiveBefore);
+  const afterFile = readFileSnapshot(archivePath);
+  expect(afterFile.bytes).toEqual(beforeFile.bytes);
+  expect(afterFile.stat.mode).toBe(beforeFile.stat.mode); expectKeptState(source, before);
   expect(fs.readlinkSync(f.graph)).toBe(actualGraph);
 });
 
@@ -200,7 +204,7 @@ it('default custom graph opening imports another project from the historical sha
   const decoys = path.join(f.config, 'backups'); fs.mkdirSync(decoys, { mode: 0o700 });
   const decoy = path.join(decoys, 'agent-messages-expired.db'); fs.writeFileSync(decoy, 'unrelated DIR archive', { mode: 0o600 });
   const beforeArchive = snapshot(archive), beforeLive = snapshot(live);
-  const archiveBytes = fs.readFileSync(archivePath), archiveMode = fs.statSync(archivePath).mode;
+  const beforeFile = readFileSnapshot(archivePath);
   const message = original.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(sent.message_id);
   const first = f.open().status();
   const restored = first.find(row => row.id === sent.message_id);
@@ -220,7 +224,9 @@ it('default custom graph opening imports another project from the historical sha
   expect(first).toHaveLength(2);
   expect(f.open().status()).toEqual(first);
   expectKeptState(live, beforeLive); expect(snapshot(archive)).toEqual(beforeArchive);
-  expect(fs.readFileSync(archivePath)).toEqual(archiveBytes); expect(fs.statSync(archivePath).mode).toBe(archiveMode);
+  const afterFile = readFileSnapshot(archivePath);
+  expect(afterFile.bytes).toEqual(beforeFile.bytes);
+  expect(afterFile.stat.mode).toBe(beforeFile.stat.mode);
   expect(fs.readdirSync(f.home)).toEqual(['sentinel']);
   expect(fs.readdirSync(f.config).sort()).toEqual(['backups', 'sentinel']);
   expect(fs.readFileSync(decoy, 'utf8')).toBe('unrelated DIR archive');
@@ -229,7 +235,7 @@ it('default custom graph opening imports another project from the historical sha
   expect(expired['db'].prepare('SELECT COUNT(*) AS n FROM events WHERE message_id=?').get(sent.message_id)?.n).toBe(0);
   expect(f.open({ clock: () => NOW + 2 * 86400000 }).status(undefined, sent.message_id)).toEqual([]);
   expect(snapshot(archive)).toEqual(beforeArchive);
-  expect(fs.readFileSync(archivePath)).toEqual(archiveBytes);
+  expect(readFileSnapshot(archivePath).bytes).toEqual(beforeFile.bytes);
 });
 
 it.skipIf(process.platform === 'win32').each(['symlink', 'public-mode', 'empty-sidecar'] as const)('refuses unsafe default archive %s without modifying it or creating the target', reason => {

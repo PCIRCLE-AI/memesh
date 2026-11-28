@@ -145,6 +145,16 @@ export function identityOf(file) {
     }
 }
 const sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+export function readPidLock(lock) {
+    const fd = fs.openSync(lock, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+        const stat = fs.fstatSync(fd);
+        return stat.isFile() ? { stat, raw: fs.readFileSync(fd, 'utf8').trim() } : null;
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
 export function takeOverStaleLock(lock, judged) {
     const aside = `${lock}.stale-${process.pid}`;
     try {
@@ -188,7 +198,7 @@ function removeEmptyStartupLock(lock) {
             throw err;
     }
 }
-function processIsGone(pid) {
+export function processIsGone(pid) {
     try {
         process.kill(pid, 0);
         return false;
@@ -209,11 +219,13 @@ function clearDeadStartupLock(lock) {
                 removeStartupClaim(lock, owner);
             return;
         }
-        const judged = identityOf(lock);
-        const age = Date.now() - fs.statSync(lock).mtimeMs;
-        const raw = fs.readFileSync(lock, 'utf8').trim();
+        const opened = readPidLock(lock);
+        if (!opened)
+            return;
+        const { stat: judged, raw } = opened;
+        const age = Date.now() - judged.mtimeMs;
         const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= STARTUP_LOCK_EMPTY_STALE_MS;
-        if (judged !== null && stale && sameFile(identityOf(lock), judged))
+        if (stale && sameFile(identityOf(lock), judged))
             fs.unlinkSync(lock);
     }
     catch (err) {

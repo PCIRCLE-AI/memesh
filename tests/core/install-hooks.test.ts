@@ -11,7 +11,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { execFileSync } from 'child_process';
-import { diffSnapshots, snapshotTree } from '../helpers/fs-snapshot.js';
+import { diffSnapshots, readFileSnapshot, snapshotTree } from '../helpers/fs-snapshot.js';
 
 describe('install-hooks', () => {
   let tmpDir: string;
@@ -198,8 +198,7 @@ describe('install-hooks', () => {
     expect(first.settingsWritten).toBe(true);
     expect(first.markerWritten).toBe(true);
     const settingsBefore = fs.readFileSync(first.settingsPath, 'utf8');
-    const markerBefore = fs.readFileSync(first.markerPath, 'utf8');
-    const markerMtime = fs.statSync(first.markerPath).mtimeMs;
+    const markerBefore = readFileSnapshot(first.markerPath);
     const backupsBefore = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
     // Same content is not the same file: a rewrite with identical bytes still changes the inode or the mtime.
     const rulePath = path.join(process.env.HOME!, '.claude', 'rules', 'memesh-citations.md');
@@ -215,8 +214,9 @@ describe('install-hooks', () => {
     expect(second.markerWritten).toBe(false);
     expect(second.backupPath).toBeNull();
     expect(fs.readFileSync(first.settingsPath, 'utf8')).toBe(settingsBefore);
-    expect(fs.readFileSync(first.markerPath, 'utf8')).toBe(markerBefore);
-    expect(fs.statSync(first.markerPath).mtimeMs).toBe(markerMtime);
+    const markerAfter = readFileSnapshot(first.markerPath);
+    expect(markerAfter.bytes).toEqual(markerBefore.bytes);
+    expect(markerAfter.stat.mtimeMs).toBe(markerBefore.stat.mtimeMs);
     const backupsAfter = fs.readdirSync(path.dirname(first.settingsPath)).filter((f) => f.includes('.bak-pre-memesh-')).length;
     expect(backupsAfter).toBe(backupsBefore);
     expect(identity(), 'a file was rewritten with the same bytes').toEqual(identityBefore);

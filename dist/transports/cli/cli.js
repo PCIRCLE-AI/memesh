@@ -4993,7 +4993,8 @@ function remoteLocatorAliases(remote) {
     return [];
   const bare = parts.path.replace(/\.git$/i, "");
   const out = /* @__PURE__ */ new Set();
-  for (const suffix of /\.git$/i.test(bare) ? [".git"] : ["", ".git"]) {
+  const suffixes = /\.git$/i.test(bare) ? [".git"] : ["", ".git"];
+  for (const suffix of suffixes) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ["ssh-relative", "ssh-absolute"])
       out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
@@ -9588,13 +9589,16 @@ function writeAttemptTime(file2, now, directory) {
   windowsControlEntry(parent, true, directory);
   let created;
   try {
-    if (!fs14.lstatSync(file2, { throwIfNoEntry: false })) {
+    try {
       const empty = fs14.openSync(file2, "wx", 384);
       try {
         created = fs14.fstatSync(empty, { bigint: true });
       } finally {
         fs14.closeSync(empty);
       }
+    } catch (error62) {
+      if (error62.code !== "EEXIST")
+        throw error62;
     }
     const entry = windowsControlEntry(file2, false, created);
     makeWindowsPathsPrivate([file2]);
@@ -9720,18 +9724,18 @@ function judgeAuditSignatures(json2, name, version2, options) {
     return { ok: false, reason: `${name}@${version2} has no verified signature and provenance` };
   if (!Array.isArray(entry.attestationBundles))
     return { ok: false, reason: "no attestation was included for this version" };
+  const packageSubject = `pkg:npm/${name.replaceAll("@", "%40")}@${version2}`;
   for (const bundle of entry.attestationBundles) {
     const statement = statementOf(bundle);
     if (at(statement, "predicateType") !== "https://slsa.dev/provenance/v1")
       continue;
     const subjectList = at(statement, "subject");
     const subjects = Array.isArray(subjectList) ? subjectList : [];
-    const subjectNames = subjects.map((s) => String(at(s, "name")));
-    if (!subjectNames.includes(`pkg:npm/${name.replace("@", "%40")}@${version2}`))
+    const subject = subjects.find((candidate) => at(candidate, "name") === packageSubject);
+    if (subject === void 0)
       continue;
     const workflow = at(statement, "predicate", "buildDefinition", "externalParameters", "workflow");
-    const digest = subjects.find((subject) => at(subject, "name") === `pkg:npm/${name.replace("@", "%40")}@${version2}`);
-    if (at(digest, "digest", "sha512") !== options.tarballSha512Hex)
+    if (at(subject, "digest", "sha512") !== options.tarballSha512Hex)
       return { ok: false, reason: "the attested package digest is not the digest of the downloaded tarball" };
     const expectedSigner = `${EXPECTED_SOURCE.repository}/${EXPECTED_SOURCE.workflowPath}@refs/tags/v${version2}`;
     if ((options.signerOf ?? signerIdentity)(bundle) !== expectedSigner)
@@ -10170,13 +10174,34 @@ function stageAndVerify(deps, target) {
   if (install.status !== 0)
     return fail(AUTO_UPDATE_REASONS.sourceNotVerified, commandFailure(install, "staging install"));
   const pack = execNpm(deps.exec, ["pack", `${PACKAGE_NAME}@${target}`, "--pack-destination", stage, "--silent"], { cwd: stage });
-  const tarball = path12.join(stage, pack.stdout.trim().split("\n").pop() ?? "");
-  if (pack.status !== 0 || !fs14.existsSync(tarball) || !fs14.statSync(tarball).isFile())
-    return fail(AUTO_UPDATE_REASONS.tarballMismatch, pack.status === 0 ? "npm pack produced no tarball" : commandFailure(pack, "npm pack"));
+  if (pack.status !== 0)
+    return fail(AUTO_UPDATE_REASONS.tarballMismatch, commandFailure(pack, "npm pack"));
+  const filename = pack.stdout.trim().split("\n").pop() ?? "";
+  if (!/^[a-z0-9][a-z0-9._+-]*\.tgz$/i.test(filename))
+    return fail(AUTO_UPDATE_REASONS.tarballMismatch, "npm pack produced no tarball");
+  const tarball = path12.join(stage, filename);
+  let bytes;
+  try {
+    const fd = fs14.openSync(tarball, fs14.constants.O_RDONLY | (fs14.constants.O_NOFOLLOW ?? 0) | (fs14.constants.O_NONBLOCK ?? 0));
+    try {
+      const opened = fs14.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || opened.nlink !== 1n)
+        throw new Error("the packed tarball is not a regular file with a single link");
+      if (process.platform === "win32") {
+        const entry = fs14.lstatSync(tarball, { bigint: true });
+        if (!entry.isFile() || opened.ino === 0n || opened.dev !== entry.dev || opened.ino !== entry.ino)
+          throw new Error("the packed tarball path changed");
+      }
+      bytes = fs14.readFileSync(fd);
+    } finally {
+      fs14.closeSync(fd);
+    }
+  } catch {
+    return fail(AUTO_UPDATE_REASONS.tarballMismatch, "npm pack produced no readable regular tarball");
+  }
   const audit = execNpm(deps.exec, ["audit", "signatures", "--json", "--include-attestations"], { cwd: stage });
   if (audit.startupError)
     return fail(AUTO_UPDATE_REASONS.sourceNotVerified, audit.startupError);
-  const bytes = fs14.readFileSync(tarball);
   const verdict = judgeAuditSignatures(audit.stdout, PACKAGE_NAME, target, {
     tarballSha512Hex: createHash5("sha512").update(bytes).digest("hex"),
     ...deps.signerOf ? { signerOf: deps.signerOf } : {}
@@ -33614,13 +33639,14 @@ function cleanRevision(scope) {
 }
 function readOperation(file2, now) {
   try {
-    const stat2 = fs21.lstatSync(file2);
-    if (!stat2.isFile() || stat2.size > MAX_RECORD_BYTES)
-      return null;
     const fd = fs21.openSync(file2, fs21.constants.O_RDONLY | (fs21.constants.O_NOFOLLOW ?? 0) | (fs21.constants.O_NONBLOCK ?? 0));
     let data;
     try {
-      if (!fs21.fstatSync(fd).isFile())
+      const opened = fs21.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || opened.size > BigInt(MAX_RECORD_BYTES))
+        return null;
+      const entry = fs21.lstatSync(file2, { bigint: true });
+      if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino)
         return null;
       const buf = Buffer.alloc(MAX_RECORD_BYTES + 1);
       const size = fs21.readSync(fd, buf, 0, buf.length, 0);
@@ -72417,8 +72443,16 @@ function removeNewFamily(file2) {
 function systemSalvage(source, output2, executable) {
   const sql = `${output2}.sql`;
   let fd;
+  let input2;
+  let ownSql = false;
   try {
     fd = fs15.openSync(sql, "wx", 384);
+    ownSql = true;
+    input2 = fs15.openSync(sql, fs15.constants.O_RDONLY | (fs15.constants.O_NOFOLLOW ?? 0) | (fs15.constants.O_NONBLOCK ?? 0));
+    const created = fs15.fstatSync(fd, { bigint: true });
+    const opened = fs15.fstatSync(input2, { bigint: true });
+    if (!opened.isFile() || opened.dev !== created.dev || opened.ino !== created.ino)
+      return "Recovery dump path changed";
     const address = hasPagesWaiting(source) ? source : immutableAddress(source);
     const recovered = spawnSync2(executable, ["-readonly", address, ".recover --ignore-freelist"], {
       stdio: ["ignore", fd, "pipe"],
@@ -72430,14 +72464,13 @@ function systemSalvage(source, output2, executable) {
     if (recovered.error || recovered.status !== 0)
       return recovered.error?.message ?? String(recovered.stderr).trim().split("\n")[0] ?? "sqlite3 .recover failed";
     fs15.closeSync(fs15.openSync(output2, "wx", 384));
-    fd = fs15.openSync(sql, "r");
     const imported = spawnSync2(executable, ["-bail", output2], {
-      stdio: [fd, "ignore", "pipe"],
+      stdio: [input2, "ignore", "pipe"],
       encoding: "utf8",
       timeout: 12e4
     });
-    fs15.closeSync(fd);
-    fd = void 0;
+    fs15.closeSync(input2);
+    input2 = void 0;
     if (imported.error || imported.status !== 0)
       return imported.error?.message ?? String(imported.stderr).trim().split("\n")[0] ?? "sqlite3 import failed";
     const db2 = openReadOnly(output2);
@@ -72452,7 +72485,10 @@ function systemSalvage(source, output2, executable) {
   } finally {
     if (fd !== void 0)
       fs15.closeSync(fd);
-    fs15.rmSync(sql, { force: true });
+    if (input2 !== void 0)
+      fs15.closeSync(input2);
+    if (ownSql)
+      fs15.rmSync(sql, { force: true });
   }
 }
 var DatabaseReplacementOutcomeError = class extends Error {
@@ -74363,6 +74399,15 @@ function identityOf(file2) {
   }
 }
 var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
+function readPidLock(lock) {
+  const fd = fs36.openSync(lock, fs36.constants.O_RDONLY | (fs36.constants.O_NOFOLLOW ?? 0) | (fs36.constants.O_NONBLOCK ?? 0));
+  try {
+    const stat2 = fs36.fstatSync(fd);
+    return stat2.isFile() ? { stat: stat2, raw: fs36.readFileSync(fd, "utf8").trim() } : null;
+  } finally {
+    fs36.closeSync(fd);
+  }
+}
 function takeOverStaleLock(lock, judged) {
   const aside = `${lock}.stale-${process.pid}`;
   try {
@@ -74381,6 +74426,14 @@ function takeOverStaleLock(lock, judged) {
       throw err;
   } finally {
     fs36.rmSync(aside, { force: true });
+  }
+}
+function processIsGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
   }
 }
 
@@ -74518,7 +74571,7 @@ var LINK_MAX_CHARS = 8192;
 var LINK_MAX_ADDRESSES = 64;
 var SIGNATURE_DOMAIN2 = "memesh-join-link-v1\n";
 var TOKEN_BYTES = 32;
-var ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-fA-F:.%a-zA-Z]+\]):\d{1,5}$/;
+var ADDRESS = /^(?:\d{1,3}(?:\.\d{1,3}){3}|\[[0-9a-zA-Z:.%]+\]):\d{1,5}$/;
 var DEFAULT_INVITE_TTL_HOURS = 24;
 var MAX_INVITE_TTL_HOURS = 24 * 30;
 function hashToken(token) {
@@ -74636,6 +74689,7 @@ async function migrateNetworkMetadata(ctx) {
   if (!source)
     return false;
   let temporary;
+  let temporaryFd;
   try {
     const hasConfig = source.prepare("SELECT 1 FROM sqlite_master WHERE type='table' AND name='agent_network_config'").get();
     if (!hasConfig)
@@ -74655,8 +74709,9 @@ async function migrateNetworkMetadata(ctx) {
       makeWindowsPathsPrivate([directory], directory);
     const check2 = openPublicNetworkDatabase(target);
     check2?.close();
-    temporary = path37.join(directory, `.metadata-${randomUUID5()}.db`);
-    fs38.closeSync(fs38.openSync(temporary, "wx", 384));
+    const stagingPath = path37.join(directory, `.metadata-${randomUUID5()}.db`);
+    temporaryFd = fs38.openSync(stagingPath, "wx", 384);
+    temporary = stagingPath;
     if (process.platform === "win32")
       makeWindowsPathsPrivate([temporary]);
     const destination = new MemeshDatabase(temporary);
@@ -74681,12 +74736,9 @@ async function migrateNetworkMetadata(ctx) {
     if (process.platform === "win32")
       makeWindowsPathsPrivate([temporary, `${temporary}-wal`, `${temporary}-shm`, `${temporary}-journal`]);
     source.exec("COMMIT");
-    const fd = fs38.openSync(temporary, "r+");
-    try {
-      fs38.fsyncSync(fd);
-    } finally {
-      fs38.closeSync(fd);
-    }
+    fs38.fsyncSync(temporaryFd);
+    fs38.closeSync(temporaryFd);
+    temporaryFd = void 0;
     try {
       fs38.linkSync(temporary, target);
     } catch (error62) {
@@ -74707,6 +74759,8 @@ async function migrateNetworkMetadata(ctx) {
     return true;
   } finally {
     source.close();
+    if (temporaryFd !== void 0)
+      fs38.closeSync(temporaryFd);
     if (temporary)
       fs38.unlinkSync(temporary);
   }
@@ -74892,18 +74946,21 @@ function removeCreatedFolders(dataDir, directory, created) {
 var sleepSync = (ms) => {
   Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
 };
-function installLockIsStale(lock) {
+function staleInstallLock(lock) {
   try {
-    const age = Date.now() - fs39.statSync(lock).mtimeMs;
+    const opened = readPidLock(lock);
+    if (!opened)
+      return null;
+    const { stat: stat2, raw } = opened;
+    const age = Date.now() - stat2.mtimeMs;
     if (age >= INSTALL_LOCK_STALE_MS)
-      return true;
-    const raw = fs39.readFileSync(lock, "utf8").trim();
-    if (!/^[1-9][0-9]*$/.test(raw))
-      return age >= INSTALL_LOCK_EMPTY_STALE_MS;
-    process.kill(Number(raw), 0);
-    return false;
+      return stat2;
+    const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= INSTALL_LOCK_EMPTY_STALE_MS;
+    return stale ? stat2 : null;
   } catch (err) {
-    return err.code === "ESRCH";
+    if (err.code === "ENOENT")
+      return null;
+    throw err;
   }
 }
 function withInstallLock(dataDir, use) {
@@ -74923,8 +74980,8 @@ function withInstallLock(dataDir, use) {
     } catch (err) {
       if (err.code !== "EEXIST")
         throw err;
-      const judged = identityOf(lock);
-      if (judged !== null && installLockIsStale(lock)) {
+      const judged = staleInstallLock(lock);
+      if (judged !== null) {
         takeOverStaleLock(lock, judged);
         continue;
       }

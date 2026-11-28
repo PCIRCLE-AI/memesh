@@ -2107,8 +2107,9 @@ export function prepareWindowsHookState(filePath, deadline, create = false) {
 }
 
 export function openWindowsHookState(state, flags) {
+  if (flags !== 'r' && flags !== 'r+') throw windowsHookStateError();
   assertWindowsHookStateFile(state);
-  const fd = openSync(state.filePath, flags);
+  const fd = flags === 'r' ? openSync(state.filePath, 'r') : openSync(state.filePath, 'r+');
   try {
     const actual = fstatSync(fd, { bigint: true });
     if (!sameHookStateFile(state.file, actual) || !actual.isFile() || actual.nlink !== 1n) throw windowsHookStateError();

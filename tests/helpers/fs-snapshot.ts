@@ -10,6 +10,19 @@ import path from 'path';
 
 export type TreeSnapshot = Record<string, string>;
 
+const readFlags = fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
+
+export function readFileSnapshot(file: string) {
+  const fd = fs.openSync(file, readFlags);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error(`Expected a regular fixture file: ${file}`);
+    return { stat, bytes: fs.readFileSync(fd) };
+  } finally {
+    fs.closeSync(fd);
+  }
+}
+
 function describe(full: string, contentOnly: boolean): string {
   const st = fs.lstatSync(full, { bigint: true });
   const kind = st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file';
@@ -22,7 +35,17 @@ function describe(full: string, contentOnly: boolean): string {
   if (kind === 'file') {
     // A file nobody may read still has a picture: its metadata, and the fact that its bytes were not readable.
     let sha = 'unreadable';
-    try { sha = createHash('sha256').update(fs.readFileSync(full)).digest('hex'); } catch { /* keep 'unreadable' */ }
+    try {
+      const fd = fs.openSync(full, readFlags);
+      try {
+        const opened = fs.fstatSync(fd, { bigint: true });
+        if (opened.isFile() && opened.dev === st.dev && opened.ino === st.ino) {
+          sha = createHash('sha256').update(fs.readFileSync(fd)).digest('hex');
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch { /* keep 'unreadable' */ }
     return `${base} sha=${sha}`;
   }
   return base;

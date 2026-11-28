@@ -397,7 +397,8 @@ export function remoteLocatorAliases(remote: string): string[] {
   const bare = parts.path.replace(/\.git$/i, '');
   const out = new Set<string>();
   // `repo.git.git` with no suffix is `repo.git`: the spelling of the repository `repo`, not this one.
-  for (const suffix of /\.git$/i.test(bare) ? ['.git'] : ['', '.git']) {
+  const suffixes = /\.git$/i.test(bare) ? ['.git'] : ['', '.git'];
+  for (const suffix of suffixes) {
     out.add(`https://${parts.host}/${bare}${suffix}`);
     for (const transport of ['ssh-relative', 'ssh-absolute']) out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);
   }

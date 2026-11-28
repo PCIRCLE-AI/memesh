@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { appendTestFrameLog } from '../../src/network/test-frame-log.js';
 import * as windowsPermissions from '../../src/core/windows-permissions.js';
 import { makeHome, removeTree } from './helpers.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 // Exercise the actual two courier callers without starting a native endpoint.
 // The transport result is controlled; this is not proof of real relay routing.
@@ -54,8 +55,9 @@ describe.skipIf(process.platform === 'win32')('the test frame log', () => {
     expect(fs.statSync(file).mode & 0o777).toBe(0o600);
     fs.chmodSync(file, 0o644);
     expect(appendTestFrameLog(file, Buffer.from('two'))).toBeNull();
-    expect(fs.statSync(file).mode & 0o777).toBe(0o600);
-    expect(fs.readFileSync(file, 'utf8')).toBe('one\ntwo\n');
+    const { stat, bytes } = readFileSnapshot(file);
+    expect(stat.mode & 0o777).toBe(0o600);
+    expect(bytes.toString('utf8')).toBe('one\ntwo\n');
   });
 
   it('refuses a symlink at the file path, and writes nothing through it', () => {

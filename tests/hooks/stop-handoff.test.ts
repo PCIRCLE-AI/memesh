@@ -8,6 +8,7 @@ import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { ConversationMessages } from '../../src/core/conversation-messages.js';
 import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 let home: string;
 let cwd: string;
@@ -77,8 +78,9 @@ it.skipIf(process.platform === 'win32')('retains a redacted assistant in pending
   const original = fs.readFileSync(file);
   stop('This independent assistant reply must remain pending until its source can be checked.');
   expect(rows().filter(row => row.type === 'conversation')).toEqual([]);
-  expect(fs.statSync(file).mode & 0o777).toBe(0o644);
-  expect(fs.readFileSync(file)).toEqual(original);
+  const after = readFileSnapshot(file);
+  expect(after.stat.mode & 0o777).toBe(0o644);
+  expect(after.bytes).toEqual(original);
   const pending = path.join(home, '.memesh/pending-conversations');
   const files = fs.readdirSync(pending);
   expect(files).toHaveLength(1);

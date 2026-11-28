@@ -194,7 +194,8 @@ export function remoteLocatorAliases(remote) {
         return [];
     const bare = parts.path.replace(/\.git$/i, '');
     const out = new Set();
-    for (const suffix of /\.git$/i.test(bare) ? ['.git'] : ['', '.git']) {
+    const suffixes = /\.git$/i.test(bare) ? ['.git'] : ['', '.git'];
+    for (const suffix of suffixes) {
         out.add(`https://${parts.host}/${bare}${suffix}`);
         for (const transport of ['ssh-relative', 'ssh-absolute'])
             out.add(`${transport}://git@${parts.host}/${bare}${suffix}`);

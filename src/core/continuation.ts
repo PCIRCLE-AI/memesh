@@ -63,12 +63,14 @@ function cleanRevision(scope: Scope): string | null {
 
 function readOperation(file: string, now: number): Operation | null {
   try {
-    const stat = fs.lstatSync(file);
-    if (!stat.isFile() || stat.size > MAX_RECORD_BYTES) return null;
     const fd = fs.openSync(file, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     let data: Operation;
     try {
-      if (!fs.fstatSync(fd).isFile()) return null;
+      const opened = fs.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || opened.size > BigInt(MAX_RECORD_BYTES)) return null;
+      // Windows lacks O_NOFOLLOW. Compare the open file to the directory entry before reading.
+      const entry = fs.lstatSync(file, { bigint: true });
+      if (!entry.isFile() || entry.dev !== opened.dev || entry.ino !== opened.ino) return null;
       const buf = Buffer.alloc(MAX_RECORD_BYTES + 1);
       const size = fs.readSync(fd, buf, 0, buf.length, 0);
       if (size > MAX_RECORD_BYTES) return null;

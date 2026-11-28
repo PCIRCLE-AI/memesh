@@ -135,8 +135,15 @@ function removeNewFamily(file: string): void {
 function systemSalvage(source: string, output: string, executable: string): string | undefined {
   const sql = `${output}.sql`;
   let fd: number | undefined;
+  let input: number | undefined;
+  let ownSql = false;
   try {
     fd = fs.openSync(sql, 'wx', 0o600);
+    ownSql = true;
+    input = fs.openSync(sql, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    const created = fs.fstatSync(fd, { bigint: true });
+    const opened = fs.fstatSync(input, { bigint: true });
+    if (!opened.isFile() || opened.dev !== created.dev || opened.ino !== created.ino) return 'Recovery dump path changed';
     const address = hasPagesWaiting(source) ? source : immutableAddress(source);
     const recovered = spawnSync(executable, ['-readonly', address, '.recover --ignore-freelist'], {
       stdio: ['ignore', fd, 'pipe'], encoding: 'utf8', timeout: 120_000,
@@ -145,17 +152,20 @@ function systemSalvage(source: string, output: string, executable: string): stri
     if (recovered.error || recovered.status !== 0) return recovered.error?.message ?? String(recovered.stderr).trim().split('\n')[0] ?? 'sqlite3 .recover failed';
     // Two checked child processes, no shell pipeline and no whole dump in Node's heap.
     fs.closeSync(fs.openSync(output, 'wx', 0o600));
-    fd = fs.openSync(sql, 'r');
     const imported = spawnSync(executable, ['-bail', output], {
-      stdio: [fd, 'ignore', 'pipe'], encoding: 'utf8', timeout: 120_000,
+      stdio: [input, 'ignore', 'pipe'], encoding: 'utf8', timeout: 120_000,
     });
-    fs.closeSync(fd); fd = undefined;
+    fs.closeSync(input); input = undefined;
     if (imported.error || imported.status !== 0) return imported.error?.message ?? String(imported.stderr).trim().split('\n')[0] ?? 'sqlite3 import failed';
     const db = openReadOnly(output);
     try { memoryCount(db); } finally { db.close(); }
     return undefined;
   } catch (error) { return error instanceof Error ? error.message : String(error); }
-  finally { if (fd !== undefined) fs.closeSync(fd); fs.rmSync(sql, { force: true }); }
+  finally {
+    if (fd !== undefined) fs.closeSync(fd);
+    if (input !== undefined) fs.closeSync(input);
+    if (ownSql) fs.rmSync(sql, { force: true });
+  }
 }
 
 type Replacement = (from: string, to: string, commit: () => void | Promise<void>) => void | Promise<void>;

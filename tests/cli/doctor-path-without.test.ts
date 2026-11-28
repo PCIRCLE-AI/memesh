@@ -52,13 +52,13 @@ describe.skipIf(process.platform === 'win32')('pathWithout', () => {
     expect(pathWithout(['no-such-tool'], bin)).toBe(bin);
   });
 
-  it('hands a shell a PATH on which the fake agents are gone and node, found by NAME on that PATH, still runs: doctor sees no host', () => {
+  it('runs with a PATH on which the fake agents are gone and node, found by NAME on that PATH, still runs: doctor sees no host', () => {
     const { root, bin } = sharedBin();
     const home = path.join(root, 'home');
     fs.mkdirSync(home);
-    // `exec node` makes the shell look node up on the PATH the helper built. A helper that drops the
+    // Spawn resolves node on the fixture PATH. A helper that drops the
     // whole folder (the old behaviour: node lives in it) leaves "node: not found", exit 127.
-    const r = spawnSync('/bin/sh', ['-c', 'exec node "$0" doctor --json', cli], {
+    const r = spawnSync('node', [cli, 'doctor', '--json'], {
       env: { HOME: home, USERPROFILE: home, PATH: pathWithout(['claude', 'codex', 'gemini'], bin) },
       cwd: root,
       encoding: 'utf8',

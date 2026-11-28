@@ -389,9 +389,11 @@ function writeAttemptTime(file: string, now: number, directory: fs.BigIntStats |
   windowsControlEntry(parent, true, directory);
   let created: fs.BigIntStats | undefined;
   try {
-    if (!fs.lstatSync(file, { throwIfNoEntry: false })) {
+    try {
       const empty = fs.openSync(file, 'wx', 0o600);
       try { created = fs.fstatSync(empty, { bigint: true }); } finally { fs.closeSync(empty); }
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
     }
     const entry = windowsControlEntry(file, false, created);
     makeWindowsPathsPrivate([file]);
@@ -558,16 +560,16 @@ export function judgeAuditSignatures(json: string, name: string, version: string
   const entry = parsed.verified.find((e) => e.name === name && e.version === version);
   if (!entry) return { ok: false, reason: `${name}@${version} has no verified signature and provenance` };
   if (!Array.isArray(entry.attestationBundles)) return { ok: false, reason: 'no attestation was included for this version' };
+  const packageSubject = `pkg:npm/${name.replaceAll('@', '%40')}@${version}`;
   for (const bundle of entry.attestationBundles) {
     const statement = statementOf(bundle);
     if (at(statement, 'predicateType') !== 'https://slsa.dev/provenance/v1') continue;
     const subjectList = at(statement, 'subject');
     const subjects: unknown[] = Array.isArray(subjectList) ? subjectList : [];
-    const subjectNames = subjects.map((s) => String(at(s, 'name')));
-    if (!subjectNames.includes(`pkg:npm/${name.replace('@', '%40')}@${version}`)) continue;
+    const subject = subjects.find((candidate) => at(candidate, 'name') === packageSubject);
+    if (subject === undefined) continue;
     const workflow = at(statement, 'predicate', 'buildDefinition', 'externalParameters', 'workflow');
-    const digest = subjects.find((subject) => at(subject, 'name') === `pkg:npm/${name.replace('@', '%40')}@${version}`);
-    if (at(digest, 'digest', 'sha512') !== options.tarballSha512Hex) return { ok: false, reason: 'the attested package digest is not the digest of the downloaded tarball' };
+    if (at(subject, 'digest', 'sha512') !== options.tarballSha512Hex) return { ok: false, reason: 'the attested package digest is not the digest of the downloaded tarball' };
     const expectedSigner = `${EXPECTED_SOURCE.repository}/${EXPECTED_SOURCE.workflowPath}@refs/tags/v${version}`;
     if ((options.signerOf ?? signerIdentity)(bundle) !== expectedSigner) return { ok: false, reason: 'the signing certificate does not name this repository\'s release workflow at this version\'s tag' };
     if (at(workflow, 'repository') !== EXPECTED_SOURCE.repository) return { ok: false, reason: 'provenance names a different repository' };
@@ -1057,11 +1059,25 @@ function stageAndVerify(deps: AutoUpdateDeps, target: string): Staged | { ok: fa
   const install = execNpm(deps.exec, ['install', '--ignore-scripts', '--no-audit', '--no-fund', `${PACKAGE_NAME}@${target}`], { cwd: stage });
   if (install.status !== 0) return fail(AUTO_UPDATE_REASONS.sourceNotVerified, commandFailure(install, 'staging install'));
   const pack = execNpm(deps.exec, ['pack', `${PACKAGE_NAME}@${target}`, '--pack-destination', stage, '--silent'], { cwd: stage });
-  const tarball = path.join(stage, pack.stdout.trim().split('\n').pop() ?? '');
-  if (pack.status !== 0 || !fs.existsSync(tarball) || !fs.statSync(tarball).isFile()) return fail(AUTO_UPDATE_REASONS.tarballMismatch, pack.status === 0 ? 'npm pack produced no tarball' : commandFailure(pack, 'npm pack'));
+  if (pack.status !== 0) return fail(AUTO_UPDATE_REASONS.tarballMismatch, commandFailure(pack, 'npm pack'));
+  const filename = pack.stdout.trim().split('\n').pop() ?? '';
+  if (!/^[a-z0-9][a-z0-9._+-]*\.tgz$/i.test(filename)) return fail(AUTO_UPDATE_REASONS.tarballMismatch, 'npm pack produced no tarball');
+  const tarball = path.join(stage, filename);
+  let bytes: Buffer;
+  try {
+    const fd = fs.openSync(tarball, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
+    try {
+      const opened = fs.fstatSync(fd, { bigint: true });
+      if (!opened.isFile() || opened.nlink !== 1n) throw new Error('the packed tarball is not a regular file with a single link');
+      if (process.platform === 'win32') {
+        const entry = fs.lstatSync(tarball, { bigint: true });
+        if (!entry.isFile() || opened.ino === 0n || opened.dev !== entry.dev || opened.ino !== entry.ino) throw new Error('the packed tarball path changed');
+      }
+      bytes = fs.readFileSync(fd); // Use the same bytes for the attestation and the lockfile.
+    } finally { fs.closeSync(fd); }
+  } catch { return fail(AUTO_UPDATE_REASONS.tarballMismatch, 'npm pack produced no readable regular tarball'); }
   const audit = execNpm(deps.exec, ['audit', 'signatures', '--json', '--include-attestations'], { cwd: stage });
   if (audit.startupError) return fail(AUTO_UPDATE_REASONS.sourceNotVerified, audit.startupError);
-  const bytes = fs.readFileSync(tarball); // read once: the attestation and the lockfile are both judged against these bytes
   const verdict = judgeAuditSignatures(audit.stdout, PACKAGE_NAME, target, {
     tarballSha512Hex: createHash('sha512').update(bytes).digest('hex'),
     ...(deps.signerOf ? { signerOf: deps.signerOf } : {}),

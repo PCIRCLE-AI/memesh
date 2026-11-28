@@ -222,7 +222,9 @@ if (process.argv[2] !== 'doctor' && process.env.MEMESH_ROUTER_SOCKET === ${JSON.
   fs.writeFileSync(${JSON.stringify(marker)}, JSON.stringify({ step: process.argv[2], pid: process.pid }), { mode: 0o600 });
 }
 `;
-      const observedBundle = bundle.replace('\n', `\n${observer}`);
+      const shebangEnd = bundle.indexOf('\n');
+      expect(shebangEnd).toBeGreaterThan(0);
+      const observedBundle = bundle.slice(0, shebangEnd + 1) + observer + bundle.slice(shebangEnd + 1);
       fs.writeFileSync(cli, observedBundle);
       const normal = await runAsync(process.execPath, [cli, 'doctor', '--journey'], { env: process.env, cwd: world.home });
       expect(normal.status, normal.stderr).toBe(0);

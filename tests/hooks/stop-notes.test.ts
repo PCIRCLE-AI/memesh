@@ -9,6 +9,7 @@ import { MemeshDatabase } from '../../src/storage/sqlite.js';
 import { noteDirId } from '../../src/core/note-dirs.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { canDenyReads } from '../helpers/permissions.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const HOOK = path.resolve('scripts/hooks/session-summary.js');
 
@@ -181,10 +182,12 @@ describe('Stop note ingestion', () => {
     expect(second).toEqual(expect.arrayContaining([expect.objectContaining({ reason: other, count: 99 }), expect.objectContaining({ reason: deferred, count: 1 }), expect.objectContaining({ outcome: 'wrote' })]));
     expect(new Set(second.map((r) => r.run)).size).toBe(1);
     expect(ledger()).toEqual(expect.arrayContaining(first)); // first run's 100 remain in history
-    const last = path.join(memoryDir, 'a099.md'); const beforeStat = fs.statSync(last); const beforeBytes = fs.readFileSync(last);
+    const last = path.join(memoryDir, 'a099.md');
+    const before = readFileSnapshot(last);
     withDb((db) => db.prepare("DELETE FROM entities WHERE name='qa6_owner_099'").run());
     append(reads(1)); expect(run().status).toBe(0); // more=1 naturally retries; no touch/throttle override
-    expect(fs.readFileSync(last)).toEqual(beforeBytes); expect(fs.statSync(last).mtimeMs).toBe(beforeStat.mtimeMs);
+    const after = readFileSnapshot(last);
+    expect(after.bytes).toEqual(before.bytes); expect(after.stat.mtimeMs).toBe(before.stat.mtimeMs);
     const restored = withDb((db) => db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name='qa6_owner_099'").all());
     expect(restored).toEqual([{ content: 'replacement 99' }]);
     const third = ledger().filter((r) => r.hook === 'note-ingest').slice(prior + first.length + second.length);
@@ -216,7 +219,7 @@ describe('Stop note ingestion', () => {
     fs.chmodSync(bad, 0);
     let first;
     try {
-      let denied: unknown; try { fs.readFileSync(bad); } catch (error) { denied = error; }
+      let denied: unknown; try { readFileSnapshot(bad); } catch (error) { denied = error; }
       expect(denied).toHaveProperty('code', 'EACCES');
       append(reads(1)); first = run(); expect(first.status).toBe(0); expect(first.terminal).toBe(true);
       expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_good'").get())).toBeDefined();
@@ -224,7 +227,8 @@ describe('Stop note ingestion', () => {
     } finally { fs.chmodSync(bad, 0o600); }
     const failedState = fs.readFileSync(stateFile, 'utf8');
     const storedGood = goodSnapshot();
-    expect(fs.readFileSync(bad)).toEqual(bytes); expect(fs.statSync(bad).mtimeMs).toBe(mtime);
+    const after = readFileSnapshot(bad);
+    expect(after.bytes).toEqual(bytes); expect(after.stat.mtimeMs).toBe(mtime);
     append(reads(1)); const second = run(); expect(second.status).toBe(0); expect(second.terminal).toBe(true);
     // Baseline reaches this actual loss assertion: its second Stop is incorrectly throttled.
     expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_recovered'").get())).toBeDefined();
