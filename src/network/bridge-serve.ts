@@ -55,24 +55,40 @@ const COURIER_INTERVAL_MS = 1_000;
 const PRESENCE_INTERVAL_MS = 60_000;
 const SEND_CONNECT_DEADLINE_MS = 20_000;
 
+function openBridgeLog(file: string, exclusive = false): { fd: number; size: number } {
+  const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
+    | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+    | (exclusive ? fs.constants.O_EXCL : 0);
+  const fd = fs.openSync(file, flags, 0o600);
+  try {
+    const stat = fs.fstatSync(fd);
+    if (!stat.isFile()) throw new Error('Unsafe bridge log file');
+    return { fd, size: stat.size };
+  } catch (error) {
+    fs.closeSync(fd);
+    throw error;
+  }
+}
+
 function appendLog(dataDir: string, event: string, detail: Record<string, unknown> = {}): void {
   try {
     const file = logPath(dataDir);
-    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
-      | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
-    let fd = fs.openSync(file, flags, 0o600);
+    let log = openBridgeLog(file);
     try {
-      const stat = fs.fstatSync(fd);
-      if (!stat.isFile()) throw new Error('Unsafe bridge log file');
-      if (stat.size > LOG_MAX_BYTES) {
+      if (log.size > LOG_MAX_BYTES) {
         fs.renameSync(file, `${file}.1`);
-        const rotated = fd;
-        fd = fs.openSync(file, flags, 0o600);
-        fs.closeSync(rotated);
-        if (!fs.fstatSync(fd).isFile()) throw new Error('Unsafe bridge log file');
+        const rotated = log;
+        try {
+          log = openBridgeLog(file, true);
+        } catch (error) {
+          if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error;
+          // A concurrent starter already created the new log. Just append to it.
+          log = openBridgeLog(file);
+        }
+        fs.closeSync(rotated.fd);
       }
-      fs.appendFileSync(fd, line(event, detail));
-    } finally { fs.closeSync(fd); }
+      fs.appendFileSync(log.fd, line(event, detail));
+    } finally { fs.closeSync(log.fd); }
   } catch {
     // The folder itself may be what failed. Stderr was opened onto bridge.log at
     // spawn, so it still reaches the same file.

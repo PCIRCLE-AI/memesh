@@ -253,8 +253,8 @@
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "9b2b372902bb16069cf8efbef947d38cc26fb3a156b1959881640d69ffb3966c",
-      "bytes": 126557
+      "sha256": "35607a32d4f53240871779d035a2d7b95039e91f45ca2e32c2d4f0b8c364b478",
+      "bytes": 127269
     },
     {
       "path": "scripts/hooks/_stop-notes.js",

@@ -23,8 +23,26 @@ export function readFileSnapshot(file: string) {
   }
 }
 
-function describe(full: string, contentOnly: boolean): string {
-  const st = fs.lstatSync(full, { bigint: true });
+function describe(full: string, contentOnly: boolean, entry: fs.Dirent): string {
+  // Keep metadata and bytes from the same file. Unreadable files still have a metadata snapshot.
+  let stat: fs.BigIntStats | undefined;
+  let sha = 'unreadable';
+  if (entry.isFile()) {
+    try {
+      const fd = fs.openSync(full, readFlags);
+      try {
+        const opened = fs.fstatSync(fd, { bigint: true });
+        const named = fs.lstatSync(full, { bigint: true });
+        if (named.isFile() && opened.isFile() && opened.dev === named.dev && opened.ino === named.ino) {
+          stat = opened;
+          sha = createHash('sha256').update(fs.readFileSync(fd)).digest('hex');
+        }
+      } finally {
+        fs.closeSync(fd);
+      }
+    } catch { /* keep 'unreadable' */ }
+  }
+  const st = stat ?? fs.lstatSync(full, { bigint: true });
   const kind = st.isSymbolicLink() ? 'link' : st.isDirectory() ? 'dir' : 'file';
   // A rollback can put the BYTES back but not the inode or the modification times: `contentOnly` leaves those out.
   const identity = contentOnly ? '' : ` ino=${st.ino} mtime=${st.mtimeNs}`;
@@ -32,22 +50,7 @@ function describe(full: string, contentOnly: boolean): string {
   const size = kind === 'dir' ? '' : ` size=${st.size}`;
   const base = `${kind}${identity} mode=${(st.mode & 0o7777n).toString(8)}${size}`;
   if (kind === 'link') return `${base} -> ${fs.readlinkSync(full)}`;
-  if (kind === 'file') {
-    // A file nobody may read still has a picture: its metadata, and the fact that its bytes were not readable.
-    let sha = 'unreadable';
-    try {
-      const fd = fs.openSync(full, readFlags);
-      try {
-        const opened = fs.fstatSync(fd, { bigint: true });
-        if (opened.isFile() && opened.dev === st.dev && opened.ino === st.ino) {
-          sha = createHash('sha256').update(fs.readFileSync(fd)).digest('hex');
-        }
-      } finally {
-        fs.closeSync(fd);
-      }
-    } catch { /* keep 'unreadable' */ }
-    return `${base} sha=${sha}`;
-  }
+  if (kind === 'file') return `${base} sha=${sha}`;
   return base;
 }
 
@@ -55,9 +58,10 @@ function describe(full: string, contentOnly: boolean): string {
 export function snapshotTree(root: string, opts: { contentOnly?: boolean } = {}): TreeSnapshot {
   const out: TreeSnapshot = {};
   const walk = (dir: string): void => {
-    for (const name of fs.readdirSync(dir).sort()) {
-      const full = path.join(dir, name);
-      out[path.relative(root, full)] = describe(full, opts.contentOnly === true);
+    const entries = fs.readdirSync(dir, { withFileTypes: true });
+    for (const entry of entries.sort((a, b) => a.name < b.name ? -1 : a.name > b.name ? 1 : 0)) {
+      const full = path.join(dir, entry.name);
+      out[path.relative(root, full)] = describe(full, opts.contentOnly === true, entry);
       if (fs.lstatSync(full).isDirectory()) walk(full);
     }
   };

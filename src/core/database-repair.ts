@@ -140,10 +140,11 @@ function systemSalvage(source: string, output: string, executable: string): stri
   try {
     fd = fs.openSync(sql, 'wx', 0o600);
     ownSql = true;
-    input = fs.openSync(sql, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const created = fs.fstatSync(fd, { bigint: true });
+    // The import needs its own file offset at zero after .recover writes the dump.
+    input = fs.openSync(sql, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
     const opened = fs.fstatSync(input, { bigint: true });
-    if (!opened.isFile() || opened.dev !== created.dev || opened.ino !== created.ino) return 'Recovery dump path changed';
+    if (!opened.isFile() || opened.ino === 0n || opened.nlink !== 1n || opened.dev !== created.dev || opened.ino !== created.ino) return 'Recovery dump path changed';
     const address = hasPagesWaiting(source) ? source : immutableAddress(source);
     const recovered = spawnSync(executable, ['-readonly', address, '.recover --ignore-freelist'], {
       stdio: ['ignore', fd, 'pipe'], encoding: 'utf8', timeout: 120_000,

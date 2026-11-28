@@ -3091,26 +3091,39 @@ var MAX_CONCURRENT_CONNECTIONS = 32;
 var COURIER_INTERVAL_MS = 1e3;
 var PRESENCE_INTERVAL_MS = 6e4;
 var SEND_CONNECT_DEADLINE_MS = 2e4;
+function openBridgeLog(file, exclusive = false) {
+  const flags = fs13.constants.O_WRONLY | fs13.constants.O_APPEND | fs13.constants.O_CREAT | (fs13.constants.O_NOFOLLOW ?? 0) | (fs13.constants.O_NONBLOCK ?? 0) | (exclusive ? fs13.constants.O_EXCL : 0);
+  const fd = fs13.openSync(file, flags, 384);
+  try {
+    const stat2 = fs13.fstatSync(fd);
+    if (!stat2.isFile())
+      throw new Error("Unsafe bridge log file");
+    return { fd, size: stat2.size };
+  } catch (error) {
+    fs13.closeSync(fd);
+    throw error;
+  }
+}
 function appendLog(dataDir2, event, detail = {}) {
   try {
     const file = logPath(dataDir2);
-    const flags = fs13.constants.O_WRONLY | fs13.constants.O_APPEND | fs13.constants.O_CREAT | (fs13.constants.O_NOFOLLOW ?? 0) | (fs13.constants.O_NONBLOCK ?? 0);
-    let fd = fs13.openSync(file, flags, 384);
+    let log = openBridgeLog(file);
     try {
-      const stat2 = fs13.fstatSync(fd);
-      if (!stat2.isFile())
-        throw new Error("Unsafe bridge log file");
-      if (stat2.size > LOG_MAX_BYTES) {
+      if (log.size > LOG_MAX_BYTES) {
         fs13.renameSync(file, `${file}.1`);
-        const rotated = fd;
-        fd = fs13.openSync(file, flags, 384);
-        fs13.closeSync(rotated);
-        if (!fs13.fstatSync(fd).isFile())
-          throw new Error("Unsafe bridge log file");
+        const rotated = log;
+        try {
+          log = openBridgeLog(file, true);
+        } catch (error) {
+          if (error.code !== "EEXIST")
+            throw error;
+          log = openBridgeLog(file);
+        }
+        fs13.closeSync(rotated.fd);
       }
-      fs13.appendFileSync(fd, line(event, detail));
+      fs13.appendFileSync(log.fd, line(event, detail));
     } finally {
-      fs13.closeSync(fd);
+      fs13.closeSync(log.fd);
     }
   } catch {
     try {

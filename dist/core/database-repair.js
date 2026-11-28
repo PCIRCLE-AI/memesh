@@ -162,10 +162,10 @@ function systemSalvage(source, output, executable) {
     try {
         fd = fs.openSync(sql, 'wx', 0o600);
         ownSql = true;
-        input = fs.openSync(sql, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
         const created = fs.fstatSync(fd, { bigint: true });
+        input = fs.openSync(sql, fs.constants.O_RDONLY | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0));
         const opened = fs.fstatSync(input, { bigint: true });
-        if (!opened.isFile() || opened.dev !== created.dev || opened.ino !== created.ino)
+        if (!opened.isFile() || opened.ino === 0n || opened.nlink !== 1n || opened.dev !== created.dev || opened.ino !== created.ino)
             return 'Recovery dump path changed';
         const address = hasPagesWaiting(source) ? source : immutableAddress(source);
         const recovered = spawnSync(executable, ['-readonly', address, '.recover --ignore-freelist'], {

@@ -420,7 +420,7 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       }
       expect(swapped).toBe(true);
       // The fresh lock survived, so this starter never got in.
-      expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid}\n`);
+      expect(readFileSnapshot(lock).bytes.toString('utf8')).toBe(`${process.pid}\n`);
       expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
       fs.rmSync(lock);
     }, 20_000);
@@ -539,9 +539,8 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       const judged = identityOf(lock);
       if (!judged) throw new Error('no lock');
       takeOverStaleLock(lock, judged);
-      expect(fs.existsSync(lock)).toBe(false);
-
-      fs.writeFileSync(lock, '222\n');
+      // This succeeds only if the old lock was removed and the path is still free.
+      fs.writeFileSync(lock, '222\n', { flag: 'wx', mode: 0o600 });
       const fresh = identityOf(lock);
       takeOverStaleLock(lock, { dev: judged.dev, ino: judged.ino + 1000000 });
       expect(readFileSnapshot(lock).bytes.toString('utf8')).toBe('222\n');

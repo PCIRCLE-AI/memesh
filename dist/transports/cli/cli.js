@@ -72448,10 +72448,10 @@ function systemSalvage(source, output2, executable) {
   try {
     fd = fs15.openSync(sql, "wx", 384);
     ownSql = true;
-    input2 = fs15.openSync(sql, fs15.constants.O_RDONLY | (fs15.constants.O_NOFOLLOW ?? 0) | (fs15.constants.O_NONBLOCK ?? 0));
     const created = fs15.fstatSync(fd, { bigint: true });
+    input2 = fs15.openSync(sql, fs15.constants.O_RDONLY | (fs15.constants.O_NOFOLLOW ?? 0) | (fs15.constants.O_NONBLOCK ?? 0));
     const opened = fs15.fstatSync(input2, { bigint: true });
-    if (!opened.isFile() || opened.dev !== created.dev || opened.ino !== created.ino)
+    if (!opened.isFile() || opened.ino === 0n || opened.nlink !== 1n || opened.dev !== created.dev || opened.ino !== created.ino)
       return "Recovery dump path changed";
     const address = hasPagesWaiting(source) ? source : immutableAddress(source);
     const recovered = spawnSync2(executable, ["-readonly", address, ".recover --ignore-freelist"], {

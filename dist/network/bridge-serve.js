@@ -31,28 +31,44 @@ const MAX_CONCURRENT_CONNECTIONS = 32;
 const COURIER_INTERVAL_MS = 1_000;
 const PRESENCE_INTERVAL_MS = 60_000;
 const SEND_CONNECT_DEADLINE_MS = 20_000;
+function openBridgeLog(file, exclusive = false) {
+    const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
+        | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0)
+        | (exclusive ? fs.constants.O_EXCL : 0);
+    const fd = fs.openSync(file, flags, 0o600);
+    try {
+        const stat = fs.fstatSync(fd);
+        if (!stat.isFile())
+            throw new Error('Unsafe bridge log file');
+        return { fd, size: stat.size };
+    }
+    catch (error) {
+        fs.closeSync(fd);
+        throw error;
+    }
+}
 function appendLog(dataDir, event, detail = {}) {
     try {
         const file = logPath(dataDir);
-        const flags = fs.constants.O_WRONLY | fs.constants.O_APPEND | fs.constants.O_CREAT
-            | (fs.constants.O_NOFOLLOW ?? 0) | (fs.constants.O_NONBLOCK ?? 0);
-        let fd = fs.openSync(file, flags, 0o600);
+        let log = openBridgeLog(file);
         try {
-            const stat = fs.fstatSync(fd);
-            if (!stat.isFile())
-                throw new Error('Unsafe bridge log file');
-            if (stat.size > LOG_MAX_BYTES) {
+            if (log.size > LOG_MAX_BYTES) {
                 fs.renameSync(file, `${file}.1`);
-                const rotated = fd;
-                fd = fs.openSync(file, flags, 0o600);
-                fs.closeSync(rotated);
-                if (!fs.fstatSync(fd).isFile())
-                    throw new Error('Unsafe bridge log file');
+                const rotated = log;
+                try {
+                    log = openBridgeLog(file, true);
+                }
+                catch (error) {
+                    if (error.code !== 'EEXIST')
+                        throw error;
+                    log = openBridgeLog(file);
+                }
+                fs.closeSync(rotated.fd);
             }
-            fs.appendFileSync(fd, line(event, detail));
+            fs.appendFileSync(log.fd, line(event, detail));
         }
         finally {
-            fs.closeSync(fd);
+            fs.closeSync(log.fd);
         }
     }
     catch {

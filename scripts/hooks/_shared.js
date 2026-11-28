@@ -732,23 +732,29 @@ function checkedConversationQuotes(event, env) {
       || (userPrompt && (typeof quoteSource.id !== 'string' || !quoteSource.id))) {
       throw new Error('invalid quote source identity');
     }
-    const file = join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), 'messages.db');
+    const directory = resolve(dirname(env.MEMESH_DB_PATH ?? getDbPath()));
+    const file = join(directory, 'messages.db');
+    const readEntry = target => lstatSync(target, { bigint: true });
     let stat;
-    try { stat = lstatSync(file); } catch (error) { if (error.code === 'ENOENT') return clean; throw error; }
+    try { stat = readEntry(file); } catch (error) { if (error.code === 'ENOENT') return clean; throw error; }
+    const windows = process.platform === 'win32';
+    const owner = typeof process.getuid === 'function' ? BigInt(process.getuid()) : null;
     const privateFile = value => value.isFile() && !value.isSymbolicLink()
-      && (process.platform === 'win32' || (value.mode & 0o077) === 0)
-      && (typeof process.getuid !== 'function' || value.uid === process.getuid());
-    const dir = lstatSync(dirname(file));
-    if (!dir.isDirectory() || dir.isSymbolicLink() || (process.platform !== 'win32' && (dir.mode & 0o077) !== 0)
-      || (typeof process.getuid === 'function' && dir.uid !== process.getuid()) || !privateFile(stat)) {
+      && (windows || (value.mode & 0o077n) === 0n) && (owner === null || value.uid === owner);
+    const privateDirectory = value => value.isDirectory() && !value.isSymbolicLink()
+      && (windows || (value.mode & 0o077n) === 0n) && (owner === null || value.uid === owner);
+    const dir = readEntry(directory);
+    if (!privateDirectory(dir) || !privateFile(stat)) {
       throw new Error('unsafe quote source');
     }
+    const sidecars = [];
     for (const suffix of ['-wal', '-shm', '-journal']) {
       try {
-        const sidecar = lstatSync(file + suffix);
-        if (!privateFile(sidecar) || (process.platform !== 'win32' && (sidecar.mode & 0o700) !== (stat.mode & 0o700))) {
+        const sidecar = readEntry(file + suffix);
+        if (!privateFile(sidecar) || (!windows && (sidecar.mode & 0o700n) !== (stat.mode & 0o700n))) {
           throw new Error('unsafe quote sidecar');
         }
+        sidecars.push(file + suffix);
       }
       catch (error) { if (error.code !== 'ENOENT') throw error; }
     }
@@ -756,19 +762,28 @@ function checkedConversationQuotes(event, env) {
     if (existsSync(file + '-wal') && lstatSync(file + '-wal').size > 0 && !existsSync(file + '-shm')) {
       throw new Error('quote WAL requires an existing shared-memory file');
     }
-    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0));
-    const opened = fstatSync(fd);
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(fd, { bigint: true });
     if (!privateFile(opened) || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error('quote source changed');
     const remaining = conversationDeadline - Date.now();
     if (remaining <= 0) throw new Error('quote source budget exhausted');
+    if (windows) verifyWindowsPathsPrivate([directory, file, ...sidecars], remaining);
+    const recheck = () => {
+      const current = readEntry(file);
+      const parent = readEntry(directory);
+      if (!privateFile(current) || current.dev !== opened.dev || current.ino !== opened.ino
+        || !privateDirectory(parent) || parent.dev !== dir.dev || parent.ino !== dir.ino) {
+        throw new Error('quote source changed');
+      }
+    };
+    recheck();
     source = new MemeshDatabase(file, { readOnly: true });
     // SQLite's native busy sleeps can exceed the hook's wall-clock budget.
     // Retry this read against the same deadline; migration/write waits stay unchanged.
     source.pragma('busy_timeout = 0');
-    return retryWhileLocked(() => {
+    const result = retryWhileLocked(() => {
       if (Date.now() >= conversationDeadline) throw new Error('quote source budget exhausted');
-      const current = lstatSync(file);
-      if (current.dev !== opened.dev || current.ino !== opened.ino) throw new Error('quote source changed');
+      recheck();
       if (userPrompt) {
         const message = source.prepare(`SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at
           FROM messages WHERE id = ? AND recipient = ? AND recipient_machine = ? AND body IS NOT NULL
@@ -792,6 +807,8 @@ function checkedConversationQuotes(event, env) {
       return { ...clean, observations,
         title: omitAgentMessageText(clean.title ?? '', texts).text };
     }, Math.max(0, conversationDeadline - Date.now()), file);
+    recheck();
+    return result;
   } catch (cause) {
     throw Object.assign(new Error('conversation quote source unavailable'), { code: 'MEMESH_CONVERSATION_QUOTE_SOURCE', cause });
   } finally {
@@ -2113,6 +2130,7 @@ export function openWindowsHookState(state, flags) {
   try {
     const actual = fstatSync(fd, { bigint: true });
     if (!sameHookStateFile(state.file, actual) || !actual.isFile() || actual.nlink !== 1n) throw windowsHookStateError();
+    assertWindowsHookStateFile(state);
     return fd;
   } catch (err) {
     closeSync(fd);
