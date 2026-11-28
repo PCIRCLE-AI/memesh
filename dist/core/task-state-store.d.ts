@@ -1,6 +1,7 @@
 import { type TaskState, type TaskStateField } from './task-state.js';
 export interface SetTaskStateInput {
     project?: string;
+    ids?: readonly string[];
     patch: Partial<Record<TaskStateField, string>>;
     sourceHost?: string;
 }
@@ -13,7 +14,7 @@ export declare class TaskStateUnreadableError extends Error {
     readonly project: string;
     constructor(project: string);
 }
-export declare function getTaskState(project?: string): {
+export declare function getTaskState(project?: string, ids?: readonly string[]): {
     project: string;
     state: TaskState;
 };

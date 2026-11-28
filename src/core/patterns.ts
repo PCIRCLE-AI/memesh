@@ -4,7 +4,10 @@
 // =============================================================================
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
+import { NOISE_TYPES } from './analytics.js';
+import { NOISE_TYPES as LIFECYCLE_COMPRESSED_TYPES } from './lifecycle.js';
+import { COMPACTABLE_TYPES as DREAMER_COMPACTED_TYPES } from './dreamer.js';
+import { unmarkedCompressedCommits } from './compression-ledger.js';
 
 // ---------------------------------------------------------------------------
 // Result types
@@ -33,7 +36,46 @@ export interface PatternsResult {
 // Constants
 // ---------------------------------------------------------------------------
 
-const AUTO_TYPES = ['session_keypoint', 'commit', 'session_identity', 'workflow_checkpoint', 'session-insight', SESSION_HANDOFF_TYPE];
+// Records the hooks write on their own (commits, session dumps, weekly
+// roll-ups, the handoff): they say nothing about what the person works on.
+const AUTO_TYPES = [...NOISE_TYPES, 'workflow_checkpoint'];
+const SESSION_TYPES = ['session_keypoint', 'session-insight'];
+
+/**
+ * Which records count as work that happened. A forgotten memory does not. But
+ * archiving also happens without the person asking: lifecycle compression
+ * (`compressWeeklyNoise`, run daily) and the dreamer both archive old commits
+ * and session records, and both leave `metadata.compacted_into` on each row
+ * they archive; the types either may archive are read from each one's own set.
+ * `forget` leaves nothing, and remembering an archived record again removes
+ * the marker. So an archived record of those types counts exactly when it
+ * carries that marker; a record forgotten before its week was compressed was
+ * never marked and never counts. Weekly summaries never count: their time is
+ * the moment of compression. Known limits: rows compressed before the marker
+ * existed were marked once, by `backfillCompressionMarkers`, where a weekly
+ * summary's counts account for every archived row of that week and type; for
+ * a week it could not mark, the commits its summary declared still count in
+ * `totalCommits` (`unmarkedCompressedCommits`) but not in hours, days or
+ * sessions, and in data an older version wrote, a record compressed, remembered
+ * again and then forgotten looks compressed and still counts.
+ */
+const COMPRESSED_TYPE_LIST = [...new Set([...LIFECYCLE_COMPRESSED_TYPES, ...DREAMER_COMPACTED_TYPES])]
+  .filter((t) => t !== 'weekly-summary' && t !== 'weekly_summary')
+  .map((t) => `'${t.replace(/'/g, "''")}'`).join(',');
+function countedSql(alias: string): string {
+  return `(${alias}.type != 'weekly-summary' AND (${alias}.status = 'active' OR (${alias}.status = 'archived'
+    AND ${alias}.type IN (${COMPRESSED_TYPE_LIST})
+    AND json_type(CASE WHEN json_valid(${alias}.metadata) THEN ${alias}.metadata ELSE '{}' END, '$.compacted_into') = 'integer')))`;
+}
+// Tags memory writes on its own account, not learning topics. Exact labels and
+// prefixes with their separator: a bare 'auto' or 'session' prefix also threw
+// away real topics such as `automation`, `autoscaling` and `sessions`.
+const SYSTEM_TAG_PREFIXES = ['date:', 'session:', 'project:', 'source:', 'severity:', 'error-pattern:'];
+const SYSTEM_TAG_LITERALS = [
+  'auto', 'auto-captured', 'auto-tracked', 'auto_saved',
+  'session_end', 'session-summary', 'session-insight', 'session_keypoint', 'workflow_checkpoint',
+  'scope:project',
+];
 const LEARNING_TYPES = ['lesson_learned', 'mistake', 'bug_fix', 'lesson'];
 
 // ---------------------------------------------------------------------------
@@ -50,14 +92,14 @@ export function computePatterns(db: MemeshDatabase, categories?: string[]): Patt
   if (allCategories || categories!.includes('workSchedule')) {
     hourDistribution = db.prepare(`
       SELECT CAST(strftime('%H', created_at, 'localtime') AS INTEGER) as hour, COUNT(*) as count
-      FROM entities
+      FROM entities e WHERE ${countedSql('e')}
       GROUP BY hour ORDER BY hour
     `).all() as Array<{ hour: number; count: number }>;
 
     dayDistribution = db.prepare(`
       SELECT CAST(strftime('%w', created_at, 'localtime') AS INTEGER) as dayNum,
         COUNT(*) as count
-      FROM entities GROUP BY dayNum ORDER BY dayNum
+      FROM entities e WHERE ${countedSql('e')} GROUP BY dayNum ORDER BY dayNum
     `).all() as Array<{ dayNum: number; count: number }>;
   }
 
@@ -79,11 +121,21 @@ export function computePatterns(db: MemeshDatabase, categories?: string[]): Patt
 
   if (allCategories || categories!.includes('workflow')) {
     totalCommits = (db.prepare(
-      "SELECT COUNT(*) as c FROM entities WHERE type = 'commit'"
-    ).get() as { c: number }).c;
-    totalSessions = (db.prepare(
-      "SELECT COUNT(*) as c FROM entities WHERE type IN ('session_keypoint', 'session-insight')"
-    ).get() as { c: number }).c;
+      `SELECT COUNT(*) as c FROM entities e WHERE e.type = 'commit' AND ${countedSql('e')}`
+    ).get() as { c: number }).c + unmarkedCompressedCommits(db);
+    // One conversation writes up to three session records, all tagged with the
+    // same `session:<id>`: count the ids, and a record with no such tag as one.
+    const sessionTypes = SESSION_TYPES.map(() => '?').join(',');
+    totalSessions = (db.prepare(`
+      SELECT
+        (SELECT COUNT(DISTINCT t.tag) FROM tags t JOIN entities e ON e.id = t.entity_id
+          WHERE ${countedSql('e')} AND e.type IN (${sessionTypes}) AND t.tag LIKE 'session:%')
+        +
+        (SELECT COUNT(*) FROM entities e
+          WHERE ${countedSql('e')} AND e.type IN (${sessionTypes})
+            AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag LIKE 'session:%'))
+        AS c
+    `).get(...SESSION_TYPES, ...SESSION_TYPES) as { c: number }).c;
     commitsPerSession = totalSessions > 0 ? Math.round((totalCommits / totalSessions) * 10) / 10 : 0;
   }
 
@@ -107,10 +159,11 @@ export function computePatterns(db: MemeshDatabase, categories?: string[]): Patt
       SELECT t.tag, COUNT(*) as count FROM tags t
       JOIN entities e ON t.entity_id = e.id
       WHERE e.type IN (${LEARNING_TYPES.map(() => '?').join(',')})
-        AND t.tag NOT LIKE 'date:%' AND t.tag NOT LIKE 'auto%' AND t.tag NOT LIKE 'session%'
-        AND t.tag != 'scope:project'
+        AND e.status = 'active'
+        ${SYSTEM_TAG_PREFIXES.map(() => 'AND t.tag NOT LIKE ?').join('\n        ')}
+        AND t.tag NOT IN (${SYSTEM_TAG_LITERALS.map(() => '?').join(',')})
       GROUP BY t.tag ORDER BY count DESC LIMIT 10
-    `).all(...LEARNING_TYPES) as Array<{ tag: string; count: number }>;
+    `).all(...LEARNING_TYPES, ...SYSTEM_TAG_PREFIXES.map((p) => `${p}%`), ...SYSTEM_TAG_LITERALS) as Array<{ tag: string; count: number }>;
   }
 
   return {

@@ -1,24 +1,27 @@
 import { describe, expect, it } from 'vitest';
 import { TOOL_DEFINITIONS } from '../src/transports/mcp/handlers.js';
+import { CONVERSATION_MESSAGE_DESCRIPTION, CONVERSATION_MESSAGE_INPUT_SCHEMA, ConversationMessageActionSchema } from '../src/transports/conversation-messaging.js';
 
 describe('public MCP message tool definition', () => {
-  it('advertises principal and exact-session targeting to conforming clients', () => {
+  it('publishes the strict four-action conversation contract', () => {
     const message = TOOL_DEFINITIONS.find((tool) => tool.name === 'message');
-    expect(message).toBeDefined();
+    if (!message) throw new Error('message tool definition missing');
 
-    const properties = message?.inputSchema.properties as Record<string, unknown>;
-    expect(properties.target_kind).toEqual(expect.objectContaining({
-      type: 'string',
-      enum: ['principal', 'session'],
-    }));
+    expect(message.inputSchema).toEqual(CONVERSATION_MESSAGE_INPUT_SCHEMA);
+    expect(message.description).toBe(CONVERSATION_MESSAGE_DESCRIPTION);
+    for (const input of [
+      { action: 'discover' },
+      { action: 'send', recipient: 'receiver', kind: 'task', body: 'body' },
+      { action: 'read', message_id: '00000000-0000-4000-8000-000000000000' },
+      { action: 'status' },
+    ]) expect(ConversationMessageActionSchema.safeParse(input).success).toBe(true);
   });
 
-  it('#497: advertises intended_session and fallback_to_principal, and says what each does', () => {
-    const message = TOOL_DEFINITIONS.find((tool) => tool.name === 'message');
-    const properties = message?.inputSchema.properties as Record<string, unknown>;
-    expect(properties.intended_session).toEqual(expect.objectContaining({ type: 'string' }));
-    expect(properties.fallback_to_principal).toEqual(expect.objectContaining({ type: 'boolean' }));
-    expect(message?.description).toContain('intended_session');
-    expect(message?.description).toContain('intended_for_other_session');
+  it('rejects retired routing and lifecycle fields', () => {
+    for (const input of [
+      { action: 'poll' },
+      { action: 'discover', target_kind: 'principal' },
+      { action: 'send', recipient: 'receiver', kind: 'task', body: 'body', intended_session: 'session' },
+    ]) expect(ConversationMessageActionSchema.safeParse(input).success).toBe(false);
   });
 });

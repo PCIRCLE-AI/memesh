@@ -104,6 +104,18 @@ export function npxSync(args, opts = {}) {
   return runSync(NPX, args, opts);
 }
 
+/** Read one package from npm's array, direct or package-name-keyed JSON report. */
+export function parsePackResult(stdout) {
+  const report = JSON.parse(String(stdout));
+  if (!report || typeof report !== 'object') throw new Error('npm pack must report exactly one package');
+  const entries = Array.isArray(report) ? report
+    : Array.isArray(report.files) || typeof report.filename === 'string' ? [report] : Object.values(report);
+  if (entries.length !== 1 || !entries[0] || typeof entries[0] !== 'object' || Array.isArray(entries[0])) {
+    throw new Error('npm pack must report exactly one package');
+  }
+  return entries[0];
+}
+
 /**
  * `baseEnv` with every spelling of `npm_config_cache` removed and the private
  * cache set. Windows environment names are case-insensitive and Node keeps

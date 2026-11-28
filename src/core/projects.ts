@@ -15,20 +15,10 @@
 
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import { extractProjectFromEntity } from './project-attribution.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 
 // The attribution rule lives in project-attribution.ts (pure, shared with the
 // dashboard); re-exported here for the existing importers.
 export { extractProjectFromName, extractProjectFromEntity } from './project-attribution.js';
-
-/**
- * The one type a project never counts: the Stop hook writes a session handoff
- * for every project, tagged `project:<name>`, and it is not one of the
- * project's memories. `computeProjects` (the chips) and `listByProject` (the
- * list behind a chip) both filter with this fragment, so neither can start or
- * stop counting it without the other. Alias `e` is the entities table.
- */
-export const NOT_A_PROJECT_MEMORY = { sql: 'e.type <> ?', param: SESSION_HANDOFF_TYPE } as const;
 
 export interface ProjectInfo {
   /** Canonical project key, suitable for matching against tag values. */
@@ -60,8 +50,7 @@ export function computeProjects(db: MemeshDatabase): ProjectInfo[] {
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-      AND ${NOT_A_PROJECT_MEMORY.sql}
-  `).all(NOT_A_PROJECT_MEMORY.param) as RawEntity[];
+  `).all() as RawEntity[];
 
   const acc = new Map<string, { count: number; types: Map<string, number>; sources: Set<'tag' | 'heuristic'> }>();
 

@@ -17,13 +17,12 @@ Treat this as a single-context repo: one product, one domain vocabulary, which
 is why a single glossary fits. The layout underneath that is not uniform, and an
 agent enumerating source files will miss code if it assumes it is. There is no
 npm workspace — the root `package.json` has no `workspaces` field — and code
-lives in three differently-shaped places, **only two of which a
+lives in two differently-shaped places, **only one of which a
 `package.json`-or-`src/` sweep will find**:
 
 | Where | Shape |
 |---|---|
 | repository root | `package.json`; code in `src/`, `scripts/`, `tests/`, `benchmarks/`, and two root config files |
-| `extensions/memory-memesh/` | its own `package.json`, TypeScript at the directory root (`index.ts`, `config.ts`) — **no `src/`** |
 | `extensions/hermes-memesh/` | Python: `__init__.py` and `plugin.yaml`, **no `package.json` at all** |
 
 The Python row is the one the sweep misses, and it is why this table exists.
@@ -47,7 +46,7 @@ writing the first decision picks the conventional location and records it here
 in the same change.
 
 (The skills also support a multi-context layout, keyed on a `CONTEXT-MAP.md` at
-the root. This repo does not use it; reach for it only if the three packages
+the root. This repo does not use it; reach for it only if the packages
 ever grow separate domain vocabularies.)
 
 ## Use the glossary's vocabulary

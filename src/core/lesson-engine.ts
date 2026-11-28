@@ -59,7 +59,7 @@ export function createExplicitLesson(
     ? `lesson-${scope}-${errorPattern}`
     : `lesson-${scope}-${lessonSlug(error)}`;
 
-  remember({
+  const stored = remember({
     name,
     type: 'lesson_learned',
     observations: [
@@ -85,9 +85,9 @@ export function createExplicitLesson(
   // before the re-confirmation.
   getDatabase()
     .prepare('UPDATE entities SET confidence = 1.0 WHERE name = ?')
-    .run(name);
+    .run(stored.name);
 
-  return { name };
+  return { name: stored.name };
 }
 
 // `findProjectLessons` was removed in 2026-05 (SDD G8 cleanup). The

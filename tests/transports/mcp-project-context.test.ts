@@ -1,9 +1,11 @@
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { execFileSync } from 'node:child_process';
+import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
-import { getProjectName } from '../../src/core/paths.js';
+import { getProjectIds, getProjectName } from '../../src/core/paths.js';
 import { resolveMcpProject } from '../../src/transports/mcp/project-context.js';
 
 const dirs: string[] = [];
@@ -18,7 +20,7 @@ afterEach(() => { for (const d of dirs.splice(0)) fs.rmSync(d, { recursive: true
 describe('resolveMcpProject: the project an MCP call belongs to when it names none', () => {
   it('one workspace root is that root\'s project', () => {
     const a = dir('a');
-    expect(resolveMcpProject(undefined, [uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(undefined, [uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('no root and no launch root is unbound', () => {
@@ -31,12 +33,12 @@ describe('resolveMcpProject: the project an MCP call belongs to when it names no
     const sub = path.join(a, 'sub'); fs.mkdirSync(sub);
     // A non-git directory is its own project, so a subdirectory is a different one.
     expect(getProjectName(sub)).not.toBe(getProjectName(a));
-    expect(resolveMcpProject(undefined, [uri(a), uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(undefined, [uri(a), uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('the launch root alone binds the call (a host that sends no roots)', () => {
     const a = dir('a');
-    expect(resolveMcpProject(a, [])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(a, [])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('an unusable launch root is refused, never replaced by the roots or the server cwd', () => {
@@ -56,7 +58,7 @@ describe('resolveMcpProject: the project an MCP call belongs to when it names no
     const r = resolveMcpProject(a, [uri(b)]);
     expect(r).toMatchObject({ error: 'workspace_ambiguous' });
     expect('reason' in r && r.reason).toMatch(/MEMESH_PROJECT_ROOT/);
-    expect(resolveMcpProject(a, [uri(a)])).toEqual({ project: getProjectName(a) });
+    expect(resolveMcpProject(a, [uri(a)])).toEqual({ project: getProjectName(a), ids: getProjectIds(a) });
   });
 
   it('roots the client advertised but did not return bind nothing, not even with a launch root', () => {
@@ -161,6 +163,34 @@ describe('task_state and briefing without a project use the bound project, never
     expect(r.isError).toBeFalsy();
     expect(JSON.parse(text(r)).project).toBe(getProjectName(a));
   });
+
+  it('briefing of a bound checkout with a remote also shows memories under its path id, never a same-name repository\'s', async () => {
+    const repo = path.join(dir('repo'), 'proj');
+    fs.mkdirSync(repo);
+    // execFileSync throws when git fails, so a broken setup cannot pass silently.
+    execFileSync('git', ['init', '-q', repo]);
+    execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'https://github.com/acme/proj.git']);
+    const hash = (s: string) => createHash('sha256').update(s).digest('hex').slice(0, 32);
+    const remoteId = `proj~${hash('github.com/acme/proj')}`;
+    const pathId = `proj~${hash(fs.realpathSync.native(repo))}`;
+    const { KnowledgeGraph } = await import('../../src/knowledge-graph.js');
+    const kg = new KnowledgeGraph(db.getDatabase());
+    const byPath = kg.createEntity('by-path', 'reference', { title: 'Written under the path id', observations: ['x'], tags: [`project:${pathId}`] });
+    const foreign = kg.createEntity('same-name', 'reference', { title: 'Another proj repository', observations: ['y'], tags: ['project:proj~0123456789abcdef0123456789abcdef'] });
+    const r = await call('briefing', {}, undefined, [uri(repo)]);
+    expect(r.isError).toBeFalsy();
+    const out = JSON.parse(text(r));
+    expect(out.project).toBe(remoteId);
+    expect(out.text).toContain(`[mem:${byPath}]`);
+    expect(out.text).not.toContain(`[mem:${foreign}]`);
+    // Naming the bound project explicitly reads it the same way: under every id of its checkout.
+    const named = JSON.parse(text(await call('briefing', { project: remoteId }, undefined, [uri(repo)])));
+    expect(named.text).toContain(`[mem:${byPath}]`);
+    // Naming another project reads only that id: the checkout's path id is not proven to be its.
+    const other = JSON.parse(text(await call('briefing', { project: 'proj~0123456789abcdef0123456789abcdef' }, undefined, [uri(repo)])));
+    expect(other.text).toContain(`[mem:${foreign}]`);
+    expect(other.text).not.toContain(`[mem:${byPath}]`);
+  });
 });
 
 // #511: a `project:<name>` tag that names the bound repository by its plain
@@ -222,6 +252,10 @@ describe('#511 remember: a plain-name project tag for the bound project gets the
     const again = await call('remember', { name: 'legacy-511', type: 'decision', why: 'a fixed choice for this case; revisit if it changes', observations: ['two'], tags: [plain] }, repo);
     expect(again.isError, text(again)).toBeFalsy();
     expect(JSON.parse(text(again)).retagged).toBeUndefined();
+    expect(JSON.parse(text(again)).name).toBe('legacy-511');
+    const append = await call('remember', { name: 'legacy-511', observations: ['three'], tags: [plain] }, repo);
+    expect(append.isError, text(append)).toBeFalsy();
+    expect(JSON.parse(text(append)).name).toBe('legacy-511');
     expect(tagsOf('legacy-511')).toEqual([plain]);
   });
 

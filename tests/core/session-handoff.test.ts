@@ -1,118 +1,13 @@
 import { describe, it, expect } from 'vitest';
 import {
-  cleanHandoffText,
-  handoffLines,
-  handoffView,
-  HANDOFF_FUTURE_SKEW_MINUTES,
-  HANDOFF_MAX_AGE_DAYS,
-  HANDOFF_MAX_CHARS,
-  HANDOFF_STALE_HOURS,
-  agentMessageTexts,
-  CHANNEL_SCAN_MAX_CHARS,
-  lastAssistantText,
-  omitAgentMessageText,
-  SESSION_HANDOFF_TYPE,
-  sessionHandoffName,
+  handoffLines, handoffView, HANDOFF_MAX_BYTES, HANDOFF_SESSION_LIMIT,
+  agentMessageTexts, CHANNEL_SCAN_MAX_CHARS, lastAssistantText, omitAgentMessageText,
 } from '../../src/core/session-handoff.js';
-import { groupTopology } from '../../src/core/work-topology.js';
-import { AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../src/core/agent-messaging.js';
-import { NOISE_TYPES } from '../../src/core/analytics.js';
 
 const line = (entry: object) => JSON.stringify(entry);
 const asst = (content: unknown, extra: object = {}) =>
   line({ type: 'assistant', message: { role: 'assistant', content }, ...extra });
 const text = (t: string) => [{ type: 'text', text: t }];
-
-describe('cleanHandoffText', () => {
-  it('drops fenced code and keeps the prose around it', () => {
-    const out = cleanHandoffText('Fixed the parser.\n\n```ts\nconst secretLooking = 1;\n```\n\nNext: run the suite.');
-    expect(out).toBe('Fixed the parser.\n\nNext: run the suite.');
-  });
-
-  it('drops a fence that was never closed, to the end of the message', () => {
-    expect(cleanHandoffText('Done with the change.\n```bash\nrm -rf build')).toBe('Done with the change.');
-  });
-
-  it('does not mistake a ``` in the middle of a sentence for a fence', () => {
-    const inline = 'Fixed the markdown renderer so a line that starts with ``` is no longer treated as a fence by mistake. Next: rebase and open the PR.';
-    expect(cleanHandoffText(inline)).toBe(inline);
-    // A single line that opens AND closes with backticks is a code span, not a fence.
-    expect(cleanHandoffText('```one-liner``` was the old spelling.\nNext: rebase and open the PR.')).toContain('Next: rebase and open the PR.');
-  });
-
-  it('keeps prose after a closed fence and drops only the fenced lines', () => {
-    const out = cleanHandoffText('Before.\n```\nfirst block\n```\nBetween.\n```py\nsecond block\n```\nAfter.');
-    expect(out).toBe('Before.\nBetween.\nAfter.');
-  });
-
-  it('recognises the fence shapes markdown allows: tildes, list indentation, a longer closer, text after the closer', () => {
-    const next = 'Next: rebase and open the PR.';
-    expect(cleanHandoffText(`Intro.\n~~~\nsecret-looking code\n~~~\n${next}`)).toBe(`Intro.\n${next}`);
-    expect(cleanHandoffText(`Steps:\n10. Build it:\n    \`\`\`bash\n    npm run build\n    \`\`\`\n${next}`)).toBe(`Steps:\n10. Build it:\n${next}`);
-    expect(cleanHandoffText(`Intro.\n\`\`\`\ncode\n\`\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
-    expect(cleanHandoffText(`Intro.\n\`\`\`\ncode\n\`\`\` done with that\n${next}`)).toBe(`Intro.\n${next}`);
-    // A shorter or different run inside the block does not close it.
-    expect(cleanHandoffText(`Intro.\n\`\`\`\`\n\`\`\`\n~~~\nstill code\n\`\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
-    expect(cleanHandoffText(`Intro.\n\`\`\`\n~~~~\nstill code\n\`\`\`\n${next}`)).toBe(`Intro.\n${next}`);
-  });
-
-  it('stays linear on many fence openers that never close', () => {
-    const started = Date.now();
-    const out = cleanHandoffText(`Intro.\n${'```js\n'.repeat(40_000)}`);
-    expect(out).toBe('Intro.');
-    expect(Date.now() - started).toBeLessThan(2_000);
-  });
-
-  it('collapses runs of blank lines and trailing spaces', () => {
-    expect(cleanHandoffText('one  \n\n\n\n\ntwo\t')).toBe('one\n\ntwo');
-  });
-
-  it('keeps the END of a long message, so the next step survives', () => {
-    const long = `${'background sentence. '.repeat(200)}\nNEXT STEP: rebase and open the PR.`;
-    const out = cleanHandoffText(long);
-    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
-    expect(out.startsWith('…')).toBe(true);
-    expect(out.endsWith('NEXT STEP: rebase and open the PR.')).toBe(true);
-  });
-
-  it('starts on a line break when one is near, not mid-sentence', () => {
-    // The cut lands inside the run of x's; the first line break after it is
-    // 178 characters in, so the fragment is dropped and the kept text starts
-    // on a whole line.
-    const body = `${'x'.repeat(300)}\nWhole line one kept.\n${'filler line\n'.repeat(50)}`;
-    const out = cleanHandoffText(body);
-    expect(out.startsWith('…Whole line one kept.')).toBe(true);
-    expect(out.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
-  });
-
-  it('never starts on half of a surrogate pair', () => {
-    // 1001 UTF-16 units; the last 799 (the ellipsis takes the 800th) begin
-    // exactly on the LOW half of an emoji, which the cut has to step over.
-    const out = cleanHandoffText(`x${'😀'.repeat(500)}`);
-    const body = out.slice(1);
-    expect(out.startsWith('…')).toBe(true);
-    const first = body.charCodeAt(0);
-    expect(first >= 0xdc00 && first <= 0xdfff, 'the kept text starts on a lone low surrogate').toBe(false);
-  });
-
-  it('handles a very long run of spaces inside a line in linear time', () => {
-    // The Stop hook has a 10 s budget. A trailing-space pattern that retries
-    // from every position of a run FOLLOWED BY TEXT takes ~4 s at 80,000 spaces
-    // and ~15 s at 160,000; this run is 200,000 and must still be instant.
-    const line = `first${' '.repeat(200_000)}last`;
-    const started = Date.now();
-    const out = cleanHandoffText(`${line}\nsecond line   `);
-    const elapsed = Date.now() - started;
-    // Far longer than the bound, so only the end survives.
-    expect(out).toBe('…last\nsecond line');
-    expect(elapsed).toBeLessThan(2_000);
-  });
-
-  it('returns an empty string when only code is left', () => {
-    expect(cleanHandoffText('```js\nconsole.log(1)\n```')).toBe('');
-    expect(cleanHandoffText('')).toBe('');
-  });
-});
 
 describe('lastAssistantText', () => {
   it('walks back past tool-only lines to the newest line with text', () => {
@@ -155,94 +50,82 @@ describe('lastAssistantText', () => {
   });
 });
 
-describe('the handoff is one entity per project and nobody else lists it', () => {
-  it('is named per project', () => {
-    expect(sessionHandoffName('acme')).toBe(`${SESSION_HANDOFF_TYPE}:acme`);
+describe('a Codex rollout (rows as the host writes them: response_item rows with a payload)', () => {
+  const message = (role: string, blockType: string, ...texts: string[]) => line({
+    type: 'response_item',
+    payload: { type: 'message', id: 'msg_1', role, status: 'completed', content: texts.map((t) => ({ type: blockType, text: t })) },
+  });
+  const request = (type = 'function_call') => line({ type: 'response_item', payload: { type, call_id: 'c1', name: 'shell', arguments: '{}' } });
+  const output = (value: string) => line({ type: 'response_item', payload: { type: 'function_call_output', call_id: 'c1', output: value } });
+
+  it('reads the newest assistant message row, past requests, outputs, user rows and events', () => {
+    const jsonl = [
+      message('assistant', 'output_text', 'An older message.'),
+      request(),
+      output('ok'),
+      message('assistant', 'output_text', 'The final words, from Codex.'),
+      message('user', 'input_text', 'a later user turn'),
+      request('custom_tool_call'),
+      line({ type: 'event_msg', payload: { type: 'agent_message', message: 'an event, not a message row' } }),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('The final words, from Codex.');
   });
 
-  it('groupTopology drops it, in the project pool and as a foreign one', () => {
-    const sections = groupTopology([
-      { name: 'session-handoff:acme', type: SESSION_HANDOFF_TYPE, title: 'Where the last session left off' },
-      { name: 'session-handoff:other', type: SESSION_HANDOFF_TYPE, title: 'Where the last session left off', foreign: true },
-      { name: 'decision-1', type: 'decision', title: 'use sqlite' },
-    ], 'acme');
-    const listed = sections.flatMap((s) => s.entities.map((e) => e.name));
-    expect(listed).toEqual(['decision-1']);
+  it('skips an assistant row whose text is only white space, and reads the one before it', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('assistant', 'output_text', '  \n\t ')].join('\n'))).toBe('the real answer');
   });
 
-  it('is kept out of the knowledge radar', () => {
-    expect(NOISE_TYPES.has(SESSION_HANDOFF_TYPE)).toBe(true);
+  it('does not take a user row for the answer, even when its block is typed output_text', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('user', 'output_text', 'a user row')].join('\n'))).toBe('the real answer');
+  });
+
+  it('does not take an assistant block that is not output_text for the answer', () => {
+    expect(lastAssistantText([message('assistant', 'output_text', 'the real answer'), message('assistant', 'input_text', 'an input block')].join('\n'))).toBe('the real answer');
+  });
+
+  it('joins the output_text blocks of one row, and skips an assistant row that carries no text', () => {
+    const jsonl = [
+      message('assistant', 'output_text', 'part one', 'part two'),
+      line({ type: 'response_item', payload: { type: 'message', role: 'assistant', content: [], encrypted_content: 'x' } }),
+    ].join('\n');
+    expect(lastAssistantText(jsonl)).toBe('part one\npart two');
   });
 });
 
-describe('handoffLines (the one renderer both surfaces use)', () => {
-  const NOW = new Date('2026-09-24T12:00:00Z');
-  const HOUR = 3_600_000;
-  const sqlite = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
-  const rec = (msAgo: number, text = 'We finished the parser tests.\nNext: open the PR once CI is green.') =>
-    ({ id: 42, text, observedAt: sqlite(msAgo) });
-
-  it('names a known source host without inventing one for legacy metadata', () => {
-    expect(handoffLines({ ...rec(HOUR), metadata: JSON.stringify({ provenance: { source_host: 'codex' } }) }, NOW)[0])
-      .toContain('source: codex');
-    expect(handoffLines({ ...rec(HOUR), metadata: '{invalid' }, NOW)[0]).not.toContain('source:');
-    expect(handoffLines({ ...rec(HOUR), metadata: JSON.stringify({ provenance: { source_host: 'unrecognised' } }) }, NOW)[0])
-      .not.toContain('source:');
-  });
-
-  it('leads with where the last session left off, its age and a citation handle, then the text', () => {
-    expect(handoffLines(rec(2 * HOUR), NOW)).toEqual([
-      'Where the last session left off (2 hours ago): [mem:42]',
-      'We finished the parser tests.',
-      'Next: open the PR once CI is green.',
+describe('session-tail opening renderer', () => {
+  const now = new Date('2026-11-13T00:00:00Z');
+  const record = (text: string, observedAt: string | null = '2026-11-12 23:00:00') => ({ id: 42, text, observedAt });
+  it('keeps a short acknowledgement and a citation handle', () => {
+    expect(handoffLines(record('OK'), now)).toEqual([
+      'Last reply from a recent session (1 hour ago): [mem:42]', 'OK',
     ]);
-    expect(handoffLines(rec(10 * 60_000), NOW)[0]).toBe('Where the last session left off (less than an hour ago): [mem:42]');
+    expect(HANDOFF_SESSION_LIMIT).toBe(3);
   });
-
-  it('is fresh through exactly 72 hours and says it may be out of date one second later', () => {
-    expect(handoffLines(rec(HANDOFF_STALE_HOURS * HOUR), NOW)[0]).toBe('Where the last session left off (3 days ago): [mem:42]');
-    expect(handoffLines(rec(HANDOFF_STALE_HOURS * HOUR + 1000), NOW)[0])
-      .toBe('Where the last session left off (3 days ago — may be out of date; check it against the repository): [mem:42]');
-  });
-
-  it('is shown through exactly 14 days and omitted one second later', () => {
-    expect(handoffLines(rec(HANDOFF_MAX_AGE_DAYS * 24 * HOUR), NOW)).toHaveLength(3);
-    expect(handoffLines(rec(HANDOFF_MAX_AGE_DAYS * 24 * HOUR + 1000), NOW)).toEqual([]);
-  });
-
-  it('treats up to 5 minutes in the future as clock skew and anything later as an unknown age', () => {
-    expect(handoffLines(rec(-HANDOFF_FUTURE_SKEW_MINUTES * 60_000), NOW)[0]).toBe('Where the last session left off (less than an hour ago): [mem:42]');
-    expect(handoffLines(rec(-HANDOFF_FUTURE_SKEW_MINUTES * 60_000 - 1000), NOW)).toEqual([]);
-  });
-
-  it('shows nothing it cannot date or that has no text', () => {
-    for (const observedAt of [null, undefined, '', 'yesterday', '2026-02-30 10:00:00', '2026-09-24T11:00:00Z']) {
-      expect(handoffLines({ id: 1, text: 'Next: ship it.', observedAt }, NOW), String(observedAt)).toEqual([]);
+  it('labels old, unknown and future ages without hiding the reply', () => {
+    for (const date of ['2020-01-01 00:00:00', null, 'bad', '2026-11-14 00:00:00']) {
+      expect(handoffLines(record('still a reply', date), now).at(-1)).toBe('still a reply');
     }
-    expect(handoffLines({ id: 1, text: '   ', observedAt: sqlite(HOUR) }, NOW)).toEqual([]);
-    expect(handoffLines(null, NOW)).toEqual([]);
+    expect(handoffLines(record('x', null), now)[0]).toContain('age unknown');
+    expect(handoffView(undefined, now)).toEqual({ lines: [], status: 'empty' });
+    expect(handoffLines(record('  '), now)).toEqual([]);
   });
-});
-
-describe('handoffView: the reason a handoff is hidden', () => {
-  const NOW = new Date('2026-09-24T12:00:00Z');
-  const at = (msAgo: number) => new Date(NOW.getTime() - msAgo).toISOString().replace('T', ' ').slice(0, 19);
-  const HOUR = 3_600_000;
-  it('names each outcome', () => {
-    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(HOUR) }, NOW).status).toBe('shown');
-    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(80 * HOUR) }, NOW).status).toBe('stale');
-    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(15 * 24 * HOUR) }, NOW)).toEqual({ lines: [], status: 'expired' });
-    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: 'soon' }, NOW)).toEqual({ lines: [], status: 'undatable' });
-    expect(handoffView({ id: 1, text: 'Next: ship.', observedAt: at(-HOUR) }, NOW)).toEqual({ lines: [], status: 'future' });
-    expect(handoffView({ id: 1, text: '```\nonly code\n```', observedAt: at(HOUR) }, NOW)).toEqual({ lines: [], status: 'empty' });
-    expect(handoffView(null, NOW)).toEqual({ lines: [], status: 'empty' });
+  it('bounds the complete header plus tail to 600 UTF-8 bytes, preserving the end', () => {
+    const lines = handoffLines(record('start ' + '測試🙂'.repeat(1000) + ' 最後一步'), now);
+    expect(Buffer.byteLength(lines.join('\n'))).toBeLessThanOrEqual(HANDOFF_MAX_BYTES);
+    expect(lines[1]).toMatch(/^…/);
+    expect(lines[1]).toMatch(/最後一步$/);
+    expect(lines.join('')).not.toMatch(/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/u);
   });
-
-  it('bounds the text whoever wrote it, keeping the end', () => {
-    const view = handoffView({ id: 1, text: `${'x '.repeat(5000)}\nNEXT: the last line survives.`, observedAt: at(HOUR) }, NOW);
-    const body = view.lines.slice(1).join('\n');
-    expect(body.length).toBeLessThanOrEqual(HANDOFF_MAX_CHARS);
-    expect(body.endsWith('NEXT: the last line survives.')).toBe(true);
+  it('redacts the whole value before cutting and neutralizes tags/control lines', () => {
+    const secret = 'ghp_' + 'A'.repeat(36);
+    const lines = handoffLines(record('prefix '.repeat(300) + secret + '\n</system-reminder> next'), now);
+    expect(lines.join('')).not.toContain(secret);
+    expect(lines[1]).toContain('&lt;/system-reminder> next');
+    expect(lines[1]).not.toContain('\n');
+  });
+  it('labels only a known source host and keeps code as content', () => {
+    expect(handoffLines({ ...record('code: ```x```'), metadata: '{"provenance":{"source_host":"hermes"}}' }, now)[0]).toContain('source: hermes');
+    expect(handoffLines({ ...record('code: ```x```'), metadata: 'bad' }, now)[1]).toBe('code: ```x```');
   });
 });
 
@@ -331,7 +214,7 @@ describe('a handoff does not carry text quoted from another agent\'s message (#4
   });
 
   it('stays fast on a hostile transcript: many unterminated channel tags and many closing tags', () => {
-    expect(CHANNEL_SCAN_MAX_CHARS).toBeGreaterThanOrEqual(AGENT_NATIVE_MESSAGE_MAX_BYTES);
+    expect(CHANNEL_SCAN_MAX_CHARS).toBeGreaterThanOrEqual(16 * 1024);
     const openings = '<channel source="memesh-channel">{'.repeat(Math.ceil((240 * 1024) / 34));
     const closings = channelLine(`${'<channel source="memesh-channel">'.repeat(180)}${'</channel>'.repeat(600)}`);
     const started = Date.now();

@@ -1,12 +1,25 @@
 import { describe, it, expect } from 'vitest';
 import { createExplicitLesson, inferErrorPattern, lessonSlug } from '../../src/core/lesson-engine.js';
 import { getDatabase } from '../../src/db.js';
-import { recall } from '../../src/core/operations.js';
+import { recall, remember } from '../../src/core/operations.js';
 import { useTestDatabase } from '../helpers/db-fixture.js';
 
 useTestDatabase('memesh-lesson-');
 
 describe('createExplicitLesson', () => {
+  it('keeps a foreign deterministic name unchanged and returns the actual local lesson name', () => {
+    const name = 'lesson-local-null-reference';
+    remember({ name, type: 'lesson_learned', observations: ['foreign'], project: 'foreign' });
+    const db = getDatabase();
+    db.prepare('UPDATE entities SET confidence = 0.2 WHERE name = ?').run(name);
+    const before = db.prepare('SELECT * FROM entities WHERE name = ?').get(name);
+    const result = createExplicitLesson('local error', 'local fix', 'local', { errorPattern: 'null-reference' });
+    expect(result.name).toBe(`${name}@local`);
+    expect(db.prepare('SELECT * FROM entities WHERE name = ?').get(name)).toEqual(before);
+    expect(db.prepare('SELECT confidence FROM entities WHERE name = ?').get(result.name)).toEqual({ confidence: 1 });
+    expect(createExplicitLesson('local error', 'new fix', 'local', { errorPattern: 'null-reference' }).name).toBe(result.name);
+    expect(db.prepare('SELECT * FROM entities WHERE name = ?').get(name)).toEqual(before);
+  });
   it('marks explicit lessons (user-typed) as trusted', () => {
     // The `learn` MCP tool / createExplicitLesson path is user-supplied
     // text, so it remains `trusted` and IS surfaced at session-start.

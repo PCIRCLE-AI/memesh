@@ -1,9 +1,11 @@
+import { withoutFinalPeriod } from './sentence.js';
 import { createHash } from 'node:crypto';
 import { getProjectName, holdsSecret, redactSecretList, redactSecrets } from './paths.js';
 import { readTranscriptSnapshot, scanTranscripts, transcriptMatchesProject } from './transcript-source.js';
 import { parseVisibleConversation } from './transcript-extractor.js';
 import { validateGuardSpec } from './guards.js';
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
+import { isReservedTag } from './work-topology.js';
 import { PRODUCT_IMPROVEMENT_KIND, readProductImprovementPayload, readProductImprovementSourceIds, } from './product-improvements.js';
 const COMPACT_MIN_CLUSTER_SIZE = 5;
 const COMPACT_MAX_CLUSTER_SIZE = 100;
@@ -13,7 +15,7 @@ const COMPACT_MAX_SIGNAL = 0.7;
 const TRANSCRIPT_PACKAGE_MAX_TURNS = 100;
 const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
-const COMPACTABLE_TYPES = new Set([
+export const COMPACTABLE_TYPES = new Set([
     'commit',
     'session_keypoint',
     'session-insight',
@@ -335,7 +337,7 @@ function applyProductImprovementProposal(db, row, kg) {
             'State: accepted for product work; implementation and outcome are not verified.',
         ];
         const tags = [
-            ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:')),
+            ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:') && !isReservedTag(tag)),
             'project:' + row.project,
             'status:accepted-for-product',
             'implementation:unverified',
@@ -418,7 +420,7 @@ function applyTranscriptProposal(db, row, kg) {
     }
     catch { }
     const tags = [
-        ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+        ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
         `project:${row.project}`,
     ];
     const entityName = collisionSafeName(db, digest.name, 'transcript', row.id);
@@ -471,7 +473,7 @@ export function applyProposal(db, proposalId, kg) {
     const sourceIds = JSON.parse(row.source_ids);
     const isPattern = digest.type === 'pattern_emergent';
     const tags = [
-        ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+        ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
         `project:${row.project}`,
     ];
     let ownedSourceIds = sourceIds;
@@ -609,7 +611,7 @@ export class NothingToClaimError extends Error {
     proposalId;
     reason;
     constructor(proposalId, reason) {
-        super(`proposal #${proposalId} claimed nothing: ${reason}. Nothing was written, and the proposal will not be retried.`);
+        super(`proposal #${proposalId} claimed nothing: ${withoutFinalPeriod(reason)}. Nothing was written, and the proposal will not be retried.`);
         this.proposalId = proposalId;
         this.reason = reason;
         this.name = 'NothingToClaimError';

@@ -1,5 +1,5 @@
 import { getDatabase } from '../db.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -7,7 +7,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE } from './note-derive.js';
-import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
+import { WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent } from './recall-agent-view.js';
 import { boundReplacedHistory } from './replaced-history.js';
 export { REPLACED_HISTORY_MAX, REPLACED_HISTORY_MAX_BYTES } from './replaced-history.js';
@@ -70,8 +70,6 @@ function resolveRememberInput(input) {
             throw new Error('remember needs `name` and `type`, or `note`');
         if (input.type === '')
             throw new Error('remember needs `name` and `type`, or `note`');
-        if (input.type === undefined && !input.replace)
-            throw new Error('remember needs `name` and `type`, or `note`');
         return {
             args: {
                 ...input,
@@ -103,18 +101,12 @@ function resolveRememberInput(input) {
     };
 }
 function rememberInTransaction(args, derived, typeGiven, db, kg) {
-    const existing = db
-        .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
-        .get(args.name);
-    const touched = [
-        ...(existing ? [args.name] : []),
-        ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
-    ];
-    let retagged;
     const healed = withFullProjectTag(args.tags, args.currentProject);
+    let retagged;
     if (healed.retagged) {
         const plainTag = healed.retagged.from;
-        const keepsPlain = touched.some((name) => db
+        const touchedNames = [args.name, ...(args.relations ?? []).filter(rel => rel.type === 'supersedes').map(rel => rel.to)];
+        const keepsPlain = touchedNames.some(name => db
             .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
             .get(name, plainTag) !== undefined);
         if (!keepsPlain) {
@@ -122,7 +114,22 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
             retagged = healed.retagged;
         }
     }
+    const scopedTags = args.tags ?? [];
+    const scopes = [...new Set(scopedTags.filter(tag => tag.startsWith('project:')).map(tag => tag.slice(8)))];
+    const scope = args.project !== undefined ? args.project : scopes.length === 1 ? scopes[0] : undefined;
+    args = { ...args, name: resolveProjectMemoryName(db, args.name, scope, args.projectIds, true),
+        relations: args.relations?.map(rel => ({ ...rel, to: resolveProjectMemoryName(db, rel.to, scope, args.projectIds) })) };
+    const existing = db
+        .prepare('SELECT id, namespace, type, title, status FROM entities WHERE name = ?')
+        .get(args.name);
+    const touched = [
+        ...(existing ? [args.name] : []),
+        ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
+    ];
     const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+    if (args.projectIsDefault && !args.replace && existing && tagProjects.length === 0 && projectTagsOf(db, existing.id).length === 0) {
+        args = { ...args, project: null };
+    }
     if (tagProjects.some((p) => p.trim() === '')) {
         throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
     }
@@ -135,9 +142,16 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     const declaredProject = args.project !== undefined ? args.project : tagProjects[0];
     if (declaredProject !== undefined) {
         for (const name of touched) {
-            const refusal = projectOwnershipRefusal(db, name, declaredProject);
+            const refusal = projectOwnershipRefusal(db, name, declaredProject, args.projectIds);
             if (refusal !== undefined)
                 throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+        }
+    }
+    if (typeof args.project === 'string' && existing) {
+        const filed = filedUnder(projectTagsOf(db, existing.id), args.project, args.projectIds);
+        if (filed !== undefined && filed !== args.project) {
+            const current = `project:${args.project}`;
+            args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
         }
     }
     if (args.replace && existing && existing.status === 'archived') {
@@ -146,14 +160,8 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
     }
     const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
     if (entityType === undefined) {
-        throw new Error(`\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+        throw new Error(`There is no memory named "${args.name}" to inherit a type from, `
             + 'so this call would create one with no type — pass `type` to create it.');
-    }
-    if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
-        && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
-        throw new Error(`MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
-            + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
-            + 'Pass `why`, or an observation that starts with "Why: ".');
     }
     let replacedVersion;
     let retypedTo;
@@ -178,7 +186,7 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         if (tags === undefined)
             tags = previousTags;
     }
-    else if (derived && existing) {
+    else if (derived && existing && existing.status !== 'archived') {
         title = undefined;
         const stored = new Set(db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(existing.id)
             .map((o) => o.content));
@@ -209,13 +217,13 @@ function rememberInTransaction(args, derived, typeGiven, db, kg) {
         }
     }
     if (stampLocalMetadata)
-        kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(current, {
+        kg.updateEntityMetadata(args.name, (current) => (args.trustOverride === undefined && current.trust === 'untrusted' ? current : buildLocalMetadata(current, {
             trust: args.trustOverride,
             provenance: {
                 ...(args.sourceHost && !existing ? { source_host: args.sourceHost } : {}),
                 ...(args.provenanceOverride ?? {}),
             },
-        }));
+        })));
     if (replacedVersion) {
         const version = redactVersionText(replacedVersion);
         kg.updateEntityMetadata(args.name, (current) => {
@@ -291,6 +299,7 @@ function searchAndScore(args) {
         limit: args.limit,
         includeArchived: args.include_archived,
         namespace: args.namespace,
+        scopeRelations: !args.cross_project,
     });
     const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
     return {
@@ -329,7 +338,7 @@ export async function recallWithConflicts(args) {
 function recallIds(args, requestedIds) {
     const ids = [...new Set(requestedIds)];
     const kg = new KnowledgeGraph(getDatabase());
-    const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+    const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, relations: { scope: args.projectScope, namespace: args.namespace, includeArchived: args.include_archived } });
     const byId = new Map(rows.map(entity => [entity.id, entity]));
     const results = ids.map(id => {
         const entity = byId.get(id);
@@ -371,6 +380,7 @@ export function learn(args) {
 export function forget(args) {
     const db = getDatabase();
     const kg = new KnowledgeGraph(db);
+    args = { ...args, name: resolveProjectMemoryName(db, args.name, args.project, args.projectIds) };
     if (args.observation !== undefined) {
         const result = kg.removeObservation(args.name, args.observation);
         const shown = redactSecrets(args.observation);

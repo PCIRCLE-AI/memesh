@@ -3,6 +3,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { npxSync } from './lib/npm-bin.mjs';
 import { buildIsolatedSuiteEnv } from './lib/isolated-env.mjs';
+import { removeTempHome } from './lib/remove-temp-home.mjs';
 
 /**
  * Run the test suite against a throwaway HOME.
@@ -39,5 +40,5 @@ try {
     env,
   });
 } finally {
-  fs.rmSync(home, { recursive: true, force: true });
+  removeTempHome(home);
 }

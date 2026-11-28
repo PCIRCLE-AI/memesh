@@ -66,10 +66,12 @@
       "observationsWritten": 1
     },
     {
-      "threw": "\"session-handoff:p2\" is stored as type decision, not session-handoff; the Stop hook leaves it alone"
+      "id": 14,
+      "isNew": false,
+      "observationsWritten": 1
     },
     {
-      "id": 15,
+      "id": 16,
       "isNew": true,
       "observationsWritten": 1
     }
@@ -95,19 +97,20 @@
       "id": 3,
       "name": "pre-compact-s1",
       "type": "session-summary",
-      "title": null,
+      "title": "crane compaction",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "provenance": {},
+        "title_source": "heuristic"
       }
     },
     {
       "id": 5,
       "name": "session-s2-files",
       "type": "session-insight",
-      "title": "Files",
+      "title": "session-s2-files",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
@@ -122,12 +125,13 @@
       "id": 8,
       "name": "session-s3-files",
       "type": "session-insight",
-      "title": null,
+      "title": "marten a",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
         "provenance": {},
+        "title_source": "heuristic",
         "forgotten_observation_hashes": [
           "fc0ef49bee25245ba71ce3dec95c4543acaba25c51a51d92ac1dcc0c12c58571"
         ]
@@ -137,12 +141,13 @@
       "id": 10,
       "name": "session-s4-files",
       "type": "session-insight",
-      "title": null,
+      "title": "vole kept",
       "status": "archived",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "provenance": {},
+        "title_source": "heuristic"
       }
     },
     {
@@ -164,22 +169,25 @@
       "id": 14,
       "name": "session-handoff:p2",
       "type": "decision",
-      "title": null,
-      "status": "active",
-      "namespace": "personal",
-      "confidence": 1,
-      "metadata": null
-    },
-    {
-      "id": 15,
-      "name": "untitled-commit",
-      "type": "commit",
-      "title": null,
+      "title": "ordinary legacy-name content",
       "status": "active",
       "namespace": "personal",
       "confidence": 1,
       "metadata": {
-        "provenance": {}
+        "title_source": "heuristic"
+      }
+    },
+    {
+      "id": 16,
+      "name": "untitled-commit",
+      "type": "commit",
+      "title": "shrike",
+      "status": "active",
+      "namespace": "personal",
+      "confidence": 1,
+      "metadata": {
+        "provenance": {},
+        "title_source": "heuristic"
       }
     }
   ],
@@ -226,7 +234,12 @@
     },
     {
       "id": 15,
-      "entity_id": 15,
+      "entity_id": 14,
+      "content": "ordinary legacy-name content"
+    },
+    {
+      "id": 16,
+      "entity_id": 16,
       "content": "shrike"
     }
   ],
@@ -289,7 +302,7 @@
     ],
     "land": [],
     "shrike": [
-      15
+      16
     ],
     "Files": [
       5,

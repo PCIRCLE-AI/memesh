@@ -132,36 +132,41 @@ describe('MCP recall by ID', () => {
     }
   });
 
-  it('HTTP and unbound MCP agree on small IDs, with project memories unavailable', async () => {
+  it('HTTP reaches an ID of any project, as its word search does, while unbound MCP leaves project memories unavailable', async () => {
     const ids = [idOf('loose'), idOf('allowed'), idOf('global')];
     const server = app.listen(0, '127.0.0.1');
     try {
       await new Promise<void>(resolve => server.once('listening', resolve));
       const address = server.address();
       if (!address || typeof address === 'string') throw new Error('HTTP listener unavailable');
-      const response = await fetch(`http://127.0.0.1:${address.port}/v1/recall`, {
-        method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids }),
-      });
-      const http = (await response.json()).data;
+      const post = async (body: Record<string, unknown>) => {
+        const response = await fetch(`http://127.0.0.1:${address.port}/v1/recall`, {
+          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body),
+        });
+        expect(response.status).toBe(200);
+        return (await response.json()).data;
+      };
+      const http = await post({ ids });
       const mcp = await handleTool('recall', { ids });
       expect(mcp.isError).not.toBe(true);
       const parsed = JSON.parse(mcp.content[0].text);
-      expect(response.status).toBe(200);
       expect(http.retrieval).toEqual({ mode: 'ids', degraded: false, truncated: false });
       expect(parsed.retrieval).toEqual(http.retrieval);
-      expect(http.results).toEqual(parsed.results);
-      expect(http.entities.map((e: { id: number }) => e.id)).toEqual(parsed.entities.map((e: { id: number }) => e.id));
-      expect(http.results[1]).toEqual({ id: idOf('allowed'), status: 'unavailable' });
-      for (const include_archived of [false, true]) {
-        const archivedIds = [idOf('archived'), idOf('foreign-archived')];
-        const archivedResponse = await fetch(`http://127.0.0.1:${address.port}/v1/recall`, {
-          method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ ids: archivedIds, include_archived }),
-        });
-        const body = await archivedResponse.json();
-        expect(body.data.results).toEqual(archivedIds.map(id => ({ id, status: 'unavailable' })));
-        expect(JSON.stringify(body)).not.toContain('archived private content');
-        expect(JSON.stringify(body)).not.toContain('foreign archived content');
-      }
+      // The project memory is found over HTTP and unavailable to a session bound to no project.
+      expect(http.results.map((r: { status: string }) => r.status)).toEqual(['found', 'found', 'found']);
+      expect(parsed.results[1]).toEqual({ id: idOf('allowed'), status: 'unavailable' });
+      expect(http.entities.map((e: { id: number }) => e.id)).toEqual(ids);
+      expect(parsed.entities.map((e: { id: number }) => e.id)).toEqual([ids[0], ids[2]]);
+      // Archived: reported as archived unless include_archived, then found, whichever project holds it.
+      const archivedIds = [idOf('archived'), idOf('foreign-archived')];
+      const hidden = await post({ ids: archivedIds });
+      expect(hidden.results).toEqual(archivedIds.map(id => ({ id, status: 'archived' })));
+      expect(JSON.stringify(hidden)).not.toContain('archived private content');
+      expect(JSON.stringify(hidden)).not.toContain('foreign archived content');
+      const shown = await post({ ids: archivedIds, include_archived: true });
+      expect(shown.results.map((r: { status: string }) => r.status)).toEqual(['found', 'found']);
+      expect(JSON.stringify(shown)).toContain('archived private content');
+      expect(JSON.stringify(shown)).toContain('foreign archived content');
     } finally {
       await new Promise<void>((resolve, reject) => server.close(err => err ? reject(err) : resolve()));
     }

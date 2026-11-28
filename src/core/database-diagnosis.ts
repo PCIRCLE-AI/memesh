@@ -1,6 +1,31 @@
 import fs from 'fs';
 import path from 'path';
+import { findPackageRoot } from './package-root.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
+
+/** SQLite's words for damaged pages or a file that is not a database at all. */
+export function isDamagedDatabaseError(message: string): boolean {
+  return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
+}
+
+/** The same repair entry point for doctor, open failures and explicit backup restores. */
+export function repairCommand(databasePath: string, backupPath?: string, nodeFallback = false): string {
+  const quote = process.platform === 'win32'
+    ? (value: string) => `"${value.replace(/"/g, '""')}"`
+    : shellQuote;
+  const command = nodeFallback
+    ? `node ${quote(path.join(findPackageRoot(import.meta.url), 'dist', 'transports', 'cli', 'cli.js'))} repair`
+    : 'memesh repair';
+  return `${command} --database ${quote(databasePath)}${backupPath ? ` --from-backup ${quote(backupPath)}` : ''}`;
+}
+
+/** One checked repair command; never an unchecked shell pipeline over the original. */
+export function damagedDatabaseFix(databasePath: string): string {
+  return `Stop every memesh process, then run: ${repairCommand(databasePath)}. `
+    + `If memesh is not on PATH: ${repairCommand(databasePath, undefined, true)}. `
+    + 'Repair keeps a verified copy of the database and its journal, salvages readable memories, and checks the result before replacing the file. Restart your AI tools afterwards.';
+}
 
 /**
  * Why a database would not open, and the one fix to print for it. `memesh
@@ -19,18 +44,26 @@ export function diagnoseDatabaseFailure(
   let diagnosis: string;
   let fix: string;
 
-  // MeMesh's own permission errors (#520) already say what is wrong and
-  // carry the one command that fixes it; a generic guess below (move the
-  // database away and start fresh) would be wrong for every one of them.
+  // A held lock comes first: the file is fine, and any repair advice
+  // (moving it aside, or salvaging it as damaged) would be wrong.
   const ownFix = (err as { fix?: unknown } | null)?.fix;
-  if (typeof ownFix === 'string') {
-    diagnosis = message;
-    fix = runOrSay(ownFix);
-  } else if (/database is locked|SQLITE_BUSY/i.test(message)) {
-    // Another process holds the write lock: the file is fine, and moving it
-    // aside would hide the owner's data from that process too.
+  if (/database is locked|SQLITE_BUSY/i.test(message)) {
     diagnosis = `Another process has the database locked: ${message}`;
     fix = 'Wait for the other memesh process to finish, or stop it, then retry';
+  } else if (isUnsupportedNode(err)) {
+    // Not a database problem: this Node cannot run MeMesh, and no file move fixes that.
+    diagnosis = message;
+    fix = err.fix;
+  } else if (isSqliteSelfCheckFailure(err)) {
+    // The self-check of the Node's SQLite did not finish: the database was never looked at, so it is not moved aside.
+    diagnosis = message;
+    fix = err.advice;
+  } else if (typeof ownFix === 'string') {
+    // MeMesh's own errors (#520 permissions, a failed integrity check) already
+    // say what is wrong and carry the one command that fixes it; a generic
+    // guess below (move the database away and start fresh) would be wrong.
+    diagnosis = message;
+    fix = runOrSay(ownFix);
   } else if (existsSyncImpl(databasePath)) {
     try {
       const stat = statSyncImpl(databasePath);
@@ -49,6 +82,11 @@ export function diagnoseDatabaseFailure(
       } else if (stat.size === 0) {
         diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
         fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
+      } else if (isDamagedDatabaseError(message)) {
+        // Damaged pages (a truncated file, say): the same advice as a file
+        // that opens but fails its integrity check, never "move it away".
+        diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+        fix = damagedDatabaseFix(databasePath);
       } else {
         diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
         fix = `Backup and reset: mv ${shellQuote(databasePath)} ${shellQuote(`${databasePath}.backup`)} && memesh recall`;
@@ -90,4 +128,18 @@ export function diagnoseDatabaseFailure(
   }
 
   return { diagnosis, fix };
+}
+
+/**
+ * What a long-running entry point (`memesh serve`, the MCP server) prints with
+ * `console.error` (stderr; their tests watch that channel) when its database
+ * will not open: the same diagnosis and fix as `memesh doctor`'s database
+ * row, so a permission problem gets its chmod and damage gets the copy-first
+ * salvage, never "move it aside".
+ */
+export function databaseOpenFailureReport(err: unknown, databasePath: string): string {
+  const message = err instanceof Error ? err.message : String(err);
+  const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath);
+  const diagnosisLine = diagnosis !== message ? `   Diagnosis: ${diagnosis}\n` : '';
+  return `\n❌ MeMesh startup failed: database cannot be opened\n\n   Database path: ${databasePath}\n   Error: ${message}\n\n${diagnosisLine}Fix: ${fix}\n`;
 }

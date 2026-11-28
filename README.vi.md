@@ -6,10 +6,10 @@
 
 MeMesh giúp các trợ lý lập trình AI chia sẻ ngữ cảnh, trao đổi công việc, góp ý cho nhau và bàn giao rõ ràng giữa các phiên. Bộ nhớ dùng chung giữ lại sở thích, quyết định của dự án và kinh nghiệm đã tích lũy, để bạn không phải giải thích lại từ đầu mỗi lần mở phiên mới.
 
-- **Phân công giữa các phiên.** Các phiên Codex và Claude Code đang chạy có thể trao đổi công việc, câu hỏi, yêu cầu rà soát và kết quả qua hệ thống nhắn tin MeMesh và Claude Channel tùy chọn.
+- **Phân công giữa các hội thoại đã đăng ký.** Trao đổi công việc, câu hỏi, yêu cầu rà soát và kết quả. Manifest plugin của cả Claude và Codex đều khai báo hook hội thoại; việc nhận tin và đánh thức phiên gốc cần bằng chứng riêng cho từng host.
 - **Dùng chung ngữ cảnh dự án.** Các trợ lý trên cùng một máy có thể tra lại quyết định và kinh nghiệm của dự án, thay vì tìm hiểu lại từ đầu.
 - **Bàn giao rõ ràng.** Ghi lại mục tiêu, bước tiếp theo và vướng mắc để phiên sau kiểm tra trước khi tiếp tục.
-- **Giữ lại những điều hữu ích.** Lưu sở thích, quyết định và bài học để tìm lại trong các phiên và công cụ khác nhau.
+- **Giữ lại những điều hữu ích.** Lưu sở thích, quyết định và bài học để tìm lại trong các phiên và công cụ khác nhau. Quyết định, bài học và sở thích được tìm thấy ở mọi dự án, kèm tên dự án gốc; commit và ghi chú phiên của mỗi dự án chỉ ở lại trong dự án đó.
 
 Theo mặc định, bộ nhớ nằm trong một tệp trên máy của bạn: `~/.memesh/knowledge-graph.db`. MeMesh không cần mô hình AI riêng. Nhắc nhở tự động phụ thuộc vào tích hợp của từng công cụ; ghi chú bàn giao cung cấp ngữ cảnh, không bảo đảm công việc sẽ tự khởi động lại.
 
@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — làm theo [hướng dẫn kết nối MeMesh với Hermes](docs/platforms/hermes-agent.md) để tìm lại và ghi nhận thông tin vào bộ nhớ.
 
-Nếu cần dùng cả công cụ dòng lệnh, hãy cài [Node.js 22.13+](https://nodejs.org), rồi chạy:
+Nếu cần dùng cả công cụ dòng lệnh, hãy cài [Node.js](https://nodejs.org) 26.13.1 trở lên trong nhánh 26.x (khuyến nghị), 24.22.3 trở lên trong nhánh 24.x, hoặc 22.23.5 trở lên trong nhánh 22.x, rồi chạy:
 
 ```bash
 npm install -g @pcircle/memesh
@@ -42,15 +42,15 @@ memesh doctor
 
 `PCIRCLE-AI/memesh` là kho GitHub cung cấp marketplace. `memesh@pcircle-memesh` chọn plugin `memesh` từ marketplace `pcircle-memesh`.
 
-## Cho Codex và Claude Code phối hợp
+## Tin nhắn hội thoại (bản source thử nghiệm)
 
-Dùng một phiên để triển khai thay đổi, một phiên khác để rà soát, đặt câu hỏi hoặc báo cáo kết quả. MeMesh cung cấp hộp thư cục bộ dùng chung; Claude Channel đưa tin nhắn trực tiếp vào phiên Claude Code đang chạy. Codex dùng cơ chế thông báo native riêng, sau đó lấy nội dung tin nhắn từ hộp thư.
+Dùng một phiên để triển khai thay đổi, một phiên khác để rà soát, đặt câu hỏi hoặc báo cáo kết quả. Tin nhắn hội thoại MeMesh chỉ có bốn thao tác: tìm địa chỉ, gửi nội dung có loại, đọc một tin nhắn nhận được và xem trạng thái/audit. Nội dung luôn là dữ liệu không đáng tin cậy.
 
-1. Cài các plugin ở trên và mở cả hai công cụ trong cùng kho mã, bằng cùng người dùng hệ điều hành và cùng cấu hình cơ sở dữ liệu MeMesh.
-2. Phiên Claude MCP thông thường đủ điều kiện có thể nhận thông báo native không cần Channel trên macOS/Linux; [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) tùy chọn gửi toàn bộ envelope. Phiên Codex CLI đủ điều kiện tự đăng ký khi hook SessionStart chạy.
-3. Yêu cầu trợ lý: “Dùng `message discover` để tìm phiên Claude/Codex đang chạy cho dự án này, gửi yêu cầu rà soát và báo lại phản hồi.” Chọn người nhận thực sự xuất hiện trong kết quả; không đoán ID phiên. Bên nhận đọc tin, ghi nhận `intake`, rồi trả lời với kết quả rà soát.
+1. Dùng các hội thoại đã đăng ký với cùng cấu hình cơ sở dữ liệu MeMesh. Cả hai plugin đều khai báo hook tin nhắn SessionStart/UserPromptSubmit. Luồng wire riêng theo định dạng Codex đã được kiểm tra; giao tới host native và mô hình thực vẫn cần xác minh riêng.
+2. Chạy `memesh message discover` và chỉ chọn địa chỉ thực sự được liệt kê; không đoán người nhận.
+3. Chỉ gửi nội dung qua stdin: `printf '%s' 'Hãy rà soát thay đổi này.' | memesh message send --recipient <address> --kind review_request --payload-stdin`. Bên nhận dùng `memesh message read --message-id <id>` và có thể trả lời bằng `--reply-to <id>`.
 
-Khi chưa bật Claude Channel, hộp thư lưu trữ bền vững và nhắc nhở qua hook của Claude Code vẫn dùng được. Gửi thành công không có nghĩa bên kia đã nhận làm hay hoàn thành công việc. Phiên đã dừng không tự tiếp tục; hãy kiểm tra phiên Codex Desktop bằng `message discover`, thay vì mặc định rằng nó đã tham gia. Kênh cục bộ này không chuyển tiếp tin nhắn giữa các máy tính.
+`queued` không có nghĩa đã giao, đã đọc, đã trả lời, đã chấp nhận hoặc đã hoàn tất. Đánh thức native và giao tin hội thoại liên máy vẫn đang được phát triển.
 
 [Chi tiết thiết lập, định tuyến và biên nhận](docs/platforms/agent-messaging.md)
 
@@ -64,13 +64,13 @@ Yêu cầu trợ lý bằng ngôn ngữ tự nhiên:
 >
 > Lưu tiến độ hiện tại để phiên tiếp theo có thể tiếp tục.
 
+MeMesh mặc định sẽ ghi nhớ. Để bỏ một bộ nhớ đã lưu, hãy yêu cầu trợ lý tìm đúng mục và dùng `forget`; các hội thoại khác tiếp tục được lưu như bình thường.
+
 Plugin Claude Code cung cấp tính năng ghi nhận và nhắc nhở tự động. Plugin Codex có thể đưa ngữ cảnh vào đầu phiên khi được phép chạy các hook; những hành vi ghi nhận khác tùy thuộc công cụ. Bạn cũng có thể yêu cầu trợ lý lưu hoặc tìm bộ nhớ trực tiếp.
 
-Nhắc nhở hộp thư trong Claude Code không cần thiết lập Channel: khi chưa cấu hình danh tính riêng, các hook dùng người nhận cục bộ `claude-code`. Chúng kiểm tra khi khởi động, khi bạn gửi lời nhắc tiếp theo và khi kết thúc lượt; nhắc nhở dừng khi trợ lý ghi nhận `intake` cho tin nhắn đó. Đẩy tin trực tiếp qua Channel là tùy chọn; xem [hướng dẫn nhắn tin](docs/platforms/agent-messaging.md#claude-channel-runner).
+Các hook SessionStart/UserPromptSubmit, Claude Stop và sau công cụ Bash của Codex đưa toàn bộ tin đang chờ vào ngữ cảnh; chỉ ghi nhận giao sau khi xuất thành công. Hook bộ nhớ không còn hiển thị địa chỉ principal hoặc hướng dẫn hộp thư cũ. Việc đánh thức native và mô hình đọc tin vẫn cần xác minh; giao thức HTTP cũ được giữ riêng. Xem [hướng dẫn nhắn tin](docs/platforms/agent-messaging.md).
 
-Các phiên MCP Claude Code thông thường tự đăng ký trong `message discover` mà không cần bật Channel. Khi socket hộp thư native khả dụng, phiên nhận thông báo rồi lấy nội dung; nếu không, hộp thư bền vững và nhắc nhở qua hook vẫn hoạt động. Trực tuyến không chứng minh thông báo đã đến.
-
-Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories` trong Claude Code để xem và sửa bộ nhớ dự án. Claude Desktop sửa ngay trong bảng; Claude Code trên terminal và Codex dùng biểu mẫu tích hợp sẵn. Trong Codex, yêu cầu `$memesh` tìm và sửa một bộ nhớ. Chỉ điền tiêu đề hoặc đoạn cần đổi, để trống các trường khác để giữ nguyên. Lưu sẽ đọc lại kết quả đã ghi; Hủy không ghi gì. Công cụ chưa hỗ trợ vẫn dùng quy trình hội thoại hiện có.
+Từ MeMesh 4.11.0, Claude Code có thêm `/memesh-memories` để xem và sửa bộ nhớ dự án. Claude Desktop sửa ngay trong bảng; Claude Code trên terminal và Codex dùng biểu mẫu tích hợp sẵn. Trong Codex, yêu cầu `$memesh` tìm và sửa một bộ nhớ. Chỉ điền tiêu đề hoặc đoạn cần đổi, để trống các trường khác để giữ nguyên. Lưu sẽ đọc lại kết quả đã ghi; Hủy không ghi gì. Công cụ chưa hỗ trợ vẫn dùng quy trình hội thoại hiện có.
 
 [Tham chiếu công cụ và lệnh](docs/api/API_REFERENCE.md) · [Nhắn tin giữa các trợ lý](docs/platforms/agent-messaging.md) · [Cách hoạt động](docs/ARCHITECTURE.md) · [Đóng góp](CONTRIBUTING.md)
 
@@ -81,35 +81,36 @@ Các bản dựng từ mã nguồn chưa phát hành bổ sung `/memesh-memories
 
 | Công cụ | Chức năng |
 |---------|-----------|
-| `remember` | Lưu bộ nhớ; quyết định cần có lý do. |
+| `remember` | Lưu bộ nhớ (mặc định luôn lưu, không cần yêu cầu); lý do cho quyết định là tùy chọn, nên ghi khi đã biết. |
 | `recall` | Tìm thông tin đã lưu bằng từ khóa hoặc ID. |
 | `forget` | Đưa bộ nhớ vào trạng thái lưu trữ hoặc xóa một ghi nhận trong đó. |
 | `learn` | Lưu sai sót, nguyên nhân và cách tránh lặp lại. |
 | `briefing` | Đọc ngữ cảnh bộ nhớ hiện tại của dự án. |
 | `task_state` | Đọc hoặc ghi mục tiêu, bước tiếp theo, trở ngại và công việc đã xong. |
-| `message` | Tìm các trợ lý cục bộ đang chạy và trao đổi tin nhắn. |
+| `message` | Tìm địa chỉ hội thoại; gửi, đọc hoặc xem tin nhắn có loại và trạng thái audit của nó. |
 | `export` | Sao lưu bộ nhớ thành JSON. |
 | `import` | Nhập bản sao lưu bộ nhớ. |
 | `work_package` | Chuẩn bị bản tóm tắt bộ nhớ hoặc trích đoạn hội thoại có giới hạn để người dùng duyệt. |
 | `user_patterns` | Tổng hợp thói quen làm việc. |
 | `improvement` | Đề xuất cải tiến để người dùng duyệt. |
 
+**Ghi chú dòng lệnh.**
+- `memesh remember` lưu bộ nhớ vào dự án của thư mục hiện tại (giống `memesh learn`); `--project <tên>` chọn dự án khác, `--no-project` lưu mà không thuộc dự án nào.
+- `memesh export -o backup.json` ký bản sao lưu bằng một khóa chỉ nằm trong thư mục MeMesh của bạn. `memesh import backup.json` chỉ tin cậy lại khi tệp không bị sửa và đến từ thư mục này; mọi tệp khác được nhập ở trạng thái không tin cậy (tìm được, không tự động chèn) và kết quả nói rõ điều đó. Bộ nhớ bạn đã quên (forget) vẫn giữ nguyên trạng thái lưu trữ: kết quả in ra đúng một lệnh để khôi phục (`--restore-archived`).
+- `memesh message send` đọc nội dung từ `--payload-stdin`; không nhận nội dung qua argv.
+
 ---
 
-Các plugin có **10 hook**. Tính năng nhắc khi người dùng muốn ghi nhớ điều gì đó hỗ trợ 5 ngôn ngữ. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
+Plugin Claude Code có **9 hook**; plugin Codex có thêm 2 hook dành riêng cho Codex. MeMesh không quét từ khóa trong tin nhắn của bạn; trợ lý tự quyết định dựa trên lời bạn nói. Bạn có thể sửa bộ nhớ qua MeMesh Mod trên Claude Code/Claude Desktop Code và trong MCP/biểu mẫu tích hợp sẵn trên Codex. Không có Web Dashboard độc lập.
 
 **Xếp hạng theo điểm** — mức liên quan (30%) + độ mới (25%) + tần suất (18%) + độ tin cậy (17%) + tác động của việc truy xuất (10%). Xem [kiến trúc](docs/ARCHITECTURE.md).
 
 ## Quy tắc nhắn tin
 
-Hướng dẫn đầy đủ: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md).
-
-- Qua MCP, HTTP hoặc CLI, bạn có thể gửi một payload JSON tối đa 65.536 byte UTF-8 (64 KiB) đến một người nhận cụ thể trên cùng máy. Tin nhắn được lưu lại để bên nhận lấy nội dung sau; sau khi khởi động lại, bên nhận có thể tiếp tục đọc bằng con trỏ. Nội dung tin nhắn là dữ liệu đầu vào, không phải chỉ dẫn được mặc nhiên tin cậy. Các trạng thái tiếp nhận (`intake`), xác nhận (`ack`), xử lý công việc (`disposition`) và kích hoạt công cụ (`activation`) được ghi riêng.
-- Khi plugin MeMesh Codex được bật, mỗi luồng Codex CLI thông thường mới khởi động hoặc tiếp tục, có danh tính luồng hợp lệ và thư mục làm việc tồn tại, sẽ tự đăng ký bằng danh tính riêng cho luồng. Không cần chạy `agent setup` thủ công. SessionStart khởi chạy một tiến trình đồng hành riêng cho người dùng. SessionEnd giữ cửa sổ hàng đợi nhàn rỗi tối đa 45 giây; khi tiếp tục, thế hệ kết nối trước được thay thế; hết hạn thì đăng ký bị xóa. Tin được hàng đợi nhận trong cửa sổ này chỉ hiện thành thông báo ngắn khi cùng luồng tiếp tục, rồi trợ lý lấy nội dung từ hộp thư; điều đó không có nghĩa giao diện đã dừng được đánh thức. `memesh agent setup codex-session` chỉ cần khi một workspace muốn dùng một tên người nhận cố định.
-- Toàn bộ `native envelope` (gói tin gồm thông tin định tuyến và payload) có giới hạn riêng 16.384 byte (16 KiB). Gửi tới một phiên cụ thể chỉ thành công khi hàng đợi native chấp nhận. Gói tin quá lớn trả về `native_message_too_large`; không kết nối được router cục bộ trả về `router_unreachable`; phiên không khả dụng hoặc từ chối trả về `recipient_unavailable`. Dữ liệu phục hồi theo đúng phạm vi vẫn được giữ trong cả ba trường hợp. Gửi tới danh tính ổn định (`principal`) vẫn hỗ trợ lưu rồi chuyển tiếp. Việc cơ chế native chấp nhận tin nhắn không đồng nghĩa xác nhận hay hoàn tất công việc; không đưa thông tin bí mật vào tin nhắn native.
-- Phiên Codex đã dừng, mất kết nối hoặc không tồn tại không được đánh thức hay thay bằng phiên khác. Lần gửi qua cơ chế native thất bại tới phiên cụ thể không tự phát lại; bên gửi phải chủ động thử lại. `memesh message storage report` cho biết dữ liệu đang lưu. Cơ chế native chỉ hỗ trợ macOS và Linux.
-- Cơ chế native được mô tả ở đây dành cho Codex CLI thông thường. Không mặc định Codex Desktop hoặc tác vụ chưa kết nối đã đăng ký: hãy kiểm tra đúng phiên đang chạy trong `message discover`. Đây là giới hạn của những gì đã được kiểm chứng, không phải khẳng định các công cụ đó luôn không tương thích.
-- Claude Channel và Codex tự đăng ký không cần sao chép giá trị `--project` giữa hai bên. Mỗi công cụ suy ra dự án định tuyến từ thư mục làm việc của Claude hoặc `--workspace` của Codex, nên khởi chạy cả hai trong cùng kho mã sẽ đưa chúng vào cùng dự án.
+- Giao diện hội thoại MCP/CLI chỉ có `discover`, `send`, `read`, `status`. Danh tính người gửi do host cung cấp; MCP nhận chuỗi `body`, CLI đọc nội dung từ stdin.
+- Toàn bộ envelope đã render có giới hạn 8.000 byte UTF-8. Tin nhắn gửi đến người nhận không xác định bị từ chối trước khi lưu. Tin nhắn quá lớn gửi đến người nhận đã đăng ký bị từ chối và ghi vào nhật ký kiểm toán. Tin nhắn gửi đến người nhận đã đăng ký nhưng ngoại tuyến được đưa vào hàng đợi.
+- Khi mở kho tin lần tiếp theo, maintenance xóa tin và sự kiện đã đủ 14 ngày, đồng thời tạo một thông báo cho tin còn đủ điều kiện mà chưa được giao sau một ngày. `queued` không có nghĩa đã giao, đã đọc, đã trả lời hoặc đã hoàn tất.
+- `read` ghi nhận giao/đọc; `status` hiển thị audit và CLI `--json` xuất đầy đủ lịch sử của chủ sở hữu. HTTP cũ được giữ riêng; các trường project/poll/fetch/biên nhận của nó không áp dụng cho công cụ hội thoại mới. Xem [hướng dẫn nhắn tin](docs/platforms/agent-messaging.md).
 
 </details>
 

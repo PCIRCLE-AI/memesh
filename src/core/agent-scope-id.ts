@@ -107,6 +107,22 @@ export function agentScopeIdRejection(field: string, value: string): string | nu
 }
 
 /**
+ * The refusal for a SESSION id, or `null` when it is acceptable: everything `agentScopeIdRejection`
+ * refuses, and any non-ASCII character. A session id is the UUID or thread id its host gives it, so
+ * this costs no real session; it keeps the id comparisons without regard to case (SQLite's `lower()`
+ * and JavaScript's `toLowerCase()` agree on ASCII only) exact for every id that can be stored.
+ */
+export function sessionIdRejection(field: string, value: string): string | null {
+  const path = agentScopeIdRejection(field, value);
+  if (path) return path;
+  if (/[\u0080-\uffff]/.test(value)) {
+    return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it `
+      + `(received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+  }
+  return null;
+}
+
+/**
  * The refusal for a PROJECT value, or `null` when it is acceptable (#527).
  *
  * Stricter than `agentScopeIdRejection`, which also guards agent ids that may
@@ -131,42 +147,3 @@ export function projectScopeRejection(value: string): string | null {
   }
   return null;
 }
-
-/**
- * Every durable-message column that holds a routing identity, with the role
- * each column plays. One list is imported by `kg rename-project`
- * (`core/project-tags.ts`) and mirrored — it cannot be imported from
- * JavaScript — by the read-only invariant in
- * `scripts/audit/memory-invariants.mjs`.
- *
- * Table and column names here are literals and never caller input, so
- * interpolating them into SQL is safe.
- *
- * The router and presence tables (`agent_principals`,
- * `agent_session_instances`, `agent_session_connections`,
- * `agent_presence_facts`, `agent_dispatch_attempts`) are deliberately absent:
- * their `project` is not a `MessageSchema` field at all — each host process
- * derives it itself, from its own working directory or `--workspace`
- * (`getProjectName`, core/paths.ts), the same as an ordinary Codex thread
- * does. It is never read back from the owner-written host config
- * `memesh agent setup` writes (#474 — a `project` field there, if present,
- * is inert, kept only for a script that still passes one).
- */
-export const AGENT_MESSAGE_SCOPE_COLUMNS: ReadonlyArray<{
-  readonly table: string;
-  readonly columns: readonly string[];
-}> = [
-  { table: 'agent_messages', columns: ['project', 'recipient'] },
-  { table: 'agent_message_deliveries', columns: ['project', 'recipient'] },
-  { table: 'agent_message_events', columns: ['project', 'recipient'] },
-  { table: 'agent_message_cursors', columns: ['project', 'recipient'] },
-  { table: 'agent_message_receipts', columns: ['project', 'recipient', 'actor'] },
-  { table: 'agent_message_idempotency', columns: ['project'] },
-  { table: 'agent_ack_facts', columns: ['actor'] },
-  { table: 'agent_workflow_facts', columns: ['actor'] },
-  { table: 'agent_retention_facts', columns: ['actor'] },
-];
-
-/** The tables carrying a `project` scope column, for a project rename. */
-export const AGENT_MESSAGE_PROJECT_TABLES: readonly string[] =
-  AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes('project')).map((e) => e.table);

@@ -6,6 +6,7 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { RECALL_RESPONSE_MAX_BYTES } from '../../src/core/recall-agent-view.js';
 import { seedOversizedEntity } from '../helpers/recall-size-fixture.js';
+import { installLegacyMessageSchema, seedLegacyMessage } from '../helpers/agent-session-fixture.js';
 
 // Import the Express app (not startServer, which opens its own DB and binds a port).
 // We open our own isolated DB and start the app on a random port.
@@ -204,12 +205,10 @@ describe('HTTP Transport: POST /v1/remember', () => {
     expect(res.body.data.observations).toBe(2);
   });
 
-  it('refuses a decision with no why: 400 with the sentence that names both halves, nothing stored', async () => {
-    const refused = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
-    expect(refused.status).toBe(400);
-    expect(refused.body.success).toBe(false);
-    expect(refused.body.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(getDatabase().prepare('SELECT 1 FROM entities WHERE name = ?').get('http-bare-decision')).toBeUndefined();
+  it('stores a decision with no why, and a later call adds the why', async () => {
+    const bare = await req('POST', '/v1/remember', { name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'] });
+    expect(bare.status).toBe(200);
+    expect(bare.body.data.observations).toBe(1);
 
     const stored = await req('POST', '/v1/remember', {
       name: 'http-bare-decision', type: 'decision', observations: ['Use TLS everywhere'], why: 'the proxy terminates nothing; revisit if it does',
@@ -431,7 +430,7 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
     await req('POST', '/v1/remember', { name: 'lesson-pg-heur-config-error', type: 'lesson_learned' });
     // A project whose name begins with another's: an exact tag match keeps them apart.
     await req('POST', '/v1/remember', { name: 'pg-c-1', type: 'note', tags: ['project:pg-proj-2'] });
-    // The Stop hook's handoff carries the project tag but is not one of its memories.
+    // S2 retains the old handoff entity as an ordinary project memory.
     await req('POST', '/v1/remember', { name: 'session-handoff:pg-proj', type: 'session-handoff', tags: ['project:pg-proj'] });
     // A one-character name is not a project (the chips never read one out of a lesson name).
     await req('POST', '/v1/remember', { name: 'lesson-x-config-error', type: 'lesson_learned' });
@@ -440,9 +439,9 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
   it('pages one project newest-first with limit and offset', async () => {
     const first = await req('GET', '/v1/entities?project=pg-proj&limit=2');
     expect(first.status).toBe(200);
-    expect(names(first)).toEqual(['pg-a-3', 'pg-a-2']);
+    expect(names(first)).toEqual(['session-handoff:pg-proj', 'pg-a-3']);
     const second = await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=2');
-    expect(names(second)).toEqual(['pg-a-1']);
+    expect(names(second)).toEqual(['pg-a-2', 'pg-a-1']);
     expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=2&offset=50'))).toEqual([]);
   });
 
@@ -464,9 +463,9 @@ describe('HTTP Transport: GET /v1/entities paging and ?project=', () => {
       const listed = (await req('GET', `/v1/entities?project=${project}&limit=5000`)).body.data.length;
       expect(listed, `${project}: the chip count and the list behind it`).toBe(counted.find((p) => p.name === project)!.count);
     }
-    // Names that share a prefix stay apart, and the handoff is in neither the count nor the list.
+    // Names that share a prefix stay apart; the legacy handoff remains in both count and list.
     expect(names(await req('GET', '/v1/entities?project=pg-proj-2&limit=50'))).toEqual(['pg-c-1']);
-    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).not.toContain('session-handoff:pg-proj');
+    expect(names(await req('GET', '/v1/entities?project=pg-proj&limit=50'))).toContain('session-handoff:pg-proj');
     // Too short to be a project from a lesson name: no chip, and no list either.
     expect(counted.find((p) => p.name === 'x')).toBeUndefined();
     expect(names(await req('GET', '/v1/entities?project=x&limit=50'))).toEqual([]);
@@ -590,16 +589,14 @@ describe('HTTP Transport: POST /v1/import and archived memories (#363)', () => {
     expect(observationsOf('http-import-restored')).toContain('bundle text');
   });
 
-  it('refuses restore_archived with `skip`, as it does an unknown strategy: 400 with the core message', async () => {
+  it('restore_archived with `skip` reactivates the entity and replaces nothing', async () => {
     await seedArchived('http-import-skip-restore');
     const res = await req('POST', '/v1/import', {
       data: bundleFor('http-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
     });
-    expect(res.status).toBe(400);
-    expect(res.body.success).toBe(false);
-    expect(res.body.errorCode).toBe('operation.failed');
-    expect(res.body.error).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
-    expect(statusOf('http-import-skip-restore')).toBe('archived');
+    expect(res.status).toBe(200);
+    expect(res.body.data.restored).toBe(1);
+    expect(statusOf('http-import-skip-restore')).toBe('active');
     expect(observationsOf('http-import-skip-restore')).toEqual(['original text']);
   });
 
@@ -863,66 +860,35 @@ describe('HTTP Transport: POST /v1/learn', () => {
   });
 });
 
-describe('HTTP Transport: POST /v1/message', () => {
-  it('wakes one waiting recipient and keeps the notification payload-free', async () => {
-    const project = 'http-message-live';
-    const waiting = req('POST', '/v1/message', {
-      action: 'poll', project, recipient: 'receiver-http', wait_ms: 500, limit: 20,
-    });
-
-    await new Promise((resolve) => setTimeout(resolve, 30));
-    const sent = await req('POST', '/v1/message', {
-      action: 'send',
-      project,
-      sender: 'sender-http',
-      recipient: 'receiver-http',
-      idempotency_key: 'http-send-1',
-      payload: { text: 'wake up', payload_only: 'not-in-header' },
-      content_type: 'application/json',
-      privacy: 'private',
-    });
-    expect(sent.status).toBe(200);
-
-    const delivered = await waiting;
-    expect(delivered.status).toBe(200);
-    expect(delivered.body.data.events).toHaveLength(1);
-    expect(delivered.body.data.events[0].message_id).toBe(sent.body.data.message_id);
-    expect(JSON.stringify(delivered.body.data.events[0])).not.toContain('not-in-header');
-
-    const control = await req('POST', '/v1/message', {
-      action: 'poll', project, recipient: 'control-http', wait_ms: 0,
-    });
-    expect(control.body.data.events).toEqual([]);
+describe('HTTP Transport: retired POST /v1/message', () => {
+  it('retires messaging actions without trusting a supplied conversation identity', async () => {
+    installLegacyMessageSchema(getDatabase());
+    const before = getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_messages').get();
+    for (const action of ['poll', 'send', 'discover', 'read', 'status', 'fetch', 'intake', 'update', 'delete']) {
+      const result = await req('POST', '/v1/message', {
+        action, project: 'retired-http-message', recipient: 'recipient', sender: 'sender',
+        idempotency_key: 'retired', payload: 'PAYLOAD_MUST_NOT_BE_STORED', wait_ms: 0,
+        _meta: { session_id: 'untrusted-session' },
+      });
+      expect(result.status).toBe(410);
+      expect(result.body.errorCode).toBe('route.retired');
+      expect(JSON.stringify(result.body)).not.toContain('PAYLOAD_MUST_NOT_BE_STORED');
+    }
+    expect(getDatabase().prepare('SELECT COUNT(*) AS n FROM agent_messages').get()).toEqual(before);
   });
 
-  it('fetch does not imply ACK and foreign recipients get no payload', async () => {
-    const project = 'http-message-fetch';
-    const sent = await req('POST', '/v1/message', {
-      action: 'send',
-      project,
-      sender: 'sender-http',
-      recipient: 'receiver-http',
-      idempotency_key: 'http-send-1',
-      payload: 'private body',
-    });
-    const messageId = sent.body.data.message_id;
-
-    const fetched = await req('POST', '/v1/message', {
-      action: 'fetch', project, recipient: 'receiver-http', message_id: messageId,
-    });
-    expect(fetched.body.data.payload).toBe('private body');
-
-    const receipts = await req('POST', '/v1/message', {
-      action: 'receipts', project, recipient: 'receiver-http', message_id: messageId,
-    });
-    expect(receipts.body.data).toEqual([]);
-
-    const foreign = await req('POST', '/v1/message', {
-      action: 'fetch', project, recipient: 'control-http', message_id: messageId,
-    });
-    expect(foreign.status).toBe(400);
-    expect(foreign.body.success).toBe(false);
-    expect(JSON.stringify(foreign.body)).not.toContain('private body');
+  it('ordinary startup leaves legacy history untouched instead of running the retired timer', async () => {
+    const db = getDatabase();
+    const row = seedLegacyMessage(db, { project: 'legacy-http', sender: 'sender', recipient: 'recipient', payload: 'keep history' });
+    db.prepare('UPDATE agent_messages SET created_at=? WHERE message_id=?').run(new Date(Date.now() - 2 * 86400000).toISOString(), row.message_id);
+    const before = db.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(row.message_id);
+    const { startServer } = await import('../../src/transports/http/server.js');
+    const listener = startServer('127.0.0.1', 0, { autoUpdateCheck: false });
+    try {
+      await new Promise(resolve => setTimeout(resolve, 1200));
+      expect(db.prepare('SELECT * FROM agent_messages WHERE message_id=?').get(row.message_id)).toEqual(before);
+      expect(db.prepare('SELECT COUNT(*) AS n FROM agent_message_expiry_runs').get()?.n).toBe(0);
+    } finally { await new Promise<void>(resolve => listener.close(() => resolve())); }
   });
 });
 
@@ -1334,12 +1300,70 @@ describe('HTTP Transport: Startup validation', () => {
       }
     }
 
-    it('read-only folder: prints the chmod, not the reset advice', () => {
+    it('read-only folder with pages waiting in a -wal: refuses to start, prints the chmod, not the reset advice', () => {
       let dirName = '';
-      const out = startupOutput((dir) => { dirName = dir; fs.chmodSync(dir, 0o500); });
+      const out = startupOutput((dir, dbPath) => {
+        dirName = dir;
+        fs.writeFileSync(`${dbPath}-wal`, Buffer.alloc(64, 1), { mode: 0o600 });
+        fs.chmodSync(dir, 0o500);
+      });
       expect(out).toContain(`Fix: Run: chmod u+w ${shellQuote(dirName)}`);
       // `mv` as a command word: the random temp-folder suffix can end in `mv` before a space (`…-oH0Bmv is read-only`).
       expect(out).not.toMatch(/Backup and reset|(?:^|\s)mv |Quick fix/);
+    });
+
+    it('read-only folder, nothing pending in a -wal: the server STARTS and serves reads; a write is refused naming the folder and the chmod', async () => {
+      const dir = fs.mkdtempSync(path.join(os.tmpdir(), "memesh-http-ro-it's-"));
+      const dbPath = path.join(dir, 'test.db');
+      const previousDbPath = process.env.MEMESH_DB_PATH;
+      closeDatabase();
+      openDatabase(dbPath);
+      getDatabase().prepare("INSERT INTO entities (name, type) VALUES ('ro-http-seed', 'note')").run();
+      closeDatabase();
+      for (const s of ['-wal', '-shm']) fs.rmSync(`${dbPath}${s}`, { force: true });
+      fs.chmodSync(dir, 0o500);
+      process.env.MEMESH_DB_PATH = dbPath;
+      const stderr: string[] = [];
+      const spy = vi.spyOn(process.stderr, 'write').mockImplementation((chunk: unknown) => { stderr.push(String(chunk)); return true; });
+      let started: ReturnType<typeof app.listen> | undefined;
+      try {
+        started = startServer('127.0.0.1', 0);
+        spy.mockRestore();
+        expect(stderr.join(''), 'the open said nothing about the read-only folder').toContain(`chmod u+w ${shellQuote(dir)}`);
+        const health = await req('GET', '/v1/health');
+        expect(health.status).toBe(200);
+        expect(health.body.data.entity_count, 'the stored memory was not readable').toBeGreaterThan(0);
+        const refused = await req('POST', '/v1/remember', { name: 'ro-http-new', type: 'note' });
+        expect(refused.status).toBeGreaterThanOrEqual(400);
+        expect(refused.body.success).toBe(false);
+        expect(refused.body.error, 'the refusal does not name the folder').toContain(dir);
+        expect(refused.body.error).toContain(`chmod u+w ${shellQuote(dir)}`);
+        // An import is refused as a whole, not reported as "imported 0" with per-entity errors that look like bad input.
+        const importRefused = await req('POST', '/v1/import', {
+          data: {
+            version: '3.1.0', exported_at: '2026-09-20T00:00:00.000Z', entity_count: 1,
+            entities: [{ name: 'ro-http-imported', type: 'note', namespace: 'personal', observations: ['bundle text'], tags: [], relations: [] }],
+          },
+          merge_strategy: 'append',
+        });
+        expect(importRefused.body.success, `an import into a read-only folder was reported as a success: ${JSON.stringify(importRefused.body)}`).toBe(false);
+        expect(importRefused.body.error).toContain(dir);
+        expect(importRefused.body.error).toContain(`chmod u+w ${shellQuote(dir)}`);
+        // The user follows the advice. The running server notices: no restart, and writes work.
+        fs.chmodSync(dir, 0o700);
+        const accepted = await req('POST', '/v1/remember', { name: 'ro-http-after-the-fix', type: 'note' });
+        expect(accepted.status, JSON.stringify(accepted.body)).toBe(200);
+        expect(accepted.body.success).toBe(true);
+      } finally {
+        spy.mockRestore();
+        if (started?.listening) await new Promise<void>((resolve) => { started!.close(() => resolve()); });
+        closeDatabase();
+        if (previousDbPath === undefined) delete process.env.MEMESH_DB_PATH;
+        else process.env.MEMESH_DB_PATH = previousDbPath;
+        for (const p of [dbPath, `${dbPath}-wal`, `${dbPath}-shm`, dir]) { try { fs.chmodSync(p, 0o700); } catch { /* gone */ } }
+        fs.rmSync(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+        openDatabase(path.join(tmpDir, 'test.db'));
+      }
     });
 
     it('a -wal with fewer owner permissions: prints the chmod, not the reset advice', () => {

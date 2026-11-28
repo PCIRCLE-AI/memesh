@@ -85,28 +85,32 @@ function utf8Length(text) {
 }
 export const SILENT_HOOK_MIN_RUNS = 5;
 export const CAPTURE_HOOKS = [
+    'messages',
     'post-commit',
     'session-summary',
-    'pre-compact',
     'pre-edit-recall',
     'user-prompt-intent',
-    'decision-nudge',
     'guard-check',
     'session-start',
     'note-ingest',
-    'remember-nudge',
-    'handoff-capture',
     'stop-message-gate',
+    'codex-plan-activity',
+    'codex-busy-message-notice',
+    'prompt-recall',
 ];
+const RETIRED_HOOKS = new Set(['pre-compact', 'decision-nudge', 'remember-nudge']);
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'];
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'];
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary'];
 export const SKIP_REASONS = {
+    messageIdentityUnavailable: 'conversation-identity-unavailable',
+    messageNoPending: 'no-pending-messages',
     notBash: 'not a Bash tool call',
     notGitCommit: 'not a git commit command',
     commitLineMissing: 'a git commit ran but printed no commit line',
     commitHeadBaseline: 'recorded the repository HEAD baseline; no history was backfilled',
     commitHeadUnchanged: 'a commit-like command completed but repository HEAD did not change',
     commitHeadUnresolvable: 'a commit-like command ran but repository HEAD could not be resolved',
+    commitsAlreadyProcessed: 'all commits in this range were already processed',
     alreadyCaptured: 'this session was already captured',
     payloadTooLarge: 'payload exceeded the stdin byte cap',
     toolNameAbsent: 'tool_name absent in payload',
@@ -119,11 +123,32 @@ export const SKIP_REASONS = {
     noDatabaseForGuards: 'no database yet — nothing to guard against',
     noGuardMatched: 'no active guard matched this command',
     autoCaptureOff: 'auto-capture is turned off',
+    notesLeftForNextRun: 'more note files changed than one run reads, so the rest are read at the next Stop',
+    commitsLeftForNextRun: 'more commits arrived than one run records; the rest are left for the next run',
+    commitsNotStoredWriteFailed: 'a commit was not stored after repeated write failures',
+    forgottenMessageNotStoredAgain: 'a message that had already been forgotten was not stored again',
+    messagesNotStoredWriteFailed: 'messages were not stored because the write kept failing',
+    noteTooLarge: 'a note file was larger than the size limit and was not imported',
+    noteNoFrontmatter: 'a note file had no header block and was not imported',
+    noteTooManyObservations: 'a note file had more observations than the limit and was not imported',
+    noteIsSymlink: 'a note file was a symbolic link and was not imported',
+    noteOtherNotImported: 'a note file was not imported for another recorded reason',
+    transcriptReadTimeout: 'the transcript could not be read within the hook\'s time, so its tool calls are not recorded',
+    busyNoticeNotCodex: 'not Codex',
+    busyNoticeNoSessionId: 'no usable session_id',
+    busyNoticeSessionMismatch: 'session_id_mismatch',
+    busyNoticeNoRecipient: 'no recipient or database',
+    busyNoticeLockHeld: 'session reminder lock held',
+    busyNoticeNothingWaiting: 'no waiting messages',
+    notCodexPlanEvent: 'not a valid Codex plan event',
+    planActivityRecorded: 'activity state recorded; no notification',
+    planActivityCleared: 'invalid or failed plan cleared',
     commitCwdAbsent: 'data.cwd absent — cannot resolve project or repo',
     hashNotACommit: 'the hash is not a commit in this repository',
     noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
     emptyStdin: 'empty stdin',
     cwdAbsent: 'cwd absent in payload — cannot resolve project',
+    memoryDirOtherProject: 'the memory folder belongs to the project the session started in, not the one of its cwd',
     projectLineNoCwd: 'no usable session cwd — the project line was not shown',
     notAgenticLoop: 'not an agentic loop',
     transcriptPathAbsent: 'transcript_path absent',
@@ -138,7 +163,14 @@ export const SKIP_REASONS = {
     nothingToRecall: 'no guard matched and nothing to recall for this file',
     recallThrottled: 'no guard matched and recall for this file is throttled: this session already looked at it',
     candidateWindowTruncated: 'more candidates may exist than the search window examined',
-    noPromptIntent: 'the prompt carried no remember intent and no update decision',
+    noMessageWaiting: 'no message was waiting for this session',
+    promptTooLarge: 'the prompt is larger than the hook accepts',
+    promptEmpty: 'the prompt held no text',
+    promptRecallOff: 'prompt recall is turned off (promptRecall is false)',
+    promptNoTerms: 'the prompt held no word distinctive enough to search for',
+    promptNoMatch: 'no stored memory matched the prompt strongly enough',
+    promptStale: 'the memories that matched look out of date (a newer decision on the same topic, or a waiting status)',
+    promptAlreadyShown: 'the memories that matched were already shown in this session',
     noMemoryDir: 'no Claude Code memory directory for this project',
     noNoteChanged: 'no note file changed since the last ingestion',
     noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
@@ -150,8 +182,6 @@ export const SKIP_REASONS = {
     memoryWritten: 'a memory was written since the last Stop',
     noteFileChanged: 'a note file changed since the last Stop',
     noAssistantText: 'the Stop payload and the transcript held no assistant message',
-    handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
-    handoffArchived: 'the handoff memory was archived by forget — left alone',
     notClaudeCodeHost: 'this Stop is not running under Claude Code',
     noRecipientForGate: 'no recipient could be resolved for this session',
     noDatabaseForMessageGate: 'no database yet — nothing to check for waiting messages',
@@ -232,19 +262,20 @@ function valueEnd(s, i) {
 }
 export const NOT_TRIGGERED_SKIP_REASONS = {
     'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-    'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+    'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows, SKIP_REASONS.noAssistantText],
     'session-start': [SKIP_REASONS.noSessionId],
     'note-ingest': [SKIP_REASONS.noNoteChanged],
     'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-    'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 export const UNCLASSIFIED_SKIP_HOOKS = [
-    'pre-compact',
+    'messages',
     'pre-edit-recall',
     'user-prompt-intent',
-    'decision-nudge',
     'guard-check',
     'stop-message-gate',
+    'codex-plan-activity',
+    'codex-busy-message-notice',
+    'prompt-recall',
 ];
 export const NEVER_RAN_GRACE_HOURS = 72;
 export function parseHookOutcomes(raw, limit = HOOK_OUTCOMES_PER_HOOK) {
@@ -274,7 +305,7 @@ export function parseHookOutcomeLine(line) {
     if (!parsed || typeof parsed !== 'object')
         return null;
     const rec = parsed;
-    if (typeof rec.hook !== 'string' || !CAPTURE_HOOKS.includes(rec.hook))
+    if (typeof rec.hook !== 'string' || (!CAPTURE_HOOKS.includes(rec.hook) && !RETIRED_HOOKS.has(rec.hook)))
         return null;
     if (typeof rec.at !== 'string')
         return null;
@@ -295,6 +326,8 @@ export function parseHookOutcomeLine(line) {
     const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
     if (entity)
         record.entity = entity;
+    if (typeof rec.count === 'number' && Number.isSafeInteger(rec.count) && rec.count >= 0)
+        record.count = rec.count;
     return record;
 }
 export const RECORD_TEXT_MAX = 200;
@@ -316,6 +349,7 @@ const FIXED_ERROR_REASONS = new Set([
     'malformed stdin JSON',
     'captureEntity did not land the write',
     'the transcript could not be read',
+    SKIP_REASONS.transcriptReadTimeout,
     'the host closed stdout before the nudge could be written',
     'the database stayed locked past the hook busy timeout',
     'stdout: host closed the pipe before the block reason was delivered',
@@ -331,6 +365,19 @@ export function renderableErrorReason(reason) {
     return step ? `${step[1]}: …` : 'an unlabelled error';
 }
 export const RECENT_ERROR_RUNS = 5;
+const NOT_STORED_REASONS = new Map([
+    [SKIP_REASONS.commitsLeftForNextRun, 'commit(s)'],
+    [SKIP_REASONS.commitsNotStoredWriteFailed, 'commit(s)'],
+    [SKIP_REASONS.forgottenMessageNotStoredAgain, 'message(s)'],
+    [SKIP_REASONS.messagesNotStoredWriteFailed, 'message(s)'],
+    [SKIP_REASONS.noteTooLarge, 'note file(s)'],
+    [SKIP_REASONS.noteNoFrontmatter, 'note file(s)'],
+    [SKIP_REASONS.noteTooManyObservations, 'note file(s)'],
+    [SKIP_REASONS.noteIsSymlink, 'note file(s)'],
+    [SKIP_REASONS.noteOtherNotImported, 'note file(s)'],
+    [SKIP_REASONS.notesLeftForNextRun, 'note file(s)'],
+    [SKIP_REASONS.noteFilesRefused, 'note file(s)'],
+]);
 function summarizeOne(hook, records) {
     let writes = 0;
     let skips = 0;
@@ -346,11 +393,25 @@ function summarizeOne(hook, records) {
     let lastErrorReason = null;
     const skipCounts = new Map();
     const hosts = new Set();
-    for (const r of records) {
+    const notStored = new Map();
+    const lockedRuns = new Set();
+    for (const [i, r] of records.entries()) {
         hosts.add(r.host);
         if (lastRunAt === null || r.at >= lastRunAt)
             lastRunAt = r.at;
         const triggered = isTriggeredRecord(r);
+        if (triggered && r.outcome === 'skipped' && r.reason !== undefined && NOT_STORED_REASONS.has(r.reason)) {
+            const total = notStored.get(r.reason) ?? { records: 0, count: null, unknownCount: 0 };
+            total.records++;
+            if (r.count === undefined)
+                total.unknownCount++;
+            else
+                total.count = (total.count ?? 0n) + BigInt(r.count);
+            notStored.set(r.reason, total);
+        }
+        if (r.outcome === 'error' && /^(?:[a-z][a-z -]{0,30}: )?(?:uncaught )?MEMESH_DB_LOCKED$/.test(r.reason ?? '')) {
+            lockedRuns.add(r.run ?? `#${i}`);
+        }
         if (triggered) {
             if (firstTriggeredAt === null || r.at < firstTriggeredAt)
                 firstTriggeredAt = r.at;
@@ -429,6 +490,8 @@ function summarizeOne(hook, records) {
         lastErrorAt,
         lastErrorReason,
         recentErrors,
+        notStored: [...notStored].map(([reason, total]) => ({ ...total, reason, unit: NOT_STORED_REASONS.get(reason), count: total.count?.toString() ?? null })),
+        lockedRuns: lockedRuns.size,
         hosts: [...hosts].sort(),
         silent: SILENT_ELIGIBLE_HOOKS.includes(hook)
             && triggeredRuns >= SILENT_HOOK_MIN_RUNS
@@ -437,7 +500,7 @@ function summarizeOne(hook, records) {
 }
 export function summarizeTypeTrends(rows) {
     return rows
-        .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 }))
+        .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 && r.type !== 'session-insight' && r.type !== 'session-summary' }))
         .sort((a, b) => a.type.localeCompare(b.type));
 }
 export function captureLivenessVerdict(input) {
@@ -450,7 +513,7 @@ export function captureLivenessVerdict(input) {
         : [];
     const silent = input.hooks.filter((h) => h.silent).sort((a, b) => b.triggeredRuns - a.triggeredRuns);
     const stoppedTypes = input.types.filter((t) => t.stopped);
-    const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+    const erroring = input.hooks.filter((h) => h.recentErrors > 0 && !RETIRED_HOOKS.has(h.hook))
         .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
     let status = 'PASS';
     if (deadHooks.length > 0)

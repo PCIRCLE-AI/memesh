@@ -1,7 +1,9 @@
 import fs from 'fs';
 import path from 'path';
 import { execFileSync } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 import { homeDir } from './paths.js';
+import { shellQuote } from './file-mode.js';
 import { compareSemVerPrecedence, parseSemVer, type ParsedSemVer } from './semver.js';
 
 export type InstallChannel = 'npm-global' | 'npm-local' | 'source-checkout' | 'plugin-marketplace' | 'unknown';
@@ -50,19 +52,15 @@ export type PluginHost = 'claude-code' | 'codex';
 
 /** host, its default home directory name, and the env var that relocates it. */
 /**
- * The one command per host that re-stages the plugin cache from the
- * marketplace. Used by the install-channel guidance and by doctor's
- * plugin-cache check; keep it in one place so the two cannot disagree.
- *
- * Codex: `codex plugin add` over an existing same-version cache replaces it
- * atomically (verified 2026-08-30 on codex-cli 0.150.1 by poisoning the
- * cache and running `add`: the poison was gone and every file matched the
- * snapshot). No `remove` step — that would delete the install first and
- * leave nothing if `add` then failed.
+ * The one command that REPAIRS a plugin cache, for both hosts: put this very version back through the same
+ * checks an update takes (the release's source is verified, the database is backed up, the commit is pinned and
+ * read back). It is not how a plugin moves to a new release (that is plain `memesh update`). The old repair
+ * commands re-staged the cache from the marketplace's CURRENT branch, which is an unreleased commit nobody had
+ * checked, and ran regardless of the `autoUpdate` setting. Keep it in one place so the checks that use it cannot disagree.
  */
 export const PLUGIN_REFRESH_COMMANDS: Readonly<Record<PluginHost, string>> = {
-  'claude-code': 'memesh upgrade-plugin',
-  codex: 'codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh',
+  'claude-code': 'memesh update --reinstall',
+  codex: 'memesh update --reinstall',
 };
 
 const PLUGIN_HOST_DIRS: ReadonlyArray<readonly [PluginHost, string, string]> = [
@@ -211,7 +209,8 @@ export function getGlobalNpmRoot(
   const { execFileSyncImpl = execFileSync, execPathImpl = process.execPath } = options;
 
   try {
-    const spawned = execFileSyncImpl('npm', ['root', '-g'], { encoding: 'utf8' }).trim();
+    const npm = requireNpmInvocation(['root', '-g']);
+    const spawned = execFileSyncImpl(npm.command, npm.args, { encoding: 'utf8' }).trim();
     if (spawned) return spawned;
   } catch {
     // npm is not reachable from this process — fall through to the layout.
@@ -292,6 +291,13 @@ export function getCurrentInstallChannel(
   return channel;
 }
 
+/** The installed CLI remains reachable when a plugin did not put memesh on PATH. */
+export function pluginUpdateCommand(packageRoot: string): string {
+  const entry = path.join(packageRoot, 'dist', 'transports', 'cli', 'cli.js');
+  const quoted = process.platform === 'win32' ? `"${entry.replace(/"/g, '""')}"` : shellQuote(entry);
+  return `node ${quoted} update`;
+}
+
 /**
  * @param packageRoot - the same root that produced `channel`. Required, not
  *   optional, because the `plugin-marketplace` remediation is only correct
@@ -338,23 +344,23 @@ export function getInstallChannelSupport(
         return {
           channel,
           label: 'Codex CLI plugin marketplace',
-          canSelfUpdate: false,
-          // NOT `memesh upgrade-plugin`. That script reconciles Claude
+          canSelfUpdate: true,
+          // The repair command below is NOT `memesh upgrade-plugin`. That script reconciles Claude
           // Code's layout specifically: it reads
           // ~/.claude/plugins/marketplaces/pcircle-memesh and patches
           // ~/.claude/plugins/installed_plugins.json. Codex creates
           // neither, so pointing a Codex user at it hands them
           // "ERROR: marketplace cache not found" — worse than saying
           // nothing. Codex ships its own plugin CLI; use that.
-          recommendedCommand: PLUGIN_REFRESH_COMMANDS.codex,
+          recommendedCommand: 'memesh update',
           guidance:
-            `Run \`${PLUGIN_REFRESH_COMMANDS.codex}\` to refresh the snapshot and re-stage the plugin from it (\`add\` replaces an existing same-version cache). The plugin marketplace pins versions, so a new release does not auto-update.`,
+            `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`${pluginUpdateCommand(packageRoot)}\`): it checks the release's source, backs up the database and updates the Codex plugin to that release (automatic updates do the same by default; \`memesh doctor\` shows what they did). To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS.codex}\` (the same checks, for this version).`,
         };
       }
       return {
         channel,
         label: 'Claude Code plugin marketplace',
-        canSelfUpdate: false,
+        canSelfUpdate: true,
         // The bundled script reconciles the marketplace cache, copies the
         // new version into the plugin cache, runs npm install for runtime
         // deps, and patches installed_plugins.json to point at the new
@@ -364,9 +370,9 @@ export function getInstallChannelSupport(
         // prerequisites itself — the old prescription asked the user to
         // hand-substitute the installed version into a path. Plugin-only
         // users (no npm CLI on PATH) reach the same command via npx.
-        recommendedCommand: 'memesh upgrade-plugin',
+        recommendedCommand: 'memesh update',
         guidance:
-          'Run `memesh upgrade-plugin` (no npm CLI? `npx @pcircle/memesh upgrade-plugin`), or reinstall the plugin from the Claude Code /plugin UI. The plugin marketplace pins versions, so a new release does not auto-update.',
+          `Run \`memesh update\` (no \`memesh\` command on your PATH? run \`${pluginUpdateCommand(packageRoot)}\`; \`npx @pcircle/memesh update\` cannot work, because npx runs a throwaway copy that is not this install): it checks the release's source, backs up the database and updates the plugin to that release; automatic updates do the same by default and \`memesh doctor\` shows what they did. To repair damaged plugin files without a new release: \`${PLUGIN_REFRESH_COMMANDS['claude-code']}\`.`,
       };
     }
     default:

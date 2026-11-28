@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { checkCurrentDocumentationContracts } from '../scripts/lib/current-doc-contract.mjs';
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
@@ -9,6 +10,7 @@ const read = (relative: string) => fs.readFileSync(path.join(root, relative), 'u
 const baseline = {
   architecture: read('docs/ARCHITECTURE.md'),
   handlers: read('src/transports/mcp/handlers.ts'),
+  conversationMessaging: read('src/transports/conversation-messaging.ts'),
   httpServer: read('src/transports/http/server.ts'),
   retiredRoutes: read('src/transports/http/retired-routes.ts'),
   operations: read('src/core/operations.ts'),
@@ -25,7 +27,7 @@ const baseline = {
 
 describe('current source-backed documentation contracts', () => {
   it('accepts the synchronized current docs', () => {
-    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 0, toolCount: 12 });
+    expect(checkCurrentDocumentationContracts(baseline)).toMatchObject({ errors: [], routeCount: 31, webRouteCount: 0, toolCount: TOOL_DEFINITIONS.length });
   });
 
   it.each([
@@ -35,6 +37,10 @@ describe('current source-backed documentation contracts', () => {
     ['MCP normal remember branch omitted', { architecture: baseline.architecture.replace('McpRememberSchema, ', '') }, 'MCP handler table differs'],
     ['MCP interactive remember branch omitted', { architecture: baseline.architecture.replace(', NativeMemoryEditorSchema', '') }, 'MCP handler table differs'],
     ['MCP pane remember branch omitted', { architecture: baseline.architecture.replace(', PaneMemoryEditorSchema', '') }, 'MCP handler table differs'],
+    ['MCP conversation bridge omitted', { handlers: baseline.handlers.replace('executeConversationMessageAction(args, { session: requestContext.hostSession })', 'removedConversationBridge(args, { session: requestContext.hostSession })') }, 'MCP handler table differs'],
+    ['MCP conversation schema parse omitted', { conversationMessaging: baseline.conversationMessaging.replace('ConversationMessageActionSchema.parse(input)', 'removedConversationSchema.parse(input)') }, 'MCP handler table differs'],
+    ['MCP conversation schema export omitted', { conversationMessaging: baseline.conversationMessaging.replace('export const ConversationMessageActionSchema =', 'const ConversationMessageActionSchema =') }, 'MCP handler table differs'],
+    ['MCP conversation parse cannot borrow a later export', { conversationMessaging: `${baseline.conversationMessaging.replace('ConversationMessageActionSchema.parse(input)', 'removedConversationSchema.parse(input)')}\nexport function unrelatedParse(input) { const action = ConversationMessageActionSchema.parse(input); return action; }\n` }, 'MCP handler table differs'],
     ['removed config symbol', { architecture: baseline.architecture.replace('owner-local configuration reads', 'owner-local configuration reads via logCapabilities') }, 'removed logCapabilities'],
     ['hard-delete forget claim', { architecture: baseline.architecture.replace('KnowledgeGraph.archiveEntity(name)', 'KnowledgeGraph.deleteEntity(name)') }, 'forget section'],
     ['hard-delete forget implementation', { operations: baseline.operations.replace('kg.archiveEntity(args.name)', 'kg.deleteEntity(args.name)') }, 'operations.forget source'],
@@ -44,7 +50,7 @@ describe('current source-backed documentation contracts', () => {
     ['HTTP method/path row removal', { apiReference: baseline.apiReference.replace(/^\| POST \| \/v1\/message.*\n/m, '') }, 'HTTP route table differs'],
     ['HTTP method drift', { apiReference: baseline.apiReference.replace('| POST | /v1/config |', '| GET | /v1/config |') }, 'HTTP route table differs'],
     ['HTTP route duplicate', { apiReference: baseline.apiReference.replace(/^\| POST \| \/v1\/message.*\n/m, (row) => `${row}${row}`) }, 'HTTP route table differs'],
-    ['duplicate architecture route count', { architecture: `${baseline.architecture}\n31 \`/v1\` endpoints including two retired 410 routes\n` }, 'exactly once'],
+    ['duplicate architecture route count', { architecture: `${baseline.architecture}\n31 \`/v1\` endpoints including 3 retired 410 routes\n` }, 'exactly once'],
     ['config capabilities return', { apiReference: baseline.apiReference.replace('"config": {', '"capabilities": {},\n    "config": {') }, 'data.config'],
     ['config enum type', { apiReference: baseline.apiReference.replace('"autoUpdate": "minor"', '"autoUpdate": true') }, 'autoUpdate'],
     ['analytics factor type', { apiReference: baseline.apiReference.replace(/"activity": \{ "score": \d+, "weight": \d+, "detail": "[^"\n]+" \}/, '"activity": 50') }, 'healthFactors.activity'],

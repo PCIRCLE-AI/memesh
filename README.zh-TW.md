@@ -6,10 +6,10 @@
 
 MeMesh 讓程式開發 AI 共用背景、交換任務與審查結果，並在不同對話間留下清楚的交接。共享記憶則保留你的偏好、專案決策和過去的教訓，讓你不必每次重新解釋。
 
-- **跨對話分工。** 正在執行的 Codex 和 Claude Code session 可透過 MeMesh 訊息與選配的 Claude Channel 交換任務、問題、審查請求和結果。
+- **已登記對話之間分工。** 交換任務、問題、審查請求與結果。Claude 與 Codex plugin manifest 都已宣告對話 hooks；原生送達與叫醒仍需各宿主的實際證據。
 - **共用專案背景。** 同一台電腦上的 agent 可沿用專案決策和教訓，不必每次從頭了解。
 - **留下清楚的交接。** 記錄目標、下一步與阻擋，供下一個對話確認後接續。
-- **保留有用的記憶。** 儲存偏好、決策和教訓，讓不同對話與工具都能查找。
+- **保留有用的記憶。** 儲存偏好、決策和教訓，讓不同對話與工具都能查找。決策、教訓和偏好在所有專案都找得到，並標明來自哪個專案；各專案的 commit 紀錄和對話摘要只留在原專案。
 
 記憶預設存放在你電腦上的單一檔案：`~/.memesh/knowledge-graph.db`。MeMesh 不另跑 AI 模型。自動提醒依工具整合而定；交接提供背景，不代表任務一定會自動接續。
 
@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — 依 [MeMesh 記憶整合指南](docs/platforms/hermes-agent.md)連接 Hermes，即可使用記憶查找與擷取功能。
 
-若也需要命令列工具，先安裝 [Node.js 22.13+](https://nodejs.org)，再執行：
+若也需要命令列工具，先安裝 [Node.js](https://nodejs.org) 26.13.1 以上的 26.x 版本（建議）、24.22.3 以上的 24.x 版本，或 22.23.5 以上的 22.x 版本，再執行：
 
 ```bash
 npm install -g @pcircle/memesh
@@ -40,17 +40,19 @@ memesh doctor
 
 [安裝與更新指南](llms-install.md) · [其他工具整合](docs/platforms/README.md)
 
+若 `memesh doctor` 回報資料庫損毀，先關閉 AI 工具，再執行 `memesh repair`。它會保存核對過的損毀副本、救援可讀記憶，檢查新檔後才替換；系統 `sqlite3` 無法使用時會改用內建 Node 救援。也可用 `memesh repair --from-backup` 還原最新且通過檢查的記憶備份。完成後重新開啟 AI 工具。
+
 `PCIRCLE-AI/memesh` 是提供 marketplace 的 GitHub 儲存庫；`memesh@pcircle-memesh` 表示從 `pcircle-memesh` marketplace 安裝 `memesh` 插件。
 
-## 讓 Codex 和 Claude Code 協作
+## 對話訊息（source 候選）
 
-一個 session 實作，另一個審查、提問或回報結果。MeMesh 提供共用的本機訊息收件匣；Claude Channel 可將訊息即時送進正在執行的 Claude Code session。Codex 使用自己的原生通知路徑，再擷取訊息正文。
+一個 session 實作，另一個審查、提問或回報結果。MeMesh 對話訊息只有四個動作：尋找地址、送出有類型的本文、讀取一則收件訊息，以及查看狀態／稽核；本文一律是不受信任資料。
 
-1. 安裝上方插件，以相同作業系統使用者、相同 MeMesh 資料庫設定，在同一個 repository 啟動兩個工具。
-2. 符合條件的一般 Claude MCP 對話可在 macOS／Linux 不開 Channel 接收原生通知；選配的 [Claude Channel](docs/platforms/agent-messaging.md#claude-channel-runner) 可傳遞完整封套。一般 Codex CLI session 在插件 SessionStart hook 執行時自動註冊。
-3. 請 agent：「用 `message discover` 找到這個專案正在執行的 Claude／Codex session，送出審查請求，並回報對方回覆。」使用實際查到的收件者，不猜 session ID。接收方讀取訊息、記錄 `intake`，再回覆審查結果。
+1. 使用資料庫設定相同且已登記的對話。兩個插件皆已宣告 SessionStart／UserPromptSubmit 訊息 hook；Codex 格式的私有往返流程已驗，真正原生 host／模型交付仍待另驗。
+2. 執行 `memesh message discover`，只使用確實列出的地址，不猜測收件者。
+3. 只從 stdin 傳本文：`printf '%s' '請審查這項變更。' | memesh message send --recipient <address> --kind review_request --payload-stdin`。收件者用 `memesh message read --message-id <id>` 讀取，並可用 `--reply-to <id>` 回覆。
 
-未啟用 Claude Channel 時，仍可使用持久收件匣與 Claude Code hook 提醒。送達不代表對方已接下或完成工作；已停止的 session 不會自動恢復。Codex Desktop 是否參與，須以 `message discover` 查到的實際 session 為準。本機 channel 不負責跨電腦傳遞訊息。
+`queued` 不代表已送達、已讀、已回覆、已接受或已完成。原生叫醒與新對話跨機交付仍在開發中。
 
 [設定、路由與收據詳情](docs/platforms/agent-messaging.md)
 
@@ -64,13 +66,13 @@ memesh doctor
 >
 > 記下目前進度，方便下一個對話接手。
 
+MeMesh 預設會記住。要移除某筆已存記憶，可請 agent 找出那筆記憶並執行 `forget`；一般對話仍照常保存。
+
 Claude Code 插件提供自動記錄和提醒。Codex 插件在獲准執行 hooks 後，可以在對話開始時帶入記憶；其他自動記錄行為依工具而異。你也可以直接請 agent 儲存或查找記憶。
 
-Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 使用本機 `claude-code` 收件者，在啟動、下一次輸入與回合結束時檢查；agent 為該訊息登記 `intake` 後便停止提醒。Channel 即時推送是選配，詳見[訊息指南](docs/platforms/agent-messaging.md#claude-channel-runner)。
+SessionStart／UserPromptSubmit、Claude Stop 與 Codex Bash 工具後的 hook 都會帶入完整待收訊息，成功輸出後才記錄交付。記憶 hooks 不再公布舊 principal 地址或舊收件指令；原生叫醒與模型收讀仍待驗。保留的 HTTP 協定另行處理。詳見[訊息指南](docs/platforms/agent-messaging.md)。
 
-一般 Claude Code MCP 對話會自動登記到 `message discover`，不需啟用 Channel。原生收訊 socket 可用時可收到通知，再擷取正文；否則仍可使用持久收件匣與 hook 提醒。上線本身不證明通知已送達。
-
-尚未發布的原始碼版本新增 Claude Code `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
+MeMesh 4.11.0 起在 Claude Code 新增 `/memesh-memories` 入口，可查看及修改專案記憶。Claude Desktop 在面板內編輯；終端 Claude Code 與 Codex 使用原生表單。Codex 可請 `$memesh` 查找並編輯記憶。只填要改的標題或段落，留白保留原文。儲存後讀回結果，取消不寫入；不支援的宿主仍可用原本的對話操作。
 
 [完整工具與指令說明](docs/api/API_REFERENCE.md) · [Agent 訊息](docs/platforms/agent-messaging.md) · [運作方式](docs/ARCHITECTURE.md) · [參與開發](CONTRIBUTING.md)
 
@@ -81,35 +83,37 @@ Claude Code 的收件提醒不需設定 Channel：沒有自訂身分時，hooks 
 
 | 工具 | 用途 |
 |------|------|
-| `remember` | 儲存記憶；決策需要附上原因。 |
+| `remember` | 儲存記憶（預設就會存，不必先說）；決策未附原因也照存。 |
 | `recall` | 用關鍵字查找記憶，或用編號取回內容。 |
 | `forget` | 封存記憶或移除其中一則觀察。 |
 | `learn` | 記下錯誤、原因和避免重犯的方法。 |
 | `briefing` | 讀取專案目前的記憶背景。 |
 | `task_state` | 讀取或記錄目標、下一步、阻擋和完成事項。 |
-| `message` | 找到正在執行的本機 agent 並交換訊息。 |
+| `message` | 尋找對話地址；送出、讀取或查看有類型對話訊息及其稽核狀態。 |
 | `export` | 將記憶備份成 JSON。 |
 | `import` | 匯入記憶備份。 |
 | `work_package` | 準備有範圍限制的記憶摘要或對話摘錄，交由使用者審核。 |
 | `user_patterns` | 整理工作習慣。 |
 | `improvement` | 提出改善建議，交由使用者審核。 |
 
+**命令列補充。**
+- `memesh remember` 會把新記憶歸到目前資料夾的專案（和 `memesh learn` 相同）；`--project <名稱>` 指定其他專案，`--no-project` 存成不屬於任何專案。追加既有無專案記憶時，若未明確指定專案或專案標籤，仍維持無專案；省略 `--type` 會沿用既有類型。
+- `memesh export -o backup.json` 會用只留在 MeMesh 資料夾裡的密鑰替備份簽章。`memesh import backup.json` 只在檔案沒被改過、且來自這個資料夾時才恢復信任；其他檔案一律以不受信任匯入（可搜尋、不會自動注入），輸出會說明。你忘記（forget）的記憶仍保持封存：輸出會印出一行能復原的指令（`--restore-archived`）。
+- `memesh message send` 從 `--payload-stdin` 讀取本文；不接受把本文放進 argv。
+
 ---
 
-插件共有 10 個 hook 指令。「記住這件事」提醒支援 5 種語言。
+Claude Code 插件共有 9 個 hook 指令；Codex 插件另有 2 個 Codex 專用的 hook。MeMesh 不掃描你的話判斷儲存意圖，由 agent 依你的話自己判斷。每個 session 開場帶入有上限的記憶全貌與近期使用者對話標題；提問命中已存記憶時，最多兩筆記憶的內容會一起帶入，整段連同資料提示與 `[mem:id]` 編號合計不超過 4 KiB（UTF-8）。開場標題不代表內容已讀；內容超量會明示截取，附上可用 `recall` 讀取的編號。標題含 pending、blocked 或等待也可取回。提問帶入可用 `memesh config set promptRecall false` 關閉。
 記憶介面在 Claude Code／Claude Desktop Code 使用 MeMesh Mod，Codex 使用 MCP／原生表單；不再提供獨立 Web Dashboard。
 
 排序權重：相關性 30%、新近程度 25%、使用頻率 18%、信心 17%、回憶影響 10%。詳見[架構說明](docs/ARCHITECTURE.md)。
 
 ## 細節
 
-**agent 訊息的完整規則**（完整說明：[docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)）：
-
-- 今天就能做的：MCP、HTTP 或 CLI sender 可把一份 JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload 耐久化送給一個指定的本機 recipient。接收端可另行擷取、在重啟後用 opaque cursor 補收，並把 intake、acknowledgement、workflow disposition 與 host activation 分開記錄。
-- 啟用 MeMesh Codex plugin 後，每個具有有效 thread identity 與現有工作目錄、並新啟動或恢復的一般 Codex CLI thread，都會自動以 thread-scoped identity 註冊，不需要手動執行 `agent setup`。SessionStart 會啟動 owner-private companion；SessionEnd 保留 45 秒的有限 idle queue 視窗，resume 會取代前一個 exact generation，逾時則移除 registration。在 idle 視窗內被 queue 接受的訊息，會在同一 thread resume 時以簡短通知出現，agent 再從 inbox 擷取正文；這不代表已停止的 UI 被自動喚醒。只有某個 workspace 需要穩定的命名 principal 時，才需選用 `memesh agent setup codex-session`。包含 routing metadata 與 payload 的完整 native envelope 另有 16,384 bytes（16 KiB）上限。exact-session send 只有在原生 queue 接受後才成功；完整 envelope 過大時回報 `native_message_too_large`，sender 無法連到本機 router 時回報 `router_unreachable`，其他無法使用或拒絕的 session 則回報 `recipient_unavailable`。不論 sender 或 recipient 失敗，scope 相符的 recovery data 仍會保留，Principal target 在無法原生傳遞時仍保有 durable store-and-forward。原生接受不代表 acknowledgement 或 workflow disposition，原生訊息不得包含 secrets。
-- 已停止、缺失或斷線的 Codex session 不會被喚醒，也不會被別的對話頂替；失敗的 exact-session 原生傳遞不會自動重播，sender 必須明確重試。scope 相符的 recovery data 仍會保留，`memesh message storage report` 可以看目前存了什麼。原生傳遞目前只支援 macOS 和 Linux。
-- 這條文件化的原生路徑涵蓋一般 Codex CLI。除非確切且正在執行的 session 出現在 `message discover`，否則不要假設 Codex Desktop 或未連接的 task 已註冊；這是證據邊界，不代表這些 host 一律不相容。
-- Claude Channel 與自動註冊的 Codex 配對時，不需要在兩邊之間複製 `--project` 值：各 host 從自己的工作目錄（Claude）或 `--workspace`（Codex）推得自己的 routing project，所以在同一個 repository 啟動兩者，就會自動落在同一個 project。
+- MCP／CLI 對話介面只有 `discover`、`send`、`read`、`status`。寄件身分來自 host；MCP 以 `body` 傳文字，CLI 從 stdin 讀取。
+- 完整 rendered envelope 上限為 8,000 UTF-8 bytes。未知收件者的訊息會在儲存前遭拒。寄給已登記收件者的超量訊息會遭拒並留下稽核紀錄。已登記但離線的收件者會排隊。
+- 下次開啟訊息庫時，維護會清除已滿 14 天的訊息與事件，並對仍符合條件、滿一天未交付的訊息建立一次通知。`queued` 不代表已交付、已讀、已回覆或已完成。
+- `read` 記錄交付／已讀；`status` 顯示稽核，CLI 的 `--json` 可輸出完整擁有者紀錄。舊 HTTP 訊息端點已退役並回傳 `410 Gone`。見[訊息指南](docs/platforms/agent-messaging.md)。
 
 </details>
 

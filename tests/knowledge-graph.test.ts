@@ -213,10 +213,7 @@ describe('Feature: Knowledge Graph', () => {
     });
 
     it('does not re-duplicate observations when re-remembering a reactivated (archived) entity', () => {
-      // archiveEntity() removes the FTS row but never deletes the
-      // `observations` rows (forget() "never permanently deletes data"), so
-      // the dedup set for a reactivated entity must still see prior content
-      // rather than treating it as empty.
+      // A re-remember of an archived entity starts it over, so the same text again is stored once, not twice.
       kg.createEntity('Zig', 'language', {
         observations: ['Comptime is the whole language'],
       });
@@ -624,14 +621,20 @@ describe('Feature: Knowledge Graph', () => {
       const reactivatedRow = db.prepare("SELECT status FROM entities WHERE name = 'OldDesign'").get() as any;
       expect(reactivatedRow.status).toBe('active');
 
-      // Observations appended
+      // Only the new write is kept: the forgotten content and tags do not come back.
       const entity = kg.getEntity('OldDesign');
-      expect(entity!.observations).toContain('Use REST');
-      expect(entity!.observations).toContain('Use GraphQL');
+      expect(entity!.observations).toEqual(['Use GraphQL']);
 
-      // FTS5 rebuilt — searchable again
-      expect(kg.search('REST')).toHaveLength(1);
+      // FTS5 rebuilt from the new text only
+      expect(kg.search('REST')).toHaveLength(0);
       expect(kg.search('GraphQL')).toHaveLength(1);
+    });
+
+    it('does not bring back the tags of a forgotten memory either', () => {
+      kg.createEntity('OldDesign', 'decision', { observations: ['Use REST'], tags: ['project:old', 'topic:api'] });
+      kg.archiveEntity('OldDesign');
+      kg.createEntity('OldDesign', 'decision', { observations: ['Use GraphQL'], tags: ['project:new'] });
+      expect(kg.getEntity('OldDesign')!.tags).toEqual(['project:new']);
     });
   });
 

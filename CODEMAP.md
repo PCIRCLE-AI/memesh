@@ -15,17 +15,12 @@ for the public API surface see [`docs/api/API_REFERENCE.md`](docs/api/API_REFERE
 | `memesh <cmd>` (CLI) | `src/transports/cli/cli.ts` |
 | `memesh-mcp` (MCP stdio server) | `src/mcp/server.ts` → `src/transports/mcp/handlers.ts` |
 | `memesh-http` (HTTP REST server) | `src/transports/http/server.ts` |
-| `memesh-router` (private local router) | `src/host-runtime/router.ts` |
 | `memesh-host-claude` | `src/host-runtime/claude.ts` |
-| `memesh-host-codex` | `src/host-runtime/codex.ts` |
-| `memesh-host-codex-session` | `src/host-runtime/codex-session.ts` |
-| `memesh-host-acp` (experimental, not release-gated) | `src/host-runtime/acp.ts` |
 | `memesh serve` (HTTP REST) | `src/transports/http/server.ts` |
 | Claude Code hooks | `scripts/hooks/*.js` (wired in `hooks/hooks.json`) |
 
-Memory CRUD flows share `src/core/operations.ts`. Durable local messaging uses
-`src/core/agent-messaging.ts` plus the transport dispatcher and private router
-listed below.
+Memory CRUD flows share `src/core/operations.ts`. Conversation messaging uses `src/core/conversation-messages.ts` and the
+transport and native wake paths listed below.
 
 ---
 
@@ -38,8 +33,8 @@ src/
 ├── knowledge-graph.ts  # Entity CRUD, relations, FTS5 search, access tracking
 ├── storage/         # schema.ts (schema + migrations) · sqlite.ts (driver) · conflicts.ts · fts-index.ts / entity-index.ts (contentless-FTS5) · entity-write.ts / memory-mutation.ts (write kernel + guards) · graph-repairs.ts
 ├── transports/      # cli/ · http/ · mcp/ (+ schemas.ts = shared Zod validation)
-├── host-adapters/   # native Claude/Codex adapters + experimental ACP protocol adapter
-├── host-runtime/    # managed hosts, ordinary Claude MCP presence (claude-inbox.ts), private router
+├── host-adapters/   # Claude Channel and native conversation wake paths
+├── host-runtime/    # Claude conversation Channel entry and lifecycle
 ├── mcp/             # stdio server (NOTE: server lives here, handlers in transports/mcp/)
 scripts/hooks/       # Claude/Codex hook entrypoints + shared/generated helpers
 tests/               # vitest (forks pool) — mirrors src/ layout
@@ -80,17 +75,17 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 - Config read/write → `src/core/config.ts`
 - Path resolution (explicit `MEMESH_DIR` / `MEMESH_DB_PATH` overrides, then HOME defaults) → `src/core/paths.ts`
 - `memesh doctor` health check + real probes → `src/core/doctor.ts`; bundled MCP diagnostic child → `src/transports/cli/doctor-message-probe.ts`
-- What every entry point says about updates (snooze, just-upgraded receipt, failed check) → `src/core/update-notice.ts`; the MCP first-call and CLI stderr notice → `src/core/update-entrypoint.ts`
+- What every entry point says about updates (just-upgraded receipt, failed check) → `src/core/update-notice.ts`; the MCP first-call and CLI stderr notice → `src/core/update-entrypoint.ts`
   (build-generated as `scripts/hooks/_generated/update-notice.js` for the SessionStart / UserPromptSubmit / Stop hooks)
 - npm version check / self-update → `src/core/version-check.ts`, `src/core/updater.ts`, `src/core/install-channel.ts`, `src/core/install-hooks.ts`
 
 ### Durable local agent messaging + active-host delivery
-- Transactional message/delivery/receipt storage → `src/core/agent-messaging.ts`
-- Exact-recipient active-host routing and in-flight ownership → `src/core/agent-router.ts`
-- Shared MCP / HTTP / CLI action dispatcher → `src/transports/agent-messaging.ts`
-- Host-native adapters → `src/host-adapters/`
-- Managed router and host runtimes → `src/host-runtime/`
-- Lifecycle and operator contract → `docs/platforms/agent-messaging.md`
+- Message storage, audit and retention → `src/core/conversation-messages.ts`
+- Eligible local session wakeup → `src/host-adapters/conversation-wake.ts`
+- Shared MCP / CLI four-action dispatcher → `src/transports/conversation-messaging.ts`
+- Claude Channel and native wake support → `src/host-adapters/`
+- Claude conversation Channel entry → `src/host-runtime/`
+- Operator contract → `docs/platforms/agent-messaging.md`
 
 ### Native memory editor
 
@@ -103,20 +98,19 @@ docs/                # ARCHITECTURE.md, api/API_REFERENCE.md
 ### Hook commands (`hooks/hooks.json`)
 | Command | Fires on | Does |
 |---|---|---|
-| `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice / consent prompt (does not spawn the auto-update) |
+| `session-start.js` | SessionStart | inject project memories, inbox reminders and messaging address, banner, lesson warnings, update notice (starts the background auto-update unless the setting is off) |
+| `messages.js` | SessionStart / UserPromptSubmit | register the host conversation, output pending message batches, and record delivery after output succeeds |
 | `pre-edit-recall.js` | PreToolUse Edit/Write | inject file-relevant memories; also evaluates accepted lesson guards on the content being written |
 | `guard-check.js` | PreToolUse Bash | enforce accepted lesson guards before risky repeats |
-| `src/host-runtime/codex-session.ts` | SessionStart / SessionEnd | launch, supersede, and retire the detached exact-thread companion; apply a matching optional identity override |
-| `session-summary.js` | Stop | deterministic session capture; handoff capture (`_stop-handoff`), note ingest + remember nudge (`_stop-notes`), spawns the consented auto-update |
+| `session-summary.js` | Stop | captures the last assistant reply for later conversation tails; note ingestion (`_stop-notes`) |
 | `stop-message-gate.js` | Stop | Claude-Code-only: block the stop once per waiting agent-message id (#468) |
-| `pre-compact.js` | PreCompact | end-of-context save |
 | `post-commit.js` | PostToolUse Bash | git commit tracking |
-| `decision-nudge.js` | PostToolUse ExitPlanMode/AskUserQuestion | remind Claude to `remember` a decision just made, once per tool per session |
-| `user-prompt-intent.js` | UserPromptSubmit | detect "remember" intent; also records the update-consent answer |
+| `user-prompt-intent.js` | UserPromptSubmit | waiting-message reminder, private marker renewal |
+| `prompt-recall.js` | UserPromptSubmit | inject up to two eligible keyword-search results with titles, content and `[mem:id]`, within a shared 4096 UTF-8 byte rendered block |
 
-`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js`, `_stop-notes.js` and `_stop-handoff.js`
-are helpers, not hook commands. `_shared.js` resolves Claude's configured recipient or default `claude-code`; inbox queries suppress message IDs with intake receipts. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is spawned by the Stop hook
-(`session-summary.js` → `_shared.js` `spawnAutoUpdate`) once consent is approved; it is not registered in the manifest.
+`scripts/hooks/_shared.js`, `_claude-channel.js`, `_clear-alias.js` and `_stop-notes.js`
+are helpers, not hook commands. Conversation hooks bind the actual host session and read complete pending messages from `messages.db`; successful output records delivery. Opening context reads eligible project conversation tails. Channel push is optional. `scripts/hooks/auto-update-runner.mjs` is started in the background by the SessionStart hook (and by `memesh serve`) unless
+automatic updates are off, and by `memesh update` when asked by hand; there is no consent step. It is not registered in the manifest.
 
 ---
 
@@ -128,10 +122,8 @@ are helpers, not hook commands. `_shared.js` resolves Claude's configured recipi
 | `src/mcp/tools.ts` | Back-compat shim re-exporting `src/transports/mcp/handlers.ts` |
 | `src/transports/http/retired-routes.ts` | Routes that answer 410 Gone on purpose, with their messages |
 | `src/transports/mcp/project-context.ts` | Which project an MCP call belongs to when it names none |
-| `src/host-runtime/config.ts` | Host config + router token reading; unsupported-on-Windows guard |
-| `src/host-runtime/entry.ts` | Shared entry guard for every `memesh-host-*` binary |
-| `src/core/agent-message-inbox.ts` | Unread-message inbox fact used by briefings |
-| `src/core/agent-message-storage.ts` | Message storage and terminal-workflow pruning |
+| `src/core/export-signature.ts` | Export signatures and the owner-private signing-key reader |
+| `src/host-runtime/entry.ts` | Shared startup error handling for the Claude Channel entry |
 | `src/core/agent-scope-id.ts` | Canonical form + validation of message scope ids |
 | `src/core/briefing.ts`, `src/core/briefing-pools.ts` | Assembled work topology for agents without hooks; shared memory selection |
 | `src/core/capture-liveness.ts` | Verdict on whether automatic capture has gone quiet |
@@ -144,6 +136,7 @@ are helpers, not hook commands. `_shared.js` resolves Claude's configured recipi
 | `src/core/replaced-history.ts` | Previous versions a replaced memory keeps |
 | `src/core/product-improvements.ts` | Product-improvement proposals (redacted, bounded) |
 | `src/core/doctor-fixes.ts` | Doctor fix that removes retired config keys, with backup |
+| `src/core/doctor-journey.ts` | Install journey: store, search, send, read back through the packaged CLI in a throwaway folder; its saved result |
 | `src/core/database-diagnosis.ts` | Why the database will not open, and the one fix to print |
 | `src/core/transcript-source.ts` | Read-only, project-scoped transcript discovery |
 | `src/core/project-attribution.ts` | Which project a memory belongs to (pure functions) |

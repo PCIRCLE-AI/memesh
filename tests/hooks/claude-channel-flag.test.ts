@@ -177,7 +177,7 @@ describe('Feature: one ancestry walk names the claude process (pid, start time, 
       seen = options;
       return 'Mon Sep 28 10:00:00 2026\n';
     };
-    expect(runRealPsStart(200, exec)).toBe('Mon Sep 28 10:00:00 2026\n');
+    expect(runRealPsStart(200, exec as never)).toBe('Mon Sep 28 10:00:00 2026\n');
     expect(seen?.env?.TZ).toBe('UTC');
     expect(seen?.env?.LC_ALL).toBe('C');
   });

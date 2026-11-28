@@ -3,6 +3,7 @@ import os from 'os';
 import path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { resolveUpdateNotice } from '../src/core/update-notice.js';
+import { npmInvocation } from '../src/core/npm-launch.js';
 import {
   checkForUpdate,
   formatUpdateCheckStatus,
@@ -13,6 +14,15 @@ import {
   showsPreReleaseNotice,
   type UpdateCheck,
 } from '../src/core/version-check.js';
+
+function npmArgs(file: string, args: readonly string[] | undefined | null): string[] {
+  const invocation = npmInvocation([]);
+  expect(invocation).not.toBeNull();
+  expect(file).toBe(invocation!.command);
+  const actual = args as string[];
+  expect(actual.slice(0, invocation!.args.length)).toEqual(invocation!.args);
+  return actual.slice(invocation!.args.length);
+}
 
 /**
  * Build a mock execFile that handles BOTH parallel calls in
@@ -25,14 +35,13 @@ import {
  */
 function succeedWith(version: string, opts: { deprecated?: string } = {}) {
   return ((file: string, args: readonly string[] | undefined | null, optionsOrCallback: unknown, callbackMaybe?: unknown) => {
-    expect(file).toBe('npm');
     const callback = typeof optionsOrCallback === 'function'
       ? optionsOrCallback
       : callbackMaybe;
     expect(typeof callback).toBe('function');
     const cb = callback as (err: Error | null, stdout: string) => void;
 
-    const cmd = args as readonly string[];
+    const cmd = npmArgs(file, args);
     if (cmd[0] === 'show') {
       expect(cmd).toEqual(['show', '@pcircle/memesh', 'version']);
       cb(null, `${version}\n`);
@@ -65,11 +74,10 @@ function failLookup(message = 'npm unavailable') {
  */
 function partialFailDeprecationOnly(version: string) {
   return ((file: string, args: readonly string[] | undefined | null, optionsOrCallback: unknown, callbackMaybe?: unknown) => {
-    expect(file).toBe('npm');
     const callback = typeof optionsOrCallback === 'function'
       ? optionsOrCallback
       : callbackMaybe;
-    const cmd = args as readonly string[];
+    const cmd = npmArgs(file, args);
     if (cmd[0] === 'show') {
       (callback as (err: Error | null, stdout: string) => void)(null, `${version}\n`);
     } else if (cmd[0] === 'view' && cmd[2] === 'deprecated') {
@@ -92,11 +100,10 @@ function partialFailDeprecationOnly(version: string) {
  */
 function partialFailLatestOnly(deprecationMessage: string) {
   return ((file: string, args: readonly string[] | undefined | null, optionsOrCallback: unknown, callbackMaybe?: unknown) => {
-    expect(file).toBe('npm');
     const callback = typeof optionsOrCallback === 'function'
       ? optionsOrCallback
       : callbackMaybe;
-    const cmd = args as readonly string[];
+    const cmd = npmArgs(file, args);
     if (cmd[0] === 'show') {
       (callback as (err: Error) => void)(new Error('version lookup timed out'));
     } else if (cmd[0] === 'view' && cmd[2] === 'deprecated') {
@@ -119,6 +126,23 @@ describe('version check', () => {
 
   afterEach(() => {
     fs.rmSync(testDir, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+  });
+
+  it.skipIf(process.platform === 'win32').each([['000', 0o000], ['022', 0o022]] as const)('the cache file is owner-only (0600) after the rename, whatever the umask (umask %s)', async (_label, umask) => {
+    const previousUmask = process.umask(umask);
+    try {
+      await checkForUpdate('4.0.2', {
+        execFileImpl: succeedWith('4.0.3'),
+        updateCheckPath,
+        now: new Date('2026-04-24T10:00:00.000Z'),
+      });
+    } finally {
+      process.umask(previousUmask);
+    }
+    expect(fs.existsSync(updateCheckPath), 'no cache was written').toBe(true);
+    expect(fs.readdirSync(testDir).length, 'the scan saw nothing').toBeGreaterThan(0);
+    expect(fs.readdirSync(testDir).filter((n) => n.endsWith('.tmp')), 'a temp file was left behind').toEqual([]);
+    expect(fs.statSync(updateCheckPath).mode & 0o777).toBe(0o600);
   });
 
   it('writes successful fresh checks to cache', async () => {

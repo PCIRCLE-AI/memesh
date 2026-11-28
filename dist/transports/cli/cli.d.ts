@@ -5,7 +5,7 @@ export declare function feedbackBrowserOpenCommand(platform: NodeJS.Platform, ur
     command: string;
     args: [string];
 };
-export declare function readCliMessagePayloadFromStdin(contentType: string, input?: AsyncIterable<string | Uint8Array>): Promise<unknown>;
+export declare function readConversationMessageBodyFromStdin(input?: AsyncIterable<string | Uint8Array>): Promise<string>;
 export declare function resolveUpgradePluginScript(packageRootPath: string, pluginCacheRoot: string, pluginRegistryPath?: string): {
     script: string;
     newest: string | null;

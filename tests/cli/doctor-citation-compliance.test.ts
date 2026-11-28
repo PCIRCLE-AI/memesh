@@ -18,7 +18,7 @@
  * reads `memesh_metadata` and branches on what is there, and a stub that
  * answers canned rows cannot exercise a predicate.
  */
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
@@ -27,6 +27,9 @@ import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { closeDatabase, openDatabase } from '../../src/db.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { CITATION_RULE_BODY, CITATION_RULE_FILENAME } from '../../src/core/citation-rule.js';
+import { pathWithout, removePathMirrors } from '../helpers/path-without.js';
+
+afterAll(removePathMirrors);
 
 const CLI_PATH = path.join(__dirname, '..', '..', 'dist', 'transports', 'cli', 'cli.js');
 
@@ -35,6 +38,7 @@ interface DoctorCheck {
   status: string;
   summary: string;
   fix?: string;
+  fixId?: string;
   code?: string;
   params?: Record<string, string | number>;
   informational?: boolean;
@@ -181,9 +185,72 @@ describe('doctor: the memory-citation rate is reported, not left to be found', (
     seedDatabase();
     seedCounters('2', '0');
 
-    const check = row();
+    // A Claude Code machine: install-hooks is the remedy only there (see the Codex-only case below).
+    const check = row({ CLAUDE_CONFIG_DIR: claudeHome() });
     expect(check?.fix, 'a zero rate was reported with no remedy').toBeTruthy();
     expect(check?.fix).toMatch(/memesh-citations\.md|install-hooks/);
+  });
+
+  /** An existing Claude Code configuration directory: "this machine has Claude Code". */
+  function claudeHome(): string {
+    const dir = path.join(home, 'claude-home');
+    fs.mkdirSync(dir, { recursive: true });
+    return dir;
+  }
+
+  it('a Codex-only machine is not told to run install-hooks, and gets the Codex answer', () => {
+    // install-hooks writes Claude Code's settings; on a machine without Claude Code it would
+    // create a directory nobody uses. The row is judged by the one host-fix function.
+    seedDatabase();
+    seedCounters('4', '0');
+    const codexHome = path.join(home, 'codex-home');
+    fs.mkdirSync(codexHome, { recursive: true });
+    const fakeBin = path.join(home, 'fake-bin');
+    fs.mkdirSync(fakeBin);
+    const codexCommand = process.platform === 'win32' ? 'codex.cmd' : 'codex';
+    const codexScript = process.platform === 'win32' ? '@echo off\r\nexit /b 0\r\n' : '#!/bin/sh\nexit 0\n';
+    fs.writeFileSync(path.join(fakeBin, codexCommand), codexScript, { mode: 0o755 });
+    const codexOnly = {
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: path.join(home, 'no-such-claude'),
+      PATH: `${fakeBin}${path.delimiter}${pathWithout(['claude', 'codex', 'gemini'])}`,
+    };
+
+    const checks = doctorChecks(codexOnly);
+    const check = checks.find((c) => c.id === 'citation_compliance');
+    expect(check?.status, 'the 0% warning itself must remain').toBe('warn');
+    expect(check?.fix).toBeTruthy();
+    expect(check?.fix, 'Codex-only machine was told to run install-hooks').not.toContain('install-hooks');
+    expect(check?.fix, 'not the Codex answer the other rows give').toContain('Refresh the Codex plugin');
+    // The citation row never carries a fixId, so on its own that proves nothing: the row that does is the
+    // hook-wiring one on a Claude Code machine, and the Codex machine must not get it.
+    const claudeWiring = doctorChecks({ CLAUDE_CONFIG_DIR: claudeHome() }).find((c) => c.id === 'hook-wiring');
+    expect(claudeWiring?.fixId, 'control: a Claude Code machine has a fix to apply').toBe('install-hooks');
+    expect(checks.find((c) => c.id === 'hook-wiring')?.fixId).toBeUndefined();
+  });
+
+  it('a Codex machine whose command is not on PATH is told so, not given a command that would not run', () => {
+    seedDatabase();
+    seedCounters('4', '0');
+    const codexHome = path.join(home, 'codex-home');
+    fs.mkdirSync(codexHome, { recursive: true });
+    const check = doctorChecks({
+      CODEX_HOME: codexHome,
+      CLAUDE_CONFIG_DIR: path.join(home, 'no-such-claude'),
+      PATH: pathWithout(['claude', 'codex', 'gemini']),
+    }).find((c) => c.id === 'citation_compliance');
+    expect(check?.fix).toContain('not on PATH');
+    expect(check?.fix).not.toContain('codex plugin');
+    expect(check?.fix).not.toContain('install-hooks');
+  });
+
+  it('a Claude Code machine keeps the install-hooks advice on a missing citation contract', () => {
+    seedDatabase();
+    seedCounters('4', '0');
+    const check = row({ CLAUDE_CONFIG_DIR: claudeHome() });
+    expect(check?.fix).toContain('MCP sessions receive citation guidance from the server');
+    expect(check?.fix).toContain("For hook-only setups, run 'memesh install-hooks'");
+    expect(check?.fix).not.toContain('start a new session');
   });
 
   it('reads the citation contract from a relocated CLAUDE_CONFIG_DIR', () => {

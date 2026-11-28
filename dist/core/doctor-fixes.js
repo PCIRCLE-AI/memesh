@@ -1,9 +1,9 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { execFileSync } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import { findRetiredConfigKeys, getConfigPath, ConfigUnreadableError } from './config.js';
 import { PLUGIN_REFRESH_COMMANDS } from './install-channel.js';
+import { startReinstall } from './auto-update.js';
 export function removeRetiredConfigKeys() {
     const configPath = getConfigPath();
     if (!fs.existsSync(configPath)) {
@@ -77,11 +77,6 @@ export function isDoctorFixPermissionError(error) {
         ? isDoctorFixPermissionError(record.cause)
         : false;
 }
-function safeOutput(value) {
-    return value.replace(/(?:\/Users\/[^\s'"`]+|\/home\/[^\s'"`]+|[A-Za-z]:\\[^\s'"`]+)/g, '<local-path>')
-        .replace(/(Bearer\s+|sk-|ghp_)[A-Za-z0-9._-]+/gi, '$1<redacted>')
-        .slice(-4000);
-}
 export function pluginHostFromDoctorCheck(check) {
     if (check.params?.host === 'Codex')
         return 'codex';
@@ -89,51 +84,8 @@ export function pluginHostFromDoctorCheck(check) {
         return 'claude-code';
     throw new Error('The plugin host for this repair is unknown; re-run memesh doctor first.');
 }
-const PLUGIN_REFRESH_BUDGET_MS = 120_000;
-const MIN_SECOND_COMMAND_MS = 5_000;
-const CODEX_ADD_ARGS = ['plugin', 'add', 'memesh@pcircle-memesh'];
-export class PluginRefreshBudgetError extends Error {
-    constructor() {
-        super(`The Codex marketplace upgrade ran, but the ${PLUGIN_REFRESH_BUDGET_MS / 1000} s repair budget was nearly used up before the plugin could be added. `
-            + `Finish by hand: codex ${CODEX_ADD_ARGS.join(' ')}`);
-        this.name = 'PluginRefreshBudgetError';
-    }
-}
 export function refreshPluginCache(packageRoot, host) {
-    if (host === 'claude-code') {
-        const script = path.join(packageRoot, 'scripts', 'upgrade-plugin.sh');
-        if (!fs.existsSync(script))
-            throw new Error(`Plugin refresh script is missing at ${script}.`);
-        const run = execFileSync('bash', [script], {
-            encoding: 'utf8',
-            timeout: PLUGIN_REFRESH_BUDGET_MS,
-            stdio: ['ignore', 'pipe', 'pipe'],
-            env: process.env,
-        });
-        return {
-            host,
-            command: PLUGIN_REFRESH_COMMANDS[host],
-            exitCode: 0,
-            output: safeOutput(String(run)),
-            restartRequired: true,
-        };
-    }
-    const deadline = Date.now() + PLUGIN_REFRESH_BUDGET_MS;
-    const upgrade = execFileSync('codex', ['plugin', 'marketplace', 'upgrade', 'pcircle-memesh'], {
-        encoding: 'utf8', timeout: PLUGIN_REFRESH_BUDGET_MS, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
-    });
-    const remaining = deadline - Date.now();
-    if (remaining < MIN_SECOND_COMMAND_MS)
-        throw new PluginRefreshBudgetError();
-    const add = execFileSync('codex', CODEX_ADD_ARGS, {
-        encoding: 'utf8', timeout: remaining, stdio: ['ignore', 'pipe', 'pipe'], env: process.env,
-    });
-    return {
-        host,
-        command: PLUGIN_REFRESH_COMMANDS[host],
-        exitCode: 0,
-        output: safeOutput(`${String(upgrade)}\n${String(add)}`),
-        restartRequired: true,
-    };
+    const started = startReinstall(packageRoot);
+    return { host, command: PLUGIN_REFRESH_COMMANDS[host], exitCode: 0, output: started.message, restartRequired: true };
 }
 //# sourceMappingURL=doctor-fixes.js.map

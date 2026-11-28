@@ -21,6 +21,10 @@
 import { describe, it, expect } from 'vitest';
 import fs from 'fs';
 import path from 'path';
+import os from 'os';
+import { spawnSync } from 'child_process';
+import { pathToFileURL } from 'url';
+import { buildIsolatedSuiteEnv } from '../../scripts/lib/isolated-env.mjs';
 
 const HOOK = path.join(__dirname, '..', '..', 'scripts', 'hooks', 'session-start.js');
 const CHANNEL_SRC = path.join(__dirname, '..', '..', 'src', 'core', 'install-channel.ts');
@@ -81,27 +85,46 @@ describe('session-start banners cover every install channel', () => {
     expect(callSites, 'expected both banners to call pluginUpgradeLine').toBe(2);
   });
 
-  it('the plugin helper distinguishes the two hosts', () => {
-    const src = fs.readFileSync(HOOK, 'utf8');
-    const start = src.indexOf('function pluginUpgradeLine(');
-    expect(start, 'pluginUpgradeLine not found').toBeGreaterThan(-1);
-    const body = src.slice(start, src.indexOf('\nfunction ', start + 1));
-    expect(body, 'the helper does not consult the plugin host').toMatch(/pluginHostOf\(/);
-    expect(body, 'no Codex-specific command').toMatch(/codex plugin marketplace upgrade/);
-    expect(body, 'no Claude Code command').toMatch(/memesh upgrade-plugin/);
-    // The three assertions above are satisfied by the strings merely being
-    // PRESENT, and the defect here is a wrong mapping, not a missing string.
-    // Measured: changing the predicate to `=== 'codex-disabled'` — so every
-    // Codex user is handed the Claude Code command — left all three green, and
-    // the whole suite with them. Pin the pairing instead: the codex predicate
-    // and the codex command inside one branch.
-    expect(body, 'the helper no longer asks pluginHostOf for the value it branches on')
-      .toMatch(/const host = pluginHostOf\(pluginRoot\);/);
-    expect(
-      body,
-      "the codex branch no longer returns the codex command — the strings are all still there, the mapping is not",
-    ).toMatch(/if \(host === 'codex'\) \{[\s\S]{0,200}?codex plugin marketplace upgrade/);
-  });
+  it.each(['.codex', '.claude'])('the real %s hook hint reaches the supported manual runner without memesh on PATH', (host) => {
+    const root = fs.mkdtempSync(path.join(os.tmpdir(), "memesh hint ' "));
+    try {
+      const home = path.join(root, 'home'); const bin = path.join(root, 'bin');
+      const plugin = path.join(home, host, 'plugins/cache/pcircle-memesh/memesh/4.13.0');
+      const data = path.join(home, '.memesh');
+      for (const dir of [plugin, bin, data]) fs.mkdirSync(dir, { recursive: true });
+      const nodeName = process.platform === 'win32' ? 'node.exe' : 'node';
+      fs.symlinkSync(process.execPath, path.join(bin, nodeName));
+      for (const name of ['dist', 'scripts']) fs.cpSync(path.resolve(name), path.join(plugin, name), { recursive: true });
+      fs.copyFileSync(path.resolve('package.json'), path.join(plugin, 'package.json'));
+      fs.symlinkSync(path.resolve('node_modules'), path.join(plugin, 'node_modules'));
+      fs.writeFileSync(path.join(data, 'config.json'), '{"autoUpdate":"off"}');
+      const version = JSON.parse(fs.readFileSync(path.join(plugin, 'package.json'), 'utf8')).version;
+      const cache = path.join(root, 'update-check.json');
+      fs.writeFileSync(cache, JSON.stringify({ currentVersion: version, latestVersion: '99.0.0', lastAttemptAt: new Date().toISOString(), lastSuccessfulCheckAt: new Date().toISOString(), checkSucceeded: true, currentVersionDeprecation: 'synthetic plugin-only hint fixture' }));
+      const deny = path.join(root, 'deny.mjs');
+      fs.writeFileSync(deny, "import net from 'node:net'; net.Socket.prototype.connect = function(){throw Error('fixture network denied')}; globalThis.fetch=async()=>{throw Error('fixture network denied')};");
+      const windowsEnv = { PATH: bin, SystemRoot: process.env.SystemRoot ?? process.env.SYSTEMROOT,
+        ComSpec: process.env.ComSpec ?? process.env.COMSPEC, PATHEXT: process.env.PATHEXT };
+      const env = buildIsolatedSuiteEnv(process.platform === 'win32' ? windowsEnv : { PATH: bin }, { runtimeHome: home });
+      Object.assign(env, { MEMESH_SKIP_UPDATE_CHECK: '1', MEMESH_UPDATE_CHECK_PATH: cache, NODE_OPTIONS: `${env.NODE_OPTIONS} --import=${pathToFileURL(deny).href}` });
+      const hook = spawnSync(process.execPath, [path.join(plugin, 'scripts/hooks/session-start.js')], { env, input: JSON.stringify({ cwd: root, session_id: 't5-hint' }), encoding: 'utf8', timeout: 20_000 });
+      expect(hook.status, hook.stderr).toBe(0);
+      const messages = hook.stdout.trim().split('\n').map((line) => JSON.parse(line).systemMessage ?? '').join('\n');
+      const command = messages.match(/no memesh command on your PATH\? run (node .+ update)\)/)?.[1];
+      expect(command, messages).toBeTruthy();
+      expect(fs.readdirSync(bin)).toEqual([nodeName]);
+      const invoked = process.platform === 'win32'
+        ? spawnSync(command!, { shell: env.ComSpec ?? 'cmd.exe', env, encoding: 'utf8', timeout: 20_000 })
+        : spawnSync('/bin/sh', ['-c', command!], { env, encoding: 'utf8', timeout: 20_000 });
+      expect(invoked.status, invoked.stderr).toBe(1);
+      const state = JSON.parse(fs.readFileSync(path.join(data, 'auto-update-state.json'), 'utf8'));
+      expect(state).toMatchObject({ channel: 'plugin-marketplace', outcome: 'failed', reason: 'could not start npm' });
+      expect(invoked.stdout + invoked.stderr).toContain('could not start npm');
+      expect(state.detail).toContain(process.platform === 'win32' ? 'npm-cli.js was not found beside Node' : 'ENOENT');
+      expect(fs.existsSync(path.join(data, 'auto-update.lock'))).toBe(false);
+      console.log(JSON.stringify({ host, command, invocationExit: invoked.status, outcome: state.outcome, reason: state.reason, detail: state.detail }));
+    } finally { fs.rmSync(root, { recursive: true, force: true }); }
+  }, 30_000);
 
   it("says so when it could not ask which host this is, rather than assuming Claude Code", () => {
     // `pluginHostOf` used to be `detectPluginHost?.(root) ?? null` inside a

@@ -1,43 +1,47 @@
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
-import net from 'node:net';
 import { createHash } from 'crypto';
 import { createRequire } from 'module';
 import { execFileSync } from 'child_process';
 import { findRetiredConfigKeys, getConfigPath, readConfig } from './config.js';
 import {
-  openDatabase, closeDatabase, isDatabaseOpen,
+  openDatabase, closeDatabase, isDatabaseOpen, readOnlyFolderState,
 } from '../db.js';
 import { getUpdateCheck } from './version-check.js';
 import { classifyBump } from './updater.js';
+import { AUTO_UPDATE_REASONS, currentPolicy, describeUpdatePolicy, updateControlDir, describeLockHolder, inspectAutoUpdateState, readInstalling, proxyConfigured, nodeUsesEnvProxy } from './auto-update.js';
+import { backupDirectoryFor } from './db-copy.js';
 import {
   getCurrentInstallChannel, getInstallChannelSupport, detectPluginHost,
   pluginHostConfigRoot, versionedPluginCacheRoots, PLUGIN_REFRESH_COMMANDS,
   type InstallChannel, type PluginHost,
 } from './install-channel.js';
-import { getInstallRecord } from './install-id.js';
-import { ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
-import { diagnoseDatabaseFailure } from './database-diagnosis.js';
+import { readInstallRecordState } from './install-id.js';
+import { isWritable, ownerWriteCommand, runOrSay, shellQuote } from './file-mode.js';
+import { whyFailed } from './safe-write.js';
+import { damagedDatabaseFix, diagnoseDatabaseFailure, isDamagedDatabaseError } from './database-diagnosis.js';
+import { withoutFinalPeriod } from './sentence.js';
+import { AutoArchiveRecordUnreadable, readLastAutoArchiveRun } from './lifecycle.js';
 import { citationRulePath, citationRuleState, type CitationRuleScope } from './citation-rule.js';
-import { getAgentRouterSocketPath, getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
+import { getDbPath, getMemeshDirFromDbPath, homeDir, memeshDir } from './paths.js';
 import { findProjectIdentitySplits, type ProjectIdentitySplit } from './project-identity-split.js';
-import { AGENT_ROUTER_SOCKET_PATH_MAX_BYTES } from './agent-router.js';
 import { detectPluginRuntime, readInstallMarker } from './install-hooks.js';
+import { manifestScope } from './manifest-scope.js';
+import { claudeCodePresent, codexPresent, geminiPresent, isOnPath } from './host-presence.js';
 import { UNSPACED_SCRIPT_GLOB_RUN3 } from '../storage/fts-index.js';
-import { MemeshDatabase } from '../storage/sqlite.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode, MemeshDatabase, nodeProblem } from '../storage/sqlite.js';
+import { isTransientDbError } from '../storage/schema.js';
 import { AUTO_CAPTURE_TAG } from './types.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
-import { parseSqliteUtcMs, sqliteUtcToIso } from './time-utils.js';
+import { parseSqliteUtcMs } from './time-utils.js';
 import { autoCaptureDecision } from './capture-flag.js';
 import {
   captureLivenessVerdict, parseHookOutcomes, summarizeHookOutcomes, summarizeTypeTrends,
-  FAIL_ELIGIBLE_HOOKS, SKIP_REASONS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS,
+  FAIL_ELIGIBLE_HOOKS, HOOK_OUTCOMES_FILENAME, NEVER_RAN_GRACE_HOURS, SILENT_HOOK_MIN_RUNS, RECENT_ERROR_RUNS,
   type CaptureLivenessStatus, type HookLivenessSummary, type TypeTrend,
 } from './capture-liveness.js';
 import { guardFromMetadata } from './guards.js';
-import { getAgentMessageStorageReport } from './agent-message-storage.js';
-import { readHostConfigFile } from '../host-runtime/config.js';
+import { journeyEnv, journeyRecordPath, readJourneyRecord } from './doctor-journey.js';
 
 export type DoctorCheckStatus = 'pass' | 'warn' | 'fail';
 export type DoctorOverallStatus = 'PASS' | 'PASS_WITH_CONCERNS' | 'FAIL';
@@ -162,17 +166,9 @@ interface DoctorOptions {
   envImpl?: NodeJS.ProcessEnv;
   fetchImpl?: typeof fetch;
   /**
-   * Optional owner-supplied message-storage policy. Doctor reports it but
-   * never enables it, schedules retention, or changes the database.
-   */
-  agentMessageStoragePolicy?: {
-    storage_quota_bytes?: number;
-    retention_cutoff?: Date | string;
-  };
-  /**
    * Test seam: probe that the built-in SQLite runtime can open a database.
    */
-  nativeBindingProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
+  nativeBindingProbeImpl?: (packageRoot: string) => NativeBindingProbeResult;
   /**
    * Test seam: resolve `memesh` on the user's shell PATH. Default uses
    * `which` / `where` via execFileSync. Returns the resolved absolute
@@ -181,17 +177,11 @@ interface DoctorOptions {
   resolveShellMemeshImpl?: () => string | null;
   /**
    * Opt-in installed-artifact probe for the durable-message MCP surface.
-   * It starts the packaged stdio server in an isolated HOME and imports the
-   * bundled host adapters; it is intentionally unrelated to the skills hash.
+   * It starts the packaged stdio server in an isolated HOME; it is intentionally unrelated to the skills hash.
    */
   probeMessageCapability?: boolean;
   messageCapabilityProbeImpl?: (packageRoot: string) => { ok: true } | { ok: false; message: string };
-  /**
-   * Opt-in read-only probe of the actual Local router endpoint. It does not
-   * start a router, register a synthetic host, send content, or wake a session.
-   */
-  probeMessageRouterStatus?: boolean;
-  messageRouterStatusProbeImpl?: () => Promise<MessageRouterStatusProbe>;
+
 }
 
 interface PluginCacheDiscovery {
@@ -209,15 +199,8 @@ interface ClaudePluginEntries {
   entries: Array<Record<string, unknown>>;
 }
 
-type MessageRouterStatusProbe = {
-  socket_path: string;
-  socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
-  active_registrations?: number;
-  detail?: string;
-};
-
-const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop', 'PreCompact'];
-const AGENT_MESSAGE_STORAGE_QUOTA_ENV = 'MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES';
+const CAPTURE_HEARTBEAT_HOOKS = new Set(['session-summary', 'post-commit']);
+const EXPECTED_HOOK_TYPES = ['PreToolUse', 'SessionStart', 'PostToolUse', 'Stop'];
 
 // Locale READMEs that MUST stay in lockstep with README.md. Order matters
 // only for the doctor output — alphabetised for readability.
@@ -342,12 +325,76 @@ function resolveDatabasePath(): string {
   return getDbPath();
 }
 
+// A Node that cannot run MeMesh fails every database row the same way; the Database
+// row says why, once, and the others point at it. The repair is the error's own `fix`.
+const NODE_TOO_OLD_SEE_DATABASE_ROW = 'Not checked: this Node cannot open the MeMesh database (the Database row above says why).';
+
+/** Summary of a database row whose read threw. `detail` is the error's own text. */
+function queryFailedSummary(err: unknown, detail: string, what: string, unknownMeans: string): string {
+  if (isUnsupportedNode(err)) return NODE_TOO_OLD_SEE_DATABASE_ROW;
+  return `Could not read ${what} from the database: ${withoutFinalPeriod(detail)}. ${unknownMeans}`;
+}
+
+/**
+ * The database file is not there (yet). A diagnostic must not be the thing that creates it: a user who runs
+ * `memesh doctor` before ever using MeMesh would otherwise get a database, a schema and its migrations as a side
+ * effect of asking whether the install is healthy.
+ */
+export class NoDatabaseYetError extends Error {
+  constructor(readonly databasePath: string) {
+    super(`No database at ${databasePath} yet`);
+    this.name = 'NoDatabaseYetError';
+  }
+}
+
+/**
+ * How doctor opens the database unless a test or caller supplies its own: only a database that already exists, and
+ * read-only. No file is created, no schema is brought up to date, no migration or sweep runs. (The permission
+ * hardening every opener does, taking group/other access off the files, still applies.)
+ */
+function openDatabaseForDoctor(dbPath?: string, opts: { busyTimeoutMs?: number } = {}): MemeshDatabase {
+  const target = dbPath ?? getDbPath();
+  if (!fs.existsSync(target)) throw new NoDatabaseYetError(target);
+  const borrowed = isDatabaseOpen();
+  const db = openDatabase(target, { ...opts, readOnly: true });
+  // Read-only opens skip initialization, including its busy-timeout override.
+  // A diagnostic should report a busy database promptly rather than wait 30 seconds per check.
+  // The HTTP server lends its live singleton: never change its writes' timeout, even temporarily.
+  if (!borrowed) db.pragma(`busy_timeout = ${opts.busyTimeoutMs ?? 1_000}`);
+  return db;
+}
+
+/** Read-only, a database whose schema is older than this version cannot be read by every check: it is behind, not broken. */
+function isSchemaBehind(err: unknown): boolean {
+  // An error that carries its own fix was raised on purpose by a check that already read the damage (a diagnostic's
+  // missing column, a failed integrity check): that is broken, not behind, and keeps its own advice.
+  if (typeof (err as { fix?: unknown } | null)?.fix === 'string') return false;
+  return /no such (table|column)/i.test(err instanceof Error ? err.message : String(err));
+}
+/**
+ * What to tell the user about a database that is behind this version's layout. Doctor opens it read-only and does not
+ * migrate it; a memesh command does, so the usual advice is to run one. When the folder (or the database file) cannot
+ * be written, that command would fail too, and the advice that works is the one that makes it writable, first.
+ */
+function schemaBehindNote(databasePath: string = getDbPath()): string {
+  const base = 'The database was written by an older version and has not been brought up to date yet. Doctor opens it read-only and does not migrate it';
+  const update = 'run any memesh command (for example `memesh recall x`) to update it, then run doctor again.';
+  const folder = readOnlyFolderState();
+  if (folder) return `${base}, and ${folder.reason}, so a memesh command could not update it either. First ${runOrSay(folder.fix).replace(/^Run: /, 'run: ')}; then ${update}`;
+  let writeBack: string | undefined;
+  try { writeBack = ownerWriteCommand(databasePath); } catch { writeBack = undefined; }
+  if (writeBack) return `${base}, and the database file is read-only, so a memesh command could not update it either. First ${writeBack}; then ${update}`;
+  return `${base}: ${update}`;
+}
+
 /**
  * A read-only database, folder or -wal/-shm is a permission question, not a
  * disk one (#520). MeMesh's own refusals carry their command as `fix`, the
  * same signal the Database row reads, so the rows agree.
  */
 function queryFailedFix(err: unknown): string {
+  if (isUnsupportedNode(err)) return err.fix;
+  if (isSqliteSelfCheckFailure(err)) return err.advice;
   const fix = (err as { fix?: unknown } | null)?.fix;
   if (typeof fix === 'string') {
     return `MeMesh did not open the database because of its permissions; the Database row above explains why. ${runOrSay(fix)}`;
@@ -359,7 +406,29 @@ function queryFailedFix(err: unknown): string {
   if (/database is locked|SQLITE_BUSY/i.test(detail)) {
     return 'Another process has the database locked; wait for it to finish, or stop it, then retry.';
   }
+  if (/malformed|not a database|SQLITE_CORRUPT|SQLITE_NOTADB/i.test(detail)) {
+    return 'The database file is damaged; the Database row above shows how to repair it.';
+  }
   return 'The error is quoted above. Check that ~/.memesh is readable and that the disk is not full.';
+}
+
+/**
+ * `ok`, or one line naming what SQLite's quick_check found (or the damage it
+ * hit while looking). Any other error it raises — a held lock, an I/O error —
+ * says nothing about the pages and is thrown as it is, for
+ * `diagnoseDatabaseFailure` to name.
+ */
+function quickIntegrityVerdict(db: DatabaseLike): string {
+  let row: { quick_check?: unknown } | undefined;
+  try {
+    row = db.prepare('PRAGMA quick_check(1)').get() as { quick_check?: unknown } | undefined;
+  } catch (err) {
+    const message = err instanceof Error ? err.message : String(err);
+    if (!isDamagedDatabaseError(message)) throw err;
+    return message.replace(/\s+/g, ' ').slice(0, 200);
+  }
+  if (typeof row?.quick_check !== 'string') return 'quick_check returned no verdict';
+  return row.quick_check.replace(/\s+/g, ' ').slice(0, 200);
 }
 
 function createCheck(
@@ -389,167 +458,6 @@ function createCheck(
  */
 function createInfo(id: string, label: string, summary: string, fix?: string): DoctorCheck {
   return { id, label, status: 'pass', summary, fix, informational: true };
-}
-
-/**
- * A deliberately read-only operator row. The table probe keeps old databases
- * and narrow doctor-test doubles on their established output contract.
- */
-function inspectAgentMessageStorage(
-  db: MemeshDatabase,
-  databasePath: string,
-  policy: DoctorOptions['agentMessageStoragePolicy'],
-): DoctorCheck | undefined {
-  try {
-    const present = db.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_messages'",
-    ).get() as { present?: number } | undefined;
-    if (!present?.present) return undefined;
-
-    // A cutoff is policy, not a diagnostic default. Epoch is only an inert
-    // placeholder needed by the report's classifier; without an owner cutoff
-    // doctor deliberately does not present an age-prunable count.
-    const cutoff = policy?.retention_cutoff ?? new Date(0);
-    const report = getAgentMessageStorageReport(db, { cutoff, databasePath });
-    const quota = policy?.storage_quota_bytes;
-    const invalidQuota = quota !== undefined && (!Number.isSafeInteger(quota) || quota < 0);
-    const quotaText = quota === undefined
-      ? 'quota not configured'
-      : !invalidQuota
-        ? `quota ${formatStorageBytes(quota)} (${formatStorageBytes(report.payload_bytes)} logical payload used)`
-        : 'configured quota is invalid';
-    const retentionText = policy?.retention_cutoff === undefined
-      ? 'retention policy not configured; terminal-prunable payload was not evaluated'
-      : `retention cutoff ${String(policy.retention_cutoff)}; ${report.terminal_prunable_message_count} terminal message(s) `
-        + `(${formatStorageBytes(report.terminal_prunable_payload_bytes)}) are prunable by that owner policy`;
-    const walText = report.wal_file_bytes === null
-      ? 'WAL size unavailable'
-      : `WAL ${formatStorageBytes(report.wal_file_bytes)}`;
-    const databaseText = report.database_file_bytes === null
-      ? 'database file size unavailable'
-      : `database file ${formatStorageBytes(report.database_file_bytes)}`;
-
-    const summary =
-      `${report.message_count} message(s), ${formatStorageBytes(report.payload_bytes)} logical payload `
-      + `(${report.protected_unresolved_message_count} unresolved/protected); ${formatStorageBytes(report.reusable_freelist_bytes)} `
-      + `SQLite freelist reusable; ${databaseText}; ${walText}; ${quotaText}; ${retentionText}. `
-      + 'Doctor only read this state: it did not prune payloads, checkpoint WAL, or run VACUUM.';
-
-    if (invalidQuota) {
-      return createCheck(
-        'agent_message_storage',
-        'Agent message storage',
-        'warn',
-        `${summary} Send enforcement rejects this quota configuration; use a canonical non-negative safe decimal integer.`,
-        `Set ${AGENT_MESSAGE_STORAGE_QUOTA_ENV} to 0 or a positive decimal integer within the safe integer range, then re-run memesh doctor.`,
-      );
-    }
-
-    return createInfo(
-      'agent_message_storage',
-      'Agent message storage',
-      summary,
-    );
-  } catch {
-    // This diagnostic must not turn a healthy database row into a duplicate
-    // database failure merely because a pre-message schema cannot report it.
-    return undefined;
-  }
-}
-
-/** Does this release receipt's detail say the app-server daemon was missing? */
-function noDaemonReason(detailJson: string): boolean {
-  try {
-    return (JSON.parse(detailJson) as { detail?: { reason?: unknown } } | null)?.detail?.reason === 'no_daemon';
-  } catch {
-    return false; // Malformed detail_json is not this check's problem to diagnose.
-  }
-}
-
-/**
- * The Codex stuck-message release (#468, `watchCodexQueueRelease` in
- * codex-cli-queue.ts) only works when Codex is running its app-server
- * daemon. An ordinary `codex` CLI session — or any session started with
- * `--no-daemon` — has no daemon for the router to ask, so the release
- * records a `host_activation` receipt with `host_activation: 'unsupported'`
- * and `detail.reason: 'no_daemon'` instead of starting the queued message.
- * A message left in that thread's queue after an interrupted turn then
- * stays queued until the next prompt, and nothing else surfaces that (#491).
- *
- * Read-only, same shape as `inspectAgentMessageStorage` immediately above:
- * a raw `db.prepare` probe, `undefined` (not a row) when the table predates
- * the message schema, and no `code:` — `inspectAgentMessageStorage`'s own
- * `'warn'` branch a few lines up ships the same way, and adding one here
- * would need a translated catalogue entry in all 11 dashboard locales for a
- * server-diagnostic sentence (see DoctorBanner's sanctioned English
- * fallback for an uncoded row).
- */
-function inspectCodexQueueDaemon(db: MemeshDatabase): DoctorCheck | undefined {
-  try {
-    const present = db.prepare(
-      "SELECT 1 AS present FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_receipts'",
-    ).get() as { present?: number } | undefined;
-    if (!present?.present) return undefined;
-
-    // Only the receipts the Codex release itself writes: any agent can record
-    // a host_activation receipt through the public `activation` action, and an
-    // `unsupported` from one of those says nothing about Codex's daemon.
-    const rows = db.prepare(`
-      SELECT project, recipient, detail_json, created_at FROM agent_message_receipts
-      WHERE receipt_kind = 'host_activation'
-        AND actor = 'memesh-router'
-        AND idempotency_key LIKE 'codex-queue-release-%'
-        AND created_at > datetime('now', '-7 days')
-      ORDER BY created_at DESC, rowid DESC
-    `).all() as Array<{ project: string; recipient: string; detail_json: string; created_at: string }>;
-
-    if (rows.length === 0) {
-      return createInfo(
-        'codex-queue-daemon',
-        'Codex stuck-message release',
-        'No Codex host_activation receipts in the last 7 days. The Codex stuck-message release has not run recently, so its app-server-daemon dependency has not been exercised either way.',
-      );
-    }
-
-    // The newest receipt per thread decides: a thread whose daemon has come
-    // back since, and whose release then ran, has nothing stuck.
-    const latestPerThread = new Map<string, (typeof rows)[number]>();
-    for (const row of rows) {
-      const key = `${row.project}\u0000${row.recipient}`;
-      if (!latestPerThread.has(key)) latestPerThread.set(key, row);
-    }
-    const stuck = [...latestPerThread.values()].filter((row) => noDaemonReason(row.detail_json));
-
-    if (stuck.length === 0) {
-      return createInfo(
-        'codex-queue-daemon',
-        'Codex stuck-message release',
-        `${latestPerThread.size} Codex thread(s) ran the stuck-message release in the last 7 days; the latest run in each found the app-server daemon. Nothing is waiting on it.`,
-      );
-    }
-
-    // Every stuck thread is named: the fix below asks for a prompt in each.
-    const named = stuck
-      .map((row) => `${row.recipient} in ${row.project} (${sqliteUtcToIso(row.created_at)})`)
-      .join(', ');
-    return createCheck(
-      'codex-queue-daemon',
-      'Codex stuck-message release',
-      'warn',
-      `${stuck.length} Codex thread(s) last ran the stuck-message release without the app-server daemon: ${named}. A MeMesh message queued there after an interrupted turn stays in that thread's queue until you send the thread a prompt.`,
-      'Send a prompt in each thread named above to drain its queue. To restore the automatic release, run Codex with its app-server daemon (avoid `--no-daemon`).',
-    );
-  } catch (err) {
-    // A failure here, the table probe included, is a real one: say so rather
-    // than leave the row out, which would read as "fine".
-    return createCheck(
-      'codex-queue-daemon',
-      'Codex stuck-message release',
-      'warn',
-      `Could not read the Codex host_activation receipts: ${err instanceof Error ? err.message : String(err)}`,
-      'Run `memesh doctor` again; if this persists, check the database rows above for the underlying error.',
-    );
-  }
 }
 
 /**
@@ -591,57 +499,6 @@ function inspectProjectIdentitySplit(db: MemeshDatabase): DoctorCheck | undefine
       + 'kg rename-project --from <name> --to <id> previews moving its memories to that id, and the same command with --apply moves them '
       + '(it backs the database up first). A shared name does not prove one project: if a different repository used that name, leave it.',
   );
-}
-
-/**
- * Report how ordinary Codex sessions choose their local routing identity.
- * A plugin cache copy is only evidence of cached source; live discovery is
- * still the authoritative proof that Codex enabled the plugin and its
- * SessionStart companion registered this thread.
- */
-function inspectCodexSessionSetup(
-  codexPluginCacheDetected: boolean,
-  existsSyncImpl: typeof fs.existsSync,
-): DoctorCheck | null {
-  if (!codexPluginCacheDetected) return null;
-
-  const configPath = path.join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-  if (existsSyncImpl(configPath)) {
-    return createInfo(
-      'codex-session-setup',
-      'Codex ordinary-session notifications',
-      'A Codex identity override file is present and will be validated at SessionStart. A valid override applies only in its configured workspace; other Codex plugin sessions use automatic thread-scoped identities. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
-    );
-  }
-
-  return createInfo(
-    'codex-session-setup',
-    'Codex ordinary-session notifications',
-    'No explicit identity override is configured. When the Codex plugin is enabled, each startup or resumed thread registers automatically under a thread-scoped identity. A cached plugin copy does not prove a live registration; use `memesh message discover --project <project>` to read current presence.',
-  );
-}
-
-function configuredAgentMessageStoragePolicy(
-  explicit: DoctorOptions['agentMessageStoragePolicy'],
-): DoctorOptions['agentMessageStoragePolicy'] {
-  if (explicit !== undefined) return explicit;
-  const quotaRaw = process.env[AGENT_MESSAGE_STORAGE_QUOTA_ENV];
-  if (quotaRaw === undefined || quotaRaw === '') return undefined;
-  // Keep this predicate byte-for-byte aligned with send enforcement in
-  // transports/agent-messaging.ts. Number(raw) alone accepts exponent notation,
-  // whitespace, signs, decimals, and values outside Number's safe range.
-  if (!/^(0|[1-9][0-9]*)$/.test(quotaRaw)) {
-    return { storage_quota_bytes: Number.NaN };
-  }
-  const parsed = Number(quotaRaw);
-  return { storage_quota_bytes: Number.isSafeInteger(parsed) ? parsed : Number.NaN };
-}
-
-function formatStorageBytes(value: number): string {
-  if (!Number.isFinite(value) || value < 0) return 'unknown size';
-  if (value < 1024) return `${value} B`;
-  if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KiB`;
-  return `${(value / (1024 * 1024)).toFixed(1)} MiB`;
 }
 
 function parseJsonFile(
@@ -1036,6 +893,7 @@ function inspectHookWiring(
   existsSyncImpl: typeof fs.existsSync,
   readFileSyncImpl: typeof fs.readFileSync,
   memeshDir: string,
+  hosts: HostsHere,
   installChannel?: InstallChannel,
   installedPluginsPath?: string,
   pluginHost?: PluginHost | null,
@@ -1085,6 +943,35 @@ function inspectHookWiring(
         'Hooks wired into Claude Code',
         'pass',
         'Wired via the Claude Code plugin runtime (found in installed_plugins.json). This copy is not the one doing the capturing — the plugin manages the hooks.',
+      );
+    }
+    // A machine without Claude Code but with Codex or Gemini CLI: it has no Claude Code
+    // hooks to connect, and telling it to run `memesh install-hooks` would create a
+    // Claude directory nobody uses. Gemini is judged the way `memesh setup` judges it:
+    // its command is on PATH.
+    const hostState = hostFixState(hosts);
+    if (hostState === 'codex' || hostState === 'codex-no-command' || hostState === 'gemini') {
+      const hostName = hostState === 'gemini' ? 'Gemini CLI' : 'Codex';
+      return createCheck(
+        'hook-wiring',
+        'Hooks wired into Claude Code',
+        'pass',
+        `Claude Code was not found on this machine (${hostName} is), so there are no Claude Code hooks to wire. This row does not check ${hostName}'s own hooks; the Capture liveness row shows whether any hook has recorded a result.`,
+        undefined,
+        { code: 'hook-wiring.no-claude-code', params: { captureWired: 0 } },
+      );
+    }
+    // No agent host at all. Telling this machine to run `install-hooks` would
+    // connect memesh to a program that is not installed, and `doctor --fix` used to
+    // do exactly that. There is nothing to repair yet, so the row carries no fixId.
+    if (hostState === 'no-host') {
+      return createCheck(
+        'hook-wiring',
+        'Hooks wired into Claude Code',
+        'warn',
+        'No agent host was found on this machine (looked for Claude Code, Codex and Gemini CLI: their commands on PATH, and the Claude Code and Codex configuration directories), so memesh has nothing to connect to yet.',
+        NO_HOST_NEXT_STEP,
+        { code: 'hook-wiring.no-host' },
       );
     }
     return createCheck(
@@ -1156,7 +1043,7 @@ function inspectHookWiring(
   // nothing about whether a capture hook should ever execute — and
   // hook-activity's never-ran FAIL says "they should be executing", so it
   // must key on capture wiring specifically, not on wiring at all.
-  const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse', 'PreCompact']);
+  const CAPTURE_EVENTS = new Set(['Stop', 'PostToolUse']);
   const hooks = (settingsParsed.value as { hooks?: Record<string, unknown> }).hooks;
   let hasMemeshHook = false;
   let hasCaptureHook = false;
@@ -1244,10 +1131,9 @@ function inspectHookWiring(
  * as proof of automation. That is why the count can never be trusted with
  * the verdict again.)
  *
- * Three hooks stamp, but only one is load-bearing: `session-summary` fires
+ * Two hooks stamp, but only one is load-bearing: `session-summary` fires
  * on every session's Stop (its low-signal bails stamp too), so its silence
- * is meaningful. `post-commit` and `pre-compact` fire only when the user
- * commits or a session compacts — their absence proves nothing, so their
+ * is meaningful. `post-commit` fires only for a commit, an optional event, so its
  * STALENESS caps at warn, never fail. The two ways they can still drive a
  * red are both positive evidence, not absence: a corrupt/future timestamp
  * (stale-unknown — the row itself is lying), and the stop-silent warn when
@@ -1342,10 +1228,9 @@ function inspectHookActivity(
     // timestamp as liveness evidence would let one foreign row turn a dead
     // capture loop permanently green (four independent reviews converged on
     // this). Foreign rows are simply not evidence, in either direction.
-    const KNOWN_HOOKS = new Set(['session-summary', 'post-commit', 'pre-compact']);
     const ages = new Map<string, number | null>();
     for (const r of rows) {
-      if (!KNOWN_HOOKS.has(r.hook)) continue;
+      if (!CAPTURE_HEARTBEAT_HOOKS.has(r.hook)) continue;
       const age = hoursSince(r.last_run_at);
       ages.set(r.hook, age !== null && age >= -SKEW_TOLERANCE_H ? Math.max(age, 0) : null);
     }
@@ -1416,8 +1301,7 @@ function inspectHookActivity(
           { code: 'hook-activity.stale-unconfirmed', params: { hook: 'session-summary', hours: Math.ceil(ssAge) } });
       }
 
-      // Only the event-driven hooks (post-commit / pre-compact) have stamped.
-      // Their triggers depend on user behaviour — no commits means no
+      // Only post-commit has stamped. Its trigger depends on user behaviour — no commits means no
       // post-commit run, dead or alive — so their staleness caps at WARN,
       // never fail: evidence from hooks the user may simply not be
       // triggering cannot prove death, only invite a look.
@@ -1504,11 +1388,11 @@ function inspectHookActivity(
       // wire capture hooks (MCP-only hosts, recall-only wirings) it would be
       // a permanent unfixable red. Note "capture hook", not "wired at all":
       // a SessionStart-only wiring passes the wiring row but proves nothing
-      // about Stop/PostToolUse/PreCompact ever executing, so it must not
+      // about Stop/PostToolUse ever executing, so it must not
       // arm the never-ran FAIL below.
       return createCheck('hook-activity', TITLE, 'warn',
-        'No capture hook has ever run — and no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing to run.',
-        'If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini), this is expected and safe to ignore.',
+        'No capture hook has ever run — and no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing to run.',
+        'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
         { code: 'hook-activity.not-wired' });
     }
     return createCheck('hook-activity', TITLE, 'fail',
@@ -1517,9 +1401,14 @@ function inspectHookActivity(
       'Run `memesh doctor` after ending one work session. If this still says no hook has run, run `memesh install-hooks` and restart your agent.',
       { code: 'hook-activity.never-ran', params: { hours: Math.round(measuringHours) } });
   } catch (err) {
+    if (err instanceof NoDatabaseYetError) {
+      return createInfo('hook-activity', TITLE,
+        'No database yet, so no hook can have captured anything: hook activity is not checked until MeMesh has stored its first memory. Doctor does not create the database.');
+    }
+    if (isSchemaBehind(err)) return createInfo('hook-activity', TITLE, `Not checked: ${schemaBehindNote()}`);
     const detail = err instanceof Error ? err.message : String(err);
     return createCheck('hook-activity', TITLE, 'fail',
-      `Could not read hook activity from the database: ${detail}. Capture health is unknown, which is not the same as healthy.`,
+      queryFailedSummary(err, detail, 'hook activity', 'Capture health is unknown, which is not the same as healthy.'),
       queryFailedFix(err),
       { code: 'hook-activity.query-failed', params: { detail } });
   } finally {
@@ -1548,48 +1437,78 @@ function inspectHookActivity(
  * every hook looks busy — that is the shape of a capture path that broke
  * downstream of the hook.
  */
-/**
- * The session handoff's exact name, taken from the `handoff-capture` records
- * in the same window the diagnosis was made from — or null.
- *
- * Null unless those records name exactly ONE handoff: when several projects'
- * handoffs were archived, no single command fixes them all, and the unnamed
- * advice (which says how to look each one up) is the honest one.
- *
- * The name goes into a command the dashboard offers to copy, so it is used
- * only when it is COMPLETE (outcome records cut an entity at 200 characters;
- * a cut name ends before the 32-hex project hash) and SAFE to paste into a
- * shell unquoted (the project label is a raw folder name and can hold spaces,
- * quotes, `$` or backticks).
- */
-const SAFE_HANDOFF_NAME = /^session-handoff:[A-Za-z0-9._-]+~[0-9a-f]{32}$/;
+/** What to tell a machine that has no agent host at all, instead of `memesh install-hooks`. */
+const NO_HOST_NEXT_STEP = 'Install Claude Code or Codex (or Gemini CLI), then run `memesh setup` to connect memesh to it.';
 
-function archivedHandoffName(file: ReturnType<typeof parseHookOutcomes>): string | null {
-  if (!Object.hasOwn(file.hooks, 'handoff-capture')) return null;
-  const names = new Set<string>();
-  for (const r of file.hooks['handoff-capture']) {
-    if (r.outcome === 'skipped' && r.reason === SKIP_REASONS.handoffArchived && typeof r.entity === 'string') names.add(r.entity);
-  }
-  if (names.size !== 1) return null;
-  const [name] = names;
-  return SAFE_HANDOFF_NAME.test(name) ? name : null;
+/** What to tell a machine whose agent is Codex: Codex's hooks come from its plugin, not from `memesh install-hooks`. */
+const CODEX_NEXT_STEP = `Refresh the Codex plugin (\`${PLUGIN_REFRESH_COMMANDS.codex}\`), restart Codex, start one session, and re-run \`memesh doctor\`. If you just updated, start a session first — the records begin on the next hook run.`;
+
+/** Codex's folder is here but its command is not on PATH: the refresh command would only print "command not found". */
+const CODEX_NO_COMMAND_NEXT_STEP = "Codex's configuration folder is here but the `codex` command is not on PATH, so the Codex plugin cannot be refreshed from this shell. Put `codex` on PATH, then re-run `memesh doctor` for the refresh command.";
+
+/** For a row that only says "no capture hook is wired": connecting memesh to Codex as an MCP server alone (what `memesh setup` does for Codex) is a normal setup. */
+const CODEX_MCP_ONLY_NOTE = 'If memesh is connected to Codex as an MCP server only (what `memesh setup` does for Codex), this is expected and safe to ignore.';
+
+/** What to tell a machine whose only agent is Gemini CLI: it is an MCP-only host, there is no hook to install. */
+const GEMINI_NEXT_STEP = 'Gemini CLI connects to memesh as an MCP server only, so there are no memesh hooks to install on this machine.';
+
+/** The rows that say "no capture hook is wired", where a machine that never wired one is not broken. */
+const NOT_WIRED_CODES: ReadonlySet<string> = new Set(['hook-activity.not-wired', 'capture-liveness.not-wired']);
+
+/** Which agents are on the machine: the answers `memesh setup` gives, asked once per doctor run. */
+export interface HostsHere {
+  /** Claude Code is here, or `memesh install-hooks` has wired it before (its marker file exists): either way `install-hooks` is its fix. */
+  claude: boolean;
+  codex: boolean;
+  /** The `codex` command is on PATH (the folder alone does not make it runnable). */
+  codexCommand: boolean;
+  gemini: boolean;
+}
+
+function detectHostsHere(existsSyncImpl: typeof fs.existsSync, memeshDir: string): HostsHere {
+  return {
+    claude: claudeCodePresent(existsSyncImpl, isOnPath) || existsSyncImpl(path.join(memeshDir, 'install-hooks.json')),
+    codex: codexPresent(existsSyncImpl, isOnPath),
+    codexCommand: isOnPath('codex'),
+    gemini: geminiPresent(isOnPath),
+  };
 }
 
 /**
- * Reinstalling the hooks cannot help an archived handoff: captureEntity
- * leaves an archived memory alone on purpose. Re-remembering it under the
- * same name makes it active again, and the next Stop replaces its text.
+ * Which agent the machine has, as far as the rows that prescribe a hook fix are concerned:
+ * Claude Code when it is here (`memesh install-hooks` is for it), else Codex, else Gemini CLI,
+ * else none. Decided from whether the agents are on the machine, not from any row's text.
  */
-function archivedHandoffCheck(title: string, runs: number, name: string | null): DoctorCheck {
-  const summary = `handoff-capture: ${runs} runs, 0 writes — the session handoff was archived with \`forget\`, so it is not updated any more.`;
-  if (name) {
-    return createCheck('capture-liveness', title, 'warn', summary,
-      `To turn it back on, run \`memesh remember --name ${name} --type session-handoff --obs restart\`; the next Stop replaces it.`,
-      { code: 'capture-liveness.handoff-archived', params: { runs, name } });
-  }
-  return createCheck('capture-liveness', title, 'warn', summary,
-    'To turn it back on, find its exact name with `memesh recall session-handoff --include-archived`, then remember anything under that name with type session-handoff; the next Stop replaces it.',
-    { code: 'capture-liveness.handoff-archived-unnamed', params: { runs } });
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'codex-no-command' | 'gemini';
+
+export function hostFixState(hosts: HostsHere): HostFixState {
+  if (hosts.claude) return 'claude';
+  if (hosts.codex) return hosts.codexCommand ? 'codex' : 'codex-no-command';
+  return hosts.gemini ? 'gemini' : 'no-host';
+}
+
+function hostFix(state: Exclude<HostFixState, 'claude'>, code: string | undefined): string {
+  if (state === 'no-host') return NO_HOST_NEXT_STEP;
+  if (state === 'gemini') return GEMINI_NEXT_STEP;
+  const step = state === 'codex' ? CODEX_NEXT_STEP : CODEX_NO_COMMAND_NEXT_STEP;
+  return code !== undefined && NOT_WIRED_CODES.has(code) ? `${step} ${CODEX_MCP_ONLY_NOTE}` : step;
+}
+
+/**
+ * The ONE place that writes the fix of a row that would otherwise prescribe
+ * `memesh install-hooks`. That command writes Claude Code's settings, so on a
+ * machine that has no Claude Code it would create a directory nobody uses and
+ * contradict the hook-wiring row. Every such row gets the answer for this machine
+ * instead (and no fixId, so `doctor --fix` cannot act on it).
+ *
+ * The rows are recognised by their fix naming `install-hooks`: they are built in a dozen
+ * places, and a row that slips through is caught by the machine-by-machine sweep in
+ * tests/core/doctor-capture-liveness.test.ts, which fails when any row on a machine without Claude
+ * Code still names the command.
+ */
+export function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck {
+  if (state === 'claude' || check.status === 'pass' || !check.fix?.includes('install-hooks')) return check;
+  return { ...check, fix: hostFix(state, check.code), fixId: undefined };
 }
 
 /**
@@ -1606,6 +1525,20 @@ function withRecordedHosts(
   const hostsSeen = [...new Set(result.report.hooks.flatMap((h) => h.hosts))].sort();
   if (hostsSeen.length === 0) return result;
   return { ...result, check: { ...result.check, summary: `${result.check.summary} Hosts recorded: ${hostsSeen.join(', ')}.` } };
+}
+
+/** The hook result file exists but cannot be read: say so, with the reason and the way out that matches it. */
+function outcomeFileUnreadable(file: string, err: unknown): DoctorCheck {
+  const code = (err as NodeJS.ErrnoException).code;
+  const why = whyFailed(err);
+  const fix = code === 'EISDIR'
+    ? `A folder is where that file belongs: move it aside (\`mv ${shellQuote(file)} ${shellQuote(`${file}.broken`)}\`); the next hook run creates the file.`
+    : code === 'EACCES' || code === 'EPERM'
+      ? `Give yourself read access to it (\`chmod u+r ${shellQuote(file)}\`; if another user owns it, move it aside), then re-run \`memesh doctor\`.`
+      : `Look at it with \`ls -l ${shellQuote(file)}\`, fix what stops it being read, then re-run \`memesh doctor\`.`;
+  return createCheck('capture-liveness', 'Capture liveness', 'warn',
+    `The hook result file at ${file} cannot be read (${why}), so whether the hooks save anything cannot be checked. This is not the same as "no records".`,
+    fix, { code: 'capture-liveness.outcome-file-unreadable', params: { path: file, reason: why } });
 }
 
 function inspectCaptureLiveness(
@@ -1628,9 +1561,13 @@ function inspectCaptureLiveness(
   }
 
   let raw: string | null;
+  const outcomePath = path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME);
   try {
-    raw = readFileSyncImpl(path.join(memeshDirImpl(), HOOK_OUTCOMES_FILENAME), 'utf8') as string;
-  } catch {
+    raw = readFileSyncImpl(outcomePath, 'utf8') as string;
+  } catch (err) {
+    // A file that is there and cannot be read is a different thing from no file: saying "no records"
+    // would call records nobody can see an absence, and the fix for it is a permission, not an update.
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') return { check: outcomeFileUnreadable(outcomePath, err) };
     // No file yet is the ordinary state right after an upgrade — the hooks
     // create it on their next run. It is NOT evidence of death, and the
     // never-ran branch below refuses to treat it as such.
@@ -1639,6 +1576,31 @@ function inspectCaptureLiveness(
   const outcomeFile = parseHookOutcomes(raw);
   const hooks = summarizeHookOutcomes(outcomeFile);
 
+  const result = inspectRecordedCaptureLiveness(openDatabaseImpl, closeDatabaseImpl, hooks, captureWired);
+  const details = hooks.flatMap((hook) => {
+    const reasons = hook.notStored.map((item) => `'${item.reason}': ${item.records} record(s), `
+      + (item.count === null ? `${item.unit}: quantity unknown` : `${item.count} known ${item.unit}`)
+      + (item.unknownCount > 0 ? `; ${item.unknownCount} record(s) with unknown quantity` : ''));
+    if (hook.lockedRuns > 0) reasons.push(`${hook.lockedRuns} run(s) failed because the database stayed locked (MEMESH_DB_LOCKED); lost item count unknown`);
+    return reasons.length ? [`${hook.hook}, within the retained window of ${hook.triggeredRuns} triggered run(s): ${reasons.join('; ')}.`] : [];
+  });
+  if (details.length > 0) {
+    result.check.summary += ` Not stored or deferred: ${details.join(' ')}`;
+    if (hooks.some((hook) => hook.notStored.length > 0)) result.check.summary += ' Item totals can include the same item on multiple runs.';
+    if (result.check.status === 'pass') result.check.status = 'warn';
+    if (result.report?.status === 'PASS') result.report.status = 'PASS_WITH_CONCERNS';
+  }
+  return result;
+}
+
+/** Preserve every existing verdict, then the caller appends retained loss evidence to all paths, including query failure. */
+function inspectRecordedCaptureLiveness(
+  openDatabaseImpl: typeof openDatabase,
+  closeDatabaseImpl: typeof closeDatabase,
+  hooks: HookLivenessSummary[],
+  captureWired: boolean,
+): { check: DoctorCheck; report?: CaptureLivenessReport } {
+  const TITLE = 'Capture liveness';
   let db: DatabaseLike | null = null;
   let types: TypeTrend[];
   let neverRan: string[];
@@ -1652,12 +1614,8 @@ function inspectCaptureLiveness(
     // Per type, this week against the previous one. Restricted to
     // auto-capture rows: a hand-typed `memesh learn` is not evidence that the
     // automatic layer is alive, which is the mistake an earlier version of
-    // the hook-activity count made.
-    //
-    // The session handoff is left out: it is ONE row per project that each
-    // Stop rewrites in place, so its `created_at` never moves and it would
-    // read as "stopped" from the eighth day on. `handoff-capture` has its own
-    // row in the hook table above.
+    // the hook-activity count made. Legacy session-handoff rows have no
+    // producer after S2; their old timestamps cannot diagnose a stopped one.
     const rows = db.prepare(
       `SELECT e.type AS type,
               SUM(CASE WHEN e.created_at > datetime('now', '-7 days') THEN 1 ELSE 0 END) AS last7,
@@ -1667,9 +1625,9 @@ function inspectCaptureLiveness(
          JOIN tags t ON t.entity_id = e.id
         WHERE t.tag = ?
           AND e.created_at > datetime('now', '-14 days')
-          AND e.type <> ?
+          AND e.type <> 'session-handoff'
         GROUP BY e.type`,
-    ).all(AUTO_CAPTURE_TAG, SESSION_HANDOFF_TYPE) as Array<{ type: string; last7: number; prev7: number }>;
+    ).all(AUTO_CAPTURE_TAG) as Array<{ type: string; last7: number; prev7: number }>;
     types = summarizeTypeTrends(rows.map((r) => ({
       type: String(r.type),
       last7: Number(r.last7) || 0,
@@ -1680,7 +1638,8 @@ function inspectCaptureLiveness(
       "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'hook_runs'",
     ).get();
     const heartbeats = tablePresent
-      ? db.prepare('SELECT hook, last_run_at FROM hook_runs').all() as Array<{ hook: string; last_run_at: string }>
+      ? (db.prepare('SELECT hook, last_run_at FROM hook_runs').all() as Array<{ hook: string; last_run_at: string }>)
+        .filter(({ hook }) => CAPTURE_HEARTBEAT_HOOKS.has(hook))
       : [];
     const stamped = new Set(heartbeats.map((r) => r.hook));
     stampedCount = stamped.size;
@@ -1711,11 +1670,18 @@ function inspectCaptureLiveness(
       ).get(AUTO_CAPTURE_TAG, since) as { c: number } | undefined)?.c ?? 0;
     }
   } catch (err) {
+    if (err instanceof NoDatabaseYetError) {
+      return {
+        check: createInfo('capture-liveness', TITLE,
+          'No database yet, so there is nothing to keep alive: capture liveness is not checked until MeMesh has stored its first memory. Doctor does not create the database.'),
+      };
+    }
+    if (isSchemaBehind(err)) return { check: createInfo('capture-liveness', TITLE, `Not checked: ${schemaBehindNote()}`) };
     // A query failure is not a healthy graph and must not read as one.
     const detail = err instanceof Error ? err.message : String(err);
     return {
       check: createCheck('capture-liveness', TITLE, 'fail',
-        `Could not read capture liveness from the database: ${detail}. Whether anything is being saved is unknown, which is not the same as healthy.`,
+        queryFailedSummary(err, detail, 'capture liveness', 'Whether anything is being saved is unknown, which is not the same as healthy.'),
         queryFailedFix(err),
         { code: 'capture-liveness.query-failed', params: { detail } }),
     };
@@ -1743,8 +1709,8 @@ function inspectCaptureLiveness(
     if (!captureWired) {
       return {
         check: createCheck('capture-liveness', TITLE, 'warn',
-          `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse / PreCompact) is confirmed wired on this machine, so there is nothing that should be running.`,
-          'If you want automatic capture, run `memesh install-hooks`. If this install is MCP-only (Codex / Gemini / Cursor), this is expected and safe to ignore.',
+          `The ${hook} hook has never run — but no capture hook (Stop / PostToolUse) is confirmed wired on this machine, so there is nothing that should be running.`,
+          'If you want automatic capture, run `memesh install-hooks`. If you use memesh only through its MCP server (no hooks), this is expected and safe to ignore.',
           { code: 'capture-liveness.not-wired', params: { hook } }),
         report: { ...report, status: 'PASS_WITH_CONCERNS' },
       };
@@ -1795,9 +1761,6 @@ function inspectCaptureLiveness(
   if (verdict.silentHook) {
     const h = verdict.silentHook;
     const reason = h.dominantSkipReason ?? 'no reason recorded';
-    if (h.hook === 'handoff-capture' && reason === SKIP_REASONS.handoffArchived) {
-      return { check: archivedHandoffCheck(TITLE, h.triggeredRuns, archivedHandoffName(outcomeFile)), report };
-    }
     return {
       check: createCheck('capture-liveness', TITLE, 'warn',
         `${h.hook}: ${h.triggeredRuns} runs, 0 writes — '${reason}'. The hook is alive and deciding there is nothing to save every single time, which is also what a broken capture path looks like.`,
@@ -1814,7 +1777,7 @@ function inspectCaptureLiveness(
   // hooks crash as they load (a missing `_generated` file — the 4.8.2 and
   // 4.9.4 shape) and leave nothing at all, which the old heartbeats from
   // before the crash would otherwise cover.
-  if (hooks.length === 0 && captureWired && stampedCount > 0
+  if (hooks.length === 0 && stampedCount > 0
     && measuringHours !== null && measuringHours > NEVER_RAN_GRACE_HOURS) {
     const lastHeartbeat = newestHeartbeatHours === null ? null : Math.round(newestHeartbeatHours);
     return {
@@ -1868,6 +1831,20 @@ function inspectCaptureLiveness(
     check: createCheck('capture-liveness', TITLE, 'pass', summary),
     report,
   };
+}
+
+/** Inspect only filenames: pending conversation bodies can contain private text. */
+export function inspectPendingConversations(dir: string = getMemeshDirFromDbPath()): DoctorCheck {
+  try {
+    const count = fs.readdirSync(path.join(dir, 'pending-conversations')).filter(name => /^[0-9a-f]{32}\.json$/.test(name)).length;
+    return createCheck('pending-conversations', 'Pending conversations', count ? 'warn' : 'pass',
+      `${count} conversation event(s) waiting for database replay.`,
+      count ? 'The next memory hook retries pending writes; if the count persists, check database lock and file permissions.' : undefined,
+      { params: { count } });
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code === 'ENOENT') return createCheck('pending-conversations', 'Pending conversations', 'pass', '0 conversation events waiting for database replay.', undefined, { params: { count: 0 } });
+    return createCheck('pending-conversations', 'Pending conversations', 'warn', 'Pending conversation events could not be counted. Check the data folder permissions.');
+  }
 }
 
 /**
@@ -1947,22 +1924,29 @@ function defaultResolveShellMemesh(): string | null {
   }
 }
 
-function defaultNativeBindingProbe(_packageRoot: string): { ok: true } | { ok: false; message: string } {
+/** The SQLite probe's answer; `fix` is set when the failure is this Node's (or the probe's own), not a damaged install. */
+type NativeBindingProbeResult = { ok: true } | { ok: false; message: string; fix?: string };
+
+function defaultNativeBindingProbe(_packageRoot: string): NativeBindingProbeResult {
   try {
     const probe = new MemeshDatabase(':memory:');
     try { probe.prepare('SELECT 1').get(); } finally { probe.close(); }
     return { ok: true };
   } catch (err) {
-    return { ok: false, message: err instanceof Error ? err.message : String(err) };
+    return {
+      ok: false,
+      message: err instanceof Error ? err.message : String(err),
+      ...(isUnsupportedNode(err) ? { fix: err.fix } : isSqliteSelfCheckFailure(err) ? { fix: err.advice } : {}),
+    };
   }
 }
 
 /**
- * Compare a running Node version against a `>=X.Y.Z` engines range.
+ * Compare a running Node version against a minimum or a union of major caret ranges.
  *
  * Deliberately narrow: it understands exactly the one form this package
  * publishes, and says so when it meets anything else. A looser parser that
- * guessed at `^`, `||` or `<` ranges would answer confidently and sometimes
+ * guessed at other ranges would answer confidently and sometimes
  * wrongly, and the row it feeds is allowed to FAIL — a wrong answer there
  * tells a healthy install it is broken. Returning `null` makes the caller
  * report "not checked", which is the true statement.
@@ -1973,7 +1957,21 @@ export function satisfiesMinimumNodeRange(
 ): boolean | null {
   const min = /^>=\s*v?(\d+)(?:\.(\d+))?(?:\.(\d+))?\s*$/.exec(range.trim());
   const running = /^v?(\d+)\.(\d+)\.(\d+)/.exec(version.trim());
-  if (!min || !running) return null;
+  if (!running) return null;
+
+  if (!min) {
+    if (!/^v?(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(version.trim())) return null;
+    const parts = range.split('||').map((part) => part.trim());
+    if (parts.length < 2) return null;
+    const bounds = parts.map((part) => /^\^([1-9]\d*)\.(\d+)\.(\d+)$/.exec(part));
+    if (bounds.some((bound) => !bound)) return null;
+    const have = running.slice(1, 4).map(Number);
+    return bounds.some((bound) => {
+      const wanted = bound!.slice(1, 4).map(Number);
+      return have[0] === wanted[0] && (have[1] > wanted[1] ||
+        (have[1] === wanted[1] && have[2] >= wanted[2]));
+    });
+  }
 
   const wanted = [Number(min[1]), Number(min[2] ?? 0), Number(min[3] ?? 0)];
   const have = [Number(running[1]), Number(running[2]), Number(running[3])];
@@ -2053,9 +2051,21 @@ export function inspectNodeRuntime(
       'Node runtime',
       'fail',
       `${facts} This package requires Node ${declared}, so this runtime is BELOW the ` +
-        `supported floor. Native modules and hooks may fail in ways that look unrelated.`,
+        `supported floor, so MeMesh cannot open its database.`,
       `Upgrade Node to ${declared.replace(/^>=\s*/, '')} or newer, then run \`memesh doctor\` again.`,
       { code: 'node-runtime.too-old', params: { detail: facts, required: declared.replace(/^>=\s*/, '') } },
+    );
+  }
+  if (!hasNodeSqliteImpl()) {
+    // New enough, yet node:sqlite did not load: MeMesh cannot run, and no upgrade changes that.
+    const problem = nodeProblem(nodeVersion, () => true, false);
+    return createCheck(
+      'node-runtime',
+      'Node runtime',
+      'fail',
+      `${facts} ${problem?.message ?? 'node:sqlite is not available.'}`,
+      problem?.fix ?? 'Remove the --no-experimental-sqlite option, then run `memesh doctor` again.',
+      { code: 'node-runtime.sqlite-unavailable', params: { detail: facts } },
     );
   }
   return createCheck(
@@ -2086,12 +2096,15 @@ export function hasBuiltInSqlite(): boolean {
 function inspectNativeBinding(
   packageRoot: string,
   _existsSyncImpl: typeof fs.existsSync,
-  probeImpl: (packageRoot: string) => { ok: true } | { ok: false; message: string } = defaultNativeBindingProbe,
+  probeImpl: (packageRoot: string) => NativeBindingProbeResult = defaultNativeBindingProbe,
 ): DoctorCheck {
   const result = probeImpl(packageRoot);
-  return result.ok
-    ? createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).')
-    : createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } });
+  if (result.ok) return createCheck('native-binding', 'SQLite', 'pass', 'node:sqlite opened a database (probe succeeded).');
+  const failed = { code: 'native-binding.load-failed', params: { detail: result.message, root: packageRoot } };
+  if (result.fix) {
+    return createCheck('native-binding', 'SQLite', 'fail', 'SQLite is not usable on this Node (the Database row above says why).', result.fix, failed);
+  }
+  return createCheck('native-binding', 'SQLite', 'fail', `SQLite could not open a database: ${result.message}`, 'Check the Node runtime and reinstall if necessary.', failed);
 }
 
 /**
@@ -2273,7 +2286,7 @@ function pluginCacheUnverifiable(host: PluginHost, missing: string): DoctorCheck
     `Plugin cache source record is current (${hostLabel})`,
     'warn',
     `Could not tell whether the plugin cache matches the marketplace: ${missing}. The version alone cannot answer this — two builds can carry the same version.`,
-    `Run \`${command}\` — it re-stages the cache from the marketplace and records the commit, after which this check can answer.`,
+    `Run \`${command}\` — it puts this version back through the same checks an update takes (source check, database backup) and records the commit, after which this check can answer.`,
     { code: 'plugin-cache.unverifiable', params: { host: hostLabel, command } },
     'plugin-cache-refresh',
   );
@@ -2417,6 +2430,8 @@ function inspectPluginCacheCurrency(
 
   let installedSha: string | null;
   let installedMissing: string;
+  // The version Claude Code's own record says it installed (Codex's revision marker carries none).
+  let recordedVersion: string | null = null;
   if (host === 'codex') {
     installedSha = readCodexInstallRevision(packageRoot, readFileSyncImpl);
     installedMissing = 'the plugin cache carries no readable .codex-marketplace-install.json revision';
@@ -2438,6 +2453,7 @@ function inspectPluginCacheCurrency(
     const soleEntry = entries.length === 1 ? entries[0] : undefined;
     const soleEntryHasPath = typeof soleEntry?.installPath === 'string' && soleEntry.installPath.length > 0;
     const entry = matching.length === 1 ? matching[0] : undefined;
+    recordedVersion = typeof entry?.version === 'string' ? entry.version : null;
     installedSha = !registry.malformed
       && typeof entry?.gitCommitSha === 'string'
       && /^[0-9a-f]{40}$/.test(entry.gitCommitSha)
@@ -2481,14 +2497,29 @@ function inspectPluginCacheCurrency(
     );
   }
 
+  const params = { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command };
+  // Two different things look alike here. The marketplace branch moves ahead of the last release all the time: the plugin stays on the
+  // release MeMesh verified, which is how it is meant to work, and there is nothing to do. But when the record of what was installed
+  // names another version than the package that is running, the cache and the record disagree: that is damage, and it is repaired.
+  let runningVersion: string | null = null;
+  try { runningVersion = JSON.parse(readFileSyncImpl(path.join(packageRoot, 'package.json'), 'utf8') as string).version ?? null; } catch { /* unreadable: no claim of a mismatch */ }
+  if (recordedVersion !== null && typeof runningVersion === 'string' && recordedVersion !== runningVersion) {
+    return createCheck(
+      'plugin-cache',
+      `Plugin cache source record is current (${hostLabel})`,
+      'warn',
+      `${hostLabel}'s record says version ${recordedVersion} is installed from commit ${installedSha.slice(0, 8)}, but the plugin running here is ${runningVersion}: the cache and the record disagree.`,
+      'Run `memesh update --reinstall`: it puts the verified release back (source check, commit on main, pinned dependencies, read-back) and rewrites the record.',
+      { code: 'plugin-cache.stale', params },
+    );
+  }
   return createCheck(
     'plugin-cache',
     `Plugin cache source record is current (${hostLabel})`,
-    'warn',
-    `The plugin cache records commit ${installedSha.slice(0, 8)}, but the marketplace has moved to ${marketplaceSha.slice(0, 8)} under the same version — ${hostLabel} does not normally refresh a cache whose version did not change, so refresh the cache before relying on the newer marketplace code.`,
-    `Run \`${command}\` to refresh the cache in place, then restart ${hostLabel}.`,
-    { code: 'plugin-cache.stale', params: { installed: installedSha.slice(0, 8), marketplace: marketplaceSha.slice(0, 8), host: hostLabel, command } },
-    'plugin-cache-refresh',
+    'pass',
+    `The plugin cache records commit ${installedSha.slice(0, 8)}; the ${hostLabel} marketplace now records ${marketplaceSha.slice(0, 8)}. MeMesh has not checked whether this installation was built from a release. If you doubt this copy, run \`memesh update --reinstall\` to put it back through the release checks.`,
+    undefined,
+    { code: 'plugin-cache.behind-marketplace', params },
   );
 }
 
@@ -2513,7 +2544,7 @@ function isClaudeChannelCommand(command: unknown): boolean {
  * Inspect Claude's user-scoped MCP registration without treating transport
  * initialization or router state as channel admission. The user-scope
  * registry lives in ~/.claude.json; only the memesh-channel entry and the
- * config file it names are read.
+ * registration command is inspected; no legacy host config or token is read.
  */
 function inspectClaudeChannelRegistration(
   existsSyncImpl: typeof fs.existsSync,
@@ -2532,7 +2563,7 @@ function inspectClaudeChannelRegistration(
         'Claude Channel registration',
         'warn',
         'The canonical Claude user config could not be read as JSON, so the memesh-channel registration is malformed or unverifiable.',
-        'Repair the owner-controlled Claude config with `claude mcp remove memesh-channel` and re-run `memesh agent setup claude` to obtain a fresh registration command.',
+        'Repair the owner-controlled Claude registration with `claude mcp add --scope user memesh-channel -- memesh-host-claude` (no --config).',
       );
     }
   }
@@ -2546,8 +2577,8 @@ function inspectClaudeChannelRegistration(
       'claude-channel',
       'Claude Channel registration',
       'warn',
-      'No user-scoped memesh-channel registration was found. Durable MCP/inbox messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.',
-      'If you want the opt-in channel, run `memesh agent setup claude` and then register the printed user-scoped MCP command.',
+      'No user-scoped memesh-channel registration was found. Conversation messaging can still work, but live Claude Channel notification is inactive. The upstream research-preview channel remains opt-in.',
+      'For the opt-in channel, register `claude mcp add --scope user memesh-channel -- memesh-host-claude` and enable the host Channel flag. The actual host session ID is required at runtime.',
       { code: 'claude-channel.unregistered' },
     );
   }
@@ -2557,54 +2588,24 @@ function inspectClaudeChannelRegistration(
     : null;
   const command = record?.command;
   const rawArgs = record?.args;
-  const args = Array.isArray(rawArgs) ? rawArgs : null;
-  const configIndex = args?.indexOf('--config') ?? -1;
-  const target = args && configIndex >= 0 && typeof args[configIndex + 1] === 'string'
-    ? args[configIndex + 1] as string
-    : null;
-  let targetConfigValid = false;
-  if (target) {
-    try {
-      const config = readHostConfigFile<JsonObject>(target);
-      // #474: `project` is deliberately absent — the Claude channel host no
-      // longer reads it (it derives its routing project from its own
-      // working directory), so a config missing it is coherent, not broken.
-      const required = ['router_socket', 'token_file', 'principal_id'];
-      targetConfigValid = config.server_name === 'memesh-channel'
-        && required.every((key) => {
-          const value = config[key];
-          return typeof value === 'string'
-            && value.length > 0
-            && Buffer.byteLength(value) <= 4096;
-        });
-    } catch {
-      targetConfigValid = false;
-    }
-  }
+  const args = rawArgs === undefined ? [] : rawArgs;
   const commandValid = isClaudeChannelCommand(command);
-  const coherent = commandValid
-    && args !== null
-    && args.length === 2
-    && configIndex === 0
-    && target !== null
-    && targetConfigValid;
+  const coherent = commandValid && Array.isArray(args) && args.length === 0;
   if (!coherent) {
-    const reason = !commandValid || args === null || configIndex !== 0 || target === null
-      ? 'the command or --config declaration is malformed'
-      : 'the declared owner config target is missing, insecure, malformed, or incomplete';
+    const reason = 'the command or arguments are malformed; the conversation Channel requires no legacy --config';
     return createCheck(
       'claude-channel',
       'Claude Channel registration',
       'warn',
       `The user-scoped memesh-channel registration is present but ${reason}. Live Claude Channel notification is not established.`,
-      'Remove and re-register the owner-controlled memesh-channel entry with `memesh agent setup claude`; keep its generated config file owner-private.',
+      'Register the normal `memesh-host-claude` command without arguments. The host supplies its actual session ID; no router config or token is needed.',
     );
   }
 
   return createInfo(
     'claude-channel',
     'Claude Channel registration',
-    'The user-scoped memesh-channel registration and owner-private config target are coherent (CONFIGURED). Development-channel admission and agent surfacing are not verified; durable MCP/inbox messaging remains a separate path.',
+    'The user-scoped memesh-channel command is coherent (CONFIGURED). Runtime session identity, Channel admission and native model reception are not verified; conversation read/status remain separate actions.',
   );
 }
 
@@ -2612,29 +2613,209 @@ function inspectClaudeChannelRegistration(
  * True when the install is younger than the same 24h grace period the
  * hook-wiring check already gives a fresh install (line ~873): "no
  * successful update check yet" is expected for a install a few minutes
- * old and is not evidence of anything. `install.json`'s `created_at` is
- * ISO-8601 (`toISOString()`), NOT the SQLite `YYYY-MM-DD HH:MM:SS` shape
- * `hoursSince` parses — reusing that helper on this value would silently
- * return null (unparseable) and read as "unknown age" on every call.
+ * old and is not evidence of anything.
+ *
+ * How old it is comes from `install.json`'s `created_at` when that file
+ * exists (ISO-8601 from `toISOString()`, NOT the SQLite `YYYY-MM-DD HH:MM:SS`
+ * shape `hoursSince` parses). Doctor never creates that file: a diagnostic must
+ * not be what leaves state behind on a machine nobody has used. When it is not
+ * there, the age is that of the installed package itself: when this version's
+ * `package.json` was put on disk (birth time, falling back to the inode change
+ * time where the filesystem has no birth time). So the basis is "how long ago
+ * was THIS version installed": an automatic update that reinstalls the package
+ * starts the 24 hours again, and for that day the row says "installed recently"
+ * instead of warning that the update status is unknown.
+ *
+ * An age that cannot be read (no such file, permissions, a time in the future)
+ * is "cannot tell", never "recent": the caller then gives the ordinary warning
+ * rather than hiding it.
  */
-function isFreshInstall(): boolean {
+function isFreshInstall(packageRoot: string, statSyncImpl: typeof fs.statSync): boolean {
+  const HOUR_MS = 60 * 60 * 1000;
   try {
-    const createdAt = new Date(getInstallRecord().created_at).getTime();
-    if (!Number.isFinite(createdAt)) return false;
-    return (Date.now() - createdAt) / (60 * 60 * 1000) < 24;
+    const record = readInstallRecordState();
+    if (record.status === 'ok') {
+      // A record with no usable creation time, or one in the future, says nothing about the age: cannot tell.
+      if (record.created_at === null) return false;
+      const ageHours = (Date.now() - new Date(record.created_at).getTime()) / HOUR_MS;
+      return ageHours >= 0 && ageHours < 24;
+    }
+    // A record that is there but unusable is not "no record": its age is unknown, so cannot tell.
+    if (record.status === 'unreadable') return false;
+    const stat = statSyncImpl(path.join(packageRoot, 'package.json'));
+    const installedAt = stat.birthtimeMs > 0 ? stat.birthtimeMs : stat.ctimeMs;
+    if (!Number.isFinite(installedAt) || installedAt <= 0) return false;
+    const ageHours = (Date.now() - installedAt) / HOUR_MS;
+    return ageHours >= 0 && ageHours < 24;
   } catch {
     return false;
   }
 }
 
+/**
+ * What the automatic updater last did, read from the record it writes for every
+ * attempt (nothing is inferred). Failed attempts and unusable policy settings
+ * warn; intentional skips and waiting follow the updater's settings.
+ */
+function inspectAutoUpdate(installSupport?: import('./install-channel.js').InstallChannelSupport): DoctorCheck {
+  const policy = currentPolicy();
+  const policyStatus = policy.policy === 'off' && (policy.reason === AUTO_UPDATE_REASONS.policyOffUnreadableConfig || policy.reason === AUTO_UPDATE_REASONS.policyOffInvalidValue) ? 'warn' : 'pass';
+  const cannotSelfUpdate = installSupport !== undefined && !installSupport.canSelfUpdate;
+  const setting = policy.policy === 'off'
+    ? `off (${describeUpdatePolicy(policy)})`
+    : cannotSelfUpdate
+      ? `on in the settings, but this install (${installSupport.label}) cannot update itself, so nothing is installed. ${installSupport.guidance}`
+      : `on for ${policy.policy === 'major' ? 'every version' : `${policy.policy} versions and below`}; it installs after running sessions end (waiting at most 3 days, after which sessions still open may use the new files before they restart)`;
+  const dataDir = updateControlDir();
+  const read = inspectAutoUpdateState(dataDir);
+  const installing = readInstalling(dataDir);
+  if (installing && !installing.running) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. An update from ${installing.marker.from} to ${installing.marker.to} began its install at ${installing.marker.at}, and the process that ran it is gone without recording a result, so the install may be half done.`,
+      `Put this version back through the same checks with \`memesh update --reinstall\` (a database backup was made before the install began: see ${backupDirectoryFor(getDbPath())}). Details: ${path.join(dataDir, 'auto-update.log')}.`,
+      { code: 'auto-update.interrupted' },
+    );
+  }
+  const holder = describeLockHolder(updateControlDir());
+  if (holder && !holder.running) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. The update lock was left behind by a ${holder.label === 'manual' ? 'manual' : 'automatic'} update (pid ${holder.pid}, started ${holder.startedAt}) that is no longer running.`,
+      `Nothing to do: the next update attempt takes the lock over about 2 minutes after its owner is found gone. Details: ${path.join(dataDir, 'auto-update.log')}.`,
+      { code: 'auto-update.lock-orphan' },
+    );
+  }
+  const running = installing?.running ? ` An install to ${installing.marker.to} is running now (since ${installing.marker.at}).` : holder?.running ? ` An update is running now (started ${holder.startedAt}, ${holder.label === 'manual' ? 'by hand' : 'automatic'}).` : '';
+  if (read.kind === 'unreadable') {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. The record of the last attempt cannot be read (${read.detail}), so it is not known whether one ran or failed.`,
+      `Look at ${path.join(dataDir, 'auto-update-state.json')} and ${path.join(dataDir, 'auto-update.log')}; removing the damaged record (a file, or a directory that is in its place) is safe: the next attempt writes a new one.`,
+      { code: 'auto-update.state-unreadable' },
+    );
+  }
+  if (read.kind === 'absent') {
+    return createCheck('auto-update', 'Automatic updates', policyStatus, `Automatic updates are ${setting}. No attempt has run yet.${running}`);
+  }
+  const state = read.state;
+  const waitedDays = state.outcome === 'waiting' && state.waitingSince ? Math.floor((Date.now() - Date.parse(state.waitingSince)) / 86_400_000) : null;
+  // Older state files have no `hermes` field and a run with no copy records null: both mean nothing to list.
+  const hermesResults = Array.isArray(state.hermes) ? state.hermes : [];
+  const hermesNotes = hermesResults.map((h) => ` Hermes provider at ${h.path}: ${h.outcome} — ${h.reason}.`).join('');
+  const what = `Last attempt ${state.at}: ${state.outcome} — ${state.reason}${state.to ? ` (${state.from ?? '?'} → ${state.to})` : ''}${waitedDays !== null && waitedDays >= 0 ? `; waiting for ${waitedDays} day(s) of the 3 allowed` : ''}.${hermesNotes}${state.notice ? ` Note: ${state.notice}.` : ''}${running}`;
+  const logPath = path.join(dataDir, 'auto-update.log');
+  const hermesAdvice = `To put the Hermes provider in place by hand: \`memesh hermes install\` (add \`--path <dir>\` for a copy outside the default place; a directory MeMesh did not install is only replaced with \`--force\`, and is saved first). Read ${logPath} for the reason.`;
+  // The wait has a limit (3 days): past it the updater installs anyway. Still waiting means it is not running or cannot finish.
+  if (waitedDays !== null && waitedDays >= 3) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `The wait for running sessions is limited to 3 days, so the update should have installed by now: its runner is probably not running. Update now with \`${installSupport?.recommendedCommand ?? 'memesh update'}\` (it does not wait for sessions); read ${logPath} for what the runner said.`,
+      { code: 'auto-update.wait-overdue' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.installedAfterWait) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `Restart the sessions that were open during the update so they run the new version together with their hooks.${hermesResults.some((h) => h.outcome === 'failed') ? ` ${hermesAdvice}` : ''}`,
+      { code: 'auto-update.mixed-versions' },
+    );
+  }
+  if (hermesResults.some((h) => h.outcome === 'failed')) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      hermesAdvice,
+      { code: 'auto-update.hermes-failed' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexMarketplaceMissing) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      'The Codex marketplace pcircle-memesh is not in config.toml, and MeMesh did not remove it, so it is taken as removed on purpose and the Codex plugin is not being updated. If that was on purpose, nothing to do. To get it back, pinned to the verified release: `memesh update --reinstall`.',
+      { code: 'auto-update.codex-marketplace-missing' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.codexRestoreFailed) {
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      'An update removed the Codex marketplace pcircle-memesh and then failed before it could put it back: it is missing because of that update, not because you removed it. The next automatic run puts it back while config.toml is unchanged; to do it now: `codex plugin marketplace add PCIRCLE-AI/memesh`, then `memesh update --reinstall`.',
+      { code: 'auto-update.codex-restore-failed' },
+    );
+  }
+  if (state.reason === AUTO_UPDATE_REASONS.dependencyPinFailed) {
+    // The install was undone: the version that was running is still the one that runs, and the next update tries the same release again.
+    return createCheck(
+      'auto-update',
+      'Automatic updates',
+      'warn',
+      `Automatic updates are ${setting}. ${what}`,
+      `The update was undone and ${state.from ?? 'the previous version'} is still what runs: nothing is broken. The next automatic run, or \`memesh update\`, tries again. If it keeps failing, read ${path.join(updateControlDir(), 'auto-update.log')} for the step that failed (usually the network or the registry).`,
+      { code: 'auto-update.pin-undone' },
+    );
+  }
+  if (state.outcome === 'failed') {
+    const log = path.join(updateControlDir(), 'auto-update.log');
+    const backup = state.backup ? ` A database backup was made first: ${state.backup}` : '';
+    // A package whose source did not check out must not be installed by other means
+    // either (a bare npm install skips the check); `memesh update` runs the same check.
+    const sourceRejected = state.reason === AUTO_UPDATE_REASONS.sourceNotVerified || state.reason === AUTO_UPDATE_REASONS.tarballMismatch || state.reason === AUTO_UPDATE_REASONS.commitNotOnMain || state.reason === AUTO_UPDATE_REASONS.dependenciesNotPinned;
+    const fix = state.reason === AUTO_UPDATE_REASONS.installNotUndone
+      ? `Run \`memesh update --reinstall\`: it puts this version back through the same checks and finishes the install. Until then \`memesh serve\` and the Claude channel runner cannot start because their dependencies are missing; remember, recall and MCP still work. Read ${log} for what happened.${backup}`
+      : state.reason === AUTO_UPDATE_REASONS.commitUnconfirmed && proxyConfigured(process.env) && !nodeUsesEnvProxy()
+      ? `Upgrade Node to 22.21 or later in the 22.x line, or Node 24 or later, so the release check can use your proxy; automatic updates can then retry. Read ${log} for what happened.${backup}`
+      : sourceRejected
+      ? `Do not install this version by other means (${installSupport?.channel === 'npm-global' || installSupport === undefined ? 'a bare npm install' : 'installing it from the marketplace yourself'}): that skips the check of where the package came from. \`memesh update\` runs the same check and will refuse too. Read ${log} for the check that failed; if it keeps failing, report it.${backup}`
+      : installSupport?.recommendedCommand
+        ? `Read ${log} for the step that failed, then update by hand with \`${installSupport.recommendedCommand}\`.${backup}`
+        : `Read ${log} for the step that failed, then update the way you installed MeMesh.${backup}`;
+    return createCheck('auto-update', 'Automatic updates', 'warn', `Automatic updates are ${setting}. ${what}`, fix, { code: 'auto-update.failed' });
+  }
+  return createCheck('auto-update', 'Automatic updates', policyStatus, `Automatic updates are ${setting}. ${what}`);
+}
+
+/**
+ * How to fill the update cache. `memesh status` opens the database, so on a Node that cannot run MeMesh it cannot do
+ * it, and the repair that works is the Node's own (the Database row says why).
+ */
+function updateCacheFix(): string {
+  let problem;
+  try { problem = nodeProblem(); } catch { problem = null; /* the probe could not finish: the usual advice stands */ }
+  return problem
+    ? `\`memesh status\` cannot run on this Node, so it cannot store the answer. ${problem.fix}`
+    : 'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.';
+}
+
 async function inspectUpdateStatus(
   packageVersion: string,
   getUpdateCheckImpl: typeof getUpdateCheck,
-  installSupport?: import('./install-channel.js').InstallChannelSupport,
+  installSupport: import('./install-channel.js').InstallChannelSupport | undefined,
+  packageRoot: string,
+  statSyncImpl: typeof fs.statSync,
 ): Promise<DoctorCheck> {
   const update = await getUpdateCheckImpl(packageVersion, { preferFresh: false });
   if (!update) {
-    if (isFreshInstall()) {
+    if (isFreshInstall(packageRoot, statSyncImpl)) {
       return createCheck(
         'update-status',
         'Update status',
@@ -2647,7 +2828,7 @@ async function inspectUpdateStatus(
       'Update status',
       'warn',
       'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.',
-      'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.',
+      updateCacheFix(),
       { code: 'update-status.no-cache' },
     );
   }
@@ -2714,7 +2895,7 @@ async function inspectUpdateStatus(
   // is the right answer for users who haven't completed a successful
   // check yet (and have no security advisory waiting).
   if (update.freshness === 'unavailable') {
-    if (isFreshInstall() && !update.lastAttemptAt && !update.lastError) {
+    if (isFreshInstall(packageRoot, statSyncImpl) && !update.lastAttemptAt && !update.lastError) {
       return createCheck(
         'update-status',
         'Update status',
@@ -2727,7 +2908,7 @@ async function inspectUpdateStatus(
       'Update status',
       'warn',
       'memesh has not been able to check for newer versions yet, so it cannot tell you whether an update exists.',
-      'Run `memesh status` once while connected to the internet — that stores the answer and this notice goes away.',
+      updateCacheFix(),
       { code: 'update-status.no-cache' },
     );
   }
@@ -2742,8 +2923,8 @@ async function inspectUpdateStatus(
   if (update.checkSucceeded && update.lastError) {
     const hasUpdate = Boolean(update.updateAvailable && update.latestVersion);
     const summary = hasUpdate
-      ? `Deprecation status unknown for ${packageVersion}: ${update.lastError}. Update ${update.latestVersion} is available.`
-      : `Deprecation status unknown for ${packageVersion}: ${update.lastError}.`;
+      ? `Deprecation status unknown for ${packageVersion}: ${withoutFinalPeriod(update.lastError)}. Update ${update.latestVersion} is available.`
+      : `Deprecation status unknown for ${packageVersion}: ${withoutFinalPeriod(update.lastError)}.`;
     // Tailor the upgrade hint to the install channel — `memesh
     // update` only works for npm-global self-updatable installs.
     let upgradeHint: string;
@@ -2898,13 +3079,25 @@ function verifySkillsManifest(
   const reinstall = installSupport.guidance;
   const manifestPath = path.join(packageRoot, 'dist', 'skills-manifest.json');
   if (!existsSyncImpl(manifestPath)) {
+    // A source checkout builds on demand and may have no manifest yet. Every other install is a packaged one, and a
+    // packaged install always ships it: its absence means a file was removed, which is exactly what this check is for.
+    if (installSupport.channel === 'source-checkout') {
+      return createCheck(
+        'skills-manifest',
+        'Skills + hooks integrity',
+        'warn',
+        'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.',
+        `Run \`npm run build\` to regenerate.`,
+        { code: 'skills-manifest.missing-dev' },
+      );
+    }
     return createCheck(
       'skills-manifest',
       'Skills + hooks integrity',
-      'warn',
-      'No skills-manifest.json found. This is normal for source checkouts — packaged installs ship the manifest.',
-      `Run \`npm run build\` to regenerate, or reinstall: ${reinstall}`,
-      { code: 'skills-manifest.missing-dev' },
+      'fail',
+      'No skills-manifest.json found, and this is not a source checkout: a packaged install always ships it. A file was removed from this install, so the skill and hook files cannot be verified.',
+      `Reinstall the package: ${reinstall} If the problem reproduces on a fresh install, open a security issue at https://github.com/PCIRCLE-AI/memesh/security.`,
+      { code: 'skills-manifest.missing' },
     );
   }
   let manifest: { entries?: Array<{ path: string; sha256: string }> };
@@ -2933,9 +3126,19 @@ function verifySkillsManifest(
   }
   const mismatches: string[] = [];
   const missing: string[] = [];
+  const scope = manifestScope(packageRoot);
+  const safeFiles = new Set(scope.files);
   for (const entry of entries) {
     const full = path.join(packageRoot, entry.path);
     if (!existsSyncImpl(full)) { missing.push(entry.path); continue; }
+    // Never read what is not a plain file: a named pipe in a published file's place blocks the read for ever, which
+    // would hang the diagnostic that is meant to catch the swap. It is not what was published, so it is reported.
+    try {
+      const kind = fs.lstatSync(full);
+      if (!kind.isFile()) { mismatches.push(`${entry.path} (not a regular file)`); continue; }
+    } catch { /* the read below reports what is wrong */ }
+    // A listed path is not permission to read it: a link above it can lead outside the package.
+    if (!safeFiles.has(entry.path)) { mismatches.push(`${entry.path} (not in the safe covered scope)`); continue; }
     let actualHash: string;
     try {
       const buf = readFileSyncImpl(full);
@@ -2946,15 +3149,29 @@ function verifySkillsManifest(
     }
     if (actualHash !== entry.sha256) mismatches.push(entry.path);
   }
-  if (missing.length === 0 && mismatches.length === 0) {
+  // The other direction: the manifest lists what it lists, but what must be listed is decided by the code, from
+  // what is on disk. A file in scope that the manifest does not mention (a new SKILL.md, an extra hook, or an entry
+  // taken out of the manifest by whoever changed that file) is exactly what this check exists to catch.
+  const listed = new Set(entries.map((entry) => entry.path));
+  const unlisted = scope.files.filter((file) => !listed.has(file));
+  // What the scan could not account for: a location the package must have and does not (a whole `skills/`
+  // folder, a wiring file), a symbolic link in a covered place (npm pack ships none), a folder it could not read, a
+  // folder named like what npm pack leaves out, an entry that is not a file.
+  const unaccounted = [
+    ...scope.missingRequired.map((p) => `${p} (required, not found)`),
+    ...scope.issues,
+  ];
+  if (missing.length === 0 && mismatches.length === 0 && unlisted.length === 0 && unaccounted.length === 0) {
     return createCheck(
       'skills-manifest',
       'Skills + hooks integrity',
       'pass',
-      `${entries.length} skill / hook files match the published manifest (SHA-256 verified).`,
+      `${entries.length} skill / hook files match the published manifest (SHA-256 verified); ${scope.files.length} files are in the covered scope on disk, none unlisted.`,
     );
   }
   const detail = [
+    unaccounted.length > 0 ? `${unaccounted.length} not accounted for: ${unaccounted.slice(0, 3).join(', ')}${unaccounted.length > 3 ? ` (+${unaccounted.length - 3} more)` : ''}` : null,
+    unlisted.length > 0 ? `${unlisted.length} not in the manifest: ${unlisted.slice(0, 3).join(', ')}${unlisted.length > 3 ? ` (+${unlisted.length - 3} more)` : ''}` : null,
     missing.length > 0 ? `${missing.length} missing: ${missing.slice(0, 3).join(', ')}${missing.length > 3 ? ` (+${missing.length - 3} more)` : ''}` : null,
     mismatches.length > 0 ? `${mismatches.length} tampered: ${mismatches.slice(0, 3).join(', ')}${mismatches.length > 3 ? ` (+${mismatches.length - 3} more)` : ''}` : null,
   ].filter(Boolean).join('; ');
@@ -2973,24 +3190,25 @@ function probeInstalledMessageCapability(packageRoot: string): { ok: true } | { 
     'dist/transports/cli/doctor-message-probe.js',
     'dist/mcp/server.js',
     'dist/transports/mcp/handlers.js',
-    'dist/host-adapters/codex-app-server.js',
-    'dist/host-adapters/claude-channel.js',
-    'dist/host-adapters/acp-client.js',
   ];
   const absent = required.filter((relative) => !fs.existsSync(path.join(packageRoot, relative)));
   if (absent.length > 0) return { ok: false, message: `installed runtime is missing ${absent.join(', ')}` };
 
   const probeHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-doctor-message-'));
   try {
+    const env = journeyEnv(probeHome);
+    const dataDir = path.join(probeHome, '.memesh');
+    fs.mkdirSync(dataDir, { mode: 0o700 });
+    fs.writeFileSync(path.join(dataDir, 'config.json'), JSON.stringify({ updateCheck: false, autoUpdate: 'off' }), { mode: 0o600 });
     execFileSync(process.execPath, [path.join(packageRoot, 'dist/transports/cli/doctor-message-probe.js'), packageRoot], {
-      cwd: packageRoot,
+      cwd: probeHome,
       stdio: 'pipe',
       timeout: 15_000,
-      env: { ...process.env, HOME: probeHome, MEMESH_AUTO_CAPTURE: 'false' },
+      env,
     });
     return { ok: true };
   } catch {
-    return { ok: false, message: 'installed MCP or bundled host adapters did not complete the message capability probe' };
+    return { ok: false, message: 'installed MCP did not complete the message capability probe' };
   } finally {
     fs.rmSync(probeHome, { recursive: true, force: true });
   }
@@ -3004,125 +3222,69 @@ function inspectMessageCapability(
   if (!enabled) {
     return createInfo(
       'message-capability',
-      'Message adapter imports',
-      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its nine-action message schema plus bundled host-adapter imports. This does not check a live router socket or host registration.',
+      'Message MCP schema',
+      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 to start this installed MCP and verify its four-action message schema. This does not verify host registration or native model reception.',
     );
   }
   const result = probe(packageRoot);
   if (result.ok) return createCheck(
     'message-capability',
-    'Message adapter imports',
+    'Message MCP schema',
     'pass',
-    'This installed MCP advertised the nine-action message schema and all bundled host adapters imported successfully. No live router socket, host registration, or host acceptance was verified.',
+    'This installed MCP advertised the four-action message schema. Host registration and native model reception were not verified.',
   );
   return createCheck(
     'message-capability',
-    'Message adapter imports',
+    'Message MCP schema',
     'fail',
-    `Installed message capability probe failed: ${result.message}.`,
+    `Installed message capability probe failed: ${withoutFinalPeriod(result.message)}.`,
     'Reinstall or rebuild this package, then retry with MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1.',
     { code: 'message-capability.probe-failed', params: { detail: result.message } },
   );
 }
 
-async function defaultMessageRouterStatusProbe(): Promise<MessageRouterStatusProbe> {
-  const socketPath = process.env.MEMESH_ROUTER_SOCKET ?? getAgentRouterSocketPath();
-  // A path over the limit is why `memesh-router` never created the socket —
-  // reporting it as plain "missing" sent the owner to restart a router that
-  // will fail again on the exact same path, a dead-end (#404). Checked before
-  // `lstatSync` so this cause is never masked by an ENOENT for the same path.
-  const socketPathBytes = Buffer.byteLength(socketPath);
-  if (socketPathBytes > AGENT_ROUTER_SOCKET_PATH_MAX_BYTES) {
-    return { socket_path: socketPath, socket: 'path-too-long', detail: `${socketPathBytes} bytes` };
-  }
-  let stat: fs.Stats;
-  try {
-    stat = fs.lstatSync(socketPath);
-  } catch (error) {
-    const detail = error instanceof Error ? error.message : String(error);
-    return { socket_path: socketPath, socket: 'missing', detail };
-  }
-  if (!stat.isSocket() || (stat.mode & 0o077) !== 0) {
-    return { socket_path: socketPath, socket: 'insecure' };
-  }
-
-  const reachable = await new Promise<boolean>((resolve) => {
-    const socket = net.createConnection({ path: socketPath });
-    const timer = setTimeout(() => {
-      socket.destroy();
-      resolve(false);
-    }, 1_500);
-    timer.unref();
-    socket.once('connect', () => {
-      clearTimeout(timer);
-      socket.destroy();
-      resolve(true);
-    });
-    socket.once('error', () => {
-      clearTimeout(timer);
-      resolve(false);
-    });
-  });
-  return { socket_path: socketPath, socket: reachable ? 'reachable' : 'unreachable' };
-}
-
-async function inspectMessageRouterStatus(
-  enabled: boolean,
-  probe: () => Promise<MessageRouterStatusProbe>,
-): Promise<DoctorCheck> {
-  if (!enabled) {
+function inspectInstallJourney(packageVersion: string): DoctorCheck {
+  const record = readJourneyRecord();
+  if (record === undefined) {
     return createInfo(
-      'message-router-status',
-      'Live message router / host registration',
-      'Not verified (opt-in). Set MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 to check only whether the owner-private Local router socket is live. This check never starts a router, registers a host, sends a message, or wakes a stopped session.',
+      'install-journey',
+      'Install journey',
+      'No install journey recorded yet. It runs after `memesh install-hooks` and `memesh setup`; run it now with `memesh doctor --journey`.',
     );
   }
-  const result = await probe();
-  switch (result.socket) {
-    case 'reachable':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'pass',
-        `Owner-private Local router socket is reachable at ${result.socket_path}. This proves only router availability; it does not prove an active host registration, native delivery, host_accept, ACK, or stopped-session wake-up.`,
-      );
-    case 'missing':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'warn',
-        `No Local router socket exists at ${result.socket_path}. No active host is registered through this router, and MeMesh will not wake a stopped or missing session.`,
-        'Start the owner-configured router with `memesh-router`, then run this opt-in probe again.',
-        { code: 'message-router.socket-missing', params: { path: result.socket_path } },
-      );
-    case 'path-too-long':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'fail',
-        `The router socket path is ${result.detail} — over the ${AGENT_ROUTER_SOCKET_PATH_MAX_BYTES}-byte limit a Unix domain socket allows, so \`memesh-router\` cannot create it at ${result.socket_path}. Starting the router again fails the same way.`,
-        'Set MEMESH_ROUTER_SOCKET to a shorter absolute path, or move HOME / MEMESH_DIR somewhere with a shorter path, then start `memesh-router` again.',
-        { code: 'message-router.socket-path-too-long', params: { path: result.socket_path, bytes: result.detail ?? 'unknown' } },
-      );
-    case 'insecure':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'fail',
-        `Router socket at ${result.socket_path} is not an owner-private Unix socket.`,
-        'Stop the router, remove the unsafe socket, and restart `memesh-router` under the owning user.',
-        { code: 'message-router.socket-insecure', params: { path: result.socket_path } },
-      );
-    case 'unreachable':
-      return createCheck(
-        'message-router-status',
-        'Live message router / host registration',
-        'warn',
-        `An owner-private router socket exists at ${result.socket_path}, but it did not accept a local connection. No host registration or native delivery is verified.`,
-        'Check the owner-configured `memesh-router` process, then run this opt-in probe again.',
-        { code: 'message-router.socket-unreachable', params: { path: result.socket_path } },
-      );
+  if ('unreadable' in record) {
+    return createCheck('install-journey', 'Install journey', 'warn', `The saved journey result could not be read: ${record.unreadable}.`, `Delete ${journeyRecordPath()}, or re-run \`memesh install-hooks\` or \`memesh setup\`, which write a new one.`, { code: 'install-journey.unreadable', params: { detail: record.unreadable } });
   }
+  const stale = record.version !== packageVersion ? ` This result is from v${record.version}; this is v${packageVersion}.` : '';
+  if (record.ok) {
+    // A pass for another version says nothing about this one: shown as information, not as a green check.
+    if (record.version !== packageVersion) {
+      return createInfo(
+        'install-journey',
+        'Install journey',
+        `The last journey passed on v${record.version} (${record.at}); this is v${packageVersion}. Run \`memesh doctor --journey\` to check this version.`,
+      );
+    }
+    return createCheck('install-journey', 'Install journey', 'pass', `Store, search, send and read back worked at ${record.at} (v${record.version}).`);
+  }
+  if (record.failedStep === 'prepare') {
+    return createCheck(
+      'install-journey',
+      'Install journey',
+      'warn',
+      `The journey could not run at ${record.at}: ${record.reason}. memesh itself was not checked.${stale}`,
+      record.fix ?? 'Run `memesh doctor --journey`.',
+      { code: 'install-journey.not-run', params: { detail: record.reason ?? '' } },
+    );
+  }
+  return createCheck(
+    'install-journey',
+    'Install journey',
+    'warn',
+    `The journey failed at "${record.failedStep}" at ${record.at}: ${record.reason}.${stale}`,
+    record.fix ?? 'Run `memesh doctor --journey`.',
+    { code: 'install-journey.failed', params: { step: record.failedStep ?? 'unknown', detail: record.reason ?? '' } },
+  );
 }
 
 function summarizeOverallStatus(checks: DoctorCheck[]): DoctorOverallStatus {
@@ -3142,7 +3304,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     httpBaseUrl = 'http://127.0.0.1:3737',
     platform = process.platform,
     envImpl = process.env,
-    openDatabaseImpl = openDatabase,
+    openDatabaseImpl = openDatabaseForDoctor,
     closeDatabaseImpl = closeDatabase,
     isDatabaseOpenImpl = isDatabaseOpen,
     getConfigPathImpl = getConfigPath,
@@ -3156,13 +3318,10 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     readFileSyncImpl = fs.readFileSync,
     statSyncImpl = fs.statSync,
     fetchImpl = fetch,
-    agentMessageStoragePolicy,
     nativeBindingProbeImpl,
     resolveShellMemeshImpl = defaultResolveShellMemesh,
     probeMessageCapability = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY === '1',
     messageCapabilityProbeImpl = probeInstalledMessageCapability,
-    probeMessageRouterStatus = process.env.MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER === '1',
-    messageRouterStatusProbeImpl = defaultMessageRouterStatusProbe,
   } = options;
 
   // F16: If the database is already open before doctor runs (e.g., the
@@ -3206,15 +3365,42 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // Staging here means the block emits exactly one `database` row, whichever
   // way it ends.
   const dbChecks: DoctorCheck[] = [];
+  let databaseContention: unknown;
   try {
     const db = openDatabaseImpl(databasePath) as unknown as DatabaseLike;
+    // A file can open and count its entities while another table's pages are
+    // damaged; briefing and recall then fail on those pages
+    // and tell the user to run doctor. quick_check(1) stops at the first
+    // problem; it still reads the whole file on a healthy database (about 0.2 s
+    // for 470 MB measured) and names the damage on a broken one. Anything but
+    // "ok" goes through the catch below as one `database` row, with the
+    // advice that fits damage (not "start fresh").
+    const integrity = quickIntegrityVerdict(db);
+    if (integrity !== 'ok') {
+      throw Object.assign(
+        new Error(`Database at ${databasePath} opened, but SQLite's quick integrity check failed: ${integrity}`),
+        {
+          fix: damagedDatabaseFix(databasePath),
+        },
+      );
+    }
     const count =
       (db.prepare('SELECT COUNT(*) as c FROM entities').get() as { c?: number } | undefined)?.c ?? 0;
     // #520: a database the owner made read-only opens for reads, so say it
     // here, in the row a reader looks at, with the command that undoes it.
     const writeBack = ownerWriteCommand(databasePath);
+    // Opened read-only because the FOLDER cannot be written (no -wal holds pages, so the file is readable as it is).
+    const folder = readOnlyFolderState();
     dbChecks.push(
-      writeBack
+      folder
+        ? createCheck(
+          'database',
+          'Database',
+          'warn',
+          `Database at ${databasePath} (${count} entities) is open for reads only: ${folder.reason}.`,
+          runOrSay(folder.fix),
+        )
+        : writeBack
         ? createCheck(
           'database',
           'Database',
@@ -3229,16 +3415,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           `Database opened successfully at ${databasePath} (${count} entities).`,
         ),
     );
-
-    const messageStorage = inspectAgentMessageStorage(
-      db as unknown as MemeshDatabase,
-      databasePath,
-      configuredAgentMessageStoragePolicy(agentMessageStoragePolicy),
-    );
-    if (messageStorage) dbChecks.push(messageStorage);
-
-    const codexQueueDaemon = inspectCodexQueueDaemon(db as unknown as MemeshDatabase);
-    if (codexQueueDaemon) dbChecks.push(codexQueueDaemon);
 
     const projectSplit = inspectProjectIdentitySplit(db as unknown as MemeshDatabase);
     if (projectSplit) dbChecks.push(projectSplit);
@@ -3396,8 +3572,8 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       // try/catch — so an unreadable rule file (wrong permissions, or a
       // directory at that path) would be reported to the user as
       // `database.broken`, sending them to debug a database that is fine.
-      // The scope comes from the install marker, exactly as both WRITERS
-      // resolve it (`session-start.js` and `installHooks`). Hardcoding
+      // The scope comes from the install marker, exactly as the explicit
+      // writer `installHooks` resolves it. Hardcoding
       // 'user' here made doctor look in `~/.claude/rules/` on a
       // `--scope project` install, where the file is inside the project —
       // so it reported the contract missing on every project install, and
@@ -3434,7 +3610,7 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
           + `learn which memories are worth injecting.`,
           rule.state === 'current'
             ? `The citation contract is installed at ${rule.path}. If this stays at 0% across several more sessions, the injected memories are not earning their tokens — consider narrowing what is injected.`
-            : `The citation contract is ${rule.state} at ${rule.path}. Run 'memesh install-hooks' (or start a new session) to write it, then re-check after a few sessions.`,
+            : `The citation contract is ${rule.state} at ${rule.path}. MCP sessions receive citation guidance from the server. For hook-only setups, run 'memesh install-hooks'; then re-check after a few sessions.`,
           { code: 'citation.none', params: { total: citationTotal } },
         ));
       } else {
@@ -3446,25 +3622,95 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       }
     }
 
-  } catch (err) {
-    // F15: Provide actionable diagnosis for common database failures
-    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
+    try {
+      // The automatic archiver (lifecycle.ts, run at session start): what its
+      // last run did. Auto-captured commits and session rollups nobody used for
+      // two weeks are archived; this is the only place a person can see that it
+      // happened, how many, and how to get one back.
+      let archiveRun: ReturnType<typeof readLastAutoArchiveRun> = null;
+      let archiveUnreadable: string | null = null;
+      try {
+        archiveRun = readLastAutoArchiveRun(db);
+      } catch (err) {
+        if (!(err instanceof AutoArchiveRecordUnreadable)) throw err;
+        archiveUnreadable = err.message;
+      }
+      if (archiveUnreadable) {
+        dbChecks.push(createCheck(
+          'auto_archive',
+          'Automatic archive',
+          'warn',
+          `Cannot tell when it last ran: ${archiveUnreadable}. The record is rewritten the next time the archiver runs (at session start, at most once a day).`,
+        ));
+      } else if (archiveRun) {
+        const byType = Object.entries(archiveRun.byType ?? {}).map(([t, n]) => `${n} ${t}`).join(', ');
+        dbChecks.push(createInfo(
+          'auto_archive',
+          'Automatic archive',
+          `Last run ${archiveRun.at}: ${archiveRun.archived} auto-captured memor${archiveRun.archived === 1 ? 'y' : 'ies'} archived`
+          + `${byType ? ` (${byType})` : ''}, unused for ${String(archiveRun.unusedDays ?? 14)} days`
+          + `${Number(archiveRun.keptCited) > 0 ? `; ${archiveRun.keptCited} old one(s) kept because a session cited them` : ''}. `
+          + `Memories an agent wrote are never archived this way. Read an archived one with 'memesh recall --include-archived'; `
+          + 'remember the same name again to bring it back.',
+        ));
+      } else {
+        dbChecks.push(createInfo(
+          'auto_archive',
+          'Automatic archive',
+          'Has not run yet. It runs at session start, at most once a day, and archives auto-captured commits and session '
+          + 'rollups that nobody used for 14 days.',
+        ));
+      }
+    } catch {
+      // A database without the metadata table (older schema): no archiver row to show.
+    }
 
+  } catch (err) {
+    if (isTransientDbError(err)) databaseContention = err;
     // Replaces, not appends: whatever was staged before the throw describes a
     // database this function has just concluded it cannot use.
     dbChecks.length = 0;
-    dbChecks.push(
-      createCheck(
-        'database',
-        'Database',
-        'fail',
-        diagnosis,
-        fix,
-        // fix stays untranslated (it is itself diagnosis-specific text);
-        // the dashboard translates the summary frame and shows fix raw.
-        { code: 'database.broken', params: { detail: diagnosis } },
-      ),
-    );
+    if (err instanceof NoDatabaseYetError) {
+      // The ordinary state of an install nobody has used yet. Say so, and say what was not looked at and why. If the
+      // folder that would hold it exists and cannot be written, MeMesh could not create the database there: say that.
+      const folderPath = path.dirname(databasePath);
+      const folderLocked = !isWritable(folderPath) && fs.existsSync(folderPath);
+      const notChecked = 'Not checked until then: message storage, the keyword index, guard activity, memory use rate, hook activity, capture liveness.';
+      dbChecks.push(folderLocked
+        ? createCheck(
+          'database',
+          'Database',
+          'warn',
+          `No database yet at ${databasePath}, and ${folderPath} cannot be written, so MeMesh cannot create one: memories cannot be saved. ${notChecked}`,
+          `chmod u+w ${shellQuote(folderPath)}`,
+          { code: 'database.folder-read-only' },
+        )
+        : createInfo(
+          'database',
+          'Database',
+          `No database yet at ${databasePath}: MeMesh creates it the first time it stores a memory, and doctor never creates it. ${notChecked}`,
+        ));
+    } else if (isSchemaBehind(err)) {
+      dbChecks.push(createCheck('database', 'Database', 'warn',
+        `Database at ${databasePath} opened, but its layout is older than this version, so the checks that need the newer layout were skipped.`,
+        schemaBehindNote(databasePath),
+        { code: 'database.schema-behind' }));
+    } else {
+      // F15: Provide actionable diagnosis for common database failures
+      const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath, existsSyncImpl, statSyncImpl);
+      dbChecks.push(
+        createCheck(
+          'database',
+          'Database',
+          'fail',
+          diagnosis,
+          fix,
+          // fix stays untranslated (it is itself diagnosis-specific text);
+          // the dashboard translates the summary frame and shows fix raw.
+          { code: 'database.broken', params: { detail: diagnosis } },
+        ),
+      );
+    }
   } finally {
     checks.push(...dbChecks);
     try {
@@ -3483,9 +3729,9 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   // installedPluginsPathImpl may be undefined — detectPluginRuntime owns the
   // default path; restating it here was a second copy of the same location.
   const pluginHost = detectPluginHost(packageRoot);
-  let codexPluginCacheDetected = pluginHost === 'codex';
   let claudePluginCacheDetected = pluginHost === 'claude-code';
-  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), install, installedPluginsPathImpl, pluginHost);
+  const hosts = detectHostsHere(existsSyncImpl, memeshDir());
+  const wiring = inspectHookWiring(existsSyncImpl, readFileSyncImpl, memeshDir(), hosts, install, installedPluginsPathImpl, pluginHost);
   const pluginCache = inspectPluginCacheCurrency(install, pluginHost, packageRoot, installedPluginsPathImpl, readFileSyncImpl, existsSyncImpl, marketplaceHeadShaImpl);
   if (pluginCache) checks.push(pluginCache);
   if (install === 'npm-global') {
@@ -3494,7 +3740,6 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
       ? pluginCacheDiscoveryImpl()
       : defaultPluginCacheDiscovery(readFileSyncImpl, existsSyncImpl);
     for (const discovered of discoveredPluginCaches) {
-      if (discovered.host === 'codex') codexPluginCacheDetected = true;
       if (discovered.host === 'claude-code') claudePluginCacheDetected = true;
       const check = discovered.unverifiableReason
         ? pluginCacheUnverifiable(discovered.host, discovered.unverifiableReason)
@@ -3514,24 +3759,25 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   if (claudePluginCacheDetected) {
     checks.push(inspectClaudeChannelRegistration(existsSyncImpl, readFileSyncImpl));
   }
-  const codexSessionSetup = inspectCodexSessionSetup(codexPluginCacheDetected, existsSyncImpl);
-  if (codexSessionSetup) checks.push(codexSessionSetup);
   // hook-activity's never-ran verdict only reds when wiring is actually in
   // place — otherwise the wiring row above already tells the story, and an
   // MCP-only install would carry a permanent unfixable FAIL.
   // never-ran's FAIL claims "capture hooks should be executing" — that needs
-  // a capture event (Stop/PostToolUse/PreCompact) confirmed wired, not just
+  // a capture event (Stop/PostToolUse) confirmed wired, not just
   // any wiring. A plugin-marketplace pass carries no walk result and wires
   // every event through hooks.json, so it counts as capture-wired; a
   // settings-walk pass counts only when the walk saw a capture event.
   const captureWired = wiring.status === 'pass'
     && (wiring.params === undefined || wiring.params.captureWired === 1);
-  checks.push(inspectHookActivity(openDatabaseImpl, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
+  // Reuse this run's lock failure instead of waiting again for each activity row.
+  const openForActivity = databaseContention === undefined ? openDatabaseImpl : () => { throw databaseContention; };
+  checks.push(inspectHookActivity(openForActivity, safeCloseDatabaseImpl, existsSyncImpl, statSyncImpl, captureWired));
   // Next to hook-activity on purpose: "did it run" and "did it write" are
   // read together, and separating them is what let a green heartbeat cover
   // an empty graph for two days (#327).
-  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openDatabaseImpl, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
+  const captureLiveness = withRecordedHosts(inspectCaptureLiveness(openForActivity, safeCloseDatabaseImpl, readFileSyncImpl, getMemeshDirFromDbPath, captureWired));
   checks.push(captureLiveness.check);
+  checks.push(inspectPendingConversations());
   // The figures behind the capture-liveness row, surfaced on the result so
   // `--json` carries the evidence and not only the verdict.
   const captureReport = captureLiveness.report;
@@ -3542,27 +3788,35 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
   checks.push(inspectShellCli(install, packageRoot, packageVersion, resolveShellMemeshImpl, existsSyncImpl, readFileSyncImpl));
   checks.push(verifySkillsManifest(packageRoot, existsSyncImpl, readFileSyncImpl, installSupport));
   checks.push(inspectMessageCapability(packageRoot, probeMessageCapability, messageCapabilityProbeImpl));
-  checks.push(await inspectMessageRouterStatus(probeMessageRouterStatus, messageRouterStatusProbeImpl));
+  checks.push(inspectInstallJourney(packageVersion));
 
-  checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport));
+  checks.push(await inspectUpdateStatus(packageVersion, getUpdateCheckImpl, installSupport, packageRoot, statSyncImpl));
+  checks.push(inspectAutoUpdate(installSupport));
 
   // Anonymous install ID — surfaced so the user can SEE what's
   // included in feedback issues (transparency). Never sent
   // automatically; only attached to feedback bodies the user
   // explicitly opts into sharing via "Include system info".
   try {
-    const record = getInstallRecord();
+    // Read only: doctor never creates the file. `memesh feedback` is what creates it, the first time it builds a report
+    // with diagnostics.
+    const record = readInstallRecordState();
     // `createInfo`, not `createCheck(..., 'pass', ...)`. This row reports a
     // value and has no branch that could fail, which is the exact case the
-    // `informational` flag was added for — it was rendering as `[PASS]` and
+    // `informational` flag was added for: it was rendering as `[PASS]` and
     // counting toward Overall, padding "N/N PASS" with a row that verified
-    // nothing. The Capabilities row named in that flag's own docstring was
-    // this same defect; this one was left behind when it was fixed.
+    // nothing.
+    const installFile = path.join(memeshDir(), 'install.json');
+    const sharing = 'Never transmitted automatically; `memesh feedback` includes it in the report text it prints or opens for you to submit, unless you pass `--no-diagnostics`.';
     checks.push(
       createInfo(
         'install_id',
         'Install ID',
-        `Anonymous install ID: ${record.install_id} (created ${record.created_at}). Stored locally at ${path.join(memeshDir(), 'install.json')}. Never transmitted automatically; included only in feedback issues you submit with the "Include system info" checkbox on.`,
+        record.status === 'ok'
+          ? `Anonymous install ID: ${record.install_id}${record.created_at ? ` (created ${record.created_at})` : ''}. Stored locally at ${installFile}. ${sharing}`
+          : record.status === 'unreadable'
+            ? `${installFile} exists but cannot be used (${record.reason}). Doctor does not touch it; the next \`memesh feedback\` with diagnostics replaces it with a new ID. ${sharing}`
+            : `No install ID yet: it is created the first time \`memesh feedback\` builds a report with diagnostics (it would be stored locally at ${installFile}). Doctor does not create it. ${sharing}`,
       ),
     );
   } catch {
@@ -3575,9 +3829,15 @@ export async function runDoctor(options: DoctorOptions): Promise<DoctorResult> {
     checks.push(await inspectHttpProbe(httpBaseUrl, fetchImpl));
   }
 
+  // Every row that would prescribe `memesh install-hooks` is judged by the same
+  // host state, in this one pass: a row added later (or one built before the
+  // wiring row existed, like the citation rate) cannot keep a second copy.
+  const hostState = hostFixState(hosts);
+  const finalChecks = checks.map((check) => withHostFix(check, hostState));
+
   return {
     status: summarizeOverallStatus(checks),
-    checks,
+    checks: finalChecks,
     ...(captureReport ? { capture: captureReport } : {}),
   };
 }

@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
-import { HOOK_OUTCOMES_FILENAME } from '../../src/core/capture-liveness.js';
+import { HOOK_OUTCOMES_FILENAME, SKIP_REASONS } from '../../src/core/capture-liveness.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { withoutHostIdentity } from '../helpers/host-env.js';
 
@@ -144,7 +144,7 @@ describe('Feature: Post-Commit Hook', () => {
     }
     expect(outcomes().at(-1)).toMatchObject(withActive
       ? { outcome: 'wrote', entity: `commit-${active!.hash}` }
-      : { outcome: 'skipped', reason: 'capture target is archived', entity: name });
+      : { outcome: 'skipped', reason: 'all commits in this range were already processed' });
     runHook(payload);
     expect(outcomes().at(-1)?.reason).toContain('HEAD did not change');
   });
@@ -396,11 +396,14 @@ describe('Feature: Post-Commit Hook', () => {
     expect(batchTags).toHaveLength(2);
   });
 
-  it('Scenario: a large reachable range captures only the newest 20 and records the skipped count', () => {
+  it('Scenario: a large reachable range captures the oldest 20 and drains the remainder next time', () => {
     commit('chore: establish cap baseline');
     runHook({
       tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git commit -q -m baseline' }, tool_output: '',
     });
+    const markerDir = path.join(testDir, 'post-commit-heads');
+    const markerFile = path.join(markerDir, fs.readdirSync(markerDir).find(name => name.endsWith('.json'))!);
+    const baselineHeads = JSON.parse(fs.readFileSync(markerFile, 'utf8')).heads;
     const commits = Array.from({ length: 22 }, (_, index) => commit(`feat: hidden batch ${index + 1}`));
     runHook({
       tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git cherry-pick range >result.log' }, tool_output: '',
@@ -410,10 +413,20 @@ describe('Feature: Post-Commit Hook', () => {
     const names = new Set((db.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map((row) => row.name));
     db.close();
     expect(names).toHaveLength(20);
-    expect(names.has(`commit-${commits[0].hash}`)).toBe(false);
-    expect(names.has(`commit-${commits[1].hash}`)).toBe(false);
-    expect(names.has(`commit-${commits.at(-1)!.hash}`)).toBe(true);
-    expect(outcomes().at(-1)?.reason).toBe('captured 20 commits as a batch; skipped 2 older commits');
+    expect([...names].sort()).toEqual(commits.slice(0, 20).map(c => `commit-${c.hash}`).sort());
+    expect(JSON.parse(fs.readFileSync(markerFile, 'utf8')).heads).toEqual(baselineHeads);
+    const deferred = outcomes().find(row => row.reason === SKIP_REASONS.commitsLeftForNextRun)!;
+    expect(deferred.count).toBe(2);
+    expect(outcomes().some(row => row.outcome === 'wrote' && row.run === deferred.run)).toBe(true);
+    runHook({
+      tool_name: 'Bash', cwd: repoDir, tool_input: { command: 'git cherry-pick range >result.log' }, tool_output: '',
+    });
+    const after = openDb();
+    const allNames = (after.prepare("SELECT name FROM entities WHERE type = 'commit'").all() as Row[]).map(row => row.name);
+    after.close();
+    expect(allNames.sort()).toEqual(commits.map(c => `commit-${c.hash}`).sort());
+    expect(Object.values(JSON.parse(fs.readFileSync(markerFile, 'utf8')).heads)).toContain(git(['rev-parse', 'HEAD']).trim());
+    expect(outcomes().filter(row => row.reason === SKIP_REASONS.commitsLeftForNextRun)).toHaveLength(1);
   });
 
   it('Scenario: linked worktrees keep independent positions inside one repository marker', () => {

@@ -1,0 +1,9 @@
+{
+  "name": "memesh-network-runtime",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Installed on demand by `memesh network create` or `join`. Not a dependency of MeMesh.",
+  "dependencies": {
+    "@number0/iroh": "1.2.0"
+  }
+}

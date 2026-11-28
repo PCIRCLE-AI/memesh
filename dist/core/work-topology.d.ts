@@ -3,6 +3,14 @@ export declare const LESSON_TYPE_LIST: readonly string[];
 export declare function canonicalEntityType(type: string): string;
 export declare const WORK_LAYER_TYPES: ReadonlySet<string>;
 export declare const DECISION_TYPES: ReadonlySet<string>;
+export declare const PREFERENCE_TYPES: readonly string[];
+export declare const SHARED_EXPERIENCE_TYPES: ReadonlySet<string>;
+export declare const SHARED_EXPERIENCE_TYPE_LIST: readonly string[];
+export declare const SHARED_FEEDBACK_TYPE = "feedback";
+export declare const NOTE_FILE_PROVENANCE = "note-file";
+export declare const EDITED_BY_TOOL = "memory-tool";
+export declare function isReservedTag(tag: string): boolean;
+export declare const NOTE_FILE_MISSING_TAG = "source:note-file:missing";
 export declare const WHY_PREFIX = "Why: ";
 export declare const UNCONFIRMED_DECISION_DAYS = 30;
 export declare function utcEpoch(at: string | null | undefined): number;
@@ -24,6 +32,7 @@ export interface TopologyEntity {
     global?: boolean;
     foreign?: boolean;
     noProject?: boolean;
+    sharedFrom?: string;
     why?: string | null;
     unconfirmedDays?: number | null;
 }
@@ -41,6 +50,7 @@ export interface TopologyBudget {
 }
 export declare const DEFAULT_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>>;
 export declare const GLOBAL_TOPOLOGY_LIMIT = 3;
+export declare const SHARED_TOPOLOGY_LIMIT = 3;
 export declare const TOPOLOGY_CANDIDATE_CAP = 400;
 export declare const SNIPPET_FETCH_CHARS: number;
 export declare function buildTopologyLines(entities: TopologyEntity[], projectName: string, budget: TopologyBudget): string[];
@@ -49,10 +59,9 @@ export interface TopologyPool {
     foreign: boolean;
     global?: boolean;
     noProject?: boolean;
+    shared?: boolean;
 }
-export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget, { reserve }?: {
-    reserve?: number;
-}): string[];
+export declare function assembleTopologyBlock(stateLines: readonly string[], pools: readonly TopologyPool[], projectName: string, budget?: TopologyBudget): string[];
 export declare function joinedLength(lines: readonly string[]): number;
 export declare function prioritizeDecisions<T extends {
     id: number;
@@ -61,6 +70,13 @@ export declare const TASK_STATE_DISPLAY_MAX_CHARS = 1200;
 export declare function boundTaskStateLines(lines: readonly string[]): string[];
 export declare function hasBriefingContent(lines: readonly string[]): boolean;
 export declare function buildReferenceContext(memoryLines: ReadonlyArray<string | null | undefined>): string;
+export declare const MAX_OPENING_CONTEXT_BYTES = 8000;
+export declare function buildOpeningContext(taskLines: readonly string[], tailLines: readonly string[], remainingLines: readonly string[], reservedBytes?: number): {
+    text: string;
+    taskLines: string[];
+    tailLines: string[];
+    remainingLines: string[];
+};
 export declare function projectLabel(projectId: string): string;
 export declare function jsonStringLiteral(value: string): string;
 export declare function stripControlChars(s: string): string;

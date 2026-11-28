@@ -23,6 +23,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { leaveHotJournal } from '../helpers/hot-journal.js';
 
 const require = createRequire(import.meta.url);
 // _shared.js is plain JS with no type declarations.
@@ -39,6 +40,9 @@ const isWindows = process.platform === 'win32';
 describe('session-start unwritable-suite skip guard', () => {
   it('does not silently skip the whole suite on CI', () => {
     if (!process.env.CI) return; // local root runs are the developer's business
+    // Root only, on purpose: the suite below is also skipped on Windows, where a mode bit is no barrier, but the
+    // Windows CI legs are a known part of the matrix and the Windows cases of this behaviour are covered by their
+    // own tests (the 'win32' skips name the reason). Root in CI is the accident this guard exists to catch.
     expect(isRoot && !isWindows, 'CI runs as root — the unwritable-dir suite below is silently skipped; run it in a non-root user or consciously retire it').toBe(false);
   });
 });
@@ -200,10 +204,11 @@ describe.skipIf(isRoot || isWindows)('session-start: an unwritable memesh dir is
     // The db FILE is read-only, the directory writable: capture cannot
     // land, but a reader can still open (SQLite can create the WAL
     // sidecars it needs in the directory). The dir-555 sibling case is
-    // physically unreadable for a cleanly-closed WAL database — no -shm
-    // can be created — so "recall still works" is only a promise the
-    // filesystem lets us keep HERE, and the honest outcome there is the
-    // warning plus the memories-not-loaded line (both now delivered).
+    // readable too, but only through an immutable open (see the tests
+    // below): a plain read-only open of a cleanly-closed WAL database
+    // needs to create a -shm, which a read-only folder refuses. When even
+    // the immutable open is impossible (a -wal holds pages), the honest
+    // outcome is the warning plus the memories-not-loaded line.
     const dbPath = path.join(memeshDir, 'knowledge-graph.db');
     const projectName = shared.getProjectName(home);
     seedDb(dbPath, `project:${projectName}`);
@@ -229,5 +234,122 @@ describe.skipIf(isRoot || isWindows)('session-start: an unwritable memesh dir is
       parsed.hookSpecificOutput?.additionalContext,
       'the recall payload must still be injected — capture being off is not memory being gone',
     ).toContain('seeded memory for the recall-not-withheld test');
+  });
+
+  function runHookFull(): { systemMessage: string; context: string } {
+    const hookPath = path.resolve('scripts/hooks/session-start.js');
+    const out = execFileSync('node', [hookPath], {
+      input: JSON.stringify({ cwd: home }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: memeshDir },
+      encoding: 'utf8',
+      timeout: 15000,
+    });
+    const parsed = JSON.parse(out.trim()) as { systemMessage?: string; hookSpecificOutput?: { additionalContext?: string } };
+    return { systemMessage: parsed.systemMessage ?? '', context: parsed.hookSpecificOutput?.additionalContext ?? '' };
+  }
+
+  it('an unwritable FOLDER with a cleanly-closed WAL database (no -wal, no -shm) still loads every memory', () => {
+    // RR F2: a plain read-only open of a WAL database needs a -shm, the
+    // folder cannot give one, and the session loaded nothing while its own
+    // message said "recall still works". With no -wal there is nothing a
+    // reader could miss, so the file is read as immutable.
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath, `project:${shared.getProjectName(home)}`);
+    expect(fs.existsSync(`${dbPath}-wal`) || fs.existsSync(`${dbPath}-shm`), 'the seed left sidecars: this is not the cleanly-closed state').toBe(false);
+    // The file header says WAL (bytes 18 and 19 are 2 in a WAL database): without this the test would also
+    // pass for a rollback-journal database, which never needed the fallback.
+    const header = Buffer.alloc(20);
+    const fd = fs.openSync(dbPath, 'r');
+    try { fs.readSync(fd, header, 0, 20, 0); } finally { fs.closeSync(fd); }
+    expect([header[18], header[19]], 'the seeded database is not in WAL mode').toEqual([2, 2]);
+    fs.chmodSync(memeshDir, 0o555);
+    expect(() => fs.writeFileSync(path.join(memeshDir, 'probe'), 'x')).toThrow();
+
+    const { systemMessage, context } = runHookFull();
+    expect(systemMessage).toMatch(/cannot write to/i);
+    expect(systemMessage).not.toMatch(/memories not loaded/);
+    expect(context, 'the memory was not loaded although the message promised recall').toContain('seeded memory for the recall-not-withheld test');
+  });
+
+  it('an EMPTY -wal holds no pages to miss, so the folder-unwritable database is read as immutable too', () => {
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath, `project:${shared.getProjectName(home)}`);
+    fs.writeFileSync(`${dbPath}-wal`, '');
+    expect(fs.existsSync(`${dbPath}-wal`)).toBe(true);
+    expect(fs.statSync(`${dbPath}-wal`).size).toBe(0);
+    expect(fs.statSync(dbPath).size, 'the seeded database is empty').toBeGreaterThan(0);
+    fs.chmodSync(memeshDir, 0o555);
+    expect(() => fs.writeFileSync(path.join(memeshDir, 'probe'), 'x')).toThrow();
+
+    const { systemMessage, context } = runHookFull();
+    expect(systemMessage).not.toMatch(/memories not loaded/);
+    expect(context).toContain('seeded memory for the recall-not-withheld test');
+  });
+
+  it('when the memories genuinely cannot be read, the message does not claim that recall works', () => {
+    // A -wal that holds pages in an unwritable folder with no -shm: the immutable open would miss what the -wal
+    // holds, so it is not used and the read fails.
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath, `project:${shared.getProjectName(home)}`);
+    fs.writeFileSync(`${dbPath}-wal`, Buffer.alloc(64, 1));
+    fs.chmodSync(memeshDir, 0o555);
+    expect(() => fs.writeFileSync(path.join(memeshDir, 'probe'), 'x')).toThrow();
+
+    const { systemMessage, context } = runHookFull();
+    expect(systemMessage).toMatch(/memories not loaded/);
+    expect(systemMessage).not.toMatch(/recall still works/);
+    expect(context).not.toContain('seeded memory for the recall-not-withheld test');
+  });
+
+  it('readTarget: immutable only for a read-only open in a folder that cannot be written and has no -wal pages', () => {
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath);
+    const immutable = (target: string) => /\?immutable=1$/.test(target) && target.startsWith('file:');
+    // A writable folder: never immutable (a writer's later changes would not be seen).
+    expect(immutable(shared.readTarget(dbPath, { readOnly: true })), 'a writable folder was read as immutable').toBe(false);
+    // Not a read-only open: never.
+    fs.chmodSync(memeshDir, 0o555);
+    expect(immutable(shared.readTarget(dbPath, undefined))).toBe(false);
+    expect(immutable(shared.readTarget(dbPath, {}))).toBe(false);
+    // Read-only open, unwritable folder, no -wal: immutable.
+    expect(immutable(shared.readTarget(dbPath, { readOnly: true }))).toBe(true);
+  });
+
+  it('readTarget: a -wal AND -shm that both exist (a process has the database open) is read plainly, never as immutable', () => {
+    // An immutable read never sees what that process writes next, nor what its checkpoint moves into the main file.
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath);
+    fs.writeFileSync(`${dbPath}-wal`, '');
+    fs.writeFileSync(`${dbPath}-shm`, Buffer.alloc(32768));
+    fs.chmodSync(memeshDir, 0o555);
+    const target = shared.readTarget(dbPath, { readOnly: true });
+    expect(target, 'a database another process has open was read as an immutable file').toBe(dbPath);
+  });
+
+  it('readTarget: a rollback journal with bytes in it (a crash left a transaction half done) is never skipped', () => {
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath);
+    fs.writeFileSync(`${dbPath}-journal`, Buffer.alloc(512, 1));
+    fs.chmodSync(memeshDir, 0o555);
+    expect(shared.readTarget(dbPath, { readOnly: true }), 'an unfinished transaction would be read as committed').toBe(dbPath);
+    // An EMPTY journal holds nothing to roll back: that file does not stop the immutable read.
+    fs.chmodSync(memeshDir, 0o755);
+    fs.writeFileSync(`${dbPath}-journal`, '');
+    fs.chmodSync(memeshDir, 0o555);
+    expect(String(shared.readTarget(dbPath, { readOnly: true }))).toMatch(/\?immutable=1$/);
+  });
+
+  it('a hot journal in an unwritable folder: the session says the memories were not loaded, and shows none of the half-done transaction', () => {
+    const dbPath = path.join(memeshDir, 'knowledge-graph.db');
+    seedDb(dbPath, `project:${shared.getProjectName(home)}`);
+    leaveHotJournal(dbPath);
+    fs.chmodSync(memeshDir, 0o555);
+    expect(() => fs.writeFileSync(path.join(memeshDir, 'probe'), 'x')).toThrow();
+
+    const { systemMessage, context } = runHookFull();
+    expect(systemMessage).toMatch(/memories not loaded/);
+    expect(systemMessage).not.toMatch(/recall still works/);
+    expect(context).not.toContain('CHANGED');
+    expect(context).not.toContain('seeded memory for the recall-not-withheld test');
   });
 });

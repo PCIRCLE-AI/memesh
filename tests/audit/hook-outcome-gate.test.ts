@@ -7,7 +7,12 @@ import {
   findUnreasonedReturns,
   readCaptureHooks,
   validateSessionStart,
+  findUnlistedRecordedHooks,
+  validatePostCommitEmptyBatch,
+  isReviewedPostCommitExit,
 } from '../../scripts/audit/hook-outcome-gate.mjs';
+import os from 'os';
+import { spawnSync } from 'child_process';
 
 /**
  * The gate behind #328 item-1: an exit with no outcome record before it is
@@ -16,6 +21,34 @@ import {
  * directions — it must flag the uncovered exit and stay quiet on a covered one.
  */
 describe('capture-hook outcome gate', () => {
+  it('fails closed when an empty post-commit batch loses a required record', () => {
+    const source = fs.readFileSync(path.resolve('scripts/hooks/post-commit.js'), 'utf8');
+    expect(validatePostCommitEmptyBatch(source)).toBe(true);
+    const uncovered = findUncoveredExits(source);
+    expect(uncovered).toHaveLength(1);
+    expect(isReviewedPostCommitExit(source, uncovered[0])).toBe(true);
+    for (const call of [
+      "record('skipped', SKIP_REASONS.commitsAlreadyProcessed);",
+      "record('skipped', SKIP_REASONS.commitsLeftForNextRun, undefined, remaining);",
+      "record('skipped', SKIP_REASONS.captureTargetArchived, `commit-${commitHash}`);",
+      "record('error', hookErrorReason(err));",
+      "record('skipped', SKIP_REASONS.commitsNotStoredWriteFailed, undefined, 1);",
+    ]) {
+      expect(source).toContain(call);
+      expect(validatePostCommitEmptyBatch(source.replace(call, ''))).toBe(false);
+      expect(isReviewedPostCommitExit(source.replace(call, ''), uncovered[0])).toBe(false);
+    }
+  });
+
+  it('accepts only the proven note result spread and rejects lost reasons', () => {
+    const source = fs.readFileSync(path.resolve('scripts/hooks/_stop-notes.js'), 'utf8');
+    expect(findUnreasonedReturns(source, 'runNoteIngestion')).toEqual([]);
+    for (const reason of ['reason: summarizeNoteIngest(result)', 'reason: reasons[code]', 'reason: SKIP_REASONS.noteNothingNew']) {
+      expect(source).toContain(reason);
+      expect(findUnreasonedReturns(source.replace(reason, 'reasonMissing: undefined'), 'runNoteIngestion')).not.toEqual([]);
+    }
+    expect(findUnreasonedReturns('function runNoteIngestion() { return { ...anything }; }', 'runNoteIngestion')).toEqual([1]);
+  });
   it('flags an early exit with no record before it', () => {
     const source = [
       'process.stdin.on("end", () => {', // 1
@@ -206,7 +239,7 @@ describe('the gate reads the real hook list (#324 H3)', () => {
     expect(names.length).toBeGreaterThanOrEqual(10);
     // These two are record NAMES, not files — the drift that started this.
     expect(names).toContain('note-ingest');
-    expect(names).toContain('remember-nudge');
+    expect(names).not.toContain('remember-nudge');
     // Prose in the block carries apostrophes ("session-summary's window");
     // none of them may come back as a hook name.
     for (const n of names) expect(n, `parsed a sentence as a hook name: ${n}`).toMatch(/^[a-z][a-z-]*$/);
@@ -255,5 +288,26 @@ describe('returning helpers must return a reason (#324 H3)', () => {
       '}', // 3
     ].join('\n');
     expect(findUnreasonedReturns(src, 'decide')).toEqual([]);
+  });
+
+  it('passes on this repository (the gate runs main() on the real tree, Q6_21 F4)', () => {
+    const r = spawnSync(process.execPath, [path.resolve('scripts/audit/hook-outcome-gate.mjs')], { encoding: 'utf8' });
+    expect(r.status, `${r.stdout}${r.stderr}`).toBe(0);
+  });
+
+  it('the other direction: a hook name a script records that CAPTURE_HOOKS lacks is a violation, since doctor drops its records (Q6_20 F5)', () => {
+    const repo = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-gate-rev-'));
+    try {
+      fs.mkdirSync(path.join(repo, 'scripts', 'hooks'), { recursive: true });
+      fs.writeFileSync(path.join(repo, 'scripts', 'hooks', 'a.js'), "recordHookOutcome(env, { hook: 'listed', outcome });\n// hook: 'in-a-comment'\n");
+      expect(findUnlistedRecordedHooks(repo, ['listed'])).toEqual([]);
+      fs.writeFileSync(path.join(repo, 'scripts', 'hooks', 'b.js'), "const record = (o, r) => recordHookOutcome(process.env, { hook: 'codex-busy-message-notice', outcome: o, reason: r });\n");
+      expect(findUnlistedRecordedHooks(repo, ['listed'])).toEqual([
+        expect.stringMatching(/b\.js: records outcomes as 'codex-busy-message-notice', which is not in CAPTURE_HOOKS/),
+      ]);
+    } finally { fs.rmSync(repo, { recursive: true, force: true }); }
+    // On this repository: every recorded name is listed, codex-busy-message-notice among them.
+    expect(findUnlistedRecordedHooks(path.resolve('.'), readCaptureHooks())).toEqual([]);
+    expect(readCaptureHooks()).toContain('codex-busy-message-notice');
   });
 });

@@ -1,7 +1,8 @@
-import { describe, expect, it } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { resolveUpdateNotice, writeJustUpgradedMarker } from '../src/core/update-notice.js';
 import {
   CLI_NOTICE_THROTTLE_MS,
   MCP_PENDING_RETRY_MS,
@@ -24,17 +25,244 @@ const cache = (dir: string, latest: string | null, extra: Record<string, unknown
   return file;
 };
 
+describe('invalid policy reaches the actual cached upgrade notice', () => {
+  const dirs: string[] = [];
+  afterEach(() => { vi.unstubAllEnvs(); vi.restoreAllMocks(); for (const dir of dirs.splice(0)) fs.rmSync(dir, { recursive: true, force: true }); });
+  function fixture() {
+    const root = tmp(); dirs.push(root);
+    const home = path.join(root, 'A'); const dir = path.join(root, 'B'); const account = path.join(root, 'account');
+    for (const d of [home, dir, path.join(account, '.memesh')]) fs.mkdirSync(d, { recursive: true });
+    vi.stubEnv('HOME', home); vi.stubEnv('MEMESH_DIR', dir); vi.stubEnv('MEMESH_DB_PATH', path.join(dir, 'kg.db')); vi.stubEnv('MEMESH_AUTO_UPDATE', undefined);
+    vi.spyOn(os, 'userInfo').mockReturnValue({ homedir: account } as ReturnType<typeof os.userInfo>);
+    cache(dir, '4.10.0');
+    return { dir, account, input: { currentVersion: '4.9.4', entryPoint: 'mcp' as const, now: NOW, refresh: () => { throw new Error('fresh cached notice must not refresh'); }, installSupport: { canSelfUpdate: true, guidance: '' } } };
+  }
+  it('active broken config names the full path, cause and repair without telling a model to update', () => {
+    const f = fixture(); const file = path.join(f.dir, 'config.json'); fs.writeFileSync(file, '{broken');
+    const line = updateNoticeForEntryPoint(f.input);
+    expect(line).toContain('4.10.0 is available'); expect(line).toContain(file);
+    expect(line).toContain('not valid JSON'); expect(line).toContain('Repair');
+    expect(line).toContain('Do not update on your own'); expect(line).not.toContain('`memesh update`');
+  });
+  it('account broken config also carries its own full path and repair', () => {
+    const f = fixture(); const file = path.join(f.account, '.memesh/config.json'); fs.writeFileSync(file, '{broken');
+    const line = updateNoticeForEntryPoint(f.input);
+    expect(line).toContain(file); expect(line).toContain('Repair');
+  });
+  it('explicit updateCheck false stays silent and does not consume the upgrade marker', () => {
+    const f = fixture(); fs.writeFileSync(path.join(f.dir, 'config.json'), '{"updateCheck":false}');
+    writeJustUpgradedMarker(f.dir, '4.9.3', '4.9.4', NOW);
+    expect(updateNoticeForEntryPoint(f.input)).toBeNull();
+    expect(fs.existsSync(path.join(f.dir, 'just-upgraded.json'))).toBe(true);
+  });
+});
+
+describe('upgrade receipts beside a separate database', () => {
+  const roots: string[] = [];
+  const fixture = () => {
+    const root = tmp(); roots.push(root);
+    const home = path.join(root, 'A'); const config = path.join(root, 'B'); const database = path.join(root, 'C');
+    for (const dir of [home, config, database]) fs.mkdirSync(dir);
+    vi.stubEnv('HOME', home); vi.stubEnv('MEMESH_DIR', config); vi.stubEnv('MEMESH_DB_PATH', path.join(database, 'kg.db'));
+    fs.writeFileSync(path.join(config, 'config.json'), '{"updateCheck":true}');
+    const cacheFile = cache(config, '4.9.4');
+    return { home, config, database, cacheFile, marker: path.join(database, 'just-upgraded.json') };
+  };
+  afterEach(() => { vi.unstubAllEnvs(); for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true }); });
+
+  it('the actual entrypoint announces and claims C once while config, cache and throttle stay in B', () => {
+    const f = fixture();
+    const sentinel = path.join(f.config, 'just-upgraded.json'); fs.writeFileSync(sentinel, 'B sentinel');
+    const cacheBefore = fs.readFileSync(f.cacheFile); const configBefore = fs.readFileSync(path.join(f.config, 'config.json'));
+    writeJustUpgradedMarker(f.database, '4.9.3', '4.9.4', NOW);
+    const refresh = vi.fn(() => false);
+    const input = { currentVersion: '4.9.4', entryPoint: 'cli' as const, now: NOW, refresh, installSupport: null };
+    const line = updateNoticeForEntryPoint(input);
+    expect(line).toContain('4.9.3'); expect(line).toContain('4.9.4'); expect(line).toContain('Upgraded');
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(updateNoticeForEntryPoint(input)).toBeNull();
+    expect(fs.readFileSync(sentinel, 'utf8')).toBe('B sentinel');
+    expect(fs.readFileSync(f.cacheFile)).toEqual(cacheBefore);
+    expect(fs.readFileSync(path.join(f.config, 'config.json'))).toEqual(configBefore);
+    expect(fs.existsSync(path.join(f.config, 'last-cli-update-notice.4.9.4.lock'))).toBe(true);
+    expect(fs.readdirSync(f.database)).toEqual([]);
+    expect(fs.readdirSync(f.home)).toEqual([]);
+    expect(refresh).not.toHaveBeenCalled();
+  });
+
+  it('a stale receipt clears C only, preserving a B marker', () => {
+    const f = fixture();
+    writeJustUpgradedMarker(f.database, '4.9.2', '4.9.3', NOW);
+    writeJustUpgradedMarker(f.config, '4.9.3', '4.9.4', NOW);
+    const sentinel = fs.readFileSync(path.join(f.config, 'just-upgraded.json'));
+    expect(resolveUpdateNotice({ dir: f.config, markerDir: f.database, currentVersion: '4.9.4', cache: JSON.parse(fs.readFileSync(f.cacheFile, 'utf8')), now: NOW }).kind).toBe('UP_TO_DATE');
+    expect(fs.existsSync(f.marker)).toBe(false);
+    expect(fs.readFileSync(path.join(f.config, 'just-upgraded.json'))).toEqual(sentinel);
+  });
+
+  it('disabled notices do not consume the C receipt', () => {
+    const f = fixture();
+    fs.writeFileSync(path.join(f.config, 'config.json'), '{"updateCheck":false}');
+    writeJustUpgradedMarker(f.database, '4.9.3', '4.9.4', NOW);
+    const before = fs.readFileSync(f.marker);
+    expect(updateNoticeForEntryPoint({ currentVersion: '4.9.4', entryPoint: 'cli', now: NOW, refresh: () => false, installSupport: null })).toBeNull();
+    expect(fs.readFileSync(f.marker)).toEqual(before);
+    expect(fs.existsSync(path.join(f.config, 'last-cli-update-notice.4.9.4.lock'))).toBe(false);
+  });
+
+  it('an explicit entrypoint dir retains its isolated marker contract', () => {
+    const f = fixture();
+    writeJustUpgradedMarker(f.config, '4.9.3', '4.9.4', NOW);
+    writeJustUpgradedMarker(f.database, '4.9.2', '4.9.4', NOW);
+    expect(updateNoticeForEntryPoint({ dir: f.config, currentVersion: '4.9.4', entryPoint: 'cli', now: NOW, refresh: () => false, installSupport: null })).toContain('4.9.3');
+    expect(fs.existsSync(path.join(f.config, 'just-upgraded.json'))).toBe(false);
+    expect(fs.existsSync(f.marker)).toBe(true);
+  });
+});
+
 describe('formatUpdateNoticeLine', () => {
   it('has one line for each state that deserves one, and nothing for the rest', () => {
     expect(formatUpdateNoticeLine({ kind: 'UPGRADE_AVAILABLE', currentVersion: '4.9.4', latestVersion: '4.10.0' }))
-      .toBe('[memesh update] 4.10.0 is available (you are on 4.9.4). Run `memesh update`, or reply “Not now” / “Never ask again” in a hooked session.');
+      .toBe('[memesh update] 4.10.0 is available (you are on 4.9.4). Run `memesh update` to install it now.');
     expect(formatUpdateNoticeLine({ kind: 'JUST_UPGRADED', currentVersion: '4.9.4', from: '4.9.3', to: '4.9.4' }))
       .toBe('[memesh update] Upgraded 4.9.3 → 4.9.4. Processes started before the upgrade keep running 4.9.3 until they restart.');
     expect(formatUpdateNoticeLine({ kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'ENOTFOUND', attempted: true }))
       .toBe('[memesh update] Could not confirm whether an update exists (ENOTFOUND). Status is unknown, not current — `memesh status` retries.');
     expect(formatUpdateNoticeLine({ kind: 'UP_TO_DATE', currentVersion: '4.9.4', latestVersion: '4.9.4' })).toBeNull();
-    expect(formatUpdateNoticeLine({ kind: 'SNOOZED', currentVersion: '4.9.4', latestVersion: '4.10.0', until: NOW.toISOString(), level: 1 })).toBeNull();
     expect(formatUpdateNoticeLine({ kind: 'DISABLED', currentVersion: '4.9.4' })).toBeNull();
+  });
+});
+
+describe('the upgrade line says what is true for this setting, this install method and this reader', () => {
+  const up = { kind: 'UPGRADE_AVAILABLE', currentVersion: '4.9.4', latestVersion: '4.10.0' } as const;
+
+  it('off: it is available and is not being installed; nobody is told to run the update', () => {
+    const forModel = formatUpdateNoticeLine(up, { updates: 'off', door: 'mcp' })!;
+    expect(forModel).toContain('4.10.0 is available');
+    expect(forModel).toContain('Automatic updates are off');
+    expect(forModel).toContain('Do not update on your own');
+    expect(forModel).not.toContain('`memesh update`');
+    // A person may be told how to install it when they choose to; it is not an order.
+    const forPerson = formatUpdateNoticeLine(up, { updates: 'off', door: 'cli' })!;
+    expect(forPerson).toContain('Automatic updates are off');
+    expect(forPerson).not.toContain('to install it now');
+  });
+
+  it('on, read by a model through the MCP tool result: no command to run, and it says the update comes by itself', () => {
+    const line = formatUpdateNoticeLine(up, { updates: 'on', door: 'mcp' })!;
+    expect(line).toContain('installed by itself after the running sessions end');
+    expect(line).not.toContain('Run');
+    expect(line).not.toContain('memesh update`');
+  });
+
+  it('on, read by a person at a terminal: the command may be given', () => {
+    expect(formatUpdateNoticeLine(up, { updates: 'on', door: 'cli' })).toContain('Run `memesh update` to install it now.');
+    expect(formatUpdateNoticeLine(up)).toContain('Run `memesh update` to install it now.');
+  });
+
+  it('an install method that cannot update itself: say so with its own guidance, and never the command that would fail', () => {
+    const line = formatUpdateNoticeLine(up, { updates: 'unsupported', guidance: 'Update this source checkout from its repository and rebuild it.' })!;
+    expect(line).toContain('MeMesh cannot install it for this install method');
+    expect(line).toContain('rebuild it');
+    expect(line).not.toContain('memesh update`');
+  });
+
+  it('the other kinds do not depend on any of it', () => {
+    const failed = { kind: 'CHECK_FAILED', currentVersion: '4.9.4', reason: 'ENOTFOUND', attempted: true } as const;
+    expect(formatUpdateNoticeLine(failed, { updates: 'off', door: 'cli' })).toBe(formatUpdateNoticeLine(failed));
+  });
+
+  it('the real entry point reads the setting and the install method', () => {
+    const saved = process.env.MEMESH_AUTO_UPDATE;
+    const run = (setting: string, entryPoint: 'mcp' | 'cli', installSupport?: { canSelfUpdate: boolean; guidance: string } | null) => {
+      process.env.MEMESH_AUTO_UPDATE = setting;
+      const dir = tmp();
+      try {
+        cache(dir, '4.10.0');
+        return updateNoticeForEntryPoint({ dir, currentVersion: '4.9.4', now: NOW, entryPoint, processOnce: new Set<string>(), refresh: () => false, ...(installSupport !== undefined ? { installSupport } : {}) });
+      } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+    };
+    try {
+      const supported = { canSelfUpdate: true, guidance: '' };
+      expect(run('off', 'mcp', supported)).toContain('Automatic updates are off');
+      expect(run('off', 'mcp', supported)).not.toContain('memesh update`');
+      expect(run('major', 'mcp', supported)).toContain('installed by itself');
+      expect(run('major', 'mcp', supported)).not.toContain('Run `memesh update`');
+      expect(run('major', 'cli', supported)).toContain('Run `memesh update` to install it now');
+      expect(run('major', 'mcp', { canSelfUpdate: false, guidance: 'Update this source checkout from its repository and rebuild it.' })).toContain('cannot install it for this install method');
+    } finally {
+      if (saved === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = saved;
+    }
+  });
+});
+
+describe('the notice follows the setting: a release the setting does not take is not announced as coming by itself', () => {
+  const saved = process.env.MEMESH_AUTO_UPDATE;
+  const supported = { canSelfUpdate: true, guidance: '' };
+  const say = (setting: string, entryPoint: 'mcp' | 'cli', latest: string, installSupport: { canSelfUpdate: boolean; guidance: string } | null | undefined = supported) => {
+    process.env.MEMESH_AUTO_UPDATE = setting;
+    const dir = tmp();
+    try {
+      cache(dir, latest);
+      return updateNoticeForEntryPoint({ dir, currentVersion: '4.9.4', now: NOW, entryPoint, processOnce: new Set<string>(), refresh: () => false, ...(installSupport !== undefined ? { installSupport } : {}) });
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      if (saved === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = saved;
+    }
+  };
+
+  it('patch: 4.9.5 (patch) installs by itself; 4.10.0 (minor) and 5.0.0 (major) are held, and say which setting holds them', () => {
+    expect(say('patch', 'mcp', '4.9.5')).toContain('installed by itself');
+    const minor = say('patch', 'mcp', '4.10.0')!;
+    expect(minor).toContain('autoUpdate: patch does not install this release by itself');
+    expect(minor).not.toContain('installed by itself after');
+    expect(minor).toContain('Do not update on your own');
+    expect(say('patch', 'mcp', '5.0.0')).toContain('autoUpdate: patch does not install this release');
+    expect(say('patch', 'cli', '4.10.0')).toContain('`memesh update` installs it when you choose to');
+  });
+
+  it('minor: 4.10.0 installs by itself, 5.0.0 is held', () => {
+    expect(say('minor', 'mcp', '4.10.0')).toContain('installed by itself');
+    expect(say('minor', 'mcp', '5.0.0')).toContain('autoUpdate: minor does not install this release');
+  });
+
+  it('off on an install that cannot update itself says both, and does not offer the command that would refuse', () => {
+    const line = say('off', 'cli', '4.10.0', { canSelfUpdate: false, guidance: 'Update this source checkout and rebuild it.' })!;
+    expect(line).toContain('Automatic updates are off');
+    expect(line).toContain('cannot install it for this install method');
+    expect(line).toContain('rebuild it');
+    expect(line).not.toContain('`memesh update`');
+  });
+
+  it('an install that cannot update itself, read by a model: no command and no guidance to follow; the person is to be told', () => {
+    const line = say('major', 'mcp', '4.10.0', { canSelfUpdate: false, guidance: 'Run `npm i -g memesh` yourself.' })!;
+    expect(line).toContain('Do not update on your own');
+    expect(line).not.toContain('npm i -g');
+  });
+
+  it('a setting that cannot be read counts as off (the owner may have said off in a file nobody can read)', () => {
+    const savedDb = process.env.MEMESH_DB_PATH;
+    const data = tmp();
+    fs.mkdirSync(path.join(data, 'config.json')); // a directory where the config belongs: unreadable
+    process.env.MEMESH_DB_PATH = path.join(data, 'knowledge-graph.db');
+    delete process.env.MEMESH_AUTO_UPDATE;
+    const dir = tmp();
+    try {
+      cache(dir, '4.10.0');
+      const line = updateNoticeForEntryPoint({ dir, currentVersion: '4.9.4', now: NOW, entryPoint: 'mcp', processOnce: new Set<string>(), refresh: () => false, installSupport: supported });
+      expect(line).toContain('Automatic updates are off');
+      expect(line).not.toContain('installed by itself');
+    } finally {
+      fs.rmSync(dir, { recursive: true, force: true });
+      fs.rmSync(data, { recursive: true, force: true });
+      if (savedDb === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = savedDb;
+      if (saved === undefined) delete process.env.MEMESH_AUTO_UPDATE; else process.env.MEMESH_AUTO_UPDATE = saved;
+    }
+  });
+
+  it('with no installSupport given, the package root is looked up the same way as the CLI does and the notice still comes out', () => {
+    const line = say('major', 'cli', '4.10.0', undefined);
+    expect(line).toContain('4.10.0 is available');
   });
 });
 
@@ -80,7 +308,7 @@ describe('recentHookNoticeExists', () => {
 });
 
 describe('updateNoticeForEntryPoint', () => {
-  it('mcp: says it once per process, not when a hook just said it, never when snoozed or disabled', () => {
+  it('mcp: says it once per process, not when a hook just said it, never when updates are off', () => {
     const dir = tmp();
     cache(dir, '4.10.0');
     const once = new Set<string>();
@@ -94,9 +322,6 @@ describe('updateNoticeForEntryPoint', () => {
     fs.utimesSync(path.join(claims, 'c.json'), aMinuteAgo, aMinuteAgo);
     expect(updateNoticeForEntryPoint({ ...opts, processOnce: new Set() })).toBeNull();
     fs.rmSync(claims, { recursive: true });
-    fs.writeFileSync(path.join(dir, 'update-snooze.json'), JSON.stringify({ target: '4.10.0', level: 1, since: NOW.toISOString() }));
-    expect(updateNoticeForEntryPoint({ ...opts, processOnce: new Set() })).toBeNull();
-    fs.rmSync(path.join(dir, 'update-snooze.json'));
     fs.writeFileSync(path.join(dir, 'config.json'), JSON.stringify({ updateCheck: false }));
     expect(updateNoticeForEntryPoint({ ...opts, processOnce: new Set() })).toBeNull();
   });

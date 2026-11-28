@@ -11,10 +11,10 @@ import { getProjectName } from '../src/core/paths.js';
 import { projectTranscriptSlug } from '../src/core/transcript-source.js';
 import { createHash } from 'node:crypto';
 import { applyProposal, executeWorkPackage, getProposalDetail, listProposals } from '../src/core/dreamer.js';
-import * as agentMessaging from '../src/core/agent-messaging.js';
 import { handleTool, TOOL_DEFINITIONS } from '../src/mcp/tools.js';
 import { normalizeClientHost, resolveTranscriptWorkspace } from '../src/transports/mcp/handlers.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../src/core/agent-messaging.js';
+import { ConversationMessages } from '../src/core/conversation-messages.js';
+import { CONVERSATION_MESSAGE_DESCRIPTION, CONVERSATION_MESSAGE_INPUT_SCHEMA } from '../src/transports/conversation-messaging.js';
 import { RECALL_ENTITY_CONTENT_MAX_BYTES, RECALL_RESPONSE_MAX_BYTES } from '../src/core/recall-agent-view.js';
 import { filler, seedOversizedEntity } from './helpers/recall-size-fixture.js';
 
@@ -288,7 +288,7 @@ describe('work_package', () => {
     seed();
     const forbidden = () => { throw new Error('forbidden external path'); };
     const spies = [
-      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden),
+      vi.spyOn(ConversationMessages.prototype, 'send').mockImplementation(forbidden),
       vi.fn(forbidden),
     ];
     vi.stubGlobal('fetch', spies[spies.length - 1]);
@@ -402,6 +402,29 @@ describe('transcript workspace roots', () => {
       pathToFileURL(repo).href,
       pathToFileURL(nested).href,
     ])).toEqual({ transcriptWorkspaceError: 'workspace_ambiguous' });
+  });
+});
+
+describe('every tool is listed where users and agents look for it', () => {
+  const read = (file: string) => fs.readFileSync(path.resolve(file), 'utf8');
+  const names = TOOL_DEFINITIONS.map((tool) => tool.name);
+  const hasRow = (text: string, name: string) => new RegExp('^\\|\\s*`' + name + '`\\s*\\|', 'm').test(text);
+
+  it.each(['README.md', 'README.zh-TW.md', 'README.vi.md', 'AGENTS.md', 'skills/memesh/SKILL.md'])('%s has a table row for each tool', (file) => {
+    const text = read(file);
+    const missing = names.filter((name) => !hasRow(text, name));
+    expect(missing, `${file} lacks a row for: ${missing.join(', ')}`).toEqual([]);
+  });
+
+  it('docs/api/API_REFERENCE.md has a section for each tool', () => {
+    const text = read('docs/api/API_REFERENCE.md');
+    expect(names.filter((name) => !new RegExp('^### ' + name + '$', 'm').test(text))).toEqual([]);
+  });
+
+  it('docs/ARCHITECTURE.md names each tool in its overview', () => {
+    const overview = read('docs/ARCHITECTURE.md').match(/## Overview\n([\s\S]*?)(?=\n## |\n```)/)?.[1] ?? '';
+    expect(overview.length).toBeGreaterThan(0);
+    expect(names.filter((name) => !overview.includes('`' + name + '`'))).toEqual([]);
   });
 });
 
@@ -542,7 +565,7 @@ describe('transcript work_package', () => {
 
 
 
-      vi.spyOn(agentMessaging, 'sendAgentMessage').mockImplementation(forbidden), vi.fn(forbidden)];
+      vi.spyOn(ConversationMessages.prototype, 'send').mockImplementation(forbidden), vi.fn(forbidden)];
     vi.stubGlobal('fetch', spies[spies.length - 1]);
     const transaction = vi.spyOn(db, 'transaction').mockImplementation(forbidden);
     const before = db.prepare('SELECT total_changes() AS n').get();
@@ -841,18 +864,26 @@ describe('remember', () => {
     expect(result.content[0].text).toContain('name');
   });
 
-  it('does not prefix root-level validation errors with an empty path', async () => {
+  it('rejects an unknown message field through its direct strict schema', async () => {
     const result = await handleTool('message', {
-      action: 'poll',
-      project: 'memesh',
-      recipient: 'memesh',
+      action: 'discover',
       target_kind: 'principal',
-      limit: 20,
-      wait_ms: 0,
+    });
+
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain('"keys": [');
+    expect(result.content[0].text).toContain('"target_kind"');
+  });
+
+  it('does not prefix root-level validation errors with an empty path', async () => {
+    const result = await handleTool('forget', {
+      name: 'root-validation-fixture',
+      target_kind: 'principal',
     });
 
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toBe('Unrecognized key: "target_kind"');
+    expect(result.content[0].text).not.toContain('[]:');
   });
 
   it('keeps the field path for path-specific validation errors', async () => {
@@ -1264,15 +1295,14 @@ describe('import and archived memories (#363)', () => {
     expect(hit.observations).toContain('bundle text');
   });
 
-  it('refuses restore_archived with `skip` with an error result carrying the core message', async () => {
+  it('restore_archived with `skip` reactivates the entity and replaces nothing', async () => {
     await seedArchived('mcp-import-skip-restore');
     const result = await handleTool('import', {
       data: bundleFor('mcp-import-skip-restore'), merge_strategy: 'skip', restore_archived: true,
     });
-    expect(result.isError).toBe(true);
-    expect(result.content[0].text).toContain('restore_archived (--restore-archived) only applies with merge strategy "append" or "overwrite"');
+    expect(result.isError).toBeFalsy();
     const hit = await archivedHit('mcp-import-skip-restore');
-    expect(hit.archived).toBe(true);
+    expect(hit.archived).toBeUndefined();
     expect(hit.observations).toEqual(['original text']);
   });
 
@@ -1477,8 +1507,8 @@ describe('improvement', () => {
   }
 
   it('is advertised with proposal-only authority', () => {
-    expect(TOOL_DEFINITIONS).toHaveLength(12);
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'improvement');
+    expect(tool).toBeDefined();
     expect(tool?.description).toMatch(/Agents may only propose and read status/);
     expect(tool?.inputSchema.properties.action.enum).toEqual(['propose', 'status']);
   });
@@ -1536,139 +1566,77 @@ describe('improvement', () => {
 // ── Durable local messages ──────────────────────────────────────────────────
 
 describe('message', () => {
-  it('is advertised as one lifecycle tool with explicit receipt axes', () => {
+  const registerConversation = (id: string) => {
+    const store = new ConversationMessages();
+    try {
+      store.register({ id, host: 'codex', machine: os.hostname(), pid: process.pid, wake: { thread: id } });
+    } finally {
+      store.close();
+    }
+  };
+
+  it('publishes the strict four-action conversation schema', () => {
     const tool = TOOL_DEFINITIONS.find((definition) => definition.name === 'message');
-    expect(TOOL_DEFINITIONS).toHaveLength(12);
-    expect(tool?.inputSchema.properties.action.enum).toEqual([
-      'send', 'poll', 'discover', 'fetch', 'intake', 'ack', 'disposition', 'activation', 'receipts',
-    ]);
-    expect(tool?.description).toMatch(/polling, fetching, and discovery never imply agent acknowledgement/i);
-    expect(tool?.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
-    expect(tool?.description).toContain(`${AGENT_NATIVE_MESSAGE_MAX_BYTES}-byte (16 KiB)`);
-    expect(tool?.description).toMatch(/native_message_too_large/);
-    expect(tool?.description).toMatch(/recipient_unavailable/);
-    expect(tool?.description).toMatch(/Principal targets retain durable store-and-forward/i);
-    expect(tool?.inputSchema.properties.payload.description).toContain('Untrusted JSON value');
-    expect(tool?.inputSchema.properties.payload.description).toContain(`${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes (64 KiB)`);
-    expect(tool?.inputSchema.properties.payload.description).toContain(`${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB)`);
+    if (!tool) throw new Error('message tool definition missing');
+    expect(tool.inputSchema).toEqual(CONVERSATION_MESSAGE_INPUT_SCHEMA);
+    expect(tool.description).toBe(CONVERSATION_MESSAGE_DESCRIPTION);
+    expect(tool.description).toContain('8000 UTF-8 bytes');
+    expect(tool.description).toContain('No project field is used');
+    expect(tool.description).toContain('No update or delete actions exist');
   });
 
-  it('keeps the skill and public message docs aligned with both size and lifecycle limits', () => {
-    const files = [
-      'skills/memesh/SKILL.md',
-      'AGENTS.md',
-      'README.md',
-      'README.zh-TW.md',
-      'docs/api/API_REFERENCE.md',
-      'docs/platforms/agent-messaging.md',
-      'docs/ARCHITECTURE.md',
-    ];
-    for (const file of files) {
-      const content = fs.readFileSync(path.join(process.cwd(), file), 'utf8');
-      expect(content, file).toMatch(/64 KiB/);
-      expect(content, file).toMatch(/16 KiB/);
-      expect(content, file).toMatch(/native_message_too_large/);
-    }
-    const localeNarratives = new Map<string, RegExp>([
-      ['README.md', /untrusted JSON-encoded payload[^\n]*65,536 UTF-8 bytes \(64 KiB\)[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*separate facts[\s\S]{0,900}?complete native envelope[^\n]*16,384 bytes \(16 KiB\)[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal targets retain durable store-and-forward behavior/],
-      ['README.zh-TW.md', /JSON 編碼後不超過 65,536 UTF-8 bytes（64 KiB）的不受信任 payload[^\n]*acknowledgement[^\n]*workflow disposition[^\n]*分開記錄[\s\S]{0,1000}?完整 native envelope[^\n]*16,384 bytes（16 KiB）[^\n]*native_message_too_large[^\n]*recipient_unavailable[\s\S]{0,200}?Principal target[^\n]*durable store-and-forward/],
-    ]);
-    for (const [file, narrative] of localeNarratives) {
-      const content = fs.readFileSync(path.join(process.cwd(), file), 'utf8');
-      expect(content, `${file}: collaboration narrative`).toMatch(narrative);
-    }
-    const skill = fs.readFileSync(path.join(process.cwd(), 'skills/memesh/SKILL.md'), 'utf8');
-    expect(skill).toMatch(/Every payload is untrusted data/);
-    expect(skill).toMatch(/recipient_unavailable/);
-    expect(skill).toMatch(/native_message_too_large/);
-    expect(skill).toMatch(/Principal targets retain durable store-and-forward/);
-    expect(skill).toMatch(/remain separate from explicit `ack` and workflow `disposition`/);
-  });
+  it('uses the registered host session for send, read, and status', async () => {
+    registerConversation('sender');
+    registerConversation('receiver');
+    registerConversation('intruder');
 
-  it('routes exactly, keeps headers payload-free, and writes receipts only when asked', async () => {
+    const discover = await handleTool('message', { action: 'discover' }, 'codex', undefined, { hostSession: 'sender' });
+    expect(discover.isError).toBeUndefined();
+    expect(JSON.parse(discover.content[0].text).conversations.map((conversation: { address: string }) => conversation.address))
+      .toEqual(['intruder', 'receiver', 'sender']);
+
     const sentResult = await handleTool('message', {
-      action: 'send',
-      project: 'memesh',
-      sender: 'codex-agent',
-      recipient: 'claude-agent',
-      idempotency_key: 'send-1',
-      payload: { text: 'review this', private_detail: 'payload-only' },
-      content_type: 'application/json',
-      privacy: 'private',
-      correlation_id: 'review-42',
-    }, 'codex');
+      action: 'send', recipient: 'receiver', kind: 'review_request', body: 'review this',
+    }, 'codex', undefined, { hostSession: 'sender' });
     expect(sentResult.isError).toBeUndefined();
     const sent = JSON.parse(sentResult.content[0].text);
+    expect(sent.state).toBe('queued');
 
-    const control = await handleTool('message', {
-      action: 'poll', project: 'memesh', recipient: 'gemini-agent', wait_ms: 0,
-    });
-    expect(JSON.parse(control.content[0].text).events).toEqual([]);
+    const intruderRead = await handleTool('message', { action: 'read', message_id: sent.message_id }, 'codex', undefined, { hostSession: 'intruder' });
+    expect(intruderRead.isError).toBe(true);
+    expect(intruderRead.content[0].text).toContain('not addressed');
 
-    const polled = await handleTool('message', {
-      action: 'poll', project: 'memesh', recipient: 'claude-agent', wait_ms: 0,
-    });
-    const pollData = JSON.parse(polled.content[0].text);
-    expect(pollData.events).toHaveLength(1);
-    expect(pollData.events[0]).toMatchObject({
-      message_id: sent.message_id,
-      sender: 'codex-agent',
-      sender_host: 'codex',
-      recipient: 'claude-agent',
-      correlation_id: 'review-42',
-    });
-    expect(JSON.stringify(pollData.events[0])).not.toContain('payload-only');
+    const read = await handleTool('message', { action: 'read', message_id: sent.message_id }, 'codex', undefined, { hostSession: 'receiver' });
+    expect(read.isError).toBeUndefined();
+    expect(JSON.parse(read.content[0].text).message).toMatchObject({ id: sent.message_id, body: 'review this' });
 
-    const fetched = await handleTool('message', {
-      action: 'fetch', project: 'memesh', recipient: 'claude-agent', message_id: sent.message_id,
-    });
-    expect(JSON.parse(fetched.content[0].text)).toMatchObject({
-      payload: { text: 'review this', private_detail: 'payload-only' },
-      provenance: { transport: 'mcp', source_host: 'codex' },
-    });
-
-    const beforeReceipts = await handleTool('message', {
-      action: 'receipts', project: 'memesh', recipient: 'claude-agent', message_id: sent.message_id,
-    });
-    expect(JSON.parse(beforeReceipts.content[0].text)).toEqual([]);
-
-    await handleTool('message', {
-      action: 'intake', project: 'memesh', recipient: 'claude-agent', message_id: sent.message_id,
-      idempotency_key: 'intake-1', intake_state: 'ingested',
-    }, 'claude-code');
-    await handleTool('message', {
-      action: 'activation', project: 'memesh', recipient: 'claude-agent', message_id: sent.message_id,
-      idempotency_key: 'activation-1', activation: 'manual_resume_required',
-    }, 'claude-code');
-
-    const receipts = await handleTool('message', {
-      action: 'receipts', project: 'memesh', recipient: 'claude-agent', message_id: sent.message_id,
-    });
-    expect(JSON.parse(receipts.content[0].text).map((receipt: { receipt_kind: string }) => receipt.receipt_kind))
-      .toEqual(['intake', 'host_activation']);
+    const status = await handleTool('message', { action: 'status', message_id: sent.message_id }, 'codex', undefined, { hostSession: 'sender' });
+    expect(status.isError).toBeUndefined();
+    expect(JSON.parse(status.content[0].text).messages[0]).toMatchObject({ id: sent.message_id, state: 'read' });
   });
 
-  it('rejects provenance spoofing and cancels a bounded wait', async () => {
-    const spoofed = await handleTool('message', {
-      action: 'send',
-      project: 'memesh',
-      sender: 'codex-agent',
-      recipient: 'claude-agent',
-      idempotency_key: 'send-1',
-      payload: 'hello',
-      sender_host: 'spoofed-host',
-    } as Record<string, unknown>, 'codex');
-    expect(spoofed.isError).toBe(true);
-    expect(spoofed.content[0].text).toMatch(/sender_host|unrecognized/i);
+  it('rejects missing host identity and retired or extra message fields', async () => {
+    registerConversation('sender');
+    registerConversation('receiver');
+    const missingIdentity = await handleTool('message', {
+      action: 'send', recipient: 'receiver', kind: 'task', body: 'hello',
+    }, 'codex');
+    expect(missingIdentity.isError).toBe(true);
+    expect(missingIdentity.content[0].text).toContain('conversation_identity_unavailable');
 
-    const controller = new AbortController();
-    const waiting = handleTool('message', {
-      action: 'poll', project: 'memesh', recipient: 'claude-agent', wait_ms: 30_000,
-    }, 'claude-code', controller.signal);
-    setTimeout(() => controller.abort(), 20);
-    const cancelled = await waiting;
-    expect(cancelled.isError).toBe(true);
-    expect(cancelled.content[0].text).toMatch(/aborted/i);
+    const spoofedSender = await handleTool('message', {
+      action: 'send', recipient: 'receiver', kind: 'task', body: 'hello', sender: 'spoofed',
+    }, 'codex', undefined, { hostSession: 'sender' });
+    expect(spoofedSender.isError).toBe(true);
+    expect(spoofedSender.content[0].text).toContain('sender');
+
+    for (const input of [
+      { action: 'poll' },
+      { action: 'send', recipient: 'receiver', kind: 'task', body: 'hello', project: 'memesh' },
+    ]) {
+      const result = await handleTool('message', input, 'codex', undefined, { hostSession: 'sender' });
+      expect(result.isError).toBe(true);
+    }
   });
 });
 

@@ -1,12 +1,14 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync, execFileSync } from 'child_process';
+import { createHash } from 'node:crypto';
 import { createRequire } from 'module';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { pathToFileURL } from 'node:url';
-import { expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateFile, makeWindowsAclPublic, readWindowsAcl } from '../helpers/permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { recallListName } from '../../scripts/hooks/_stop-notes.js';
 
 const require = createRequire(import.meta.url);
@@ -150,10 +152,44 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     const db = createTestDb();
     for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) addEntity(db, `note-${file}`, `${file}: keep this file safe`);
     db.close();
-    const result = runHook({ tool_name: 'apply_patch', tool_input: { command:
-      '*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** Add File: c.txt\n+new\n*** Delete File: d.txt\n*** End Patch' } });
+    const list = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
+    const trace = path.join(testDir, 'state-io.json');
+    const loader = path.join(testDir, 'state-io.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const list = ${JSON.stringify(list)}, trace = ${JSON.stringify(trace)};
+const original = { open: fs.openSync, close: fs.closeSync, read: fs.readFileSync, write: fs.writeFileSync };
+const descriptors = new Set();
+let reads = 0, writes = 0;
+const tracked = p => String(p) === list || descriptors.has(p);
+fs.openSync = function (p, ...rest) { const fd = original.open.call(this, p, ...rest); if (String(p) === list) descriptors.add(fd); return fd; };
+fs.closeSync = function (fd) { try { return original.close.call(this, fd); } finally { descriptors.delete(fd); } };
+fs.readFileSync = function (p, ...rest) { if (tracked(p)) reads++; return original.read.call(this, p, ...rest); };
+fs.writeFileSync = function (p, ...rest) { if (tracked(p)) writes++; return original.write.call(this, p, ...rest); };
+process.on('exit', () => original.write(trace, JSON.stringify({ reads, writes })));
+syncBuiltinESMExports();
+`);
+    const input = { cwd: testDir, session_id: 'session-a', tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: a.txt\n*** Move to: b.txt\n@@\n-old\n+new\n*** Add File: c.txt\n+new\n*** Delete File: d.txt\n*** End Patch' } };
+    const run = (payload = input) => {
+      const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+        input: JSON.stringify(payload), env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+      });
+      expect(result.error).toBeUndefined();
+      expect(result.status, result.stderr).toBe(0);
+      expect(result.stderr).toBe('');
+      return result.stdout.trim();
+    };
+    const result = run();
     const context = JSON.parse(result).hookSpecificOutput.additionalContext;
     for (const file of ['a.txt', 'b.txt', 'c.txt', 'd.txt']) expect(context).toContain(`note-${file}`);
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 0, writes: 1 });
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt', 'c.txt', 'd.txt']);
+    expect(run()).toBe('');
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 1, writes: 0 });
+    expect(run({ ...input, tool_input: { command: '*** Begin Patch\n*** Add File: e.txt\n+new\n*** End Patch' } })).toBe('');
+    expect(JSON.parse(fs.readFileSync(trace, 'utf8'))).toEqual({ reads: 2, writes: 1 });
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt']);
   });
 
   it('does not interpret an unrelated tool command as an apply_patch target', () => {
@@ -162,6 +198,94 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     db.close();
     expect(runHook({ tool_name: 'Bash', tool_input: { command:
       '*** Begin Patch\n*** Update File: a.txt\n*** End Patch' } })).toBe('');
+  });
+
+  it('a failed patch target keeps its guard and does not mark itself or suppress healthy targets', () => {
+    const db = createTestDb();
+    addEntity(db, 'healthy-a', 'a.txt: keep this file safe');
+    const failed = addEntity(db, 'failed-b', 'b.txt: keep this file safe');
+    db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(
+      'edit-b-guard', 'lesson_learned', JSON.stringify({ guard: {
+        enabled: true, tool: 'Edit', pattern: 'b[.]txt', message: 'Keep the b edit guarded', action: 'warn',
+      } }),
+    );
+    db.close();
+    const loader = path.join(testDir, 'observation-fault.mjs');
+    fs.writeFileSync(loader, `import { DatabaseSync } from 'node:sqlite';
+const prepare = DatabaseSync.prototype.prepare;
+DatabaseSync.prototype.prepare = function (sql) {
+  const statement = prepare.call(this, sql);
+  if (sql.startsWith('SELECT content FROM observations')) {
+    for (const method of ['get', 'all']) {
+      const original = statement[method].bind(statement);
+      statement[method] = (...args) => {
+        if (Number(args[0]) === ${failed}) throw new Error('controlled target observation failure');
+        return original(...args);
+      };
+    }
+  }
+  return statement;
+};
+`);
+    const input = { cwd: testDir, session_id: 'session-a', tool_name: 'apply_patch', tool_input: { command:
+      '*** Begin Patch\n*** Update File: b.txt\n@@\n-old\n+new\n*** Update File: a.txt\n@@\n-old\n+new\n*** End Patch' } };
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify(input), env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stderr).toContain('controlled target observation failure');
+    const context = JSON.parse(result.stdout).hookSpecificOutput.additionalContext;
+    expect(context).toContain('Keep the b edit guarded');
+    expect(context).toContain('healthy-a');
+    expect(context).not.toContain('failed-b');
+    const list = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt']);
+    const retried = runHook(input);
+    expect(retried).toContain('failed-b');
+    expect(retried).toContain('Keep the b edit guarded');
+    expect(retried).not.toContain('healthy-a');
+    expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['a.txt', 'b.txt']);
+  });
+
+  it.each([['EIO', '["peer.txt"]'], ['corrupt JSON', '{']])('publication reread handles %s without hiding context', (fault, original) => {
+    const db = createTestDb();
+    addEntity(db, 'auth-note', 'auth.ts: keep the edit safe');
+    db.close();
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir, { mode: 0o700 });
+    const list = path.join(dir, recallListName('session-a'));
+    fs.writeFileSync(list, original, { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, list]);
+    const loader = path.join(testDir, 'reread-fault.mjs');
+    fs.writeFileSync(loader, `import fs from 'node:fs';
+import { syncBuiltinESMExports } from 'node:module';
+const list = ${JSON.stringify(list)}, inject = ${fault === 'EIO'};
+const original = { open: fs.openSync, close: fs.closeSync, read: fs.readFileSync };
+const descriptors = new Set();
+let reads = 0;
+fs.openSync = function (p, ...rest) { const fd = original.open.call(this, p, ...rest); if (String(p) === list) descriptors.add(fd); return fd; };
+fs.closeSync = function (fd) { try { return original.close.call(this, fd); } finally { descriptors.delete(fd); } };
+fs.readFileSync = function (p, ...rest) {
+  if ((String(p) === list || descriptors.has(p)) && ++reads === 2 && inject) throw Object.assign(new Error('controlled list reread'), { code: 'EIO' });
+  return original.read.call(this, p, ...rest);
+};
+syncBuiltinESMExports();
+`);
+    const result = spawnSync('node', ['--import', pathToFileURL(loader).href, path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: 'auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath }, encoding: 'utf8', timeout: 10000,
+    });
+    expect(result.error).toBeUndefined();
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('auth-note');
+    if (fault === 'EIO') {
+      expect(result.stderr).toContain('controlled list reread');
+      expect(fs.readFileSync(list, 'utf8')).toBe(original);
+    } else {
+      expect(result.stderr).toBe('');
+      expect(JSON.parse(fs.readFileSync(list, 'utf8'))).toEqual(['auth.ts']);
+    }
   });
 
   it('reaches a CJK filename through the shared match expression', () => {
@@ -487,7 +611,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     expect(result.stdout).toContain('auth-decision');
     const errors = outcomesOf().filter((o) => o.outcome === 'error');
     expect(errors).toHaveLength(1);
-    expect(errors[0].reason).toContain('EISDIR');
+    expect(errors[0].reason).toContain(process.platform === 'win32' ? 'MEMESH_PRIVATE_PATH' : 'EISDIR');
   });
 
   it('#521: a per-session list that cannot be written leaves an error outcome and a stderr line', () => {
@@ -551,6 +675,7 @@ describe('Feature: Pre-Edit Recall Hook', () => {
     fs.mkdirSync(dir, { recursive: true });
     const stale = path.join(dir, 'old-session.json');
     fs.writeFileSync(stale, '[]');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, stale]);
     const day = 24 * 60 * 60;
     fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
     // Parallel hooks scan the same folder: make this one lose the race for the stale list.
@@ -665,6 +790,7 @@ syncBuiltinESMExports();
     const recent = path.join(dir, 'recent-session.json');
     fs.writeFileSync(stale, '[]', 'utf8');
     fs.writeFileSync(recent, '[]', 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, stale, recent]);
     const day = 24 * 60 * 60;
     fs.utimesSync(stale, Date.now() / 1000 - 31 * day, Date.now() / 1000 - 31 * day);
     fs.utimesSync(recent, Date.now() / 1000 - 29 * day, Date.now() / 1000 - 29 * day);
@@ -687,6 +813,7 @@ syncBuiltinESMExports();
 
     const dir = path.join(testDir, 'pre-edit-recall');
     fs.mkdirSync(dir, { recursive: true });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir]);
     // Make the hook's directory read fail with EPERM, only for that directory.
     const loader = path.join(testDir, 'fault.mjs');
     fs.writeFileSync(loader, `import fs from 'node:fs';
@@ -741,6 +868,40 @@ syncBuiltinESMExports();
 
     const throttlePath = path.join(testDir, 'pre-edit-recall', recallListName('session-a'));
     expectPrivateFile(throttlePath);
+  });
+
+  it.skipIf(process.platform !== 'win32')('ignores a shared list without overwriting it or dropping Edit guards', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type, metadata) VALUES (?, ?, ?)').run(
+      'edit-guard', 'lesson_learned', JSON.stringify({ guard: {
+        enabled: true, tool: 'Edit', pattern: 'auth[.]ts', message: 'Use the guarded auth edit', action: 'warn',
+      } }),
+    );
+    const id = addEntity(db, 'auth-before-edit', 'Change authentication through the public API');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'file:auth.ts');
+    db.close();
+
+    const dir = path.join(testDir, 'pre-edit-recall');
+    fs.mkdirSync(dir);
+    const list = path.join(dir, recallListName('session-a'));
+    const original = JSON.stringify(['/src/auth.ts']);
+    fs.writeFileSync(list, original);
+    makeWindowsPathsPrivate([dir, list]);
+    const before = makeWindowsAclPublic(list);
+    const result = spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
+      input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
+      env: { ...process.env, MEMESH_DB_PATH: dbPath },
+      encoding: 'utf8',
+      timeout: 5000,
+    });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toContain('Use the guarded auth edit');
+    expect(result.stdout).toContain('auth-before-edit');
+    expect(outcomesOf().filter((outcome) => outcome.outcome === 'error')).toEqual([
+      expect.objectContaining({ reason: expect.stringContaining('MEMESH_PRIVATE_PATH') }),
+    ]);
+    expect(fs.readFileSync(list, 'utf8')).toBe(original);
+    expect(readWindowsAcl(list)).toEqual(before);
   });
 
   it('should return empty when no file_path in tool_input', () => {
@@ -845,12 +1006,9 @@ syncBuiltinESMExports();
       expect(result).toBe('');
     });
 
-    it('(i-b) excludes a session handoff that names the edited file in its text', () => {
-      // The handoff is a per-project snapshot of the agent's last message,
-      // meant for the start of the next session; repeating it on every edit
-      // of a file it happens to mention would only spend the reader's context.
-      // A note with the same text is the control: it IS recalled, so an empty
-      // result for the handoff is the exclusion at work, not a missed match.
+    it('(i-b) recalls a retained legacy handoff as ordinary memory when it names the edited file', () => {
+      // S2 retains old handoff records as ordinary memories. Both the legacy
+      // record and a note with the same file reference should be recalled.
       const db = createTestDb();
       db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('session-handoff:acme', 'session-handoff');
       const row = db.prepare('SELECT id FROM entities WHERE name = ?').get('session-handoff:acme') as any;
@@ -867,7 +1025,7 @@ syncBuiltinESMExports();
 
       const result = runHook({ tool_input: { file_path: '/src/auth.ts' } });
       expect(result).toContain('auth-note-control');
-      expect(result).not.toContain('session-handoff');
+      expect(result).toContain('session-handoff');
     });
 
     it("(ii/a) ignores a different file's file: tag, but reaches a curated lesson naming this file literally in prose", () => {
@@ -928,6 +1086,51 @@ syncBuiltinESMExports();
       }
     });
 
+    it('(iii-b) matches memories filed under any id of the repository, and not another repository\'s', () => {
+      const repo = makeGitRepo();
+      try {
+        execFileSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']);
+        const { getProjectName } = require('../../scripts/hooks/_shared.js');
+        const sha32 = (text: string) => createHash('sha256').update(text).digest('hex').slice(0, 32);
+        const real = fs.realpathSync(repo);
+        // What the checkout stored under its path's id before it had a remote is still its own.
+        const pathId = `${path.basename(real)}~${sha32(real)}`;
+        const remoteId = getProjectName(repo);
+        // The id an earlier version gave the https spelling of the same remote.
+        const earlierId = `widgets~${sha32('https://gitlab.com/acme/widgets')}`;
+        expect(remoteId).not.toBe(earlierId);
+        const otherId = `other~${'2'.repeat(32)}`;
+
+        const db = createTestDb();
+        for (const [name, id] of [['by-current-id', remoteId], ['by-earlier-spelling', earlierId], ['by-other-repo', otherId]] as const) {
+          db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'decision');
+          const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+          db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(row.id, `Decision recorded as ${name}`);
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, 'file:auth.ts');
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(row.id, `project:${id}`);
+        }
+        // Ones that name the file only in their text (no file tag): reached by the word search, which is scoped too.
+        for (const [name, id] of [['prose-by-path-of-repo', pathId], ['prose-other-repo', otherId]] as const) {
+          db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'lesson');
+          const prose = db.prepare('SELECT id FROM entities WHERE name = ?').get(name) as any;
+          const proseText = `Always check auth.ts handles expired tokens (${name})`;
+          db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(prose.id, proseText);
+          db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(prose.id, `project:${id}`);
+          indexFts(db, prose.id, name, proseText);
+        }
+        db.close();
+
+        const result = runHook({ cwd: repo, tool_input: { file_path: path.join(repo, 'auth.ts') } });
+        expect(result).toContain('prose-by-path-of-repo');
+        expect(result).toContain('by-current-id');
+        expect(result).toContain('by-earlier-spelling');
+        expect(result).not.toContain('by-other-repo');
+        expect(result).not.toContain('prose-other-repo');
+      } finally {
+        fs.rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+      }
+    });
+
     it('(iv) injects nothing and records why, when only auto-captured noise would have matched', () => {
       const db = createTestDb();
       db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('session-xyz-summary', 'session-summary');
@@ -985,12 +1188,13 @@ syncBuiltinESMExports();
       db.close();
 
       const run = () => spawnSync('node', [path.resolve('scripts/hooks/pre-edit-recall.js')], {
-        input: JSON.stringify({ cwd: testDir, tool_input: { file_path: '/src/auth.ts' } }),
+        input: JSON.stringify({ cwd: testDir, session_id: 'session-a', tool_input: { file_path: '/src/auth.ts' } }),
         env: { ...process.env, MEMESH_DB_PATH: dbPath },
         encoding: 'utf8',
         timeout: 10000,
       });
       expect(run().stdout.trim()).toBe('');
+      expect(fs.existsSync(path.join(testDir, 'pre-edit-recall', recallListName('session-a')))).toBe(false);
 
       const { DatabaseSync } = require('node:sqlite');
       const repair = new DatabaseSync(dbPath);
@@ -1091,39 +1295,6 @@ syncBuiltinESMExports();
 
       const result = runHook({ tool_input: { file_path: '/src/----.ts' } });
       expect(result).toBe('');
-    });
-
-    it('(F6) SESSION_SNAPSHOT_TYPES covers every snapshot type literal the producers write', () => {
-      const { SESSION_SNAPSHOT_TYPES } = require('../../scripts/hooks/_shared.js');
-
-      // Path constants declared separately (not inline in the readFileSync
-      // call) so this reads as what it is — extracting the LITERAL type
-      // strings two producers write, to check a structural invariant
-      // against them — not a snippet asserting source text as behavior.
-      const preCompactPath = path.resolve('scripts/hooks/pre-compact.js');
-      const sessionSummaryPath = path.resolve('scripts/hooks/session-summary.js');
-      const sessionInsightPath = path.resolve('src/core/session-insight.ts');
-
-      // pre-compact.js: object-literal `type: '...'` passed to captureEntity.
-      const preCompactSrc = fs.readFileSync(preCompactPath, 'utf8');
-      const preCompactTypes = [...preCompactSrc.matchAll(/captureEntity\(db,\s*\{[^}]*?type:\s*'([\w-]+)'/gs)].map(m => m[1]);
-      expect(preCompactTypes.length).toBeGreaterThan(0);
-
-      // session-summary.js: positional `storeMemory(name, 'TYPE', ...)` calls.
-      const sessionSummarySrc = fs.readFileSync(sessionSummaryPath, 'utf8');
-      const storeMemoryTypes = [...sessionSummarySrc.matchAll(/storeMemory\(\s*[^,]+,\s*'([\w-]+)'/g)].map(m => m[1]);
-      expect(storeMemoryTypes.length).toBeGreaterThan(0);
-
-      // src/core/session-insight.ts: the library session-summary.js AND the
-      // Hermes capture path (`captureChatSession`) both write through.
-      const sessionInsightSrc = fs.readFileSync(sessionInsightPath, 'utf8');
-      const sessionInsightTypes = [...sessionInsightSrc.matchAll(/\n\s*type:\s*'([\w-]+)',/g)].map(m => m[1]);
-      expect(sessionInsightTypes.length).toBeGreaterThan(0);
-
-      const allProducerTypes = new Set([...preCompactTypes, ...storeMemoryTypes, ...sessionInsightTypes]);
-      for (const t of allProducerTypes) {
-        expect(SESSION_SNAPSHOT_TYPES.has(t), `producer writes type "${t}" — not in SESSION_SNAPSHOT_TYPES`).toBe(true);
-      }
     });
 
     it('(F3) resolves a symlinked directory to its real path before deriving the project', () => {

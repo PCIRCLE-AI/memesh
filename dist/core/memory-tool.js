@@ -2,6 +2,7 @@ import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { removeFromFts, insertFtsRow, indexedObservationText } from '../storage/fts-index.js';
 import { redactSecretList, redactSecrets, redactTitleAndObservations } from './paths.js';
+import { EDITED_BY_TOOL, NOTE_FILE_PROVENANCE } from './work-topology.js';
 export const MEMORY_ROOT = '/memories';
 const NAMESPACES = ['personal', 'team', 'global'];
 const FILE_SUFFIX = '.md';
@@ -139,7 +140,31 @@ function rewriteObservations(kg, entity, observations) {
             namespace: entity.namespace,
             reinforceConfidence: false,
         });
+        const current = metadataObject(entity.name);
+        if (!current)
+            return;
+        const provenance = current.provenance;
+        const fromFolder = provenance?.source === NOTE_FILE_PROVENANCE;
+        if (!fromFolder)
+            return;
+        kg.updateEntityMetadata(entity.name, (meta) => ({
+            ...meta,
+            trust: 'untrusted',
+            ...(fromFolder ? { provenance: { ...provenance, edited: EDITED_BY_TOOL } } : {}),
+        }));
     }).immediate();
+}
+function metadataObject(name) {
+    const { metadata } = getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?').get(name);
+    if (metadata === null)
+        return {};
+    try {
+        const parsed = JSON.parse(metadata);
+        return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : null;
+    }
+    catch {
+        return null;
+    }
 }
 function tooLarge(body, path) {
     const bytes = Buffer.byteLength(body, 'utf8');

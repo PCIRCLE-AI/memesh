@@ -4,6 +4,16 @@ declare const app: import("express-serve-static-core").Express;
 export declare function isLoopbackRequest(req: {
     ip?: string;
 }): boolean;
+export interface RemoteTokenLoad {
+    token: Buffer;
+    freshlyCreated: boolean;
+    source: 'env' | 'file';
+    envIgnored: boolean;
+    tokenPath: string;
+}
+export declare function loadOrCreateRemoteToken(): RemoteTokenLoad;
+export declare function remoteTokenStartupNotice(load: Pick<RemoteTokenLoad, 'freshlyCreated' | 'source' | 'envIgnored' | 'tokenPath'>): string;
+export declare function isLoopbackHost(host: string): boolean;
 export declare function startServer(host?: string, port?: number, opts?: {
     allowRemote?: boolean;
     autoUpdateCheck?: boolean;

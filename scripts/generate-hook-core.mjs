@@ -43,13 +43,25 @@ const outDir = resolve(root, 'scripts/hooks/_generated');
 
 // Each entry: compiled leaf module (source of truth) → committed hook copy.
 const SOURCES = [
+  { from: 'dist/core/windows-permissions.js', to: 'windows-permissions.js', src: 'src/core/windows-permissions.ts' },
+  { from: 'dist/core/public-network-context.js', to: 'public-network-context.js', src: 'src/core/public-network-context.ts' },
+  { from: 'dist/network/roster.js', to: 'network-roster.js', src: 'src/network/roster.ts' },
+  { from: 'dist/network/identity.js', to: 'network-identity.js', src: 'src/network/identity.ts' },
+  { from: 'dist/network/types.js', to: 'network-types.js', src: 'src/network/types.ts' },
+  { from: 'dist/core/conversation-messages.js', to: 'conversation-messages.js', src: 'src/core/conversation-messages.ts' },
+  { from: 'dist/core/conversation-message-migration.js', to: 'conversation-message-migration.js', src: 'src/core/conversation-message-migration.ts' },
   { from: 'dist/core/paths.js', to: 'core-paths.js', src: 'src/core/paths.ts' },
   { from: 'dist/core/capture-flag.js', to: 'capture-flag.js', src: 'src/core/capture-flag.ts' },
+  { from: 'dist/core/transcript-lines.js', to: 'transcript-lines.js', src: 'src/core/transcript-lines.ts' },
   { from: 'dist/core/title.js', to: 'title.js', src: 'src/core/title.ts' },
   { from: 'dist/core/work-topology.js', to: 'work-topology.js', src: 'src/core/work-topology.ts' },
+  // Which memories a project's reads may see: the graph's recall and the briefing's
+  // shared pools use these fragments (the hooks' briefing pools import them from here).
+  { from: 'dist/core/project-scope.js', to: 'project-scope.js', src: 'src/core/project-scope.ts' },
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
-  { from: 'dist/core/agent-message-inbox.js', to: 'agent-message-inbox.js', src: 'src/core/agent-message-inbox.ts' },
+  { from: 'dist/storage/memory-mutation.js', to: 'memory-mutation.js', src: 'src/storage/memory-mutation.ts' },
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
+  { from: 'dist/core/continuation.js', to: 'continuation.js', src: 'src/core/continuation.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
   // Bash-captured edited paths, and the filter that keeps a non-path-shaped
@@ -66,12 +78,11 @@ const SOURCES = [
   { from: 'dist/core/capture-liveness.js', to: 'capture-liveness.js', src: 'src/core/capture-liveness.ts' },
   // The one update-status resolver (issue #308): SessionStart, UserPromptSubmit,
   // the Stop-hook updater and `memesh status` must agree on what "an update
-  // is available", "snoozed", "just upgraded" and "check failed" mean.
+  // is available", "just upgraded" and "check failed" mean.
   { from: 'dist/core/update-notice.js', to: 'update-notice.js', src: 'src/core/update-notice.ts' },
   { from: 'dist/core/semver.js', to: 'semver.js', src: 'src/core/semver.ts' },
-  // The citation contract. Mirrored because a PLUGIN install never runs
-  // `install-hooks` — the npm-only path — so the hooks are the only place
-  // that can put the rule on disk for those users, and they are the majority.
+  // The citation contract remains mirrored with the installed hook modules.
+  // Explicit `install-hooks`, not SessionStart, owns writes to Claude rules.
   { from: 'dist/core/citation-rule.js', to: 'citation-rule.js', src: 'src/core/citation-rule.ts' },
   // The durable-memory index (#323): SessionStart and `briefing` must render
   // the same index under the same frozen caps, so the builder is mirrored.
@@ -81,6 +92,12 @@ const SOURCES = [
   // the hook issuing its own SQL. scoring.ts is its import-free ranking.
   { from: 'dist/core/briefing-pools.js', to: 'briefing-pools.js', src: 'src/core/briefing-pools.ts' },
   { from: 'dist/core/scoring.js', to: 'scoring.js', src: 'src/core/scoring.ts' },
+  // The prompt-time recall (UserPromptSubmit): the hook and the replay script
+  // run the same scoring, so what a grader replays is what the hook injects.
+  { from: 'dist/core/prompt-recall.js', to: 'prompt-recall.js', src: 'src/core/prompt-recall.ts' },
+  // What is brought into context unasked: the session-start recent
+  // index, its out-of-date filter and the scope prompt-time recall shares.
+  { from: 'dist/core/recent-index.js', to: 'recent-index.js', src: 'src/core/recent-index.ts' },
   // The briefing-level policy (#360): SessionStart and `briefing` must agree
   // on what `minimal` / `standard` / `full` include, so the ONE policy table
   // is mirrored rather than re-decided per hook.
@@ -95,6 +112,13 @@ const SOURCES = [
   // keeps it out of its pools) and pre-edit recall must agree on its type, its
   // entity name and its cleaning rules, so they are one mirrored leaf.
   { from: 'dist/core/session-handoff.js', to: 'session-handoff.js', src: 'src/core/session-handoff.ts' },
+  // How a Codex rollout row reads (a tool request, an assistant message): the
+  // session summary, the remember nudge and the handoff must agree on it, so
+  // there is one definition and the hooks load this copy.
+  { from: 'dist/core/host-transcript.js', to: 'host-transcript.js', src: 'src/core/host-transcript.ts' },
+  // When a process started, as `ps` prints it with the locale and time zone pinned: the one implementation the update lock, the
+  // registry of running hosts and the Claude launcher check all use (a second copy would drift, and one of them did).
+  { from: 'dist/core/process-identity.js', to: 'process-identity.js', src: 'src/core/process-identity.ts' },
   // The Codex session principal decision (#474 follow-up, cross-host
   // discovery): SessionStart needs the SAME identity `codex-session.ts`
   // registers with the router under, or the hook's address line and the
@@ -109,6 +133,7 @@ const SOURCES = [
   // The entity write kernel: the hooks' captureEntity and core's createEntity
   // perform the same row / observations / tags / FTS write through it.
   { from: 'dist/storage/entity-write.js', to: 'entity-write.js', src: 'src/storage/entity-write.ts' },
+  { from: 'dist/storage/agent-network-schema.js', to: 'agent-network-schema.js', src: 'src/storage/agent-network-schema.ts' },
   { from: 'dist/storage/schema.js', to: 'schema.js', src: 'src/storage/schema.ts' },
   // The SQLite driver. A leaf by construction — it imports `node:module` and
   // nothing else — and the hooks need the identical `MemeshDatabase` the rest

@@ -2,17 +2,17 @@
 // Anonymous install ID
 // =============================================================================
 //
-// Stores a random UUID at `~/.memesh/install.json` on first read.
-// Purpose: correlate multiple feedback issues filed by the same
-// anonymous user without collecting any PII. The user (and only the
-// user) sees their own install_id via `memesh config get install_id`,
-// the dashboard Settings tab, and the doctor output. It is never
-// transmitted automatically — only included in body text the user
-// chooses to share (FeedbackWidget "Include system info" checkbox).
+// A random UUID stored at `~/.memesh/install.json`, created the first time
+// `memesh feedback` builds a report WITH diagnostics (the default; `--no-diagnostics`
+// leaves it out and creates nothing). Nothing else creates it: not the doctor, not
+// the MCP server, not a hook.
+// Purpose: correlate multiple feedback issues filed by the same anonymous user
+// without collecting any PII. The doctor shows it when it exists. It is never
+// transmitted automatically: it is only put into the issue text that `memesh
+// feedback` prints or opens for the user to submit, and the user chooses whether
+// to submit it.
 //
-// Pattern lifted from gstack's `gstack-config` + brain-init flow:
-// lazy-generate, chmod 600, single canonical location, transparent
-// to the user.
+// Lazy-generate, chmod 600, single canonical location.
 //
 // Schema is JSON-extensible so we can add fields later (created_at
 // is helpful for support; never add anything that maps to a person).
@@ -35,6 +35,43 @@ function installFilePath(): string {
   return path.join(memeshDir(), 'install.json');
 }
 
+/** What `install.json` holds, said without inventing anything. */
+export type InstallRecordState =
+  | { status: 'missing' }
+  /** The file is there but cannot be used (unreadable, not JSON, no `install_id`). `reason` is an error code or a short phrase, never a path. */
+  | { status: 'unreadable'; reason: string }
+  /** `created_at` is null when the file has none or it is not a time: the age is then unknown, not "now". */
+  | { status: 'ok'; install_id: string; created_at: string | null };
+
+/**
+ * Look at the stored install record and say what is there. Creates nothing: a caller that only reports on the
+ * install (the doctor) must not be what leaves it behind, and a record that is absent, damaged or missing its
+ * creation time are three different facts that it must be able to tell apart.
+ */
+export function readInstallRecordState(): InstallRecordState {
+  let raw: string;
+  try {
+    raw = fs.readFileSync(installFilePath(), 'utf8');
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException)?.code;
+    if (code === 'ENOENT' || code === 'ENOTDIR') return { status: 'missing' };
+    return { status: 'unreadable', reason: typeof code === 'string' ? code : 'read error' };
+  }
+  let parsed: Partial<InstallRecord> | null;
+  try {
+    parsed = JSON.parse(raw) as Partial<InstallRecord> | null;
+  } catch {
+    return { status: 'unreadable', reason: 'not valid JSON' };
+  }
+  if (!parsed || typeof parsed !== 'object' || typeof parsed.install_id !== 'string' || parsed.install_id.length === 0) {
+    return { status: 'unreadable', reason: 'no install_id in it' };
+  }
+  const createdAt = typeof parsed.created_at === 'string' && Number.isFinite(new Date(parsed.created_at).getTime())
+    ? parsed.created_at
+    : null;
+  return { status: 'ok', install_id: parsed.install_id, created_at: createdAt };
+}
+
 /**
  * Read or lazily create the install record. Idempotent — once
  * generated, the same UUID is returned on every subsequent call from
@@ -46,20 +83,13 @@ function installFilePath(): string {
  */
 export function getInstallRecord(): InstallRecord {
   const filePath = installFilePath();
-  try {
-    if (fs.existsSync(filePath)) {
-      const raw = fs.readFileSync(filePath, 'utf8');
-      const parsed = JSON.parse(raw) as Partial<InstallRecord>;
-      if (typeof parsed.install_id === 'string' && parsed.install_id.length > 0) {
-        return {
-          install_id: parsed.install_id,
-          created_at: typeof parsed.created_at === 'string' ? parsed.created_at : new Date().toISOString(),
-          schema_version: SCHEMA_VERSION,
-        };
-      }
-    }
-  } catch {
-    // Fall through to generate
+  const state = readInstallRecordState();
+  if (state.status === 'ok') {
+    return {
+      install_id: state.install_id,
+      created_at: state.created_at ?? new Date().toISOString(),
+      schema_version: SCHEMA_VERSION,
+    };
   }
 
   const record: InstallRecord = {

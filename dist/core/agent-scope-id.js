@@ -26,6 +26,16 @@ export function agentScopeIdRejection(field, value) {
     return `${field} must be a stable identifier, not a filesystem path (received ${JSON.stringify(canonicalAgentScopeId(value))}). `
         + `Use the name on its own, for example ${JSON.stringify(example)}.`;
 }
+export function sessionIdRejection(field, value) {
+    const path = agentScopeIdRejection(field, value);
+    if (path)
+        return path;
+    if (/[\u0080-\uffff]/.test(value)) {
+        return `${field} must contain only ASCII characters: a session id is the UUID or thread id its host gives it `
+            + `(received ${JSON.stringify(canonicalAgentScopeId(value))}).`;
+    }
+    return null;
+}
 export function projectScopeRejection(value) {
     if (value.trim() === '')
         return 'project must not be empty.';
@@ -40,16 +50,4 @@ export function projectScopeRejection(value) {
     }
     return null;
 }
-export const AGENT_MESSAGE_SCOPE_COLUMNS = [
-    { table: 'agent_messages', columns: ['project', 'recipient'] },
-    { table: 'agent_message_deliveries', columns: ['project', 'recipient'] },
-    { table: 'agent_message_events', columns: ['project', 'recipient'] },
-    { table: 'agent_message_cursors', columns: ['project', 'recipient'] },
-    { table: 'agent_message_receipts', columns: ['project', 'recipient', 'actor'] },
-    { table: 'agent_message_idempotency', columns: ['project'] },
-    { table: 'agent_ack_facts', columns: ['actor'] },
-    { table: 'agent_workflow_facts', columns: ['actor'] },
-    { table: 'agent_retention_facts', columns: ['actor'] },
-];
-export const AGENT_MESSAGE_PROJECT_TABLES = AGENT_MESSAGE_SCOPE_COLUMNS.filter((e) => e.columns.includes('project')).map((e) => e.table);
 //# sourceMappingURL=agent-scope-id.js.map

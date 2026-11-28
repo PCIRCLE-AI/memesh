@@ -241,7 +241,7 @@ describe('Core Operations: remember', () => {
     expect(recall({ query: 'quokka' }).map((entity) => entity.name)).toEqual(['atomic-old']);
   });
 
-  it('promotes imported memories back to trusted after local remember', () => {
+  it('an imported memory stays untrusted when a local remember adds to it or rewrites it with replace', () => {
     importMemories({
       merge_strategy: 'skip',
       data: {
@@ -259,18 +259,35 @@ describe('Core Operations: remember', () => {
       },
     });
 
+    const read = () => recall({ query: 'shared-auth-decision', include_archived: true })
+      .find((result) => result.name === 'shared-auth-decision');
+
+    // Adding a line does not vouch for the imported text that is still there.
     remember({
       name: 'shared-auth-decision',
       type: 'decision',
-      observations: ['Locally confirmed and updated'],
+      observations: ['Locally added line'],
     });
+    expect(read()?.metadata).toMatchObject({ trust: 'untrusted', provenance: expect.objectContaining({ source: 'import' }) });
 
-    const entity = recall({ query: 'shared-auth-decision', include_archived: true })
-      .find((result) => result.name === 'shared-auth-decision');
-    expect(entity?.metadata).toMatchObject({
-      trust: 'trusted',
-      provenance: expect.objectContaining({ source: 'local' }),
+    // Rewriting it does not either: a note that was read and then "tidied" with
+    // replace must not become trusted. Only a new name is the caller's own.
+    remember({
+      name: 'shared-auth-decision',
+      type: 'decision',
+      replace: true,
+      why: 'confirmed locally; revisit if the team changes it',
+      observations: ['Locally confirmed and rewritten'],
     });
+    expect(read()?.metadata).toMatchObject({ trust: 'untrusted', provenance: expect.objectContaining({ source: 'import' }) });
+
+    remember({
+      name: 'shared-auth-decision-local',
+      type: 'decision',
+      why: 'confirmed locally; revisit if the team changes it',
+      observations: ['Locally confirmed'],
+    });
+    expect(recall({ query: 'shared-auth-decision-local' })[0]?.metadata).toMatchObject({ trust: 'trusted', provenance: expect.objectContaining({ source: 'local' }) });
   });
 });
 

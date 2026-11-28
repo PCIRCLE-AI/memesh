@@ -8,6 +8,7 @@ export interface SetupSeams {
     isOnPath: (bin: string) => boolean;
     run: (cmd: string, args: string[]) => RunResult;
     installedPluginsPath?: string;
+    claudeConfigDir?: () => string | undefined;
 }
 export interface WireAction {
     kind: 'run' | 'install-hooks';
@@ -21,9 +22,14 @@ export interface HostStatus {
     present: boolean;
     presenceDetail: string;
     wired: boolean | null;
+    unchecked?: string;
+    unprobed?: boolean;
     wiredDetail: string;
     actions: WireAction[];
 }
 export declare function inspectHosts(seams: SetupSeams): HostStatus[];
-export declare function allWired(statuses: HostStatus[]): boolean;
+export declare function setupVerdict(statuses: HostStatus[]): {
+    exitCode: 0 | 1;
+    closing: string | null;
+};
 //# sourceMappingURL=setup.d.ts.map

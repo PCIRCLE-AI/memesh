@@ -103,4 +103,48 @@ describe('install-id', () => {
     const { getInstallRecord, getInstallId } = await freshModule();
     expect(getInstallId()).toBe(getInstallRecord().install_id);
   });
+
+  describe('readInstallRecordState: says what is there and creates nothing', () => {
+    it('missing: no file, and none is created', async () => {
+      const { readInstallRecordState } = await freshModule();
+      expect(readInstallRecordState()).toEqual({ status: 'missing' });
+      expect(fs.readdirSync(tmpDir), 'reading created a file').toEqual([]);
+      expect(fs.existsSync(tmpDir)).toBe(true);
+    });
+
+    it('ok: the id and the creation time as stored', async () => {
+      fs.writeFileSync(path.join(tmpDir, 'install.json'), JSON.stringify({ install_id: 'abc-123', created_at: '2026-01-02T03:04:05.000Z', schema_version: 1 }));
+      const { readInstallRecordState } = await freshModule();
+      expect(readInstallRecordState()).toEqual({ status: 'ok', install_id: 'abc-123', created_at: '2026-01-02T03:04:05.000Z' });
+      expect(fs.readdirSync(tmpDir).length, 'the record that was written is not there').toBeGreaterThan(0);
+    });
+
+    it.each([
+      ['no created_at', { install_id: 'abc-123' }],
+      ['a created_at that is not a time', { install_id: 'abc-123', created_at: 'yesterday-ish' }],
+      ['a created_at that is a number', { install_id: 'abc-123', created_at: 1700000000 }],
+    ])('ok but age unknown, never "now": %s', async (_name, body) => {
+      fs.writeFileSync(path.join(tmpDir, 'install.json'), JSON.stringify(body));
+      const { readInstallRecordState } = await freshModule();
+      expect(readInstallRecordState()).toEqual({ status: 'ok', install_id: 'abc-123', created_at: null });
+    });
+
+    it.each([
+      ['not JSON', '{not json', 'not valid JSON'],
+      ['JSON null', 'null', 'no install_id in it'],
+      ['an array', '[]', 'no install_id in it'],
+      ['an empty install_id', JSON.stringify({ install_id: '' }), 'no install_id in it'],
+      ['an install_id that is not a string', JSON.stringify({ install_id: 7 }), 'no install_id in it'],
+    ])('unreadable, with a reason that carries no path: %s', async (_name, body, reason) => {
+      fs.writeFileSync(path.join(tmpDir, 'install.json'), body);
+      const { readInstallRecordState } = await freshModule();
+      expect(readInstallRecordState()).toEqual({ status: 'unreadable', reason });
+    });
+
+    it('unreadable when the path is a folder: the error code is the reason, not the message', async () => {
+      fs.mkdirSync(path.join(tmpDir, 'install.json'));
+      const { readInstallRecordState } = await freshModule();
+      expect(readInstallRecordState()).toEqual({ status: 'unreadable', reason: 'EISDIR' });
+    });
+  });
 });

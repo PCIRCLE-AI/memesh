@@ -26,6 +26,7 @@ import os from 'os';
 import { createRequire } from 'module';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName: mirrorProjectName, recallSessionPath } = require('../../scripts/hooks/_shared.js');
@@ -96,7 +97,8 @@ describe('the compliance numerator counts what the denominator counts', () => {
 
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'cite-session', mirrorProjectName(cwd)), JSON.stringify({
+    const recordPath = recallSessionPath(sessionsDir, 'cite-session', mirrorProjectName(cwd));
+    fs.writeFileSync(recordPath, JSON.stringify({
       sessionId: 'cite-session',
       injectedAt: new Date().toISOString(),
       project: mirrorProjectName(cwd),
@@ -104,6 +106,7 @@ describe('the compliance numerator counts what the denominator counts', () => {
       entityNames: ['injected-decision'],
       injectedContext: 'unused-by-the-accounting',
     }));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessionsDir, recordPath]);
     return id;
   }
 

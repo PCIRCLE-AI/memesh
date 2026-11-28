@@ -1,5 +1,7 @@
 {
-  "modules": ["./native-memory.js"],
+  "modules": [
+    "./native-memory.js"
+  ],
   "hooks": {
     "PreToolUse": [
       {
@@ -35,24 +37,12 @@
         ]
       },
       {
-        "matcher": "startup|resume",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
-    "SessionEnd": [
-      {
         "matcher": "*",
         "hooks": [
           {
             "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/dist/host-runtime/codex-session.js",
-            "timeout": 3
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js",
+            "timeout": 10
           }
         ]
       }
@@ -64,16 +54,6 @@
           {
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js",
-            "timeout": 5
-          }
-        ]
-      },
-      {
-        "matcher": "ExitPlanMode|AskUserQuestion",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/decision-nudge.js",
             "timeout": 5
           }
         ]
@@ -96,18 +76,6 @@
         ]
       }
     ],
-    "PreCompact": [
-      {
-        "matcher": "*",
-        "hooks": [
-          {
-            "type": "command",
-            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-compact.js",
-            "timeout": 10
-          }
-        ]
-      }
-    ],
     "UserPromptSubmit": [
       {
         "matcher": "*",
@@ -116,6 +84,21 @@
             "type": "command",
             "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/user-prompt-intent.js",
             "timeout": 3
+          },
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/prompt-recall.js",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "*",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js",
+            "timeout": 10
           }
         ]
       }

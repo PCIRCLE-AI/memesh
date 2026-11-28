@@ -25,28 +25,22 @@
 // unasked" would inflate frequency for whatever happened to be in the window.
 
 import { getDatabase } from '../db.js';
-import { getProjectName } from './paths.js';
+import { getProjectIds, getProjectName } from './paths.js';
 import { readConfig } from './config.js';
+import { continuationLines, continuationTaskKey } from './continuation.js';
+import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
-import { recipientEverSeen, unreadDeliveryCount, unreadInboxLines } from './agent-message-inbox.js';
-import { hostSessionFromEnv } from './host-session.js';
-import { canonicalAgentScopeId } from './agent-scope-id.js';
-import { briefingTaskStateLines } from './task-state.js';
+import { taskStateLines } from './task-state.js';
 import { handoffLines } from './session-handoff.js';
-import {
-  buildBriefingIndex,
-  injectedIndexReserve,
-  type BriefingIndex,
-} from './briefing-index.js';
+import { buildBriefingIndex, type BriefingIndex } from './briefing-index.js';
+import { buildRecentIndex } from './recent-index.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 import {
   DEFAULT_TOPOLOGY_BUDGET,
   assembleTopologyBlock,
-  boundTaskStateLines,
-  buildReferenceContext,
-  hasBriefingContent,
-  joinedLength,
+  buildOpeningContext,
+  MAX_OPENING_CONTEXT_BYTES,
   jsonStringLiteral,
   projectLabel,
 } from './work-topology.js';
@@ -57,8 +51,6 @@ import {
   type BriefingLevel,
 } from './briefing-level.js';
 
-const PROJECT_LIMIT = 30;
-
 export interface BriefingResult {
   project: string;
   /** The fenced, injection-ready block — identical framing to the hook's. */
@@ -66,14 +58,11 @@ export interface BriefingResult {
   /** How many memories were rendered into the block (excluding the task state). */
   entityCount: number;
   /** Whether a task-state line leads the block: the fresh state, the one-line
-   *  stale flag, or the unreadable-record line. The unread-message reminder
-   *  that rides beside them is not a task state and does not count — a briefing
-   *  whose only state line is that reminder has `hasTaskState: false`. At
-   *  `minimal` a FRESH state is not rendered at all, so it is `false` there. */
+   *  stale flag, or the unreadable-record line. At
+   *  every level, a fresh stated task state can be rendered. */
   hasTaskState: boolean;
-  /** Whether the block leads with the session handoff: where the last session
-   *  in this project left off. Shown at every level while it is under
-   *  HANDOFF_MAX_AGE_DAYS old. Not counted in `entityCount`. */
+  /** Whether the block includes recent sessions' latest assistant replies.
+   *  Not counted in `entityCount`. */
   hasHandoff: boolean;
   /** The durable-memory index (#323) — counts, cost and the rendered lines,
    *  computed regardless of level (the `--index` CLI flag and callers that
@@ -88,9 +77,8 @@ export interface BriefingResult {
    *  empty fence. Callers that render for a human (the CLI) must check this
    *  and print a short line instead of `text`; callers that just forward
    *  the object (MCP) do not need to — `empty: true, text: ''` already says
-   *  the same thing machine-readably. Can only be true at `minimal`: at
-   *  `standard`/`full` the durable-memory index always contributes at
-   *  least its own empty-state line (#323). */
+   *  the same thing machine-readably. Possible at every level: the separate
+   *  durable-memory index does not create opening context on an empty graph. */
   empty: boolean;
 }
 
@@ -104,22 +92,35 @@ export interface BriefingResult {
  * includes them: only `global` is excluded, and only rows carrying this
  * project's tag are read, so the index is never cross-project.
  */
+/** Every id this project's memories may be filed under: all of the current checkout's when it is the project asked about. */
+function projectIdsFor(projectName: string): string[] {
+  return projectName === getProjectName() ? getProjectIds() : [projectName];
+}
+
 export function readBriefingIndex(
   db: MemeshDatabase,
   projectName: string,
   now: number = Date.now(),
+  projectIds?: readonly string[],
 ): BriefingIndex {
-  const { candidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds ?? projectIdsFor(projectName));
   return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
 
 /**
  * Assemble the same block session-start injects, for a caller that has no
  * session-start: task state first (the one line someone stated on purpose),
- * then the ranked topology, wrapped in the shared fence.
+ * then the ranked topology, wrapped in the shared fence. `projectIds` are the
+ * ids the checkout `project` was resolved from is filed under (getProjectIds),
+ * when the caller knows them (default: this process's own checkout's when
+ * `project` is its project).
  */
-export function assembleBriefing(project?: string, recipient?: string): BriefingResult {
+export function assembleBriefing(
+  project?: string, _recipient?: string, projectIds?: readonly string[],
+  continuationScope?: { workspace: string | null; session?: string },
+): BriefingResult {
   const projectName = project ?? getProjectName();
+  const ids = projectIds ?? projectIdsFor(projectName);
   const db = getDatabase();
 
   // #360 — env > config > default('minimal'), the same precedence
@@ -131,7 +132,8 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // same discipline the SessionStart hook applies via its outcome record
   // (this module has no equivalent JSONL channel, so stderr is the honest
   // substitute; a CLI/MCP process never mixes stderr into its stdout JSON).
-  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, readConfig().briefing);
+  const config = readConfig();
+  const resolvedLevel = resolveBriefingLevel(process.env.MEMESH_BRIEFING, config.briefing);
   if (resolvedLevel.invalid) {
     const { source, value } = resolvedLevel.invalid;
     try {
@@ -170,80 +172,45 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // it becomes one line that says the record is unreadable and how to
   // replace it, in the slot the stated lines would have taken.
   let taskLines: string[];
+  let taskKey: string | undefined;
   try {
-    // #360: briefingTaskStateLines downgrades a stale record to one line
-    // (at every level) and, when fresh, honours the level's own
-    // taskState flag — `minimal` omits it entirely.
-    taskLines = boundTaskStateLines(briefingTaskStateLines(getTaskState(projectName).state, projectName, new Date(), {
-      includeFresh: policy.taskState,
-    }));
+    const task = getTaskState(projectName, ids).state;
+    taskLines = taskStateLines(task, projectName);
+    taskKey = continuationTaskKey(task);
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
     taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
   }
-  const inboxRecipient = recipient === undefined ? undefined : canonicalAgentScopeId(recipient);
-  // The inbox line rides WITH the stated lines, not among the ranked
-  // memories: like goal / next / blocked it is a fact the agent must act
-  // on, not a memory that scored well. It is only actionable when the caller
-  // supplies the exact logical recipient; generic briefing has no identity
-  // and must not aggregate another recipient's activity.
-  // The inbox is keyed on (project, recipient) in the canonical form
-  // core/agent-scope-id.ts defines — that is how `send` stores it and how
-  // `poll` reads it back. Counting must ask in the same spelling, or a
-  // caller whose name differs only by Unicode composition is told its inbox
-  // is empty while `poll` returns messages: the split this change closes,
-  // reappearing on the surface an agent actually reads. The project tag
-  // lookups below deliberately keep `projectName` as given — those are
-  // entity tags, written by a different path, not this key.
-  // #497: a message meant for one session of a shared principal counts only
-  // in that session; this process's session is the one Claude Code started it in.
-  const unreadCount = unreadDeliveryCount(db, canonicalAgentScopeId(projectName), inboxRecipient, hostSessionFromEnv());
-  // D8: only worth asking when it can change the answer — a nonzero count
-  // already proves the recipient is real, and with no recipient at all
-  // `unreadInboxLines` never looks at it.
-  const everSeen = inboxRecipient !== undefined && unreadCount === 0
-    ? recipientEverSeen(db, canonicalAgentScopeId(projectName), inboxRecipient)
-    : undefined;
-  // The session handoff leads everything: it is what the last session in this
-  // project said it was about to do. Exact project, active, and through the
-  // same trust gate as every other memory. Every pool below comes from the
-  // one selection the hook also runs.
+  // Keep the optional recipient argument for caller compatibility. Conversation
+  // delivery belongs to the message hooks/read path, not the memory briefing.
+  // Task state and recent session tails precede ranked memories. The tails
+  // share the hook's exact-project, active and trust-filtered selection.
+  // The same limit the SessionStart hook resolves (env, then config, then the
+  // default), so the two surfaces cannot show different sets for one project.
   const pools = selectBriefingPools(db, projectName, {
-    projectLimit: PROJECT_LIMIT,
+    projectIds: ids,
+    projectLimit: resolveSessionLimit(process.env.MEMESH_SESSION_LIMIT, config.sessionLimit).value,
     global: policy.global,
     foreign: policy.foreign,
   });
-  const handoff = pools.handoff ? handoffLines(pools.handoff) : [];
+  const handoff = pools.handoffs.flatMap((row) => handoffLines(row));
 
-  const stateLines = [
-    ...handoff,
-    ...taskLines,
-    ...unreadInboxLines(
-      unreadCount,
-      canonicalAgentScopeId(projectName),
-      inboxRecipient,
-      everSeen,
-    ),
-  ];
-
-  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.global, ...pools.recent].map((row) => row.id));
+  const snippets = readSnippets(db, [...pools.lessons, ...pools.project, ...pools.noProject, ...pools.shared, ...pools.global, ...pools.recent].map((row) => row.id));
   const toEntities = (pool: PoolRow[]) => pool.map((row) => toTopologyEntity(row, snippets));
 
-  // One memory budget for everything inside the fence; when this level shows
-  // the index, room for its heading and "N more" line is kept back first.
-  const indexReserve = policy.index ? injectedIndexReserve(projectName) + 2 : 0;
+  // One memory budget for the ranked sections; the recent index after them is not cut by it.
   const lines = assembleTopologyBlock(
-    stateLines,
+    [],
     [
       { entities: toEntities(pools.lessons), foreign: false },
       { entities: toEntities(pools.project), foreign: false },
       { entities: toEntities(pools.noProject), foreign: false, noProject: true },
+      { entities: toEntities(pools.shared), foreign: false, shared: true },
       { entities: toEntities(pools.global), foreign: false, global: true },
       { entities: toEntities(pools.recent), foreign: true },
     ],
     projectName,
-    DEFAULT_TOPOLOGY_BUDGET,
-    { reserve: indexReserve },
+    { ...DEFAULT_TOPOLOGY_BUDGET, maxChars: MAX_OPENING_CONTEXT_BYTES },
   );
 
   // Repository facts PREFIX a briefing; they never constitute one. Prepending
@@ -251,7 +218,7 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // a git repository returned a fenced block whose entire content was a branch
   // name, which is the one thing the agent can already see. So the emptiness
   // test comes first and the facts are context for memories, not a substitute.
-  const withRepo = lines.length > 0 && repoLines.length > 0
+  const withRepo = (lines.length > 0 || taskLines.length > 0 || handoff.length > 0) && repoLines.length > 0
     ? [...repoLines, '', ...lines]
     : lines;
 
@@ -266,42 +233,43 @@ export function assembleBriefing(project?: string, recipient?: string): Briefing
   // `--index` flag, read it on its own) — but its lines only enter the
   // INJECTED block when the level includes it.
   const now = Date.now();
-  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName);
+  const { candidates: indexCandidates, truncated } = readIndexCandidates(db, projectName, ids);
+  // The standalone `index` stays the full durable catalog (`memesh briefing --index`);
+  // the INJECTED section is the recent index session-start shows (recent-index.ts).
   const index = buildBriefingIndex(indexCandidates, projectName, now, { truncated });
-  // The injected index gets what the block left of the shared budget; the
-  // standalone `index` above keeps its own caps (`memesh briefing --index`).
-  const used = lines.length === 0 ? 0 : joinedLength(lines) + 2;
-  const indexLines = policy.index
-    ? buildBriefingIndex(indexCandidates, projectName, now, { truncated, maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars - used }).lines
-    : [];
+  // The recent index is shown at every level (it is what was measured as worth its cost).
+  const indexLines = buildRecentIndex(db, projectName, now, ids).lines;
   const block = withRepo.length > 0 && indexLines.length > 0
     ? [...withRepo, '', ...indexLines]
     : [...withRepo, ...indexLines];
 
-  // #360: `block` can be genuinely empty — `minimal` on a
-  // project with nothing yet: no ranked topology, no repo-state prefix
-  // (repo lines only prepend onto EXISTING topology lines, unchanged from
-  // before #360), and `indexLines` itself empty because `minimal` excludes
-  // the index entirely (`policy.index === false`). Wrapping nothing in the
+  // `block` can be genuinely empty — a project with nothing yet: no ranked
+  // topology, no repo-state prefix (repo lines only prepend onto EXISTING
+  // topology lines), and `indexLines` itself empty because the recent index
+  // has nothing in scope to list. Wrapping nothing in the
   // preamble + an empty fence is not "nothing" — `hasBriefingContent` is
   // the SAME rule the hook applies to its own assembled lines (see
   // session-start.js's `memoryContext` construction), so the two cannot
   // drift on what "nothing to show" means, even though neither can call
   // the other's code (A1a).
-  const empty = !hasBriefingContent(block);
+  const continuationCwd = continuationScope ? continuationScope.workspace : process.cwd();
+  const session = continuationScope ? continuationScope.session : process.env.CODEX_THREAD_ID;
+  const continuation = continuationCwd && getProjectName(continuationCwd) === projectName
+    ? continuationLines(projectName, continuationCwd, session, taskKey) : [];
+  const opening = buildOpeningContext([...taskLines, ...continuation], handoff, block);
+  const empty = opening.text === '';
+  // Remaining lines preserve their original positions. Count only rendered
+  // ranked rows, never a tail or task value that happens to resemble one.
+  const renderedRankedEnd = Math.max(0, opening.remainingLines.length - (withRepo.length - lines.length));
 
   return {
     project: projectName,
-    text: empty ? '' : buildReferenceContext(block),
+    text: opening.text,
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
-    // The ranked lines only: the state lines lead the block, and the
-    // handoff's text there can itself contain lines that look like `- [`.
-    entityCount: lines.slice(stateLines.length).filter((l) => l.startsWith('- [')).length,
-    // `taskLines`, not `stateLines`: the latter also carries the unread-inbox
-    // reminder, which is not a task state.
+    entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
     hasTaskState: taskLines.length > 0,
-    hasHandoff: handoff.length > 0,
+    hasHandoff: opening.tailLines.length > 0,
     index,
     level,
     empty,

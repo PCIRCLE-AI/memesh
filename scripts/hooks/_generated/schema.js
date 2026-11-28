@@ -8,6 +8,7 @@
 // ============================================================================
 import { insertFtsRow } from './fts-index.js';
 import { parseSqliteUtcMs } from './time-utils.js';
+import { NETWORK_METADATA_SCHEMA_SQL } from './agent-network-schema.js';
 export const SCHEMA_SQL = `
 CREATE TABLE IF NOT EXISTS entities (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -68,238 +69,6 @@ CREATE TABLE IF NOT EXISTS memesh_metadata (
   value TEXT NOT NULL
 );
 
--- Local agent messaging core. Messages are immutable, deliveries identify the
--- authorized recipient, events are the wakeup/catch-up surface, cursors keep
--- the internal sequence opaque, and receipts are append-only facts that remain
--- separate from delivery existence.
-CREATE TABLE IF NOT EXISTS agent_messages (
-  message_id         TEXT PRIMARY KEY,
-  project            TEXT NOT NULL,
-  sender             TEXT NOT NULL,
-  sender_host        TEXT,
-  recipient          TEXT NOT NULL,
-  content_type       TEXT NOT NULL,
-  correlation_id     TEXT,
-  reply_to_message_id TEXT,
-  privacy            TEXT NOT NULL,
-  payload_json       TEXT NOT NULL,
-  -- A tombstone replaces only a terminal payload. The original JSON bytes
-  -- are never reconstructed from these fields; they retain enough identity to
-  -- audit the erasure while the routing and lifecycle tables remain intact.
-  payload_sha256     TEXT,
-  payload_original_bytes INTEGER,
-  payload_tombstoned_at TIMESTAMP,
-  provenance_json    TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_deliveries (
-  delivery_id        TEXT PRIMARY KEY,
-  message_id         TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  target_kind        TEXT NOT NULL DEFAULT 'principal' CHECK (target_kind IN ('principal', 'session')),
-  -- #497: the one session a principal delivery is meant for (NULL: every
-  -- session of that principal). Added by migrateEntitiesSchema on older files.
-  intended_session   TEXT,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  UNIQUE(message_id, project, recipient)
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_events (
-  event_sequence     INTEGER PRIMARY KEY AUTOINCREMENT,
-  event_id           TEXT NOT NULL UNIQUE,
-  message_id         TEXT NOT NULL,
-  delivery_id        TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  event_kind         TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_idempotency (
-  project            TEXT NOT NULL,
-  sender             TEXT NOT NULL,
-  idempotency_key    TEXT NOT NULL,
-  request_hash       TEXT NOT NULL,
-  message_id         TEXT NOT NULL UNIQUE,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  PRIMARY KEY(project, sender, idempotency_key)
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_cursors (
-  cursor_token       TEXT PRIMARY KEY,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  event_sequence     INTEGER NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP
-);
-
-CREATE TABLE IF NOT EXISTS agent_message_receipts (
-  receipt_id         TEXT PRIMARY KEY,
-  message_id         TEXT NOT NULL,
-  project            TEXT NOT NULL,
-  recipient          TEXT NOT NULL,
-  receipt_kind       TEXT NOT NULL,
-  actor              TEXT NOT NULL,
-  idempotency_key    TEXT NOT NULL,
-  request_hash       TEXT NOT NULL,
-  detail_json        TEXT NOT NULL,
-  created_at         TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE,
-  UNIQUE(project, recipient, message_id, receipt_kind, idempotency_key)
-);
-
--- Host-native push identity and lifecycle. A principal is stable, a session
--- instance is ephemeral, and every connection to that session gets a strictly
--- increasing generation. The activation checkpoint is intentionally created
--- at first principal registration: principal-targeted history at or before it
--- is durable inbox history, but is never replayed as a first-time host push.
-CREATE TABLE IF NOT EXISTS agent_principals (
-  project                     TEXT NOT NULL,
-  principal_id                TEXT NOT NULL,
-  activation_event_sequence   INTEGER NOT NULL,
-  created_at                  TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(project, principal_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_session_instances (
-  project                  TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  adapter_kind             TEXT NOT NULL,
-  last_generation          INTEGER NOT NULL DEFAULT 0,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  PRIMARY KEY(project, session_instance_id),
-  FOREIGN KEY (project, principal_id) REFERENCES agent_principals(project, principal_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_session_connections (
-  connection_id            TEXT PRIMARY KEY,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  adapter_kind             TEXT NOT NULL,
-  router_instance_id       TEXT NOT NULL,
-  lease_expires_at_ms      INTEGER NOT NULL,
-  connected_at             TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  disconnected_at          TIMESTAMP,
-  disconnect_reason        TEXT,
-  UNIQUE(project, session_instance_id, generation),
-  FOREIGN KEY (project, session_instance_id)
-    REFERENCES agent_session_instances(project, session_instance_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_presence_facts (
-  presence_fact_id          TEXT PRIMARY KEY,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  connection_id            TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  presence_kind            TEXT NOT NULL CHECK (presence_kind IN ('connected', 'heartbeat', 'disconnected', 'superseded')),
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (connection_id) REFERENCES agent_session_connections(connection_id)
-);
-
--- Dispatch is at-least-once across a crash boundary. delivery_id is the stable
--- adapter dispatch key; attempt_id identifies one invocation. A host_accept is
--- a separate fact and never implies an agent acknowledgement or workflow
--- outcome.
-CREATE TABLE IF NOT EXISTS agent_dispatch_attempts (
-  attempt_id               TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  project                  TEXT NOT NULL,
-  principal_id             TEXT NOT NULL,
-  session_instance_id      TEXT NOT NULL,
-  connection_id            TEXT NOT NULL,
-  generation               INTEGER NOT NULL,
-  router_instance_id       TEXT NOT NULL,
-  attempt_number           INTEGER NOT NULL,
-  result                   TEXT NOT NULL DEFAULT 'started' CHECK (result IN ('started', 'adapter_returned', 'adapter_rejected', 'adapter_failed', 'stale_generation')),
-  failure_code             TEXT,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  completed_at             TIMESTAMP,
-  UNIQUE(delivery_id, attempt_number),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  FOREIGN KEY (connection_id) REFERENCES agent_session_connections(connection_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_host_accepts (
-  host_accept_id           TEXT PRIMARY KEY,
-  attempt_id               TEXT NOT NULL UNIQUE,
-  delivery_id              TEXT NOT NULL UNIQUE,
-  adapter_kind             TEXT NOT NULL,
-  receipt_json             TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  FOREIGN KEY (attempt_id) REFERENCES agent_dispatch_attempts(attempt_id),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_ack_facts (
-  ack_fact_id              TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  host_accept_id           TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(delivery_id, actor, idempotency_key),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE,
-  FOREIGN KEY (host_accept_id) REFERENCES agent_host_accepts(host_accept_id)
-);
-
-CREATE TABLE IF NOT EXISTS agent_workflow_facts (
-  workflow_fact_id         TEXT PRIMARY KEY,
-  delivery_id              TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  workflow_state           TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(delivery_id, actor, idempotency_key),
-  FOREIGN KEY (delivery_id) REFERENCES agent_message_deliveries(delivery_id) ON DELETE CASCADE
-);
-
-CREATE TABLE IF NOT EXISTS agent_retention_facts (
-  retention_fact_id        TEXT PRIMARY KEY,
-  message_id               TEXT NOT NULL,
-  actor                    TEXT NOT NULL,
-  retention_state          TEXT NOT NULL,
-  idempotency_key          TEXT NOT NULL,
-  request_hash             TEXT NOT NULL,
-  detail_json              TEXT NOT NULL,
-  created_at               TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
-  UNIQUE(message_id, actor, idempotency_key),
-  FOREIGN KEY (message_id) REFERENCES agent_messages(message_id) ON DELETE CASCADE
-);
-
-CREATE INDEX IF NOT EXISTS idx_agent_message_events_recipient_sequence
-  ON agent_message_events(project, recipient, event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_scope
-  ON agent_message_deliveries(project, recipient, message_id);
-CREATE INDEX IF NOT EXISTS idx_agent_message_receipts_scope
-  ON agent_message_receipts(project, recipient, message_id, created_at);
-CREATE UNIQUE INDEX IF NOT EXISTS idx_agent_message_cursors_unique_scope_sequence
-  ON agent_message_cursors(project, recipient, event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_principals_activation
-  ON agent_principals(project, activation_event_sequence);
-CREATE INDEX IF NOT EXISTS idx_agent_session_connections_active
-  ON agent_session_connections(project, principal_id, session_instance_id, lease_expires_at_ms)
-  WHERE disconnected_at IS NULL;
-CREATE INDEX IF NOT EXISTS idx_agent_dispatch_attempts_delivery
-  ON agent_dispatch_attempts(delivery_id, attempt_number);
-CREATE INDEX IF NOT EXISTS idx_agent_workflow_facts_delivery_created
-  ON agent_workflow_facts(delivery_id, created_at, workflow_fact_id);
-
 -- Proof that a capture hook actually RAN. Nothing else in this schema can
 -- give it: every other signal is "a row was written", and "the hook ran and
 -- found nothing worth saving" is the healthy case that produces no row at
@@ -337,7 +106,14 @@ CREATE TABLE IF NOT EXISTS hook_runs (
 -- read-only database FILE (measured: "attempt to write a readonly database"
 -- killed recall along with capture). The helper SELECTs first and writes
 -- only when the key is genuinely absent — once per database lifetime.
-`;
+${NETWORK_METADATA_SCHEMA_SQL}`;
+export const MEMORY_READ_TABLES = ['entities', 'observations', 'tags'];
+export function hasTables(db, names) {
+    const row = db
+        .prepare(`SELECT count(*) AS n FROM sqlite_master WHERE type = 'table' AND name IN (${names.map(() => '?').join(', ')})`)
+        .get(...names);
+    return row.n === names.length;
+}
 export const FTS_SQL = `
 CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
   name, observations, content='',
@@ -349,6 +125,22 @@ CREATE VIRTUAL TABLE IF NOT EXISTS entities_fts USING fts5(
 -- which are the ones BM25 already scores near zero. See dropUbiquitousTerms().
 CREATE VIRTUAL TABLE IF NOT EXISTS fts_vocab USING fts5vocab(entities_fts, 'row');
 `;
+export function createSchema(db) {
+    if (hasTables(db, MEMORY_READ_TABLES)) {
+        db.exec(SCHEMA_SQL);
+        return;
+    }
+    try {
+        db.exec(`BEGIN IMMEDIATE;\n${SCHEMA_SQL}\nCOMMIT;`);
+    }
+    catch (err) {
+        try {
+            db.exec('ROLLBACK');
+        }
+        catch { }
+        throw err;
+    }
+}
 export function safeAlter(db, sql) {
     try {
         db.exec(sql);
@@ -390,37 +182,6 @@ export function migrateEntitiesSchema(db) {
        session_id      TEXT NOT NULL,
        updated_at_ms   INTEGER NOT NULL
      );`);
-    const deliveryTableExists = db
-        .prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'agent_message_deliveries'")
-        .get();
-    if (!deliveryTableExists)
-        return;
-    const deliveryColumns = new Set(db.prepare("PRAGMA table_info(agent_message_deliveries)").all().map((column) => column.name));
-    if (!deliveryColumns.has('target_kind')) {
-        safeAlter(db, "ALTER TABLE agent_message_deliveries ADD COLUMN target_kind TEXT NOT NULL DEFAULT 'principal' " +
-            "CHECK (target_kind IN ('principal', 'session'))");
-    }
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_target
-       ON agent_message_deliveries(project, target_kind, recipient, message_id);`);
-    if (!deliveryColumns.has('intended_session')) {
-        safeAlter(db, 'ALTER TABLE agent_message_deliveries ADD COLUMN intended_session TEXT');
-    }
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_message_deliveries_intended
-       ON agent_message_deliveries(project, recipient, intended_session);`);
-    const messageColumns = new Set(db.prepare("PRAGMA table_info(agent_messages)").all().map((column) => column.name));
-    const addMessageColumn = (column, sql) => {
-        if (messageColumns.has(column))
-            return;
-        safeAlter(db, sql);
-        messageColumns.add(column);
-    };
-    addMessageColumn('payload_sha256', 'ALTER TABLE agent_messages ADD COLUMN payload_sha256 TEXT');
-    addMessageColumn('payload_original_bytes', 'ALTER TABLE agent_messages ADD COLUMN payload_original_bytes INTEGER');
-    addMessageColumn('payload_tombstoned_at', 'ALTER TABLE agent_messages ADD COLUMN payload_tombstoned_at TIMESTAMP');
-    db.exec(`CREATE INDEX IF NOT EXISTS idx_agent_messages_tombstone
-       ON agent_messages(payload_tombstoned_at, created_at);
-     CREATE INDEX IF NOT EXISTS idx_agent_workflow_facts_delivery_created
-       ON agent_workflow_facts(delivery_id, created_at, workflow_fact_id);`);
 }
 export function ensureTagsUniqueIndex(db) {
     try {
@@ -478,7 +239,30 @@ export function isTransientDbError(err) {
     return (/SQLITE_BUSY|SQLITE_LOCKED|SQLITE_PROTOCOL/.test(code) ||
         /database is locked|database table is locked|locking protocol/i.test(msg));
 }
+export function retryWhileLocked(step, deadlineMs, where) {
+    const deadline = Date.now() + deadlineMs;
+    for (let attempt = 0;; attempt++) {
+        try {
+            return step();
+        }
+        catch (err) {
+            if (!isTransientDbError(err))
+                throw err;
+            if (Date.now() >= deadline) {
+                const detail = err instanceof Error ? err.message : String(err);
+                throw Object.assign(new Error(`MeMesh: could not open ${where}: it stayed locked by another process for ${deadlineMs} ms ` +
+                    `(${detail}). Close the other MeMesh processes using that folder and try again.`, { cause: err }), { code: 'MEMESH_DB_LOCKED' });
+            }
+            const backoffMs = Math.min(200, 5 * 2 ** attempt);
+            Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, backoffMs / 2 + Math.random() * (backoffMs / 2));
+        }
+    }
+}
 export const MIGRATION_RETRY_BACKOFF_MS = 24 * 60 * 60 * 1000;
+export function migrationRetryPending(db, key) {
+    const lastAttempt = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(`${key}_last_attempt`)?.value;
+    return !!lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS;
+}
 export function runOnceMigration(db, opts) {
     const { key, version, describe, migrate } = opts;
     const attemptKey = `${key}_last_attempt`;
@@ -486,10 +270,8 @@ export function runOnceMigration(db, opts) {
     const stored = readMarker(key);
     if (stored && parseInt(stored, 10) >= version)
         return false;
-    const lastAttempt = readMarker(attemptKey);
-    if (lastAttempt && Date.now() - parseInt(lastAttempt, 10) < MIGRATION_RETRY_BACKOFF_MS) {
+    if (migrationRetryPending(db, key))
         return false;
-    }
     try {
         db.transaction(() => {
             const current = readMarker(key);

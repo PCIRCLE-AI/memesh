@@ -92,6 +92,13 @@ export interface Entity {
   observations: string[];
   tags: string[];
   relations?: Relation[];
+  /**
+   * How many of this memory's relations to an archived memory a recall left
+   * out (a `supersedes` link is always shown). Present only when above 0; a
+   * recall with `include_archived` shows them. Relations to another project's
+   * memories are not counted: those read as if they did not exist.
+   */
+  archived_relations_omitted?: number;
   archived?: boolean;
   /**
    * How FTS recall matched this entity. Absent on non-recall reads.
@@ -136,15 +143,27 @@ export interface CreateEntityInput {
   namespace?: string;
 }
 
+import type { ProjectScope } from './project-scope.js';
+export type { ProjectScope };
+
 export interface SearchOptions {
   tag?: string;
   /**
-   * A default recall's scope, under every other filter: a project tag means
-   * that project's memories, memories with no project and global ones; null
-   * (no bound project) means memories with no project and global ones.
+   * A default recall's scope, under every other filter: a project tag (or
+   * several, one per id the repository was written under) means that project's
+   * memories; null (no bound project) adds none. Either way also memories with
+   * no project, global ones and the decisions, lessons and preferences of any
+   * project.
    * Internal, not a public parameter. Ignored when `tag` is given.
    */
-  projectScope?: string | null;
+  projectScope?: ProjectScope;
+  /**
+   * Narrow the relations a result shows, as recall does: a far end in another
+   * project is left out (when the search is limited to a project), an archived
+   * one unless `includeArchived` or the link is `supersedes`, and one outside
+   * `namespace`. Set by recall, the surface an agent reads.
+   */
+  scopeRelations?: boolean;
   limit?: number;
   includeArchived?: boolean;
   namespace?: string;  // filter by namespace; omit to search all namespaces
@@ -168,7 +187,7 @@ export interface SearchOptions {
 export interface RememberInput {
   /** Required unless `note` is given, in which case it is derived. */
   name?: string;
-  /** Required unless `note` is given, in which case it defaults to `note`. */
+  /** New named memories require a type; an existing name inherits its type when omitted. */
   type?: string;
   /**
    * Free text (#324). The server derives `title` (first line),
@@ -209,12 +228,18 @@ export interface RememberInput {
   // stamps ingested entities the same way).
   sourceHost?: string;
   // Transport-set, never model-set: the project the session is bound to. The
-  // memory is tagged with it, and a name that belongs to another project (or
-  // to none) is refused rather than shared.
+  // memory is tagged with it, and a name filed elsewhere is refused. An
+  // inferred project preserves an existing unfiled memory on append.
   project?: string | null;
+  /** Transport-only: project was inferred, so an append to an existing unfiled memory keeps it unfiled. */
+  projectIsDefault?: boolean;
   // Transport-set (#511): the caller's own project id (`<name>~<hash>`). A
   // `project:<name>` tag naming it by its plain name is stored as the id.
   currentProject?: string;
+  // Transport-set: every id the write's checkout is filed under (getProjectIds),
+  // when `project` is that checkout's. A memory it stored under an earlier id is
+  // added to where it is, not refused (memory-mutation.ts).
+  projectIds?: readonly string[];
 }
 
 export interface RecallInput {
@@ -227,12 +252,15 @@ export interface RecallInput {
   cross_project?: boolean;  // search across all project tags (default: false)
   // Transport-set, never model-set: the scope a call that names no tag gets
   // (see SearchOptions.projectScope). Ignored with `tag` or `cross_project`.
-  projectScope?: string | null;
+  projectScope?: ProjectScope;
 }
 
 export interface ForgetInput {
   name: string;
   observation?: string;
+  /** Host-bound scope; omitted only by existing unbound administrative callers. */
+  project?: string | null;
+  projectIds?: readonly string[];
 }
 
 // --- Operation Result Types (what core returns to transports) ---
@@ -396,10 +424,14 @@ export interface ImportResult {
   skipped: number;
   appended: number;
   /** Archived local entities the bundle named and the import left archived
-   *  and untouched (`append` / `overwrite` without `restore_archived`).
-   *  `skip` never counts here: it leaves every existing entity alone and
-   *  reports it in `skipped`. */
+   *  and untouched (any strategy, without `restore_archived`). */
   kept_archived: number;
+  /** Archived local entities made active again by `restore_archived`. Under
+   *  `append` / `overwrite` they are also counted in `appended` / `imported`. */
+  restored: number;
+  /** Of `imported`, how many were stamped trusted (CLI `--trust` or a
+   *  verified own backup). */
+  trusted: number;
   errors: string[];
   /**
    * Relations whose target is in neither the bundle nor the graph, as

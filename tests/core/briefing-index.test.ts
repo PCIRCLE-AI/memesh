@@ -7,7 +7,6 @@ import { describe, it, expect } from 'vitest';
 import os from 'os';
 import {
   buildBriefingIndex,
-  injectedIndexReserve,
   INDEX_EXCLUDED_TYPES,
   INDEX_MAX_BYTES,
   INDEX_MAX_LINES,
@@ -70,7 +69,7 @@ describe('buildBriefingIndex', () => {
     expect(idx.lines[1]).toBe('- [decision] Use PKCE for the CLI [mem:1]');
   });
 
-  it('excludes exactly the evidence layer, task-state and the session handoff — pinned to the type constants', () => {
+  it('excludes exactly the evidence layer and task-state; legacy handoffs are ordinary memories', () => {
     // Written out, NOT derived from EVIDENCE_LAYER_TYPES: comparing the list
     // against the expression that defines it is an assertion that cannot
     // fail. Spelled out, adding an evidence type turns this red on purpose —
@@ -87,14 +86,14 @@ describe('buildBriefingIndex', () => {
       'weekly_summary',
       'workflow_checkpoint',
       'task-state',
-      'session-handoff',
     ]));
     const evidence = [...EVIDENCE_LAYER_TYPES].map((type, i) => candidate(100 + i, { type }));
     const idx = buildBriefingIndex(
       [...evidence, candidate(1, { type: 'task-state' }), candidate(4, { type: 'session-handoff' }), candidate(2, { type: 'lesson_learned' }), candidate(3, { type: 'reference' })],
       PROJECT, NOW,
     );
-    expect(idx.ids).toEqual([2, 3]);
+    expect(idx.ids).toEqual([2, 3, 4]);
+    expect(isIndexableType('session-handoff')).toBe(true);
     for (const type of EVIDENCE_LAYER_TYPES) expect(isIndexableType(type)).toBe(false);
     // A type nobody has classified yet defaults INTO the index.
     expect(isIndexableType('a-type-invented-later')).toBe(true);
@@ -282,36 +281,8 @@ describe('buildBriefingIndex', () => {
   });
 });
 
-describe('the injected index shares the block budget (#434 step 3)', () => {
+describe('an index line never splits a character', () => {
   const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
-  const all = Array.from({ length: 30 }, (_, i) => candidate(i + 1));
-
-  it('with an allowance it stays inside it and says exactly how many it left out', () => {
-    for (const maxChars of [0, 150, 600, 1500]) {
-      const index = buildBriefingIndex(all, PROJECT, NOW, { maxChars });
-      const text = index.lines.join('\n');
-      expect(text.length, `maxChars ${maxChars}`).toBeLessThanOrEqual(Math.max(maxChars, injectedIndexReserve(PROJECT)));
-      expect(index.ids.length).toBeLessThan(all.length);
-      expect(text, `maxChars ${maxChars}`).toContain(`- ${all.length - index.ids.length} more`);
-      // Every id reported as shown is a line in the block, and nothing else is.
-      const shown = [...text.matchAll(/ \[mem:(\d+)\]$/gm)].map((m) => Number(m[1]));
-      expect(shown).toEqual(index.ids);
-    }
-    expect(buildBriefingIndex(all, PROJECT, NOW, { maxChars: 1500 }).ids.length).toBeGreaterThan(0);
-  });
-
-  it('the reserve covers the heading and the worst-case trailers', () => {
-    const none = buildBriefingIndex(all, PROJECT, NOW, { maxChars: 0, truncated: true });
-    expect(none.ids).toEqual([]);
-    expect(none.lines.join('\n').length).toBeLessThanOrEqual(injectedIndexReserve(PROJECT));
-    const empty = buildBriefingIndex([], PROJECT, NOW, { maxChars: 0 });
-    expect(empty.lines.join('\n').length).toBeLessThanOrEqual(injectedIndexReserve(PROJECT));
-  });
-
-  it('without an allowance nothing changes', () => {
-    expect(buildBriefingIndex(all, PROJECT, NOW, {}).lines).toEqual(buildBriefingIndex(all, PROJECT, NOW).lines);
-    expect(buildBriefingIndex(all, PROJECT, NOW, { maxChars: 1e9 }).lines).toEqual(buildBriefingIndex(all, PROJECT, NOW).lines);
-  });
 
   it('an index line never splits an astral character, wherever the cut falls', () => {
     for (let k = 0; k < 170; k++) {

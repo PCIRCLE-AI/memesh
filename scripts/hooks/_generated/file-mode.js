@@ -7,6 +7,8 @@
 // byte-locked to core — eliminating the hand-mirror drift behind the P0 FTS bug.
 // ============================================================================
 import fs from 'fs';
+import { pathToFileURL } from 'url';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 export function shellQuote(value) {
     const word = value.startsWith('-') ? `./${value}` : value;
     return `'${word.replace(/'/g, `'\\''`)}'`;
@@ -53,12 +55,42 @@ export function databaseFiles(dbPath) {
     catch { }
     return [real, `${real}-wal`, `${real}-shm`];
 }
+export function holdsBytes(file) {
+    try {
+        return fs.statSync(file).size > 0;
+    }
+    catch {
+        return false;
+    }
+}
+export function isWritable(target) {
+    try {
+        fs.accessSync(target, fs.constants.W_OK);
+        return true;
+    }
+    catch {
+        return false;
+    }
+}
+export function hasPagesWaiting(dbPath) {
+    const [real, wal] = databaseFiles(dbPath);
+    return holdsBytes(wal) || holdsBytes(`${real}-journal`);
+}
+export function immutableAddress(file) {
+    return `${pathToFileURL(file).href}?immutable=1`;
+}
 export function guardDatabaseFiles(dbPath) {
     for (const target of databaseFiles(dbPath))
         removeGroupAndOtherAccess(target);
     refuseMismatchedSidecars(dbPath);
 }
 export function requirePrivateWritableDirectory(dir, purpose) {
+    if (process.platform === 'win32') {
+        if (!fs.statSync(dir).isDirectory())
+            throw new Error(`${dir} is not a directory, and ${purpose}`);
+        makeWindowsPathsPrivate([dir], dir);
+        return;
+    }
     removeGroupAndOtherAccess(dir);
     const mode = fs.statSync(dir).mode & 0o777;
     if ((mode & 0o077) !== 0) {
@@ -75,7 +107,7 @@ export const SIDECAR_PERMISSIONS_CODE = 'MEMESH_SIDECAR_PERMISSIONS';
 const OWNER_LETTERS = [[0o400, 'r'], [0o200, 'w'], [0o100, 'x']];
 const quoted = (files) => files.map(shellQuote).join(' ');
 const letters = (bits) => OWNER_LETTERS.filter(([bit]) => bits & bit).map(([, letter]) => letter).join('');
-export function refuseMismatchedSidecars(dbPath) {
+export function refuseMismatchedSidecars(dbPath, options = {}) {
     if (process.platform === 'win32')
         return;
     const [real, wal, shm] = databaseFiles(dbPath);
@@ -90,6 +122,8 @@ export function refuseMismatchedSidecars(dbPath) {
     for (const sidecar of [wal, shm]) {
         const stat = fs.statSync(sidecar, { throwIfNoEntry: false });
         if (!stat)
+            continue;
+        if (options.readOnly && stat.size > 0)
             continue;
         const missing = database.mode & ~stat.mode & (stat.size === 0 ? 0o700 : 0o600);
         const added = stat.mode & ~database.mode & 0o700;

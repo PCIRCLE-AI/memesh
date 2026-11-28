@@ -1,7 +1,7 @@
 /**
  * A remember the transport binds to a project (`RememberInput.project`): the
- * memory is tagged with that project, and a write onto a name that belongs to
- * another project, or to no project, is refused before anything is written.
+ * memory is tagged with that project. Another project's name is qualified;
+ * an untagged row remains protected from an explicitly project-bound write.
  */
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import fs from 'node:fs';
@@ -63,21 +63,23 @@ describe('remember bound to a project', () => {
     expect(tagsOf('shared-legacy')).toEqual(['project:A', 'project:B']);
   });
 
-  it('refuses a name another project holds, and writes nothing', () => {
+  it('qualifies a name another project holds, leaving the original unchanged', () => {
     remember({ name: 'shared-name', type: 'fact', title: 'A title', observations: ['aardvark from A'], tags: ['topic:a'], project: 'A' });
-    const before = snapshot('shared-name');
-    expect(() => remember({ name: 'shared-name', type: 'decision', title: 'B title', observations: ['bandicoot from B'], tags: ['topic:b'], project: 'B' }))
-      .toThrow(/"shared-name".*project:A.*project B/s);
-    expect(snapshot('shared-name')).toBe(before);
-    expect(() => remember({ name: 'shared-name', type: 'decision', observations: ['bandicoot again'], replace: true, project: 'B' }))
-      .toThrow(/project:A/);
-    expect(snapshot('shared-name')).toBe(before);
-    expect(() => remember({ name: 'shared-name', note: 'Bandicoot note\n\nbandicoot body', project: 'B' }))
-      .toThrow(/project:A/);
-    expect(snapshot('shared-name')).toBe(before);
+    const original = () => {
+      const { row, observations, tags } = JSON.parse(snapshot('shared-name'));
+      return { row, observations, tags };
+    };
+    const before = original();
+    const second = remember({ name: 'shared-name', type: 'fact', title: 'B title', observations: ['bandicoot from B'], tags: ['topic:b'], project: 'B' });
+    expect(second.name).toBe('shared-name@B');
+    expect(original()).toEqual(before);
+    expect(remember({ name: 'shared-name', observations: ['bandicoot again'], replace: true, project: 'B' }).name).toBe(second.name);
+    expect(original()).toEqual(before);
+    expect(remember({ name: 'shared-name', note: 'Bandicoot note\n\nbandicoot body', project: 'B' }).name).toBe(second.name);
+    expect(original()).toEqual(before);
     expect(tagsOf('shared-name')).toHaveLength(2);
     expect(keywordHits('aardvark')).toEqual(['shared-name']);
-    expect(keywordHits('bandicoot')).toEqual([]);
+    expect(keywordHits('bandicoot')).toEqual([second.name]);
   });
 
   it('refuses a legacy memory with no project tag, and writes nothing, under an argument or a tag; a no-project write still reaches it', () => {

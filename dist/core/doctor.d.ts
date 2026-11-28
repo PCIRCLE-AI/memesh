@@ -49,16 +49,7 @@ interface DoctorOptions {
     statSyncImpl?: typeof fs.statSync;
     envImpl?: NodeJS.ProcessEnv;
     fetchImpl?: typeof fetch;
-    agentMessageStoragePolicy?: {
-        storage_quota_bytes?: number;
-        retention_cutoff?: Date | string;
-    };
-    nativeBindingProbeImpl?: (packageRoot: string) => {
-        ok: true;
-    } | {
-        ok: false;
-        message: string;
-    };
+    nativeBindingProbeImpl?: (packageRoot: string) => NativeBindingProbeResult;
     resolveShellMemeshImpl?: () => string | null;
     probeMessageCapability?: boolean;
     messageCapabilityProbeImpl?: (packageRoot: string) => {
@@ -67,8 +58,6 @@ interface DoctorOptions {
         ok: false;
         message: string;
     };
-    probeMessageRouterStatus?: boolean;
-    messageRouterStatusProbeImpl?: () => Promise<MessageRouterStatusProbe>;
 }
 interface PluginCacheDiscovery {
     host: import('./install-channel.js').PluginHost;
@@ -76,13 +65,28 @@ interface PluginCacheDiscovery {
     installedPluginsPath?: string;
     unverifiableReason?: string;
 }
-type MessageRouterStatusProbe = {
-    socket_path: string;
-    socket: 'reachable' | 'missing' | 'insecure' | 'unreachable' | 'path-too-long';
-    active_registrations?: number;
-    detail?: string;
-};
+export declare class NoDatabaseYetError extends Error {
+    readonly databasePath: string;
+    constructor(databasePath: string);
+}
+export interface HostsHere {
+    claude: boolean;
+    codex: boolean;
+    codexCommand: boolean;
+    gemini: boolean;
+}
+export type HostFixState = 'claude' | 'no-host' | 'codex' | 'codex-no-command' | 'gemini';
+export declare function hostFixState(hosts: HostsHere): HostFixState;
+export declare function withHostFix(check: DoctorCheck, state: HostFixState): DoctorCheck;
+export declare function inspectPendingConversations(dir?: string): DoctorCheck;
 export declare function hoursSince(sqliteTimestamp: string): number | null;
+type NativeBindingProbeResult = {
+    ok: true;
+} | {
+    ok: false;
+    message: string;
+    fix?: string;
+};
 export declare function satisfiesMinimumNodeRange(version: string, range: string): boolean | null;
 export declare function inspectNodeRuntime(packageRoot: string, existsSyncImpl: typeof fs.existsSync, readFileSyncImpl: typeof fs.readFileSync, nodeVersion?: string, moduleAbi?: string, hasNodeSqliteImpl?: () => boolean): DoctorCheck;
 export declare function hasBuiltInSqlite(): boolean;

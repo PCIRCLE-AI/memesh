@@ -1,15 +1,12 @@
 import { extractProjectFromEntity } from './project-attribution.js';
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 export { extractProjectFromName, extractProjectFromEntity } from './project-attribution.js';
-export const NOT_A_PROJECT_MEMORY = { sql: 'e.type <> ?', param: SESSION_HANDOFF_TYPE };
 export function computeProjects(db) {
     const rows = db.prepare(`
     SELECT e.id, e.name, e.type,
       (SELECT json_group_array(t.tag) FROM tags t WHERE t.entity_id = e.id) AS tags
     FROM entities e
     WHERE e.status = 'active'
-      AND ${NOT_A_PROJECT_MEMORY.sql}
-  `).all(NOT_A_PROJECT_MEMORY.param);
+  `).all();
     const acc = new Map();
     for (const row of rows) {
         let tagList = [];

@@ -15,12 +15,12 @@ import { useTestDatabase } from '../helpers/db-fixture.js';
 useTestDatabase('memesh-projects-');
 
 describe('computeProjects', () => {
-  it('does not turn a directory that only has a session handoff into a project', () => {
+  it('counts a legacy handoff as an ordinary project memory', () => {
     remember({ name: 'alpha-decision', type: 'decision', why: 'one file is easy to back up; revisit if we need many writers', observations: ['We use SQLite.'], tags: ['project:alpha'] });
     remember({ name: 'session-handoff:beta', type: 'session-handoff', observations: ['Stopped right before the release step.'], tags: ['project:beta'] });
     const names = computeProjects(getDatabase()).map((p) => p.name);
     expect(names, 'the control project is missing, so this test proves nothing').toContain('alpha');
-    expect(names).not.toContain('beta');
+    expect(names).toContain('beta');
   });
 });
 

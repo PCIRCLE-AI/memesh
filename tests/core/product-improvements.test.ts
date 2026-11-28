@@ -105,6 +105,22 @@ describe('governed memory-to-product improvements', () => {
     expect(db.prepare("SELECT COUNT(*) AS n FROM dream_proposals WHERE kind = 'product_improvement'").get().n).toBe(0);
   });
 
+  it('a stored proposal carrying a source: tag is accepted without it', async () => {
+    seedSources();
+    const { stageProductImprovement } = await import('../../src/core/product-improvements.js');
+    const { applyProposal } = await import('../../src/core/dreamer.js');
+    const staged = stageProductImprovement(db, proposalInput);
+    // A row as an earlier version could have stored it.
+    const row = db.prepare('SELECT proposed_digest FROM dream_proposals WHERE id = ?').get(staged.proposal_id) as { proposed_digest: string };
+    const payload = JSON.parse(row.proposed_digest);
+    payload.tags = [...payload.tags, 'source:note-file', 'Source:auto-capture'];
+    db.prepare('UPDATE dream_proposals SET proposed_digest = ? WHERE id = ?').run(JSON.stringify(payload), staged.proposal_id);
+    applyProposal(db, staged.proposal_id, kg);
+    const tags = (kg.getEntity(payload.name)?.tags ?? []) as string[];
+    expect(tags.length, 'the work item was not created').toBeGreaterThan(0);
+    expect(tags.filter((tag) => tag.trim().toLowerCase().startsWith('source:'))).toEqual([]);
+  });
+
   it('human acceptance creates one linked work item, preserves evidence, and surfaces it in briefing', async () => {
     const sourceIds = seedSources();
     const { stageProductImprovement, getProductImprovementStatus } = await import('../../src/core/product-improvements.js');

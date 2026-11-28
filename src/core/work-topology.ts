@@ -83,6 +83,53 @@ export const WORK_LAYER_TYPES: ReadonlySet<string> = new Set([
  */
 export const DECISION_TYPES: ReadonlySet<string> = new Set(['decision', 'architecture_decision', 'design_decision']);
 
+/**
+ * The memories that carry experience rather than project detail: a decision,
+ * a lesson, a preference. What was learned in one project helps in every other,
+ * so a recall shows them whichever project asks, labelled with the project they
+ * came from. Everything else (commits, session summaries, handoffs, notes) is
+ * the detail of one project and stays in it. This is the one list; the recall
+ * scope in the graph reads it from here.
+ */
+/** How the user likes to work: the one kind of memory that does not depend on a project's subject. */
+export const PREFERENCE_TYPES: readonly string[] = ['preference', 'user_preference'];
+
+export const SHARED_EXPERIENCE_TYPES: ReadonlySet<string> = new Set([
+  ...LESSON_TYPES,
+  ...DECISION_TYPES,
+  ...PREFERENCE_TYPES,
+]);
+
+/** SHARED_EXPERIENCE_TYPES as a list, for SQL `IN (…)` placeholders. */
+export const SHARED_EXPERIENCE_TYPE_LIST: readonly string[] = [...SHARED_EXPERIENCE_TYPES];
+
+/**
+ * `feedback` is shared only when it came from the user's own memory folder
+ * (`~/.claude/projects/<project>/memory/`, imported by the Stop hook): that is
+ * the user telling the agent how to work. Any other `feedback` (a product's
+ * feedback records, for example) is the detail of one project and stays in it.
+ * "Came from" is the memory's `provenance.source`, which only the note
+ * ingester writes (no tool, route or command can set it, and a rewrite by any
+ * writer replaces it), together with `trust: 'trusted'`, which only the
+ * ingester of the project's own folder sets. A tag says nothing: any writer can
+ * put `source:note-file` on a memory.
+ */
+export const SHARED_FEEDBACK_TYPE = 'feedback';
+/** `provenance.source` of a memory the note ingester stored (note-ingest.ts). */
+export const NOTE_FILE_PROVENANCE = 'note-file';
+/** `provenance.edited` of such a memory once the memory tool rewrote it: the text is no longer the note file's. */
+export const EDITED_BY_TOOL = 'memory-tool';
+/**
+ * A tag only MeMesh writes: `source:` records where it got a memory (a note file, its own
+ * capture), in any case and with leading space. `remember` and a work package refuse one;
+ * accepting a proposal drops one.
+ */
+export function isReservedTag(tag: string): boolean {
+  return tag.trim().toLowerCase().startsWith('source:');
+}
+/** The tag note-ingest puts on a memory whose note file is gone. */
+export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
+
 /** The observation prefix that carries a decision's reason. */
 export const WHY_PREFIX = 'Why: ';
 
@@ -215,6 +262,10 @@ export interface TopologyEntity {
   /** Belongs to no project (a preference, a general lesson): shown to every
    *  project's sessions under its own heading, never as this project's. */
   noProject?: boolean;
+  /** A decision, lesson or preference of ANOTHER project, shown because experience
+   *  is shared; the readable name of the project it came from. Its own section, small
+   *  and filled after the project's, so it cannot take the project's room. */
+  sharedFrom?: string;
   /** A decision's latest `Why: ` observation, without the prefix. `null`:
    *  the decision has none and its line says so. `undefined`: not read (the
    *  dashboard's rows), and the line is unchanged. */
@@ -261,6 +312,8 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // handle is budgeted like any other character: the text yields the
   // space; the handle is never cut in half.
   const handle = Number.isInteger(entity.id) && (entity.id as number) > 0 ? ` [mem:${entity.id}]` : '';
+  // Where a shared memory of another project came from. Budgeted like the handle and never cut.
+  const origin = entity.sharedFrom !== undefined ? ` (from ${entity.sharedFrom})` : '';
   // A decision is shown with its reason, or with the fact that it has none,
   // and with how long nobody has confirmed it: the conclusion alone reads as
   // a rule that holds forever. The markers are budgeted like the handle and
@@ -271,8 +324,8 @@ export function topologyLine(entity: TopologyEntity, maxChars: number): string {
   // A decision whose only observation is its reason has nothing else to say:
   // the line shows that reason once, not "Why: x — Why: x".
   const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
-  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+  const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length - origin.length);
+  return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${origin}${handle}`);
 }
 
 /** When a decision line must be cut, its title is clipped to this many characters before its reason is. */
@@ -321,7 +374,8 @@ export function extractCitedMemoryIds(text: string): Set<number> {
 function clip(text: string, maxChars: number): string {
   const flat = text.replace(/\s+/g, ' ').trim();
   if (flat.length <= maxChars) return flat;
-  const cut = sliceWholeChars(flat, maxChars);
+  // One unit is left for the ellipsis, so a clipped line is never longer than maxChars.
+  const cut = sliceWholeChars(flat, maxChars - 1);
   const lastSpace = cut.lastIndexOf(' ');
   // Only respect the boundary if it is not pathologically early (a single
   // very long token would otherwise collapse the line to nothing).
@@ -377,6 +431,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   const global: TopologyEntity[] = [];
   const noProject: TopologyEntity[] = [];
   const foreign: TopologyEntity[] = [];
+  const shared: TopologyEntity[] = [];
 
   for (const e of entities) {
     // task-state rows are never listed: taskStateLines is that type's sole
@@ -386,14 +441,10 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
     // arriving through a recent pool, or a stale `task-state:<old-name>`
     // left behind by a project rename, would otherwise render its goal
     // under "Decisions and direction" as though it were a decision.
-    //
-    // `session-handoff` is dropped the same way: it is never a ranked line
-    // (a later SessionStart block will be its sole renderer). A literal, not
-    // the constant in session-handoff.ts, so this leaf keeps importing
-    // nothing; a test pins the two together.
-    if (e.type === 'task-state' || e.type === 'session-handoff') continue;
+    if (e.type === 'task-state') continue;
     if (e.global) { global.push(e); continue; }
     if (e.noProject) { noProject.push(e); continue; }
+    if (e.sharedFrom !== undefined) { shared.push(e); continue; }
     // Scope is checked before layer: a memory from another project must never
     // land under a heading that names this one, whatever its type.
     if (e.foreign) { foreign.push(e); continue; }
@@ -406,6 +457,8 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
 
   decisions.sort(byRecency);
   for (const list of [lessons, knowledge, evidence, noProject, global, foreign]) list.sort(bySignal);
+  // Shared experience keeps the order the selection gave it (newest first).
+
 
   const sections: TopologySection[] = [];
   if (decisions.length) sections.push({ heading: `Decisions and direction for ${jsonStringLiteral(projectLabel(projectName))}:`, entities: decisions });
@@ -415,6 +468,7 @@ export function groupTopology(entities: TopologyEntity[], projectName: string): 
   if (noProject.length) sections.push({ heading: 'Your memories with no project (preferences, general lessons):', entities: noProject });
   if (global.length) sections.push({ heading: 'Global memory — applies across projects:', entities: global });
   if (foreign.length) sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
+  if (shared.length) sections.push({ heading: 'Your preferences from your other projects (may or may not apply here):', entities: shared });
   return sections;
 }
 
@@ -444,6 +498,12 @@ export const DEFAULT_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
  *  capped at GLOBAL_TOPOLOGY_BUDGET. Both injection surfaces share these
  *  through this assembler. */
 export const GLOBAL_TOPOLOGY_LIMIT = 3;
+/** Shared experience of other projects: at most this many, however many there are. */
+export const SHARED_TOPOLOGY_LIMIT = 3;
+const SHARED_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
+  maxChars: 640,
+  maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
+};
 const GLOBAL_TOPOLOGY_BUDGET: Readonly<Required<TopologyBudget>> = {
   maxChars: 640,
   maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
@@ -501,6 +561,8 @@ export interface TopologyPool {
   global?: boolean;
   /** True when this pool holds memories that belong to no project. */
   noProject?: boolean;
+  /** True when this pool holds the shared experience of other projects (each entity carries `sharedFrom`). */
+  shared?: boolean;
 }
 
 /**
@@ -519,9 +581,9 @@ export interface TopologyPool {
  * keeps its no-imports charter. It leads the block and is charged first.
  *
  * Everything inside the fence shares ONE budget (`budget.maxChars`, measured
- * as the lines joined by '\n'): the state lines, the project/foreign sections,
- * the global section, and `reserve` — the room the caller keeps back for the
- * durable-memory index it appends after this block. Global rules used to have
+ * as the lines joined by '\n'): the state lines, the project/foreign sections
+ * and the global section. The recent index the caller appends after this
+ * block is outside it (recent-index.ts). Global rules used to have
  * a separate additive allowance (#242); they now take what the project leaves,
  * still capped at their old size, so no category can push the total past the
  * budget.
@@ -536,16 +598,18 @@ export function assembleTopologyBlock(
   pools: readonly TopologyPool[],
   projectName: string,
   budget: TopologyBudget = DEFAULT_TOPOLOGY_BUDGET,
-  { reserve = 0 }: { reserve?: number } = {},
 ): string[] {
   const seen = new Set<string>();
   const candidates: TopologyEntity[] = [];
   const globalCandidates: TopologyEntity[] = [];
+  const sharedCandidates: TopologyEntity[] = [];
   for (const pool of pools) {
     for (const e of pool.entities) {
       if (seen.has(e.name)) continue;
       seen.add(e.name);
-      if (pool.global) {
+      if (pool.shared) {
+        sharedCandidates.push(e.sharedFrom !== undefined ? e : { ...e, sharedFrom: 'another project' });
+      } else if (pool.global) {
         globalCandidates.push(e.global ? e : { ...e, global: true });
       } else {
         candidates.push(pool.noProject ? { ...e, noProject: true } : pool.foreign && !e.foreign ? { ...e, foreign: true } : e);
@@ -554,18 +618,27 @@ export function assembleTopologyBlock(
   }
 
   // ONE budget for everything the caller will put inside the fence: these
-  // state lines, the project/foreign sections, the global section and
-  // `reserve` (what the caller keeps back for the index that follows).
+  // state lines, the project/foreign sections and the global section.
   // Measured the way the payload is measured — lines joined by '\n' — so the
   // arithmetic here and the length of the final block cannot disagree.
   const lines = boundStateLines(stateLines);
-  const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+  const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
   const topologyLines = room() > 0
     ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
     : [];
   // Spacers exist only between non-empty blocks — never at either edge.
   if (lines.length > 0 && topologyLines.length > 0) lines.push('');
   lines.push(...topologyLines);
+  // Shared experience of other projects comes after everything of the project's:
+  // it takes only what is left, capped small, so it can never push the project out.
+  const sharedLines = room() > 0
+    ? buildTopologyLines(sharedCandidates.slice(0, SHARED_TOPOLOGY_LIMIT), projectName, {
+      ...budget,
+      maxChars: Math.min(room(), SHARED_TOPOLOGY_BUDGET.maxChars),
+    })
+    : [];
+  if (lines.length > 0 && sharedLines.length > 0) lines.push('');
+  lines.push(...sharedLines);
   // Global rules no longer have an additive allowance of their own: they
   // share what is left, after the project, and are kept small by their own
   // selection window (GLOBAL_TOPOLOGY_LIMIT).
@@ -715,7 +788,8 @@ export function hasBriefingContent(lines: readonly string[]): boolean {
  *      four. They are collapsed explicitly.
  *   2. The fence is one backtick longer than the longest backtick run in the
  *      content, so a line that IS a fence is too short to close ours.
- *   3. Other control characters go through `stripControlChars` (below) — see its own doc comment (#374).
+ *   3. `<` is written `&lt;`, so no memory carries a tag.
+ *   4. Other control characters go through `stripControlChars` (below) — see its own doc comment (#374).
  *
  * Pinned by `tests/hooks/reference-context-fence.test.ts`, which fails if
  * any of the three is removed.
@@ -730,7 +804,12 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
       String(line ?? '')
         // eslint-disable-next-line no-control-regex
         .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')
-    ).trim()
+    )
+      // A memory cannot spell a tag (a closing system-reminder, an intent
+      // marker) that the reader of this block would take as its own. `<`
+      // is shown as `&lt;`: readable, and nothing in a memory is a tag.
+      .replace(/</g, '&lt;')
+      .trim()
   );
 
   let longestRun = 0;
@@ -747,6 +826,47 @@ export function buildReferenceContext(memoryLines: ReadonlyArray<string | null |
     ...safeLines,
     fence,
   ].join('\n');
+}
+
+export const MAX_OPENING_CONTEXT_BYTES = 8000;
+
+/** Charge the actual escaped wrapper, not raw characters. Task fields and all
+ * selected session tails precede optional repository facts, titles and memories. */
+export function buildOpeningContext(
+  taskLines: readonly string[],
+  tailLines: readonly string[],
+  remainingLines: readonly string[],
+  reservedBytes = 0,
+): { text: string; taskLines: string[]; tailLines: string[]; remainingLines: string[] } {
+  const encoder = new TextEncoder();
+  const fits = (lines: readonly string[]) => encoder.encode(buildReferenceContext(lines)).length + reservedBytes <= MAX_OPENING_CONTEXT_BYTES;
+  if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0) throw new Error('Invalid opening context reserved byte count');
+  let tasks = [...taskLines];
+  if (!fits([...tasks, ...tailLines])) {
+    // Keep every field (date first), shortening oversized values rather than
+    // dropping later fields or the third session's tail. Ordinary supported
+    // task values pass through unchanged whenever the complete block fits.
+    // The header remains whole. Generated field/date prefixes fit within
+    // 256 units; never shorten those into an unlabelled value or an ellipsis.
+    const shorten = (limit: number) => taskLines.map((line, index) => index === 0 ? line : clip(line, limit));
+    let low = 256, high = MAX_OPENING_CONTEXT_BYTES;
+    if (!fits([...shorten(low), ...tailLines])) throw new Error('Opening context budget cannot fit task dates and session tails');
+    while (low < high) {
+      const limit = Math.ceil((low + high) / 2);
+      if (fits([...shorten(limit), ...tailLines])) low = limit;
+      else high = limit - 1;
+    }
+    tasks = shorten(low);
+  }
+  const kept = [...tasks, ...tailLines];
+  const remaining: string[] = [];
+  for (const line of remainingLines) {
+    const next = [...kept, line];
+    if (!fits(next)) break;
+    kept.push(line);
+    remaining.push(line);
+  }
+  return { text: hasBriefingContent(kept) ? buildReferenceContext(kept) : '', taskLines: tasks, tailLines: [...tailLines], remainingLines: remaining };
 }
 
 // =============================================================================
@@ -801,7 +921,8 @@ export function jsonStringLiteral(value: string): string {
  * Remove control characters a terminal or renderer acts on but never
  * displays: C0 controls other than \t \n \r, DEL, the C1 range
  * (U+0080-U+009F), and the bidi override/isolate characters
- * (U+202A-U+202E, U+2066-U+2069) — replacing each maximal run with ONE
+ * (U+202A-U+202E, U+2066-U+2069), the direction and zero-width marks
+ * (U+061C, U+200B, U+200E, U+200F, U+2060-U+2064, U+FEFF) — replacing each maximal run with ONE
  * space, never nothing.
  *
  * \t, \n and \r are deliberately left alone: both current callers already
@@ -827,5 +948,5 @@ export function jsonStringLiteral(value: string): string {
  */
 export function stripControlChars(s: string): string {
   // eslint-disable-next-line no-control-regex
-  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');
+  return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, ' ');
 }

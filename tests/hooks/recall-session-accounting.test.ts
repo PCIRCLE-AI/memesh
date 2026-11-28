@@ -9,6 +9,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { isTriggeredRecord, SKIP_REASONS as CORE_SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName, SKIP_REASONS, writePrivateJsonAtomic } = require('../../scripts/hooks/_shared.js');
@@ -29,6 +30,7 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     dbPath = path.join(home, 'graph.db');
     sessions = path.join(home, 'sessions');
     fs.mkdirSync(sessions);
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessions]);
     const db = openDatabase(dbPath);
     ids = ['first', 'third', 'foreign'].map((name) => {
       const result = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, 'note');
@@ -257,14 +259,14 @@ describe('session citation-or-fetch accounting persists through actual Stop hook
     expect.soft(meta('citation_sessions_cited')).toBe('0');
   });
 
-  it('accounts a low-tool session without bypassing the capture activity guard', () => {
+  it('accounts recalled citations even when the transcript contains no assistant reply', () => {
     inject('short-session');
     stop('short-session', [tool(`[mem-fetched:${ids[0]}]`)], 1);
     expect.soft(hits(ids[0]), 'a single fetch is a valid use even below the capture threshold').toBe(1);
     expect.soft(meta('citation_sessions_total')).toBe('1');
     expect(read<{ n: number }>("SELECT COUNT(*) AS n FROM entities WHERE type = 'session-insight'").n).toBe(0);
     const outcomes = fs.readFileSync(path.join(home, 'hook-outcomes.jsonl'), 'utf8');
-    expect(outcomes).toContain(SKIP_REASONS.tooLittleActivity);
+    expect(outcomes).toContain(SKIP_REASONS.noAssistantText);
   });
 
   it('uses a new accounting stamp instead of mixing citation-v2 counters', () => {

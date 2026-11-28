@@ -1,13 +1,16 @@
+import { NOTE_FILE_MISSING_TAG } from './work-topology.js';
 export declare const NOTE_FILE_TAG = "source:note-file";
-export declare const NOTE_FILE_MISSING_TAG = "source:note-file:missing";
+export { NOTE_FILE_MISSING_TAG };
 export declare const NOTE_FILE_MAX_BYTES: number;
 export declare const NOTE_DIR_MAX_FILES = 500;
 export interface NoteIngestOptions {
     dir: string;
+    trusted: boolean;
     project?: string;
     maxFiles?: number;
     maxBytes?: number;
 }
+export type NoteSkipCode = 'tooLarge' | 'noFrontmatter' | 'tooManyObservations' | 'symlink' | 'other';
 export interface NoteIngestResult {
     dirId: string;
     discovered: number;
@@ -16,13 +19,18 @@ export interface NoteIngestResult {
     unchanged: number;
     repathed: string[];
     restored: string[];
+    retrusted: string[];
+    retrustBackup: string | null;
+    retrustFailed: string | null;
     markedMissing: string[];
     skipped: Array<{
         path: string;
         reason: string;
     }>;
+    skippedCounts: Record<NoteSkipCode, number>;
     refusedNow: number;
     more: number;
+    retryNeeded?: boolean;
 }
 export interface Frontmatter {
     data: Record<string, string | Record<string, string>>;

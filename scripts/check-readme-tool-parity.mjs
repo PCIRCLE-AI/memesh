@@ -4,6 +4,7 @@ import { createHash } from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import ts from 'typescript';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const option = process.argv.indexOf('--root');
@@ -18,8 +19,93 @@ if (!contract) {
   process.exit(1);
 }
 
-const tools = [...contract.matchAll(/^\s{4}name:\s*'([^']+)',\n\s{4}(?:\/\/[^\n]*\n\s{4})*description:\s*(?:\n\s{6})?(['"`])([\s\S]*?)\2,\n\s{4}inputSchema:/gm)]
-  .map(match => ({ name: match[1], description: match[3].trim() }));
+// Only the message tool may use this named factory. Read its restricted Zod
+// declaration as syntax; never import or execute the product module.
+function resolveMessageFactory() {
+  const fail = () => { throw new Error('cannot statically resolve message factory'); };
+  const handler = ts.createSourceFile('handlers.ts', source, ts.ScriptTarget.Latest, true);
+  const imports = handler.statements.filter(ts.isImportDeclaration).filter(s =>
+    s.moduleSpecifier.text === '../conversation-messaging.js');
+  if (imports.length !== 1 || imports[0].importClause?.isTypeOnly) return fail();
+  const bindings = imports[0].importClause?.namedBindings;
+  if (!bindings || !ts.isNamedImports(bindings)) return fail();
+  for (const name of ['CONVERSATION_MESSAGE_DESCRIPTION', 'CONVERSATION_MESSAGE_INPUT_SCHEMA']) {
+    if (bindings.elements.filter(e => !e.isTypeOnly && !e.propertyName && e.name.text === name).length !== 1) return fail();
+  }
+  const text = read('src/transports/conversation-messaging.ts');
+  const file = ts.createSourceFile('conversation-messaging.ts', text, ts.ScriptTarget.Latest, true);
+  if (file.parseDiagnostics.length) return fail();
+  const zImports = file.statements.filter(ts.isImportDeclaration).filter(s => s.moduleSpecifier.text === 'zod');
+  if (zImports.length !== 1 || zImports[0].importClause?.isTypeOnly || !ts.isNamedImports(zImports[0].importClause?.namedBindings) ||
+      !zImports[0].importClause.namedBindings.elements.some(e => !e.isTypeOnly && !e.propertyName && e.name.text === 'z')) return fail();
+  const declarations = new Map();
+  for (const statement of file.statements.filter(ts.isVariableStatement)) {
+    for (const declaration of statement.declarationList.declarations) {
+      if (ts.isIdentifier(declaration.name)) {
+        if (declarations.has(declaration.name.text)) return fail();
+        declarations.set(declaration.name.text, { declaration, statement });
+      }
+    }
+  }
+  const get = (name, exported) => {
+    const entry = declarations.get(name);
+    if (!entry || !(entry.statement.declarationList.flags & ts.NodeFlags.Const) || !entry.declaration.initializer ||
+        (exported && !entry.statement.modifiers?.some(m => m.kind === ts.SyntaxKind.ExportKeyword))) return fail();
+    return entry.declaration.initializer;
+  };
+  const description = get('CONVERSATION_MESSAGE_DESCRIPTION', true);
+  if (!ts.isStringLiteral(description) || !description.text.trim()) return fail();
+  const id = get('messageId', false);
+  const schema = get('ConversationMessageActionSchema', true);
+  const input = get('CONVERSATION_MESSAGE_INPUT_SCHEMA', true);
+  const constructors = new Set(['discriminatedUnion', 'object', 'literal', 'string', 'enum']);
+  const refinements = new Set(['uuid', 'min', 'max', 'optional', 'strict']);
+  const valid = (node) => {
+    if (ts.isStringLiteral(node) || ts.isNumericLiteral(node)) return true;
+    if (ts.isIdentifier(node)) return node.text === 'z' || node.text === 'messageId';
+    if (ts.isArrayLiteralExpression(node)) return node.elements.every(valid);
+    if (ts.isObjectLiteralExpression(node)) return node.properties.every(p => ts.isPropertyAssignment(p) &&
+      (ts.isIdentifier(p.name) || ts.isStringLiteral(p.name)) && valid(p.initializer));
+    if (ts.isCallExpression(node) && !node.typeArguments?.length && ts.isPropertyAccessExpression(node.expression)) {
+      const receiver = node.expression.expression;
+      const method = node.expression.name.text;
+      const root = ts.isIdentifier(receiver) && receiver.text === 'z';
+      const chain = ts.isCallExpression(receiver) || (ts.isIdentifier(receiver) && receiver.text === 'messageId');
+      return (root ? constructors.has(method) : chain && refinements.has(method)) && valid(receiver) && node.arguments.every(valid);
+    }
+    return false;
+  };
+  if (id.getText(file) !== 'z.string().uuid()' || !valid(id) || !valid(schema) ||
+      !ts.isCallExpression(schema) || schema.expression.getText(file) !== 'z.discriminatedUnion' ||
+      schema.arguments.length !== 2 || !ts.isStringLiteral(schema.arguments[0]) || schema.arguments[0].text !== 'action' ||
+      !ts.isArrayLiteralExpression(schema.arguments[1])) return fail();
+  if (!ts.isObjectLiteralExpression(input) || input.properties.length !== 2) return fail();
+  const [type, spread] = input.properties;
+  if (!ts.isPropertyAssignment(type) || type.name.getText(file) !== 'type' ||
+      !ts.isAsExpression(type.initializer) || !ts.isStringLiteral(type.initializer.expression) ||
+      type.initializer.expression.text !== 'object' || type.initializer.type.getText(file) !== 'const' ||
+      !ts.isSpreadAssignment(spread) || spread.expression.getText(file) !== 'z.toJSONSchema(ConversationMessageActionSchema)') return fail();
+  const printer = ts.createPrinter({ removeComments: true });
+  const canonical = [id, schema, input].map(node => printer.printNode(ts.EmitHint.Expression, node, file));
+  return { description: description.text.trim(), canonical: JSON.stringify([description.text, ...canonical]) };
+}
+let factoryCanonical = '';
+const tools = [...contract.matchAll(/^\s{4}name:\s*'([^']+)',\n\s{4}(?:\/\/[^\n]*\n\s{4})*description:\s*(?:\n\s{6})?(?:(['"`])([\s\S]*?)\2|(CONVERSATION_MESSAGE_DESCRIPTION)),\n\s{4}inputSchema:\s*([^,\n]+)(?:,|\n)/gm)]
+  .map(match => {
+    if (!match[4]) return { name: match[1], description: match[3].trim() };
+    if (match[1] !== 'message' || match[5].trim() !== 'CONVERSATION_MESSAGE_INPUT_SCHEMA') {
+      errors.push('canonical MCP source has invalid message factory wiring');
+      return { name: match[1], description: '' };
+    }
+    try {
+      const factory = resolveMessageFactory();
+      factoryCanonical = factory.canonical;
+      return { name: match[1], description: factory.description };
+    } catch {
+      errors.push('canonical MCP source cannot statically resolve message factory');
+      return { name: match[1], description: '' };
+    }
+  });
 const names = tools.map(tool => tool.name);
 const nameSet = new Set(names);
 const definitions = [...contract.matchAll(/^\s{2}\{\n/gm)];
@@ -40,7 +126,7 @@ const semanticContract = contract
   .replace(/^\s*\/\/[^\n]*$/gm, '')
   .replace(/\s+/g, ' ')
   .trim();
-const contractDigest = createHash('sha256').update(semanticContract).digest('hex');
+const contractDigest = createHash('sha256').update(semanticContract).update(factoryCanonical ? `\0${factoryCanonical}` : '').digest('hex');
 const lock = JSON.parse(read('scripts/mcp-doc-contract.json'));
 const surfaceDigest = (surface) => createHash('sha256')
   .update(`${contractDigest}\0${surface.trim()}`)
@@ -100,10 +186,15 @@ for (const name of names) {
 
 const architecture = read('docs/ARCHITECTURE.md');
 const overview = architecture.match(/## Overview\n([\s\S]*?)(?=\n## |\n```)/m)?.[1] ?? '';
+// The handler table names every tool too; locking only the Overview let a
+// renamed row there pass unnoticed.
+const handlerTable = architecture.match(/### transports\/mcp\/handlers\.ts -- MCP Tool Handlers\n([\s\S]*?)(?=\n### )/m)?.[1] ?? '';
 if (!overview) errors.push('docs/ARCHITECTURE.md: missing bounded Overview section');
-else checkLockedSurface('docs/ARCHITECTURE.md', overview);
+if (!handlerTable) errors.push('docs/ARCHITECTURE.md: missing bounded MCP Tool Handlers section');
+if (overview && handlerTable) checkLockedSurface('docs/ARCHITECTURE.md', `${overview.trim()}\0${handlerTable.trim()}`);
 for (const name of names) {
   if (!overview.includes(`\`${name}\``)) errors.push(`docs/ARCHITECTURE.md: overview omits MCP tool ${name}`);
+  if (!new RegExp(`^\\| \`${name}\` \\|`, 'm').test(handlerTable)) errors.push(`docs/ARCHITECTURE.md: MCP Tool Handlers table omits ${name}`);
 }
 for (const file of Object.keys(lock.surfaces ?? {})) {
   if (!checkedSurfaces.has(file)) errors.push(`scripts/mcp-doc-contract.json: unrecognized surface ${file}`);

@@ -90,7 +90,7 @@ describe('entity writers: stored result unchanged by the shared kernel', () => {
     await expect(JSON.stringify(snap, null, 2) + '\n').toMatchFileSnapshot('./__snapshots__/entity-write-parity.core.json');
   });
 
-  it('hook captureEntity: append, dedupe, title update, replace, archived no-op, localHandoff, forgotten on replace', async () => {
+  it('hook captureEntity: append, dedupe, title update, replace, archived no-op, legacy ordinary records, forgotten on replace', async () => {
     const handle = shared.openHookDb({ ...process.env, MEMESH_DB_PATH: path.join(tmpDir, 'hook.db') }, { fts: true });
     const db = handle.db as MemeshDatabase;
     const results: unknown[] = [];
@@ -117,10 +117,10 @@ describe('entity writers: stored result unchanged by the shared kernel', () => {
       removeFromFts(db, vole.id, 'session-s4-files', 'vole kept', null);
       db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(vole.id);
       results.push(cap({ name: 'session-s4-files', type: 'session-insight', observations: ['vole overwrite'], replace: true }));
-      results.push(cap({ name: 'session-handoff:p1', type: 'session-handoff', observations: ['handoff kestrel one'], tags: ['auto-capture', 'project:p1'], title: 'Handoff', replace: true, localHandoff: true, sourceHost: 'claude-code' }));
-      results.push(cap({ name: 'session-handoff:p1', type: 'session-handoff', observations: ['handoff kestrel two'], tags: ['auto-capture', 'project:p1'], title: 'Handoff', replace: true, localHandoff: true, sourceHost: 'claude-code' }));
+      results.push(cap({ name: 'session-handoff:p1', type: 'session-handoff', observations: ['handoff kestrel one'], tags: ['auto-capture', 'project:p1'], title: 'Handoff', replace: true, sourceHost: 'claude-code' }));
+      results.push(cap({ name: 'session-handoff:p1', type: 'session-handoff', observations: ['handoff kestrel two'], tags: ['auto-capture', 'project:p1'], title: 'Handoff', replace: true, sourceHost: 'claude-code' }));
       db.prepare("INSERT INTO entities (name, type) VALUES ('session-handoff:p2', 'decision')").run();
-      results.push(cap({ name: 'session-handoff:p2', type: 'session-handoff', observations: ['handoff should not land'], replace: true, localHandoff: true }));
+      results.push(cap({ name: 'session-handoff:p2', type: 'decision', observations: ['ordinary legacy-name content'] }));
       results.push(cap({ name: 'untitled-commit', type: 'commit', observations: ['shrike'], title: null }));
       const snap = snapshot(db, ['raven', 'two', 'v2', 'crane', 'calls', 'stoat', 'a', 'c', 'marten', 'vole', 'overwrite', 'kestrel', 'one', 'land', 'shrike', 'Files'], results);
       await expect(JSON.stringify(snap, null, 2) + '\n').toMatchFileSnapshot('./__snapshots__/entity-write-parity.hook.json');

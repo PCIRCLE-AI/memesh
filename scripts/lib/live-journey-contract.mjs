@@ -1,4 +1,4 @@
-export const LIVE_JOURNEY_SCHEMA_VERSION = 'memesh-live-journey/v4';
+export const LIVE_JOURNEY_SCHEMA_VERSION = 'memesh-live-journey/v5';
 export const LIVE_JOURNEY_MAX_AGE_MS = 24 * 60 * 60 * 1000;
 export const LIVE_JOURNEY_CLOCK_SKEW_MS = 5 * 60 * 1000;
 
@@ -9,7 +9,7 @@ export const CORE_JOURNEY_IDS = Object.freeze([
   'memory-round-trip',
   'session-start-briefing',
   'quiet-commit-capture',
-  'stop-session-insight',
+  'stop-conversation',
   'packed-upgrade',
 ]);
 
@@ -17,7 +17,7 @@ export const CORE_JOURNEY_BOUNDARIES = Object.freeze({
   'memory-round-trip': 'isolated-process',
   'session-start-briefing': 'isolated-process',
   'quiet-commit-capture': 'isolated-process',
-  'stop-session-insight': 'isolated-process',
+  'stop-conversation': 'isolated-process',
   'packed-upgrade': 'packed-consumer',
 });
 
@@ -50,7 +50,7 @@ export function validateCoreJourneys(rows) {
 export const REQUIRED_REGISTRATION_EVIDENCE = Object.freeze({
   codex: Object.freeze({ source: 'codex_plugin_session_start', plugin_loader_verified: true }),
   claude: Object.freeze({
-    source: 'interactive_development_channel',
+    source: 'claude_plugin_session_start',
     operator_attestation_recorded: true,
     trusted_instruction_attested: true,
   }),
@@ -79,31 +79,36 @@ export function missingRequiredSteps(steps, host) {
 }
 
 export const REQUIRED_LIVE_JOURNEY_STEPS = Object.freeze({
+  'conversation-pair': Object.freeze([
+    'normal native trust and private sources confirmed',
+    'two real host SessionStart registrations match native SID and PID',
+    'native sender queued full body to known offline recipient',
+    'recipient native read full body and replied to original sender',
+    'original native sender read reply and quoted all three markers',
+    'all owned native children terminal',
+  ]),
   codex: Object.freeze([
-    'codex preconditions',
-    'router started against the temporary MEMESH_DIR',
-    'real Codex thread created',
-    'Codex thread registered with the router',
-    'Codex plugin SessionStart hook registered the thread',
-    'Codex lease renewed before expiry',
-    'exact-session send accepted by the codex-cli-queue adapter',
-    'Codex resume registration superseded the prior generation',
-    'Codex resumed lease renewed before expiry',
-    'the Codex model fetched the message body and quoted its sentinel (model-visible proof)',
-    'companion stopped and the session left the router directory',
-    'a send to the stopped session fails closed and the durable row survives',
+    'Codex model-visible full body read and reply in the original native thread',
+    'normal native trust and private sources confirmed',
+    'two real host SessionStart registrations match native SID and PID',
+    'all four kinds delivered both directions with full body and three markers',
+    'idle recipient started its own turn without a driver prompt',
+    'busy recipient read and replied in the same native session',
+    'offline known recipient queued without delivery and received after resume',
+    'unknown recipient rejected before storage',
+    'native disconnect retained pending body without delivery',
+    'all owned native children terminal',
   ]),
   claude: Object.freeze([
-    'claude precondition',
-    'router started against the temporary MEMESH_DIR',
-    'agent setup claude',
-    'interactive Claude session registered on the channel',
-    'Claude lease renewed before expiry',
-    'operator attested that no installed MeMesh plugin hook or MCP server was present',
-    'operator attested that the trusted intake prompt was submitted and READY observed',
-    'exact-session send accepted by the claude-channel adapter',
-    'the Claude model called intake itself (model-visible proof)',
-    'session disconnected and left the router directory',
-    'a send to the stopped session fails closed and the durable row survives',
+    'Claude model-visible full body read and reply in the original native session',
+    'normal native trust and private sources confirmed',
+    'two real host SessionStart registrations match native SID and PID',
+    'all four kinds delivered both directions with full body and three markers',
+    'idle recipient started its own turn without a driver prompt',
+    'busy recipient read and replied in the same native session',
+    'offline known recipient queued without delivery and received after resume',
+    'unknown recipient rejected before storage',
+    'native disconnect retained pending body without delivery',
+    'all owned native children terminal',
   ]),
 });

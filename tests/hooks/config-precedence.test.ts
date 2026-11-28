@@ -4,7 +4,6 @@ import os from 'os';
 import path from 'path';
 import {
   isAutoCaptureEnabled,
-  resolveAutoUpdatePolicy,
   resolveSessionLimit,
   resolveBriefingLevel,
   readHookConfig,
@@ -124,42 +123,6 @@ describe('resolveSessionLimit — env > config > default(10)', () => {
   it('config sessionLimit=100 (the documented upper bound) still takes effect', () => {
     writeConfig({ sessionLimit: 100 });
     expect(resolveSessionLimit(envFor())).toBe(100);
-  });
-});
-
-describe('resolveAutoUpdatePolicy — env > config > default(off)', () => {
-  it('default off when neither env nor config sets it', () => {
-    expect(resolveAutoUpdatePolicy(envFor())).toBe('off');
-  });
-
-  it("config { autoUpdate: 'patch' } takes effect", () => {
-    writeConfig({ autoUpdate: 'patch' });
-    expect(resolveAutoUpdatePolicy(envFor())).toBe('patch');
-  });
-
-  it('env wins over config', () => {
-    writeConfig({ autoUpdate: 'patch' });
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: 'minor' }))).toBe('minor');
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: 'off' }))).toBe('off');
-  });
-
-  it('case-insensitive', () => {
-    writeConfig({ autoUpdate: 'MAJOR' });
-    expect(resolveAutoUpdatePolicy(envFor())).toBe('major');
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: 'Patch' }))).toBe('patch');
-  });
-
-  it('invalid explicit env value fails closed instead of uncovering permissive config', () => {
-    writeConfig({ autoUpdate: 'minor' });
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: 'yolo' }))).toBe('off');
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: '' }))).toBe('off');
-    expect(resolveAutoUpdatePolicy(envFor({ MEMESH_AUTO_UPDATE: 'off ' }))).toBe('off');
-    expect(resolveAutoUpdatePolicy({ MEMESH_AUTO_UPDATE: null } as unknown as NodeJS.ProcessEnv)).toBe('off');
-  });
-
-  it('invalid config value falls through to default', () => {
-    writeConfig({ autoUpdate: 'auto' });
-    expect(resolveAutoUpdatePolicy(envFor())).toBe('off');
   });
 });
 

@@ -5,17 +5,14 @@ import path from 'node:path';
 import {
   UP_TO_DATE_REFRESH_MS,
   UPGRADE_AVAILABLE_REFRESH_MS,
-  SNOOZE_LEVEL_MS,
   claimJustUpgradedMarker,
   clearJustUpgradedMarker,
   isStrictlyOlder,
   readJustUpgradedMarker,
-  readSnooze,
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
   staleRunningProcessNotice,
   writeJustUpgradedMarker,
-  writeSnooze,
 } from '../src/core/update-notice.js';
 
 const NOW = new Date('2026-09-10T12:00:00.000Z');
@@ -71,19 +68,11 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
     expect(resolveUpdateNotice({ dir: tmp(), currentVersion: '4.9.4', cache: { currentVersion: '4.9.4', latestVersion: '"4.10.0"', checkSucceeded: true, lastSuccessfulCheckAt: iso(-HOUR) }, now: NOW })).toMatchObject({ kind: 'UPGRADE_AVAILABLE', latestVersion: '4.10.0' });
   });
 
-  it('SNOOZED hides an available upgrade for the snoozed target only', () => {
+  it('a snooze file left by an older version no longer hides an available upgrade', () => {
     const dir = tmp();
-    writeSnooze(dir, '4.10.0', NOW);
-    const cache = (latest: string) => ({ currentVersion: '4.9.4', latestVersion: latest, lastSuccessfulCheckAt: iso(-HOUR), checkSucceeded: true });
-    expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: NOW, cache: cache('4.10.0') }))
-      .toMatchObject({ kind: 'SNOOZED', latestVersion: '4.10.0', until: iso(SNOOZE_LEVEL_MS[0]) });
-    // A newer target resets the snooze.
-    expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: NOW, cache: cache('4.10.1') }).kind).toBe('UPGRADE_AVAILABLE');
-    // Snooze expiry surfaces the upgrade again (the cache answer must still be
-    // fresh at that later clock, or CHECK_FAILED correctly wins).
-    const later = new Date(NOW.getTime() + SNOOZE_LEVEL_MS[0] + 1);
-    const freshLater = { ...cache('4.10.0'), lastSuccessfulCheckAt: new Date(later.getTime() - HOUR).toISOString() };
-    expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: later, cache: freshLater }).kind).toBe('UPGRADE_AVAILABLE');
+    fs.writeFileSync(path.join(dir, 'update-snooze.json'), JSON.stringify({ target: '4.10.0', level: 1, since: NOW.toISOString() }));
+    const cache = { currentVersion: '4.9.4', latestVersion: '4.10.0', lastSuccessfulCheckAt: iso(-HOUR), checkSucceeded: true };
+    expect(resolveUpdateNotice({ dir, currentVersion: '4.9.4', now: NOW, cache })).toMatchObject({ kind: 'UPGRADE_AVAILABLE', latestVersion: '4.10.0' });
   });
 
   it('JUST_UPGRADED wins over everything else and is consumed explicitly', () => {
@@ -141,25 +130,6 @@ describe('resolveUpdateNotice — one resolver, five answers', () => {
   it('DISABLED when the owner said never ask again', () => {
     expect(resolveUpdateNotice({ dir: tmp(), currentVersion: '4.9.4', now: NOW, updateCheckEnabled: false, cache: null }))
       .toEqual({ kind: 'DISABLED', currentVersion: '4.9.4' });
-  });
-});
-
-describe('escalating snooze', () => {
-  it('24h, then 48h, then 7d; a new target resets to level 1', () => {
-    const dir = tmp();
-    expect(SNOOZE_LEVEL_MS).toEqual([24 * HOUR, 48 * HOUR, 7 * 24 * HOUR]);
-    expect(writeSnooze(dir, '4.10.0', NOW)).toMatchObject({ target: '4.10.0', level: 1 });
-    expect(writeSnooze(dir, '4.10.0', NOW)).toMatchObject({ level: 2 });
-    expect(writeSnooze(dir, '4.10.0', NOW)).toMatchObject({ level: 3 });
-    expect(writeSnooze(dir, '4.10.0', NOW)).toMatchObject({ level: 3 });
-    expect(readSnooze(dir)).toMatchObject({ target: '4.10.0', level: 3, since: NOW.toISOString() });
-    expect(writeSnooze(dir, '4.11.0', NOW)).toMatchObject({ target: '4.11.0', level: 1 });
-  });
-
-  it('a corrupt snooze file reads as no snooze', () => {
-    const dir = tmp();
-    fs.writeFileSync(path.join(dir, 'update-snooze.json'), '{not json');
-    expect(readSnooze(dir)).toBeNull();
   });
 });
 

@@ -1,5 +1,6 @@
 // Bounded agent work packages and human proposal review. No built-in generation.
 
+import { withoutFinalPeriod } from './sentence.js';
 import type { MemeshDatabase } from '../storage/sqlite.js';
 
 import { createHash } from 'node:crypto';
@@ -14,6 +15,8 @@ import { validateGuardSpec, type GuardSpec } from './guards.js';
 
 import { dropEntityFromIndexes } from '../storage/entity-index.js';
 
+// A proposal staged before work packages refused `source:` tags can still carry one: dropped on accept.
+import { isReservedTag } from './work-topology.js';
 import {
   PRODUCT_IMPROVEMENT_KIND,
   readProductImprovementPayload,
@@ -36,7 +39,7 @@ const TRANSCRIPT_PACKAGE_SOURCE_BYTES = 48 * 1024;
 
 const WORK_PACKAGE_MAX_BYTES = 64 * 1024;
 
-const COMPACTABLE_TYPES = new Set([
+export const COMPACTABLE_TYPES = new Set([
   'commit',
   'session_keypoint',
   'session-insight',
@@ -468,7 +471,7 @@ function applyProductImprovementProposal(
       'State: accepted for product work; implementation and outcome are not verified.',
     ];
     const tags = [
-      ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:')),
+      ...payload.tags.filter((tag) => !tag.startsWith('project:') && !tag.startsWith('status:') && !isReservedTag(tag)),
       'project:' + row.project,
       'status:accepted-for-product',
       'implementation:unverified',
@@ -599,7 +602,7 @@ function applyTranscriptProposal(
   // `project:` tag lifted from injected transcript text must not re-file the
   // memory under another project.
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+    ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
     `project:${row.project}`,
   ];
   // Name-collision guard. createEntity uses INSERT OR IGNORE (see
@@ -717,7 +720,7 @@ export function applyProposal(
   // kept; the routing one is replaced with the cluster's own. (`metadata.project`
   // was already derived from the cluster and is unaffected either way.)
   const tags = [
-    ...digest.tags.filter((tag) => !tag.startsWith('project:')),
+    ...digest.tags.filter((tag) => !tag.startsWith('project:') && !isReservedTag(tag)),
     `project:${row.project}`,
   ];
 
@@ -980,7 +983,7 @@ export function applyProposal(
 
 export class NothingToClaimError extends Error {
   constructor(readonly proposalId: number, readonly reason: string) {
-    super(`proposal #${proposalId} claimed nothing: ${reason}. Nothing was written, and the proposal will not be retried.`);
+    super(`proposal #${proposalId} claimed nothing: ${withoutFinalPeriod(reason)}. Nothing was written, and the proposal will not be retried.`);
     this.name = 'NothingToClaimError';
   }
 }

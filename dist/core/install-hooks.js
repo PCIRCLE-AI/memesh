@@ -1,24 +1,17 @@
 import fs from 'fs';
 import path from 'path';
 import { homeDir, memeshDir } from './paths.js';
-import { citationRulePath, removeCitationRule, writeCitationRule } from './citation-rule.js';
+import { CITATION_RULE_BODY, citationRulePath, citationRuleState } from './citation-rule.js';
 import { pluginHostConfigRoot } from './install-channel.js';
+import { assertCanDelete, assertCanWrite, assertFolderWritable, Changes, refuse, whyFailed } from './safe-write.js';
 export function settingsHaveMemeshHooks(settingsPath) {
     try {
-        const parsed = JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
-        for (const entries of Object.values(parsed.hooks ?? {})) {
-            if (!Array.isArray(entries))
-                continue;
-            for (const entry of entries) {
-                for (const hook of entry.hooks ?? []) {
-                    if (hook?._memesh === true)
-                        return true;
-                }
-            }
-        }
+        const parsed = readSettings(settingsPath);
+        return Object.values(parsed?.hooks ?? {}).some((entries) => entries.some((entry) => entry.hooks.some((hook) => hook._memesh === true)));
     }
-    catch { }
-    return false;
+    catch {
+        return false;
+    }
 }
 const MARKER_FILE = 'install-hooks.json';
 export function detectPluginRuntime(installedPluginsPathImpl) {
@@ -53,44 +46,91 @@ function settingsPathFor(scope, cwd) {
     }
     return path.join(pluginHostConfigRoot('claude-code'), 'settings.json');
 }
-function writeSettingsSync(targetPath, data) {
-    fs.writeFileSync(targetPath, data, 'utf8');
+const isJsonObject = (v) => v !== null && typeof v === 'object' && !Array.isArray(v);
+const settingsRefusal = (p, what) => refuse('settings file', p, what, 'refusing to modify');
+function assertHooksShape(hooks, fail) {
+    if (!isJsonObject(hooks))
+        throw fail('"hooks" is not an object');
+    for (const [event, entries] of Object.entries(hooks)) {
+        if (!Array.isArray(entries))
+            throw fail(`hooks.${event} is not a list`);
+        entries.forEach((entry, i) => {
+            const where = `hooks.${event}[${i}]`;
+            if (!isJsonObject(entry))
+                throw fail(`${where} is not an object`);
+            if (!Array.isArray(entry.hooks))
+                throw fail(`${where}.hooks is not a list`);
+            entry.hooks.forEach((h, j) => {
+                if (!isJsonObject(h))
+                    throw fail(`${where}.hooks[${j}] is not an object`);
+            });
+        });
+    }
 }
 function readSettings(p) {
     if (!fs.existsSync(p))
-        return {};
+        return null;
+    let text;
     try {
-        const raw = fs.readFileSync(p, 'utf8');
-        return JSON.parse(raw);
+        text = fs.readFileSync(p, 'utf8');
+    }
+    catch (err) {
+        throw refuse('settings file', p, ` cannot be read (${whyFailed(err)})`);
+    }
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
     }
     catch {
-        throw new Error(`settings file at ${p} is not valid JSON; refusing to modify`);
+        throw settingsRefusal(p, ' is not valid JSON');
     }
+    if (!isJsonObject(parsed))
+        throw settingsRefusal(p, ' is not a JSON object');
+    if (parsed.hooks !== undefined)
+        assertHooksShape(parsed.hooks, (what) => settingsRefusal(p, `: ${what}`));
+    return parsed;
 }
-function backupSettings(settingsPath) {
-    if (!fs.existsSync(settingsPath))
-        return null;
-    const ts = new Date().toISOString().replace(/[:.]/g, '-');
-    const backup = `${settingsPath}.bak-pre-memesh-${ts}`;
-    fs.copyFileSync(settingsPath, backup);
-    return backup;
+function readRuleState(scope, cwd) {
+    try {
+        return citationRuleState(scope, homeDir(), cwd);
+    }
+    catch (err) {
+        throw refuse('citation rule file', citationRulePath(scope, homeDir(), cwd), ` cannot be read (${whyFailed(err)})`);
+    }
 }
 function loadPluginHooks(pluginRoot) {
     const manifestPath = path.join(pluginRoot, 'hooks', 'hooks.json');
     if (!fs.existsSync(manifestPath)) {
         throw new Error(`plugin hooks manifest not found at ${manifestPath}`);
     }
-    const manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    const damaged = (why) => refuse("memesh's own hooks file", manifestPath, ` is damaged (${why}) and cannot be used`, 'nothing was changed; reinstall memesh and run install-hooks again');
+    let manifest;
+    try {
+        manifest = JSON.parse(fs.readFileSync(manifestPath, 'utf8'));
+    }
+    catch (err) {
+        throw damaged(err instanceof SyntaxError ? 'it is not valid JSON' : whyFailed(err));
+    }
+    if (!isJsonObject(manifest))
+        throw damaged('it is not a JSON object');
+    assertHooksShape(manifest.hooks, damaged);
+    const declared = manifest.hooks;
+    if (Object.values(declared).every((entries) => entries.length === 0))
+        throw damaged('it declares no hooks');
     const out = {};
-    for (const [event, entries] of Object.entries(manifest.hooks)) {
+    for (const [event, entries] of Object.entries(declared)) {
         out[event] = entries.map((entry) => ({
             matcher: entry.matcher,
-            hooks: entry.hooks.map((h) => ({
-                type: h.type,
-                command: h.command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot),
-                ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
-                _memesh: true,
-            })),
+            hooks: entry.hooks.map((h, j) => {
+                if (typeof h.command !== 'string')
+                    throw damaged(`hooks.${event}[].hooks[${j}].command is not a string`);
+                return {
+                    type: h.type,
+                    command: h.command.replace(/\$\{CLAUDE_PLUGIN_ROOT\}/g, pluginRoot),
+                    ...(h.timeout !== undefined ? { timeout: h.timeout } : {}),
+                    _memesh: true,
+                };
+            }),
         }));
     }
     return out;
@@ -110,14 +150,40 @@ function entryAlreadyPresent(existing, desired) {
         return desired.hooks.every((h) => cmds.has(h.command));
     });
 }
+function withRollback(fn) {
+    const changes = new Changes();
+    try {
+        return fn(changes);
+    }
+    catch (err) {
+        changes.rollBack();
+        throw err;
+    }
+}
+const BACKUP_SUFFIX = () => `.bak-pre-memesh-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+const RULE_ACTION = { missing: 'created', stale: 'updated', current: 'unchanged', 'foreign-file': 'foreign-file' };
 export function installHooks(opts) {
     const cwd = opts.cwd ?? process.cwd();
+    return withRollback((changes) => installHooksUnguarded(opts, cwd, changes));
+}
+function installHooksUnguarded(opts, cwd, changes) {
     const settingsPath = settingsPathFor(opts.scope, cwd);
-    const citationRule = opts.dryRun
-        ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'unchanged' }
-        : writeCitationRule(opts.scope, homeDir(), cwd);
+    const markerPath = path.join(memeshDir(), MARKER_FILE);
+    const write = !opts.dryRun;
+    const rule = readRuleState(opts.scope, cwd);
+    const ruleWritten = write && (rule.state === 'missing' || rule.state === 'stale');
+    const citationRule = { path: rule.path, action: write ? RULE_ACTION[rule.state] : 'unchanged' };
+    const writeRule = () => {
+        if (!ruleWritten)
+            return;
+        changes.mkdir(path.dirname(rule.path));
+        changes.write(rule.path, CITATION_RULE_BODY);
+    };
     const pluginRuntime = detectPluginRuntime(opts.installedPluginsPathImpl);
     if (pluginRuntime && !opts.forceOverPlugin) {
+        if (ruleWritten)
+            assertCanWrite(rule.path, 'citation rule file');
+        writeRule();
         return {
             settingsPath,
             backupPath: null,
@@ -126,13 +192,15 @@ export function installHooks(opts) {
             skipped: 0,
             pruned: 0,
             conflicts: [],
-            markerPath: path.join(memeshDir(), MARKER_FILE),
+            markerPath,
             pluginRuntimeDetected: pluginRuntime,
             citationRule,
+            settingsWritten: false,
+            markerWritten: false,
         };
     }
     const desired = loadPluginHooks(opts.pluginRoot);
-    const settings = readSettings(settingsPath);
+    const settings = readSettings(settingsPath) ?? {};
     const existing = settings.hooks ?? {};
     let added = 0;
     let skipped = 0;
@@ -140,8 +208,6 @@ export function installHooks(opts) {
     const conflicts = [];
     const desiredKeys = new Set(Object.entries(desired).flatMap(([event, entries]) => entries.map((e) => `${event}\u0000${e.matcher ?? '*'}`)));
     for (const [event, entries] of Object.entries(existing)) {
-        if (!Array.isArray(entries))
-            continue;
         const kept = entries.filter((e) => !(isMemeshEntry(e) && !desiredKeys.has(`${event}\u0000${e.matcher ?? '*'}`)));
         pruned += entries.length - kept.length;
         if (kept.length === 0)
@@ -167,28 +233,46 @@ export function installHooks(opts) {
                 });
             }
             existing[event] = [
-                ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e))),
+                ...live.filter((e) => !(e.matcher === desiredEntry.matcher && isMemeshEntry(e)
+                    && !desiredEntries.some((sibling) => entryAlreadyPresent([e], sibling)))),
                 desiredEntry,
             ];
             added++;
         }
     }
-    const markerPath = path.join(memeshDir(), MARKER_FILE);
-    let backupPath = null;
-    if (!opts.dryRun && (added > 0 || skipped > 0)) {
-        backupPath = backupSettings(settingsPath);
-        settings.hooks = existing;
-        fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
-        writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        fs.mkdirSync(path.dirname(markerPath), { recursive: true });
-        fs.writeFileSync(markerPath, JSON.stringify({
-            installed_at: new Date().toISOString(),
-            version: opts.pluginVersion,
-            plugin_root: opts.pluginRoot,
-            scope: opts.scope,
-            settings_path: settingsPath,
-        }, null, 2) + '\n', 'utf8');
+    const marker = {
+        version: opts.pluginVersion,
+        plugin_root: opts.pluginRoot,
+        scope: opts.scope,
+        settings_path: settingsPath,
+    };
+    const current = readInstallMarker();
+    const markerCurrent = current !== null
+        && Object.keys(marker).every((key) => current[key] === marker[key]);
+    const settingsNeeded = write && (added > 0 || pruned > 0);
+    const markerNeeded = write && (settingsNeeded || !markerCurrent);
+    if (settingsNeeded) {
+        assertCanWrite(settingsPath, 'settings file');
+        if (fs.existsSync(settingsPath))
+            assertFolderWritable(path.dirname(settingsPath));
     }
+    if (markerNeeded)
+        assertCanWrite(markerPath, 'install marker file');
+    if (ruleWritten)
+        assertCanWrite(rule.path, 'citation rule file');
+    let backupPath = null;
+    if (settingsNeeded) {
+        if (fs.existsSync(settingsPath))
+            backupPath = changes.copyNew(settingsPath, BACKUP_SUFFIX());
+        settings.hooks = existing;
+        changes.mkdir(path.dirname(settingsPath));
+        changes.write(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    }
+    if (markerNeeded) {
+        changes.mkdir(path.dirname(markerPath));
+        changes.write(markerPath, JSON.stringify({ installed_at: new Date().toISOString(), ...marker }, null, 2) + '\n');
+    }
+    writeRule();
     return {
         citationRule,
         settingsPath,
@@ -199,47 +283,60 @@ export function installHooks(opts) {
         pruned,
         conflicts,
         markerPath,
+        settingsWritten: settingsNeeded,
+        markerWritten: markerNeeded,
     };
 }
 export function uninstallHooks(opts) {
     const cwd = opts.cwd ?? process.cwd();
+    return withRollback((changes) => uninstallHooksUnguarded(opts, cwd, changes));
+}
+function uninstallHooksUnguarded(opts, cwd, changes) {
     const settingsPath = settingsPathFor(opts.scope, cwd);
-    const settings = fs.existsSync(settingsPath) ? readSettings(settingsPath) : null;
-    const citationRule = opts.dryRun
-        ? { path: citationRulePath(opts.scope, homeDir(), cwd), action: 'absent' }
-        : removeCitationRule(opts.scope, homeDir(), cwd);
-    if (!settings) {
-        return { settingsPath, backupPath: null, removed: 0, citationRule };
-    }
-    const existing = settings.hooks ?? {};
+    const markerPath = path.join(memeshDir(), MARKER_FILE);
+    const write = !opts.dryRun;
+    const settings = readSettings(settingsPath);
+    const rule = readRuleState(opts.scope, cwd);
     let removed = 0;
-    for (const [event, entries] of Object.entries(existing)) {
-        const before = entries.length;
-        existing[event] = entries.filter((e) => !isMemeshEntry(e));
-        removed += before - existing[event].length;
-        if (existing[event].length === 0) {
-            delete existing[event];
-        }
-    }
-    if (Object.keys(existing).length === 0) {
-        delete settings.hooks;
-    }
-    else {
-        settings.hooks = existing;
-    }
-    let backupPath = null;
-    if (!opts.dryRun && removed > 0) {
-        backupPath = backupSettings(settingsPath);
-        writeSettingsSync(settingsPath, JSON.stringify(settings, null, 2) + '\n');
-        const markerPath = path.join(memeshDir(), MARKER_FILE);
-        if (fs.existsSync(markerPath)) {
-            try {
-                fs.unlinkSync(markerPath);
+    if (settings) {
+        const existing = settings.hooks ?? {};
+        for (const [event, entries] of Object.entries(existing)) {
+            const before = entries.length;
+            existing[event] = entries.filter((e) => !isMemeshEntry(e));
+            removed += before - existing[event].length;
+            if (existing[event].length === 0) {
+                delete existing[event];
             }
-            catch { }
+        }
+        if (Object.keys(existing).length === 0) {
+            delete settings.hooks;
+        }
+        else {
+            settings.hooks = existing;
         }
     }
-    return { settingsPath, backupPath, removed, citationRule };
+    const ruleRemoved = write && (rule.state === 'current' || rule.state === 'stale');
+    const settingsWritten = write && settings !== null && removed > 0;
+    const markerRemoved = settingsWritten && fs.existsSync(markerPath);
+    if (settingsWritten) {
+        assertCanWrite(settingsPath, 'settings file');
+        assertFolderWritable(path.dirname(settingsPath));
+    }
+    if (markerRemoved)
+        assertCanDelete(markerPath, 'install marker file');
+    if (ruleRemoved)
+        assertCanDelete(rule.path, 'citation rule file');
+    let backupPath = null;
+    if (settingsWritten) {
+        backupPath = changes.copyNew(settingsPath, BACKUP_SUFFIX());
+        changes.write(settingsPath, JSON.stringify(settings, null, 2) + '\n');
+    }
+    if (markerRemoved)
+        changes.remove(markerPath);
+    if (ruleRemoved)
+        changes.remove(rule.path);
+    const action = !write ? 'absent' : ruleRemoved ? 'removed' : rule.state === 'foreign-file' ? 'foreign-file' : 'absent';
+    return { settingsPath, backupPath, removed, citationRule: { path: rule.path, action } };
 }
 export function readInstallMarker() {
     const markerPath = path.join(memeshDir(), MARKER_FILE);

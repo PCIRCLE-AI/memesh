@@ -42,7 +42,7 @@ it('Stop captures and indexes rules without provider requests, dream spawn, or s
       require('node:module').syncBuiltinESMExports();
     `);
     const result = spawnSync(process.execPath, ['--require', preload, path.resolve('scripts/hooks/session-summary.js')], {
-      input: JSON.stringify({ session_id: 'offline-stop', transcript_path: transcript, cwd: dir }),
+      input: JSON.stringify({ session_id: 'offline-stop', transcript_path: transcript, cwd: dir, last_assistant_message: 'Edited the files.' }),
       cwd: dir, encoding: 'utf8', timeout: 10000,
       env: { HOME: dir, USERPROFILE: dir, MEMESH_DIR: dir, MEMESH_DB_PATH: dbPath, PATH: path.dirname(process.execPath), MEMESH_AUTO_CAPTURE: 'true' },
     });
@@ -53,7 +53,7 @@ it('Stop captures and indexes rules without provider requests, dream spawn, or s
     const db = new MemeshDatabase(dbPath, { readOnly: true });
     try {
       expect(db.prepare('SELECT count(*) AS n FROM dream_proposals').get()).toMatchObject({ n: 0 });
-      const memories = db.prepare("SELECT id FROM entities WHERE type = 'session-insight'").all() as Array<{ id: number }>;
+      const memories = db.prepare("SELECT id FROM entities WHERE type = 'conversation'").all() as Array<{ id: number }>;
       expect(memories.length).toBeGreaterThan(0);
       for (const memory of memories) expect(db.prepare('SELECT count(*) AS n FROM entities_fts WHERE rowid = ?').get(memory.id)).toMatchObject({ n: 1 });
       expect(db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get()).toMatchObject({ run_count: 1 });

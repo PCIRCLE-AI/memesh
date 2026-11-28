@@ -4,14 +4,14 @@ import { createRequire } from 'module';
 import { spawn } from 'child_process';
 import { join, isAbsolute } from 'path';
 import { pathToFileURL } from 'url';
-import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
+import { existsSync, readFileSync, unlinkSync, mkdirSync, accessSync, statSync, readdirSync, openSync, fstatSync, closeSync, constants as fsConstants } from 'fs';
 import { channelFlagWarningFor, resolveClaudeLauncher } from './_claude-channel.js';
 import {
-  buildReferenceContext,
   hasBriefingContent,
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
+  getProjectIds,
   getProjectName,
   HOOK_BUSY_TIMEOUT_MS,
   importFromPluginRoot,
@@ -30,16 +30,18 @@ import {
   memeshDir as memeshHomeDir,
   parseHookOutcomes,
   hookErrorReason,
+  hookCaughtReason,
   recordHookOutcome,
   summarizeHookOutcomes,
   HOOK_OUTCOMES_FILENAME,
   parseTaskState,
   readRepoState,
-  readAutoUpdateConsent,
+  dispatchAutoUpdate,
   claimUpdatePrompt,
   finalizeUpdatePromptClaim,
   readUpdatePromptClaim,
   readUpdateCheckCache,
+  readUpdateCheckCacheState,
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
   claimJustUpgradedMarker,
@@ -48,40 +50,39 @@ import {
   repoStateLines,
   resolvePluginRoot,
   resolveSessionLimitDetailed,
-  briefingTaskStateLines,
+  taskStateLines,
   resolveBriefingLevel,
-  automaticCodexSessionPrincipal,
-  DEFAULT_CLAUDE_RECIPIENT,
   isClaudeCodeHost,
-  isCodexHost,
-  resolveMessageRecipient,
-  waitingMessageLines,
   SKIP_REASONS,
-  hookMessageSessionId,
-  SESSION_ID_MISMATCH_REASON,
   briefingLevelPolicy,
   sessionStartAppendsWorkPackageNotice,
   WORK_PACKAGE_NOTICE,
   readHookConfigResult,
   HOOK_CONFIG_UNREADABLE_REASON,
-  homeDir,
   taskStateName,
-  writeCitationRule,
-  writeAutoUpdateConsent,
   writePrivateJsonAtomic,
+  assertWindowsHookStateDirectory,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  windowsHookStateDeadline,
+  writeWindowsSessionState,
   recallSessionPath,
   openMemeshDb,
   sessionProjectLine,
   jsonStringLiteral,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
 import { recordSessionLauncher } from './_clear-alias.js';
 import { recallListName, SESSION_ID_RE } from './_stop-notes.js';
-import { buildBriefingIndex, injectedIndexReserve } from './_generated/briefing-index.js';
+import { buildRecentIndex, recentLine } from './_generated/recent-index.js';
+import { hasTables, MEMORY_READ_TABLES } from './_generated/schema.js';
 import { handoffView } from './_generated/session-handoff.js';
-import { recipientEverSeenAnywhere, unknownRecipientHint } from './_generated/agent-message-inbox.js';
-import { boundTaskStateLines, joinedLength } from './_generated/work-topology.js';
-import { readIndexCandidates, readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
+import { buildOpeningContext, MAX_OPENING_CONTEXT_BYTES } from './_generated/work-topology.js';
+import { readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
+import { resolveProjectMemoryName, projectTagsOf, filedUnder } from './_generated/memory-mutation.js';
+import { continuationLines, continuationTaskKey } from './_generated/continuation.js';
 
 const require = createRequire(import.meta.url);
 const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -101,6 +102,14 @@ try {
     _installChannelMod = await import(pathToFileURL(_modPath).href);
   }
 } catch { /* best-effort — fall through to 'unknown' channel */ }
+
+// The one module that decides about automatic updates (policy, channel,
+// source check). Loaded the same way; null when dist is missing.
+let _autoUpdateMod = null;
+try {
+  const _autoUpdatePath = join(resolvePluginRoot(import.meta.url), 'dist/core/auto-update.js');
+  if (existsSync(_autoUpdatePath)) _autoUpdateMod = await import(pathToFileURL(_autoUpdatePath).href);
+} catch { /* best-effort — dispatchAutoUpdate records that the module is missing */ }
 
 const dbPath = getDbPath();
 const memeshDir = getMemeshDirFromDbPath();
@@ -164,7 +173,7 @@ function buildDeprecationBanner(currentVersion, cache) {
   // remains available in `memesh status` (fresh lookup) and the dashboard
   // (after a Check now click).
   // Tailor the remediation hint to the install channel. `memesh
-  // update` and `autoUpdate` only work for npm-global installs;
+  // update` and `autoUpdate` work for npm-global and plugin installs;
   // pointing source-checkout / project-local users at those
   // commands is misleading (especially when the deprecation is a
   // security advisory). Detect the channel and suggest the
@@ -230,51 +239,154 @@ const UPDATE_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
 const CHECK_FAILED_BANNER_THROTTLE_MS = 24 * 60 * 60 * 1000;
 
 /**
- * Banner lines for the two update states that are NOT a consent prompt:
+ * Every update-banner / update-check path that returns without doing its job leaves a line in hook-outcomes.jsonl
+ * (#360): a silence nobody can explain looks the same as a check that never ran.
+ */
+function withheldUpdateWarning(why) {
+  record({ outcome: 'notified', reason: `update warning withheld: ${why}` });
+}
+
+function updateCheckNotStarted(why) {
+  record({ outcome: 'notified', reason: `update check not started: ${why}` });
+}
+
+function recordCaught(what, err) {
+  record({ outcome: 'error', reason: `${what}: ${hookCaughtReason(err)}` });
+}
+
+/**
+ * Banner lines for the two update states that are not an "update available" notice:
  * JUST_UPGRADED (said once, then the receipt is consumed) and CHECK_FAILED
  * (unknown is not "up to date"; throttled to once a day). Everything else
- * returns [] so the caller falls through to its consent/banner logic.
+ * returns [] so the caller falls through to its update-notice logic.
  */
-function updateNoticeBanner(installedVersion, cache) {
+function updateNoticeBanner(installedVersion, cache, cacheState) {
   if (!installedVersion) return { kind: 'UNKNOWN_VERSION', lines: [] };
   const notice = resolveUpdateNotice({
-    dir: memeshHomeDir(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+    dir: memeshHomeDir(), markerDir: getMemeshDirFromDbPath(), currentVersion: installedVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
   });
   if (notice.kind === 'JUST_UPGRADED') {
     // Take the receipt atomically: two host hooks starting together must not
     // both announce. The loser sees null and says nothing about it.
-    const claimed = claimJustUpgradedMarker(memeshHomeDir());
+    const claimed = claimJustUpgradedMarker(getMemeshDirFromDbPath());
     if (!claimed) return { kind: 'UP_TO_DATE', lines: [] };
     return {
       kind: notice.kind,
       lines: [`✅ MeMesh upgraded ${claimed.from} → ${claimed.to}. Hosts already running keep the old version until they restart; this session's hooks and MCP server pick up ${claimed.to} on the next start.`],
     };
   }
-  if (notice.kind === 'CHECK_FAILED') return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, notice.reason) };
+  if (notice.kind === 'CHECK_FAILED') {
+    // No check has ever run for this version and there is no cache file at all:
+    // the first session that can start one (see buildCheckFailedBanner). A cache
+    // file that is THERE but cannot be read is not that: a check ran, its record
+    // is broken, and the banner says so instead of "no check has completed".
+    const unreadable = cacheState.status === 'unreadable';
+    const firstRun = notice.attempted === false && cacheState.status === 'missing';
+    let reason = notice.reason;
+    if (unreadable) {
+      reason = `the update-check cache is unreadable: ${cacheState.reason}`;
+      record({ outcome: 'error', reason: `update-check cache present but unreadable: ${cacheState.reason}` });
+    }
+    return { kind: notice.kind, lines: buildCheckFailedBanner(installedVersion, reason, firstRun) };
+  }
   return { kind: notice.kind, lines: [] };
+}
+
+/**
+ * The two once-per-version markers are keyed by the installed version, so each upgrade would leave a pair behind
+ * for good. Whenever a marker is written, the markers of OLDER versions are removed: nothing reads them any more.
+ * Never a marker of a newer (or unrelated) version: two installs of different versions can share one ~/.memesh (a
+ * plugin and an npm global), and each would otherwise delete the other's once-a-day throttle on every session,
+ * turning "once a day" into "every session". A version that is not strictly older, or not a version at all, is kept.
+ */
+function pruneOlderVersionMarkers(fs, dir, versionTag) {
+  let names;
+  try {
+    names = fs.readdirSync(dir);
+  } catch (err) {
+    recordCaught('update banner: old version markers cannot be listed', err);
+    return;
+  }
+  for (const name of names) {
+    const match = /^(?:update-check-first-session|last-check-failed-banner)\.(.+)\.lock$/.exec(name);
+    if (!match || match[1] === versionTag || !isStrictlyOlder(match[1], versionTag)) continue;
+    try {
+      fs.unlinkSync(join(dir, name));
+    } catch (err) {
+      // A peer that removed it first is fine; anything else (a folder in its place, no permission) is a reason.
+      if (err?.code !== 'ENOENT') {
+        recordCaught('update banner: old version marker cannot be removed', err);
+      }
+    }
+  }
+}
+
+/**
+ * True when this is the one silent session of `currentVersion` (see buildCheckFailedBanner), and says why in
+ * hook-outcomes.jsonl. False when the banner should speak.
+ */
+function claimSilentFirstSession(fs, dir, versionTag, currentVersion) {
+  if (!existsSync(dbPath)) {
+    withheldUpdateWarning(`no database yet, so no update check can have been tried (${currentVersion})`);
+    return true;
+  }
+  try {
+    // `wx`: the claim and the check that nobody holds it are one step, so
+    // two sessions starting together cannot both stay silent, and a name
+    // that is already taken in any form (a link, a folder) is not claimed.
+    fs.writeFileSync(join(dir, `update-check-first-session.${versionTag}.lock`), String(Date.now()), { mode: 0o600, flag: 'wx' });
+  } catch (err) {
+    // EEXIST: an earlier session used the one silent session. Anything else:
+    // the marker cannot be recorded, so speak rather than hide the warning.
+    if (err?.code !== 'EEXIST') recordCaught('update banner: first-session marker cannot be written', err);
+    return false;
+  }
+  pruneOlderVersionMarkers(fs, dir, versionTag);
+  withheldUpdateWarning(`first session of ${currentVersion} that has a database; the check starts now`);
+  return true;
 }
 
 /**
  * The update status is UNKNOWN (no completed check, or the registry lookup
  * failed and the last good answer is older than a day). Silence here would
  * read as "up to date", so say it — once a day per installed version.
+ *
+ * The one exception is the very first session of an installed version (#540):
+ * "could not confirm" would be a warning about something that has not been tried
+ * yet. Two cases, both silent:
+ *  - There is no database yet. THIS hook does not start the check before a
+ *    database exists (see runPostBannerUpdateTasks: starting it earlier races
+ *    the database's own creation), so as far as it knows nothing has been tried.
+ *    (The CLI and the MCP server do start a check without a database; when one
+ *    has run, its cache exists and this case does not apply.) The silence lasts
+ *    until a database exists and costs nothing: no marker is written.
+ *  - The first session that has a database. It starts the check itself, right
+ *    after this banner. It is silent once per installed version; if the next
+ *    session still has nothing, the banner speaks as usual.
+ * If the once-per-version marker cannot be written, the banner speaks: a warning
+ * that may repeat is better than one that is hidden for a reason nobody sees.
  */
-function buildCheckFailedBanner(currentVersion, reason) {
-  try {
-    const fs = require('fs');
-    const dir = memeshHomeDir();
-    try { ensurePrivateDir(dir); } catch { /* best-effort */ }
-    const versionTag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
-    const markerPath = join(dir, `last-check-failed-banner.${versionTag}.lock`);
-    let stat;
-    try { stat = fs.statSync(markerPath); } catch { stat = null; }
-    if (stat && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) return [];
-    try {
-      fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
-      try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
-    } catch { /* best-effort */ }
-  } catch {
+function buildCheckFailedBanner(currentVersion, reason, firstRun = false) {
+  const fs = require('fs');
+  const dir = memeshHomeDir();
+  try { ensurePrivateDir(dir); } catch (err) { recordCaught('update banner: memesh folder', err); }
+  const versionTag = /^[0-9A-Za-z.+-]+$/.test(currentVersion) ? currentVersion : 'unknown';
+  if (firstRun && claimSilentFirstSession(fs, dir, versionTag, currentVersion)) return [];
+  const markerPath = join(dir, `last-check-failed-banner.${versionTag}.lock`);
+  let stat;
+  try { stat = fs.statSync(markerPath); } catch { stat = null; }
+  // Only a file is a marker; a folder of that name is not one, and writing
+  // over it below fails loudly instead of silencing the warning for a day.
+  if (stat && stat.isFile() && Date.now() - stat.mtimeMs < CHECK_FAILED_BANNER_THROTTLE_MS) {
+    withheldUpdateWarning('already shown within the last day for this version');
     return [];
+  }
+  try {
+    fs.writeFileSync(markerPath, String(Date.now()), { mode: 0o600 });
+    try { fs.chmodSync(markerPath, 0o600); } catch { /* non-POSIX */ }
+    pruneOlderVersionMarkers(fs, dir, versionTag);
+  } catch (err) {
+    recordCaught('update banner: throttle marker cannot be written, the warning may repeat', err);
   }
   return [`ℹ️  MeMesh could not confirm whether an update exists (${reason}). Update status is unknown, not current — run \`memesh status\` to retry.`];
 }
@@ -390,47 +502,30 @@ function detectInstallChannelHook(pluginRoot) {
   }
 }
 
-function buildUpdateConsentPrompt(sessionId, currentVersion, cache, channel) {
+/**
+ * The once-per-session update notice. Nothing is asked: with automatic updates
+ * on, it says the install happens after the running sessions end and takes
+ * effect in the next one; otherwise it says what to run. The notice is claimed
+ * atomically so two hosts starting together print it once.
+ */
+function buildUpdateNotice(sessionId, currentVersion, cache, channel) {
   if (!sessionId || sessionId === 'unknown' || !cache || cache.currentVersion !== currentVersion) return null;
-  // One resolver decides. Snoozed ("Not now" within its window), disabled
-  // ("Never ask again"), a just-landed upgrade, or a failed check all mean:
-  // no consent prompt this session. Those states get their own banner line.
   const notice = resolveUpdateNotice({
-    dir: memeshHomeDir(), currentVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
+    dir: memeshHomeDir(), markerDir: getMemeshDirFromDbPath(), currentVersion, cache, updateCheckEnabled: isUpdateCheckEnabled(),
   });
   if (notice.kind !== 'UPGRADE_AVAILABLE') return null;
-  const existing = readAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel);
-  if (existing?.decision) return null;
-  // Claim the session-level notice before emitting it. A resumed hook or a
-  // concurrent host process (including a second host channel) sees the
-  // atomic claim and does not duplicate the ask.
   if (readUpdatePromptClaim(sessionId, currentVersion, cache.latestVersion)
     || !claimUpdatePrompt(sessionId, currentVersion, cache.latestVersion, channel)) return null;
-  const target = channel === 'plugin-marketplace'
-    ? 'the installed marketplace plugin'
-    : channel === 'npm-global' ? 'the global memesh installation' : 'this MeMesh installation';
-  if (channel !== 'npm-global') {
-    const pluginRoot = resolvePluginRoot(import.meta.url);
-    const action = channel === 'plugin-marketplace'
-      ? pluginUpgradeLine(pluginRoot)
-      : channel === 'source-checkout'
-        ? '    Source checkout: pull and rebuild (`git pull && npm install && npm run build`).'
-        : channel === 'npm-local'
-          ? '    Project-local install: run `npm install @pcircle/memesh@latest` in the project that installed it.'
-          : '    Update it through the tool or package manager that installed MeMesh.';
+  let automatic = false;
+  try { automatic = _autoUpdateMod?.currentPolicy().policy !== 'off' && _autoUpdateMod != null; } catch { /* treated as off */ }
+  const supported = channel === 'npm-global' || channel === 'plugin-marketplace';
+  if (automatic && supported) {
     return {
-      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. This installation cannot be upgraded automatically from this session.\n${action}\n    Reply “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
-      context: `MeMesh ${cache.latestVersion} is available for ${target}, but this channel has no safe in-session installer. Show the user the channel-specific update action and do not claim that an Upgrade reply will install it.`,
+      system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}). Automatic updates are on: MeMesh will try to install it after your running sessions end (it skips what your setting does not allow and anything it cannot verify), and it takes effect in your next session. \`memesh doctor\` shows what it did. To stop automatic updates: memesh config set autoUpdate off`,
     };
   }
-  // The npm-global channel is the only hook-owned installer. Record a
-  // channel-specific pending consent for the Stop hook after the global
-  // session notice has been claimed.
-  if (!writeAutoUpdateConsent(sessionId, currentVersion, cache.latestVersion, channel, 'pending')) return null;
-  return {
-    system: `\nℹ️  MeMesh ${cache.latestVersion} is available (you're on ${currentVersion}) for ${target}. Reply “Upgrade” to install it, “Not now” to snooze this version (24h, then longer), or “Never ask again” to stop these checks.`,
-    context: `MeMesh update consent is pending for this session. Ask the user whether to upgrade from ${currentVersion} to ${cache.latestVersion} for the ${target}. Wait for an explicit Upgrade, Not now, or Never ask again response; do not install without affirmative consent.`,
-  };
+  const lines = buildUpdateAvailableBanner(currentVersion, cache, () => channel);
+  return lines.length > 0 ? { system: lines.join('\n') } : null;
 }
 
 /**
@@ -475,17 +570,14 @@ function pluginHostOf(pluginRoot) {
  */
 function pluginUpgradeLine(pluginRoot) {
   const host = pluginHostOf(pluginRoot);
-  if (host === 'codex') {
-    return `    Run: codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh`;
-  }
   if (host === 'unknown') {
     // Naming one host's command here would be a guess presented as an
     // instruction. Rare — it needs `dist/core/install-channel.js` to be
     // missing or unloadable — but that is a broken install, which is exactly
     // when wrong upgrade advice costs the most.
-    return `    Run: memesh upgrade-plugin   (on Codex: codex plugin marketplace upgrade pcircle-memesh && codex plugin add memesh@pcircle-memesh)`;
+    return `    Run: memesh update   (it checks the release's source and backs up your database first)`;
   }
-  return `    Run: memesh upgrade-plugin   (no CLI? npx @pcircle/memesh upgrade-plugin — or reinstall from /plugin UI)`;
+  return `    Run: memesh update   (it checks the release's source and backs up your database first; no memesh command on your PATH? run ${_installChannelMod.pluginUpdateCommand(pluginRoot)})`;
 }
 
 // Don't fire a fresh-check more often than this. Two parallel
@@ -498,11 +590,15 @@ function pluginUpgradeLine(pluginRoot) {
 // (24h) to stay accurate.
 const FRESH_CHECK_THROTTLE_MS = 5 * 60 * 1000;
 
+
 function spawnFreshUpdateCheck(installedVersion) {
   try {
     const pluginRoot = resolvePluginRoot(import.meta.url);
     const cliPath = join(pluginRoot, 'dist/transports/cli/cli.js');
-    if (!existsSync(cliPath)) return false;
+    if (!existsSync(cliPath)) {
+      updateCheckNotStarted('this install has no dist/transports/cli/cli.js to run it with');
+      return false;
+    }
     const fs = require('fs');
     // memeshHomeDir(), not join(homedir(), '.memesh') — same reasoning as
     // the banner marker above: marker and cache must share a directory.
@@ -551,14 +647,21 @@ function spawnFreshUpdateCheck(installedVersion) {
       // multiple processes may race the unlink but only one can
       // win the subsequent O_EXCL.
       let stat;
-      try { stat = fs.statSync(markerPath); } catch { return false; }
+      try { stat = fs.statSync(markerPath); } catch {
+        updateCheckNotStarted('the refresh marker could not be inspected');
+        return false;
+      }
       if (Date.now() - stat.mtimeMs < FRESH_CHECK_THROTTLE_MS) {
+        updateCheckNotStarted('another session started one within the last 5 minutes');
         return false;
       }
       try { fs.unlinkSync(markerPath); } catch { /* peer already removed */ }
       result = claim();
     }
-    if (result !== 'won') return false;
+    if (result !== 'won') {
+      updateCheckNotStarted('the refresh marker could not be claimed');
+      return false;
+    }
     const child = spawn(
       process.execPath,
       [cliPath, 'status'],
@@ -603,11 +706,32 @@ function spawnFreshUpdateCheck(installedVersion) {
  * mistake produces visible breakage during testing instead of silent
  * over-spawning.
  */
+/** One line in auto-update.log for a background path that returns without doing its work: nothing is skipped in silence. */
+function skipNote(reason) {
+  try { _autoUpdateMod?.logAutoUpdateLine(_autoUpdateMod.updateControlDir(), `auto-update: ${reason}`); } catch { /* nowhere to write it */ }
+}
+
+let nodeTooOld = false;
 let __postBannerRan = false;
-function runPostBannerUpdateTasks() {
+async function runPostBannerUpdateTasks() {
   if (__postBannerRan) return;
   __postBannerRan = true;
+  // This host process is running: the updater waits for it to exit before it
+  // replaces any file. Registered before anything below can return early.
   try {
+    // Every data directory under this HOME shares one host registry.
+    _autoUpdateMod?.registerLiveHost(_autoUpdateMod.updateControlDir());
+  } catch (err) {
+    // The updater then cannot see this host: leave the reason where the owner can read it.
+    try { _autoUpdateMod?.logAutoUpdateLine(_autoUpdateMod.updateControlDir(), `auto-update: could not register this session's host (${err?.message ?? err}); the updater may not wait for it`); } catch { /* nowhere to write it */ }
+  }
+  try {
+    // On a Node below the floor the database can never be opened, so there is nothing to update from here.
+    if (nodeTooOld) {
+      updateCheckNotStarted('this Node is older than the minimum MeMesh supports');
+      skipNote('this Node is older than the minimum MeMesh supports, so neither the update check nor the updater starts in this session');
+      return;
+    }
     // A first-use session has no database yet. Starting the detached
     // `memesh status` refresh in that state makes status create/migrate the
     // database while the next SessionStart may already be opening it
@@ -615,25 +739,48 @@ function runPostBannerUpdateTasks() {
     // (for example, `entities` exists while `tags` does not), turning a
     // harmless update notice into "memories not loaded". The next session
     // after the first capture will refresh the cache once the database is
-    // fully established; consent itself was already emitted above.
-    if (!existsSync(dbPath)) return;
+    // fully established.
+    if (!existsSync(dbPath)) {
+      updateCheckNotStarted('there is no database yet');
+      skipNote('there is no database yet, so neither the update check nor the updater starts in this session');
+      return;
+    }
     let installedVersion = null;
     try {
       const pluginRoot = resolvePluginRoot(import.meta.url);
       const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
       installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
-    } catch { /* best-effort */ }
-    if (!installedVersion) return;
-    // Auto-update spawn moved to Stop hook (v4.1.4) to avoid TOCTOU race
-    // where npm install -g overwrites dist/ while peer hooks are still reading it.
+    } catch { /* best-effort: said below */ }
+    if (!installedVersion) {
+      updateCheckNotStarted('the installed version could not be read from package.json');
+      skipNote('the installed version could not be read from package.json, so neither the update check nor the updater starts');
+      return;
+    }
+    // The runner is started here, but it replaces nothing while any registered
+    // host is alive (see registerLiveHost), so peer hooks never read a
+    // half-replaced dist/.
+    // With automatic updates off there is nothing to start: not the runner, and not the work it does first (the install
+    // channel is looked up with `npm root -g`). An unreadable setting counts as off, like everywhere else.
+    let automaticUpdatesOn = false;
+    try { automaticUpdatesOn = _autoUpdateMod != null && _autoUpdateMod.currentPolicy().policy !== 'off'; } catch (err) { skipNote(`the automatic-update setting could not be read (${err?.message ?? err}), so it is treated as off and the updater does not start`); }
+    if (_autoUpdateMod != null && !automaticUpdatesOn) skipNote('automatic updates are off, so the updater does not start in this session');
+    if (automaticUpdatesOn || _autoUpdateMod == null) await dispatchAutoUpdate(_autoUpdateMod);
     // Two TTLs (update-notice.ts): a current answer is re-verified hourly, a
     // known upgrade is not re-fetched for 12h; a failed or missing check is
-    // always retried. "Never ask again" also stops the background refresh.
-    if (!isUpdateCheckEnabled()) return;
-    if (!shouldRefreshUpdateCache(installedVersion, readUpdateCheckCache(installedVersion))) return;
+    // always retried. `updateCheck: false` also stops the background refresh.
+    if (!isUpdateCheckEnabled()) {
+      updateCheckNotStarted('update checks are turned off');
+      return;
+    }
+    if (!shouldRefreshUpdateCache(installedVersion, readUpdateCheckCache(installedVersion))) {
+      updateCheckNotStarted('the cached answer is still fresh');
+      return;
+    }
     spawnFreshUpdateCheck(installedVersion);
-  } catch {
-    // Best-effort — never crash the hook on a network or fs hiccup.
+  } catch (err) {
+    // Never crash the hook on a network or fs hiccup, and never leave it without a trace.
+    recordCaught('update check not started', err);
+    skipNote(`the update tasks of this session stopped on an error (${err?.message ?? err})`);
   }
 }
 
@@ -783,22 +930,24 @@ function combineWithBanner(baseMessage, { skipUpdateBanner = false } = {}) {
     const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
     const installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
     livenessVersion = installedVersion;
-    const cache = readUpdateCheckCache(installedVersion);
+    const cacheState = readUpdateCheckCacheState(installedVersion);
+    const cache = cacheState.cache;
     if (installedVersion) {
       const deprecation = buildDeprecationBanner(installedVersion, cache);
-      const notice = updateNoticeBanner(installedVersion, cache);
+      const notice = updateNoticeBanner(installedVersion, cache, cacheState);
       if (deprecation.length > 0) {
         lines = deprecation;
       } else if (notice.lines.length > 0) {
         lines = notice.lines;
       } else if (notice.kind === 'UPGRADE_AVAILABLE' && !skipUpdateBanner) {
-        // Snoozed, disabled, failed or current: the resolver already said no.
+        // Disabled, failed or current: the resolver already said no.
         lines = buildUpdateAvailableBanner(
           installedVersion, cache, () => detectInstallChannelHook(pluginRoot));
       }
     }
-  } catch {
-    // Best-effort — fall through to base message only.
+  } catch (err) {
+    // Never crash the hook, and never lose the update banner without a trace: fall through to the base message only.
+    recordCaught('update banner could not be built', err);
   }
   // The capture-liveness line rides the same single systemMessage as every
   // other banner — stdout must stay one JSON document.
@@ -869,6 +1018,9 @@ process.stdin.on('end', async () => {
   // able to lead with this warning too, or a capture-dead session that ALSO
   // hits a recall error silently drops the more important half of the story.
   let captureWarning = null;
+  // The warning promises recall works. The catch below, where it did not, takes
+  // that promise back before the message goes out.
+  const RECALL_STILL_WORKS = ' (recall still works)';
   const withCaptureWarning = (msg) => {
     if (!captureWarning) return msg;
     // The populated-database path prepends an update banner ahead of the
@@ -881,17 +1033,6 @@ process.stdin.on('end', async () => {
     // of ANY line instead.
     return `${captureWarning}\n${msg.replace(/^◉ MeMesh ready · /m, '◉ MeMesh · ')}`;
   };
-  // Also hoisted above both try blocks, same reason: a rejected
-  // MEMESH_RECIPIENT must reach the recall-failure catch's own output() too.
-  let recipientRejectionLine;
-  const withRecipientRejectionWarning = (msg) =>
-    recipientRejectionLine ? `${recipientRejectionLine}\n${msg}` : msg;
-  // #474: same hoisting reason — this session's own messaging address (set
-  // once a recipient resolves, below) must reach every exit path, including
-  // the recall-failure catch, not just the populated-database summary.
-  let addressLine = null;
-  const withAddressLine = (msg) =>
-    addressLine ? `${addressLine}\n${msg}` : msg;
   // Also hoisted above both try blocks, same reason: a launch missing the
   // channel flag is a live-delivery problem this session already has,
   // regardless of how the payload parses or whether a database exists yet.
@@ -916,7 +1057,20 @@ process.stdin.on('end', async () => {
     const data = JSON.parse(input);
     hookPayload = data;
 
+    // First, before anything that opens the database, records a launcher session or promises something: on a Node
+    // that cannot run MeMesh the one true thing to say is the Node's problem and its repair. No writability warning
+    // ("recall still works"), no messaging address, no project to pass to tools that cannot run.
+    const nodeProblem = hookNodeProblem('session-start');
+    if (nodeProblem) {
+      nodeTooOld = true;
+      output(`MeMesh: ${nodeProblem}`, `${NODE_UNSUPPORTED_CONTEXT} ${nodeProblem}`, { outcome: 'error', reason: NODE_TOO_OLD_REASON });
+      return;
+    }
+
     const projectName = getProjectName(data.cwd);
+    // Every id this checkout's memories may be filed under (its remote's id, earlier spellings
+    // of it, its path's id): the project's memories are read under all of them, written under one.
+    const projectIds = getProjectIds(data.cwd);
     // Only from the cwd this host reported for this session: without one,
     // getProjectName falls back to this process's own cwd, which under a
     // plugin is the plugin directory, not the user's project.
@@ -949,44 +1103,6 @@ process.stdin.on('end', async () => {
         reason: `briefing-level: invalid ${source} value ${value}, using ${briefingLevel}`,
       });
     }
-    // Resolved before any early return, so a rejected id is reported even
-    // with no database yet or no entities table. A hook that exits 0 has its
-    // stderr hidden from both the user and the model, so the rejection also
-    // needs a place in the same visible channel the "never seen" hint uses —
-    // `recipientRejectionLine` (hoisted above, with `withCaptureWarning`) is
-    // shown in every exit path below.
-    const recipient = resolveMessageRecipient(process.env, (label, detail) => {
-      recipientRejectionLine = `MEMESH_RECIPIENT ignored: ${detail}`;
-      record({
-        outcome: 'notified',
-        reason: `recipient: MEMESH_RECIPIENT ignored (${label})`,
-      });
-    }, { sessionId: data.session_id, cwd: data.cwd });
-    // Codex follow-up: an AUTOMATIC Codex identity (`codex-thread-<uuid>`) is
-    // a fresh, machine-generated id, unique to this one thread — nobody typed
-    // it, so it has necessarily never been "seen" anywhere before this exact
-    // session, on every single session, forever. Showing the "never seen —
-    // check it for a typo" hint (below) for it would be a permanent, useless
-    // warning a Codex user can never resolve. Recomputed from this session's
-    // own `session_id` rather than threaded through `resolveMessageRecipient`'s
-    // return value, so this can never disagree with what `recipient` actually
-    // is. Exact-match only: a CONFIGURED Codex principal (where "never seen"
-    // is exactly as meaningful as it is for Claude's fallback) is unaffected.
-    const isAutomaticCodexRecipient = Boolean(recipient) && isCodexHost(process.env)
-      && typeof data.session_id === 'string'
-      && recipient === automaticCodexSessionPrincipal({ threadId: data.session_id });
-    // #474: this session's own messaging address, stated once so the agent
-    // can use it as `sender` and knows `message discover` is scoped to this
-    // project. Mutually exclusive with a rejected MEMESH_RECIPIENT above (a
-    // rejection means no recipient resolved). Codex follow-up: `recipient`
-    // above now also resolves for an ordinary Codex plugin session with no
-    // MEMESH_RECIPIENT (`resolveMessageRecipient`'s Codex fallback), so this
-    // line is no longer Claude-only.
-    addressLine = recipient
-      ? `MeMesh messaging address: project ${jsonStringLiteral(projectName)}, recipient "${recipient}" — use `
-        + `"${recipient}" as sender in \`message\` so replies reach you; \`message discover\` with this project `
-        + 'lists other agents here.'
-      : null;
     // The check above only catches an unusable VALUE for one known key
     // (`briefing`) inside an otherwise-parseable config object. A config.json
     // that is not even that — truncated JSON, a bare array/string/number/null
@@ -1032,36 +1148,6 @@ process.stdin.on('end', async () => {
     // decide this (see the field comment in briefing-level.ts).
     const workPackageNotice = sessionStartAppendsWorkPackageNotice(briefingLevel) ? WORK_PACKAGE_NOTICE : undefined;
 
-    // Self-heal the citation contract.
-    //
-    // `install-hooks` writes it too, but a PLUGIN install never runs that
-    // command — and plugin is how most users arrive. Without this, the
-    // contract would reach only npm installs, which is the same shape as the
-    // bug it exists to fix: a mechanism that is correct on a path nobody
-    // takes. Idempotent (a byte-identical file is left alone), refuses to
-    // touch a file memesh did not write, and never blocks the session: a
-    // failure here traces and the hook carries on.
-    try {
-      // Scope comes from the install marker, NOT hardcoded to 'user'. A
-      // `--scope project` install keeps everything inside that project, and
-      // writing the contract to ~/.claude/rules/ anyway would leak it into
-      // every OTHER project on the machine — and survive
-      // `uninstall-hooks --scope project`, which only knows about the
-      // project path. No marker means a plugin install, which is user-level
-      // by construction.
-      let ruleScope = 'user';
-      try {
-        const markerPath = join(memeshHomeDir(), 'install-hooks.json');
-        if (existsSync(markerPath)) {
-          const marker = JSON.parse(readFileSync(markerPath, 'utf8'));
-          if (marker?.scope === 'project') ruleScope = 'project';
-        }
-      } catch { /* unreadable marker → user scope, the safe default */ }
-      writeCitationRule(ruleScope, homeDir(), data.cwd || process.cwd());
-    } catch (err) {
-      try { process.stderr.write(`[memesh session-start] citation rule: ${err?.message || err}\n`); } catch {}
-    }
-
     // A new start of THIS session (startup, /clear, resume, compact) shows
     // recalls again. Other sessions keep their own lists (#521). Every start
     // resets, whether or not it carries agent_type: a `claude --agent` main
@@ -1072,7 +1158,10 @@ process.stdin.on('end', async () => {
       const sid = typeof data.session_id === 'string' && SESSION_ID_RE.test(data.session_id) ? data.session_id : null;
       if (sid && !data.agent_id) {
         const own = join(throttleDir, recallListName(sid));
-        if (existsSync(own)) unlinkSync(own);
+        if (process.platform === 'win32') {
+          const state = prepareWindowsHookState(own, windowsHookStateDeadline(10000));
+          if (state.file) unlinkSync(own);
+        } else if (existsSync(own)) unlinkSync(own);
       }
       // The old machine-wide list, from before #521.
       if (existsSync(legacyThrottlePath)) unlinkSync(legacyThrottlePath);
@@ -1104,7 +1193,7 @@ process.stdin.on('end', async () => {
     // withCaptureWarning (hoisted above) demotes it instead of contradicting
     // it one line later.
     captureWarning = unwritable
-      ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session (recall still works). Run 'memesh doctor'.`
+      ? `◉ MeMesh cannot write to ${unwritable} — memories will NOT be saved this session${RECALL_STILL_WORKS}. Run 'memesh doctor'.`
       : null;
 
     // After the writability probe on purpose: recording an outcome creates
@@ -1137,9 +1226,9 @@ process.stdin.on('end', async () => {
         consentVersion = typeof pkg.version === 'string' ? pkg.version : null;
         consentCache = readUpdateCheckCache(consentVersion);
         const channel = detectInstallChannelHook(pluginRoot);
-        consent = buildUpdateConsentPrompt(data.session_id, consentVersion, consentCache, channel);
+        consent = buildUpdateNotice(data.session_id, consentVersion, consentCache, channel);
       } catch { /* best-effort */ }
-      // The consent prompt IS the update message for this session; the
+      // The update notice IS the update message for this session; the
       // routine "update available" banner must not repeat it one line later
       // (the database path has had this rule since the notice was added; the
       // no-database path printed both). Deprecation, a just-landed upgrade
@@ -1153,10 +1242,10 @@ process.stdin.on('end', async () => {
         captureWarning ?? '◉ MeMesh ready · no database yet, memories will be created as you work',
         { skipUpdateBanner: alreadyNoticed },
       );
-      const noDbContext = [addressLine, recipientRejectionLine, consent ? consent.context : null, workPackageNotice]
+      const noDbContext = [workPackageNotice]
         .filter(Boolean).join('\n\n') || undefined;
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(consent ? `${consent.system}\n${emptySummary}` : emptySummary))),
+        withChannelFlagWarning(consent ? `${consent.system}\n${emptySummary}` : emptySummary),
         noDbContext,
         // Nothing was injected (no notice at this level, no database to read
         // from) — record why, the same as the schema-present empty path
@@ -1188,20 +1277,18 @@ process.stdin.on('end', async () => {
     // pre-read from this readonly handle before it closes. Defaults to
     // true so any early exit still lets the epilogue's own throttle decide.
     let noiseCompressDue = true;
+    let autoArchiveDue = true;
     try {
-      // Check if tables exist (db may exist but be empty)
-      const tableCheck = db.prepare(
-        "SELECT name FROM sqlite_master WHERE type='table' AND name='entities'"
-      ).get();
-      if (!tableCheck) {
-        const noEntitiesContext = [addressLine, recipientRejectionLine, workPackageNotice].filter(Boolean).join('\n\n') || undefined;
+      // The database may exist but be empty, or be mid-creation (see MEMORY_READ_TABLES).
+      if (!hasTables(db, MEMORY_READ_TABLES)) {
+        const noEntitiesContext = [workPackageNotice].filter(Boolean).join('\n\n') || undefined;
         output(
-          withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')))),
+          withChannelFlagWarning(combineWithBanner(captureWarning ?? '◉ MeMesh ready · database initialised but no memories stored yet')),
           noEntitiesContext,
           // Same reason mechanism as the no-database exit above and the
           // schema-present exit below — see `nothingToInjectReason`'s own
           // comment for why this is not `minimal`-gated explicitly.
-          !noEntitiesContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no entities table yet') } : null,
+          !noEntitiesContext ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'database has no memory tables yet') } : null,
         );
         return;
       }
@@ -1212,6 +1299,7 @@ process.stdin.on('end', async () => {
       // read-only handle needs. A failed handoff, decision or lesson read is
       // recorded and leaves the rest of the context intact.
       const pools = selectBriefingPools(db, projectName, {
+        projectIds,
         projectLimit: sessionLimit,
         global: briefingPolicy.global,
         foreign: briefingPolicy.foreign,
@@ -1223,19 +1311,16 @@ process.stdin.on('end', async () => {
       });
       const projectEntities = pools.project;
       const noProjectEntities = pools.noProject;
+      const sharedEntities = pools.shared;
       const globalEntities = pools.global;
       const recentEntities = pools.recent;
+      const userConversationTitles = pools.userConversations;
       const lessonCount = pools.lessonCount;
       const topLessons = pools.lessons;
-      // Where the last session in THIS project left off — it leads the block
-      // at every level (same renderer as `briefing`). `handoffHidden` names why
-      // an existing handoff is not shown (a bounded label, never its text), so
-      // session-start's own record can say so instead of reporting an empty project.
-      const handoffRow = pools.handoff;
-      let handoffHidden = pools.handoffHidden ?? null;
-      const handoffShown = handoffView(handoffRow);
-      const handoffBlock = handoffShown.lines;
-      if (handoffRow && handoffBlock.length === 0) handoffHidden = handoffShown.status;
+      // Recent sessions' own last replies, rendered identically to briefing.
+      const handoffRows = pools.handoffs;
+      const handoffViews = handoffRows.map(row => handoffView(row));
+      const handoffBlock = handoffViews.flatMap(view => view.lines);
 
       // Build single-line summary with mid-dot separators. Earlier this
       // was a multi-line tree (├─ / └─); switched to a one-liner so the
@@ -1247,6 +1332,7 @@ process.stdin.on('end', async () => {
       const memoryFragments = [];
       if (projectCount > 0) memoryFragments.push(`${projectCount} project`);
       if (noProjectEntities.length > 0) memoryFragments.push(`${noProjectEntities.length} no-project`);
+      if (sharedEntities.length > 0) memoryFragments.push(`${sharedEntities.length} from other projects`);
       if (globalCount > 0) memoryFragments.push(`${globalCount} global`);
       if (recentCount > 0) memoryFragments.push(`${recentCount} recent`);
 
@@ -1255,7 +1341,7 @@ process.stdin.on('end', async () => {
         summary = `◉ MeMesh ready · no memories for "${projectLabel(projectName)}" yet`;
       } else {
         const parts = ['◉ MeMesh'];
-        if (handoffBlock.length > 0) parts.push('handoff from the last session');
+        if (handoffBlock.length > 0) parts.push(`tails from ${handoffRows.length} recent session(s)`);
         if (memoryFragments.length > 0) {
           parts.push(`${memoryFragments.join(' + ')} memories`);
         }
@@ -1283,10 +1369,12 @@ process.stdin.on('end', async () => {
       // surfaces agreeing, so neither side restates the numbers.
 
       const memoryLines = [];
+      let taskContextLines = [];
+      let taskKey;
       let memoryAssemblyFailed = false;
       try {
         // One query for every snippet, for the rows that will render.
-        const snippets = readSnippets(db, [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities].map(e => e.id));
+        const snippets = readSnippets(db, [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities].map(e => e.id));
 
         // "Where we left off" leads the block. It is the one memory a new
         // session needs before any other: everything below is context for
@@ -1300,58 +1388,20 @@ process.stdin.on('end', async () => {
         // Legacy read-only schemas predate status; keep those readable.
         const taskStatusFilter = db.prepare('PRAGMA table_info(entities)').all().some(column => column.name === 'status')
           ? "AND status = 'active'" : '';
-        const taskRow = db
-          .prepare(`SELECT metadata FROM entities WHERE name = ? ${taskStatusFilter}`)
-          .get(taskStateName(projectName));
-        // Who this session is comes from `MEMESH_RECIPIENT` (`recipient`,
-        // resolved above). Without it there is no exact recipient and the
-        // shared leaf returns no lines, so a session never sees a message
-        // addressed to anyone else.
-        // #360: briefingTaskStateLines downgrades a stale record to one line
-        // at EVERY level, and only consults `briefingPolicy.taskState` for a
-        // fresh one — `minimal` omits a fresh state entirely, never a stale
-        // flag. The unread-inbox line below is unconditional at every level:
-        // a message waiting for this agent is not "another project's
-        // memory", it is addressed to it. An inbox that cannot be read is
-        // recorded as its own `error` (a label, like the two below), and is
-        // not a failed memory assembly: the rest of the context still ships.
-        const inboxSession = hookMessageSessionId(data.session_id);
-        if (inboxSession.mismatch) record({ outcome: 'notified', reason: SESSION_ID_MISMATCH_REASON });
-        // Under Codex, a delivery already pushed into the thread is not reminded again.
-        const inboxLines = waitingMessageLines(db, recipient, inboxSession.sessionId, (err) =>
-          record({
-            outcome: 'error',
-            reason: `inbox: ${hookErrorReason(err)}`,
-          }), isCodexHost(process.env));
-        // A rejected MEMESH_RECIPIENT is mutually exclusive with a resolved
-        // `recipient`, so this never collides with the hint below.
-        if (recipientRejectionLine) inboxLines.unshift(recipientRejectionLine);
-        // At SessionStart only, and only when there is nothing else to say
-        // about this recipient: a hint, not a fact (see unknownRecipientHint).
-        // A lookup that fails for any reason other than the tables not
-        // existing yet is recorded as its own `error`, not shown as a hint.
-        // Checked BEFORE `addressLine` is added below — that line is
-        // identity, not a waiting message, and must not make this "nothing
-        // waiting yet" check see a non-empty inbox that isn't there.
-        // `isAutomaticCodexRecipient` (resolved above): a fresh
-        // `codex-thread-<uuid>` id cannot be a typo, so it never reaches this
-        // check at all — see its own comment for why.
-        const isDefaultClaudeRecipient = isClaudeCodeHost(process.env) && recipient === DEFAULT_CLAUDE_RECIPIENT;
-        if (recipient && !isAutomaticCodexRecipient && !isDefaultClaudeRecipient && inboxLines.length === 0) {
-          const everSeen = recipientEverSeenAnywhere(db, recipient, (err) =>
-            record({
-              outcome: 'error',
-              reason: `recipient-seen: ${hookErrorReason(err)}`,
-            }));
-          if (everSeen === false) {
-            inboxLines.push(unknownRecipientHint(recipient));
-            record({ outcome: 'notified', reason: 'recipient: never seen in any project' });
+        // The first of the checkout's ids that has a record (the current one first), as task_state reads it.
+        const taskRowStmt = db.prepare(`SELECT id, metadata FROM entities WHERE name = ? ${taskStatusFilter}`);
+        let taskRow;
+        for (const id of projectIds) {
+          const name = resolveProjectMemoryName(db, taskStateName(id), projectName, projectIds);
+          const row = taskRowStmt.get(name);
+          if (!row) continue;
+          const tags = projectTagsOf(db, row.id);
+          if (tags.length === 0 || filedUnder(tags, projectName, projectIds) !== undefined) {
+            taskRow = row;
+            break;
           }
         }
-        // #474: mutually exclusive with `recipientRejectionLine` (a rejection
-        // means no recipient, so no address to state). Added last so it
-        // never affects the "nothing waiting yet" check above.
-        if (addressLine) inboxLines.unshift(addressLine);
+        // Whole conversation messages are delivered by the separately declared messages.js hook.
         let taskMetadata = null;
         let taskCorrupted = false;
         if (taskRow?.metadata) {
@@ -1359,18 +1409,20 @@ process.stdin.on('end', async () => {
           catch { taskCorrupted = true; }
         }
         if (taskCorrupted) record({ outcome: 'error', reason: 'task-state: stored record is not valid JSON' });
-        const taskContextLines = taskCorrupted
+        const taskState = parseTaskState(taskMetadata);
+        taskKey = continuationTaskKey(taskState);
+        taskContextLines = taskCorrupted
           ? [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${taskStateUnreadableMessage(projectName)}`]
-          : boundTaskStateLines(briefingTaskStateLines(
-            parseTaskState(taskMetadata),
+          : taskStateLines(
+            taskState,
             projectName,
             new Date(),
-            { includeFresh: briefingPolicy.taskState },
-          ));
+          );
+        const conversationTitleLines = userConversationTitles.length === 0
+          ? []
+          : ['Recent user conversation titles:', ...userConversationTitles.map(recentLine)];
         const stateLines = [
-          ...handoffBlock,
-          ...taskContextLines,
-          ...inboxLines,
+          ...conversationTitleLines,
         ];
 
         // The pools overlap by construction (a lesson tagged to this project
@@ -1386,14 +1438,12 @@ process.stdin.on('end', async () => {
             { entities: topLessons.map(toEntity), foreign: false },
             { entities: projectEntities.map(toEntity), foreign: false },
             { entities: noProjectEntities.map(toEntity), foreign: false, noProject: true },
+            { entities: sharedEntities.map(toEntity), foreign: false, shared: true },
             { entities: globalEntities.map(toEntity), foreign: false, global: true },
             { entities: recentEntities.map(toEntity), foreign: true },
           ],
           projectName,
-          DEFAULT_TOPOLOGY_BUDGET,
-          // Room for the index's heading and omission footer, kept before the
-          // ranked and global sections spend the shared budget.
-          { reserve: briefingPolicy.index ? injectedIndexReserve(projectName) + 2 : 0 },
+          { ...DEFAULT_TOPOLOGY_BUDGET, maxChars: MAX_OPENING_CONTEXT_BYTES },
         ));
       } catch (err) {
         // Snippet enrichment is best-effort. A failure here must not stop
@@ -1412,53 +1462,33 @@ process.stdin.on('end', async () => {
         });
       }
 
-      // --- The durable-memory index (#323) -----------------------------
-      // One line per decision / lesson / pattern / reference for this
-      // project, newest first, hard-capped — what is known, visible without
-      // a query. Same read as core's `readBriefingIndex` (this hook owns its
-      // own SQL, with the legacy-schema guards the queries above use); every
-      // decision about what to show lives in the generated leaf. A read that
-      // fails renders as "could not be read", never as the empty-state line:
-      // an empty index is a claim about the user's data.
+      // --- The recent index ---------------------------------------
+      // The titles of the 30 memories most recently written in this
+      // project's scope, once per
+      // session (src/core/recent-index.ts, run here through its generated
+      // copy; `briefing` renders the same section). The unfiltered 30 are
+      // A read that fails renders as "could not be
+      // read", never as the empty-state line: an empty index is a claim
+      // about the user's data.
       let indexLines;
-      // id → name for the rows the index rendered, so the injected-set
-      // record below can credit a citation of an index line the same way it
-      // credits a ranked one — the line carries a `[mem:id]` handle, it was
-      // shown, and a cite of it must not earn nothing.
+      // The rows the index rendered, so a citation of one is credited like a ranked one.
       const indexEntities = [];
-      // #360: `minimal` skips the index query outright — unlike the durable
-      // index EXPOSED by the `briefing` tool/CLI (a separately-requestable
-      // fact about the project), nothing else in this hook reads it, so
-      // there is no reason to pay for a read whose only consumer is a
-      // section this level does not render.
-      if (!briefingPolicy.index) {
-        indexLines = [];
-      } else try {
-        const { candidates, truncated } = readIndexCandidates(db, projectName);
-        const index = buildBriefingIndex(candidates, projectName, Date.now(), {
-          truncated,
-          // One shared cap: the index gets what the block above left of it.
-          maxChars: DEFAULT_TOPOLOGY_BUDGET.maxChars
-            - (memoryLines.length ? joinedLength(memoryLines) + 2 : 0),
-        });
+      // Shown at every level, `minimal` included.
+      try {
+        const index = buildRecentIndex(db, projectName, Date.now(), cwdIsDirectory ? projectIds : null);
         indexLines = index.lines;
-        const rendered = new Set(index.ids);
-        for (const row of candidates) if (rendered.has(row.id)) indexEntities.push(row);
+        indexEntities.push(...index.shown);
       } catch (err) {
         const reason = String(err?.message || err);
-        try { process.stderr.write(`[memesh session-start] briefing-index: ${reason}\n`); } catch {}
+        try { process.stderr.write(`[memesh session-start] recent-index: ${reason}\n`); } catch {}
         record({
           outcome: 'error',
-          // The locus, plus a LABEL for the exception — never its message.
-          // `hook-outcomes.jsonl` is permanent, exportable and meant to be
-          // pasteable into an issue, and a message is a copy of whatever the
-          // failure echoed: SQLite quotes the statement, execFileSync carries
-          // absolute paths. `redactSecrets` runs on this field but
-          // `redactUserPaths` does not. The full text is already on stderr
-          // one line above, so nothing is lost.
-          reason: `briefing-index: ${hookErrorReason(err)}`,
+          // The locus, plus a LABEL for the exception — never its message
+          // (hook-outcomes.jsonl is permanent and pasteable; SQLite quotes
+          // the statement). The full text is on stderr one line above.
+          reason: `recent-index: ${hookErrorReason(err)}`,
         });
-        indexLines = [`Index of durable memories for ${jsonStringLiteral(projectLabel(projectName))}: could not be read this session — run \`memesh doctor\`.`];
+        indexLines = [`Recently written memories for ${jsonStringLiteral(projectLabel(projectName))}: could not be read this session — run \`memesh doctor\`.`];
       }
 
       // Every `[mem:id]` handle a rendered line ends with. Anchored to the
@@ -1476,7 +1506,7 @@ process.stdin.on('end', async () => {
       // always closes the block (#323: an empty project shows the empty-state
       // line, not nothing). briefing.test.ts's parity case is what keeps this
       // identical to the tool side.
-      if (memoryLines.length > 0) {
+      if (memoryLines.length > 0 || taskContextLines.length > 0 || handoffBlock.length > 0) {
         const repoLines = repoStateLines(readRepoState(data.cwd));
         if (repoLines.length > 0) memoryLines.unshift(...repoLines, '');
         // #360: only spacer-then-index when the index actually has lines to
@@ -1516,30 +1546,20 @@ process.stdin.on('end', async () => {
       // the hook cannot call that function directly (A1a: a hook cannot
       // import `../db.js`-dependent core modules), so this is the one place
       // the two sides CAN share the rule.
-      const memoryContext = !hasBriefingContent(memoryLines) && !workPackageNotice
-        ? undefined
-        : workPackageNotice
-          ? buildReferenceContext(memoryLines) + '\n\n' + workPackageNotice
-          : buildReferenceContext(memoryLines);
-      // The citation contract — OUTSIDE the fence on purpose: the fence
-      // declares its content "background data, not instructions", and
-      // this line IS an instruction. One line is the entire write side of
-      // the injection-ROI signal; the Stop hook credits recall_hits only
-      // from these markers (self-reported: undercounts, never overcounts).
-      // The citation instruction used to be appended here, outside the
-      // fence, so it would read as an instruction rather than as data.
-      // It never worked: Claude Code wraps a hook's additionalContext in a
-      // system-reminder ending "you should not respond to this context
-      // unless it is highly relevant", so the whole block — instruction
-      // included — arrives as data. Measured on a real database:
-      // citation_sessions_total=4, sessions WITH a citation = 0.
-      //
-      // The contract now lives in `.claude/rules/memesh-citations.md`,
-      // which Claude Code loads as an instruction. Writing it is the
-      // self-heal below; the line here is gone rather than duplicated,
-      // because a per-session copy of an instruction that is read as data
-      // is a per-session cost with no effect.
-
+      // With nothing to show but the notice, the notice goes alone: an empty
+      // fence tells the agent nothing.
+      // `output()` prefixes the session-project line and this call may append
+      // the full-level work-package notice. Reserve both separators as well,
+      // so the actual host payload—not only the fenced memory block—fits.
+      const openingReservedBytes =
+        (sessionProjectContext ? Buffer.byteLength(sessionProjectContext, 'utf8') + 2 : 0)
+        + (workPackageNotice ? Buffer.byteLength(workPackageNotice, 'utf8') + 2 : 0);
+      const openingTasks = [...taskContextLines, ...continuationLines(projectName, data.cwd, data.session_id, taskKey)];
+      const memoryBlock = hasBriefingContent([...openingTasks, ...handoffBlock, ...memoryLines])
+        ? buildOpeningContext(openingTasks, handoffBlock, memoryLines, openingReservedBytes).text : undefined;
+      const memoryContext = memoryBlock && workPackageNotice
+        ? memoryBlock + '\n\n' + workPackageNotice
+        : memoryBlock ?? workPackageNotice;
       // --- Record injected entity IDs for recall effectiveness tracking ---
       // Stop credits assistant text citations and tool-result fetch markers
       // for these injected ids. Native roles exclude hook echo attachments;
@@ -1557,13 +1577,13 @@ process.stdin.on('end', async () => {
         // The handoff's text is the agent's own last message: a `[mem:N]` at
         // the end of one of its lines is a citation it wrote, not a memory
         // this hook rendered. One occurrence is removed per such line.
-        const renderedEntityIds = renderedHandles(memoryLines);
-        for (const id of renderedHandles(handoffBlock.slice(1))) {
+        const renderedEntityIds = renderedHandles((memoryBlock ?? '').split('\n'));
+        for (const id of renderedHandles(handoffViews.flatMap(view => view.lines.slice(1)))) {
           const at = renderedEntityIds.indexOf(id);
           if (at >= 0) renderedEntityIds.splice(at, 1);
         }
-        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...globalEntities, ...recentEntities, ...indexEntities,
-          ...(handoffBlock.length > 0 ? [handoffRow] : [])];
+        const poolEntities = [...topLessons, ...projectEntities, ...noProjectEntities, ...sharedEntities, ...globalEntities, ...recentEntities, ...indexEntities, ...userConversationTitles,
+          ...handoffRows];
         const entitiesById = new Map(poolEntities.map((entity) => [entity.id, entity]));
         // A memory can appear in the ranked block AND the index; it was
         // injected once.
@@ -1573,16 +1593,21 @@ process.stdin.on('end', async () => {
 
         if (allInjected.length > 0) {
           const sessionsDir = join(memeshDir, 'sessions');
-          ensurePrivateDir(sessionsDir);
+          if (process.platform !== 'win32') ensurePrivateDir(sessionsDir);
 
           const sessionId = data.session_id;
           const sessionPath = recallSessionPath(sessionsDir, sessionId, projectName);
+          const windowsState = sessionPath && process.platform === 'win32'
+            ? prepareWindowsHookState(sessionPath, windowsHookStateDeadline(10000), true)
+            : null;
           if (sessionPath) {
             let prior = null;
             let priorFd;
             try {
-              priorFd = openSync(sessionPath, 'r');
-              if (Date.now() - fstatSync(priorFd).mtimeMs <= SESSION_RECORD_TTL_MS) {
+              priorFd = windowsState
+                ? windowsState.file && openWindowsHookState(windowsState, 'r')
+                : openSync(sessionPath, 'r');
+              if (priorFd !== undefined && Date.now() - fstatSync(priorFd).mtimeMs <= SESSION_RECORD_TTL_MS) {
                 const candidate = JSON.parse(readFileSync(priorFd, 'utf8'));
                 if (candidate.sessionId === sessionId && candidate.project === projectName) prior = candidate;
               }
@@ -1593,7 +1618,7 @@ process.stdin.on('end', async () => {
             }
             const injectedById = new Map((prior?.entityIds || []).map((id, i) => [id, prior.entityNames?.[i] ?? String(id)]));
             for (const entity of allInjected) injectedById.set(entity.id, entity.name);
-            writePrivateJsonAtomic(sessionPath, {
+            const next = {
               ...prior,
               sessionId,
               injectedAt: prior?.injectedAt || new Date().toISOString(),
@@ -1603,22 +1628,23 @@ process.stdin.on('end', async () => {
               injectedContext: String(memoryContext || summary).slice(0, 120),
               creditedIds: prior?.creditedIds || [],
               sessionCounted: prior?.sessionCounted === true,
-            });
+            };
+            if (windowsState) writeWindowsSessionState(windowsState, next);
+            else writePrivateJsonAtomic(sessionPath, next);
           } else {
             recordHookOutcome(process.env, { hook: 'session-start', outcome: 'skipped', reason: SKIP_REASONS.noSessionId, payload: data });
           }
 
           // Clean up old session files (>24h)
           try {
-            const files = require('fs').readdirSync(sessionsDir);
+            if (windowsState) assertWindowsHookStateDirectory(windowsState);
+            const files = process.platform !== 'win32' || windowsState ? readdirSync(sessionsDir) : [];
             const now = Date.now();
             for (const file of files) {
               if (!file.endsWith('.json')) continue;
               const filePath = join(sessionsDir, file);
-              const stats = require('fs').statSync(filePath);
-              if (now - stats.mtimeMs > SESSION_RECORD_TTL_MS) {
-                require('fs').unlinkSync(filePath);
-              }
+              const stats = statSync(filePath);
+              if (now - stats.mtimeMs > SESSION_RECORD_TTL_MS) unlinkSync(filePath);
             }
           } catch {}
         }
@@ -1639,34 +1665,36 @@ process.stdin.on('end', async () => {
         const pluginRoot = resolvePluginRoot(import.meta.url);
         const pkg = JSON.parse(readFileSync(join(pluginRoot, 'package.json'), 'utf8'));
         installedVersion = typeof pkg.version === 'string' ? pkg.version : null;
-      } catch {
-        // Best-effort — without the version we can't compare to cache.
+      } catch (err) {
+        // Without the version the cache cannot be compared, so no update banner this session: say so.
+        recordCaught('update banner skipped, installed version unreadable', err);
       }
-      const updateCache = readUpdateCheckCache(installedVersion);
+      const updateCacheState = readUpdateCheckCacheState(installedVersion);
+      const updateCache = updateCacheState.cache;
       let bannerLines = [];
-      let updateConsentContext = null;
+      let updateNoticeShown = false;
       if (installedVersion) {
         const deprecation = buildDeprecationBanner(installedVersion, updateCache);
-        const notice = updateNoticeBanner(installedVersion, updateCache);
+        const notice = updateNoticeBanner(installedVersion, updateCache, updateCacheState);
         if (deprecation.length > 0) {
           bannerLines = deprecation;
         } else if (notice.lines.length > 0) {
           bannerLines = notice.lines;
         } else if (notice.kind !== 'UPGRADE_AVAILABLE') {
-          // Snoozed ("Not now"), disabled ("Never ask again"), current, or
+          // Disabled (`updateCheck` false), current, or
           // unknown-but-throttled: the resolver decided, so the routine
           // banner below must not undo it.
           bannerLines = [];
         } else {
           const channel = detectInstallChannelHook(resolvePluginRoot(import.meta.url));
-          const consent = buildUpdateConsentPrompt(data.session_id, installedVersion, updateCache, channel);
+          const consent = buildUpdateNotice(data.session_id, installedVersion, updateCache, channel);
           if (consent) {
             // The first-use notice is the authoritative update message for
             // this session. Do not append the softer 24h banner as well; a
             // source/plugin user would otherwise see two contradictory
             // update instructions in one SessionStart payload.
             bannerLines = [consent.system];
-            updateConsentContext = consent.context;
+            updateNoticeShown = true;
           } else if (readUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion)) {
             // A first-use notice was already shown (and may have been
             // answered by UserPromptSubmit). Suppress the routine banner for
@@ -1690,12 +1718,10 @@ process.stdin.on('end', async () => {
 
       // memoryContext can now be undefined (nothing to inject at this level)
       // — guard the concat so an empty injection does not become the LITERAL
-      // string "undefined" glued onto a real consent prompt.
+      // string "undefined" glued onto a real notice.
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(finalMessage)))),
-        updateConsentContext
-          ? (memoryContext ? `${updateConsentContext}\n\n${memoryContext}` : updateConsentContext)
-          : memoryContext,
+        withChannelFlagWarning(withCaptureWarning(finalMessage)),
+        memoryContext,
         // A specific, greppable reason for the "genuinely nothing to inject"
         // case, distinct from the generic 'session-start-banner' entity
         // marker output() would otherwise record for ANY falsy
@@ -1705,14 +1731,10 @@ process.stdin.on('end', async () => {
         // that failure has its own error record, and an empty result it
         // caused must not also be reported as an empty project.
         !memoryContext && !memoryAssemblyFailed
-          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, handoffHidden
-            ? `session handoff not shown (${handoffHidden}); no other project content, no repository state, index excluded`
-            : 'no project content, no repository state, index excluded') }
-          : handoffHidden
-            ? { outcome: 'notified', reason: `session handoff not shown (${handoffHidden})`, entity: memoryContext ? 'session-start-context' : 'session-start-banner' }
-            : null,
+          ? { outcome: 'notified', reason: nothingToInjectReason(briefingLevel, 'no project content, no repository state, index excluded') }
+          : null,
       );
-      if (updateConsentContext) {
+      if (updateNoticeShown) {
         finalizeUpdatePromptClaim(data.session_id, installedVersion, updateCache?.latestVersion);
       }
 
@@ -1723,17 +1745,17 @@ process.stdin.on('end', async () => {
       // migration-chain open (WAL writer lock) that must stay off the
       // SessionStart hot path. Missing table / any error ⇒ due (the full
       // path owns schema creation).
-      noiseCompressDue = (() => {
+      const dueSince = (key) => {
         try {
-          const row = db.prepare(
-            "SELECT value FROM memesh_metadata WHERE key = 'last_noise_compress_at'"
-          ).get();
+          const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key);
           if (!row) return true;
           return Date.now() - new Date(row.value).getTime() >= 24 * 60 * 60 * 1000;
         } catch {
           return true;
         }
-      })();
+      };
+      noiseCompressDue = dueSince('last_noise_compress_at');
+      autoArchiveDue = dueSince('last_auto_archive_at');
     } finally {
       db.close();
     }
@@ -1741,7 +1763,7 @@ process.stdin.on('end', async () => {
     // Opens a separate read-write connection via the core module.
     // Throttled to once per 24h inside compressWeeklyNoise().
     try {
-      if (noiseCompressDue) {
+      if (noiseCompressDue || autoArchiveDue) {
       // F5: derive pluginRoot strictly from this file's location.
       // See `resolvePluginRoot` for the full reasoning.
       const pluginRoot = resolvePluginRoot(import.meta.url);
@@ -1756,6 +1778,19 @@ process.stdin.on('end', async () => {
         // in doctor, not in the dashboard. Nothing to opt into: it runs at
         // most once a day and stays silent when it compresses nothing.
         const noise = lifecycleMod.compressWeeklyNoise(dbMod.getDatabase());
+        // Auto-captured commits and session rollups nobody used for 14 days.
+        // Throttled and recorded inside (memesh_metadata, shown by `memesh
+        // doctor`); this line only makes a run that did something visible.
+        const unused = lifecycleMod.archiveUnusedAutoCaptured(dbMod.getDatabase());
+        if (unused && unused.archived > 0) {
+          try {
+            process.stderr.write(
+              `[memesh] archived ${unused.archived} auto-captured memor${unused.archived === 1 ? 'y' : 'ies'} `
+              + `not used for ${unused.unusedDays} days `
+              + `(recover with \`memesh recall --include-archived\`; \`memesh doctor\` shows the last run)\n`,
+            );
+          } catch { /* stderr gone */ }
+        }
         if (noise && noise.compressed > 0) {
           try {
             process.stderr.write(
@@ -1785,9 +1820,10 @@ process.stdin.on('end', async () => {
       // Through output(), like every other emit: the gate proves "every
       // stdout write lies inside output()", and output() records exactly one
       // outcome — here an error, not the default `wrote`.
+      if (captureWarning) captureWarning = captureWarning.replace(RECALL_STILL_WORKS, '');
       output(
-        withChannelFlagWarning(withRecipientRejectionWarning(withAddressLine(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)))),
-        recipientRejectionLine ?? addressLine ?? null,
+        withChannelFlagWarning(withCaptureWarning(`MeMesh: memories not loaded this session (${err?.message || 'unknown error'}) — everything else works; run \`memesh doctor\` if this repeats.`)),
+        null,
         { outcome: 'error', reason: hookErrorReason(err) },
       );
     }
@@ -1798,7 +1834,7 @@ process.stdin.on('end', async () => {
     // happy path, or even a thrown error caught above. The
     // function is single-shot per process so the duplicated
     // late-path call from older versions is now idempotent.
-    runPostBannerUpdateTasks();
+    await runPostBannerUpdateTasks();
   }
 });
 
@@ -1842,6 +1878,9 @@ process.stdin.on('end', async () => {
 // the memory block on every exit path, outside the memory budget, and the
 // outcome below is still decided by the memory context alone.
 let sessionProjectContext = null;
+
+/** What the model is told on a Node that cannot run MeMesh: its tools fail until the Node is fixed, so it must not try them. */
+const NODE_UNSUPPORTED_CONTEXT = "MeMesh cannot run on this Node, so none of its tools (remember, recall, message and the rest) work in this session until that is fixed; do not call them.";
 
 function output(text, memoryContext = undefined, recorded = null) {
   // session-start's only effect is the context it injects, so it records

@@ -10,7 +10,7 @@
 // =============================================================================
 
 import { getDatabase } from '../db.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { filedUnder, projectOwnershipRefusal, projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
 import { foldForExactMatch } from '../storage/fts-index.js';
 import { withFullProjectTag } from './plain-project-tag.js';
@@ -18,7 +18,7 @@ import { rankEntities } from './scoring.js';
 import { getProjectName, redactSecrets, redactTextValues, redactTitleAndObservations, redactVersionText } from './paths.js';
 import { createExplicitLesson } from './lesson-engine.js';
 import { deriveNote, NOTE_DEFAULT_TYPE, type DerivedNote } from './note-derive.js';
-import { DECISION_TYPES, WHY_PREFIX, canonicalEntityType } from './work-topology.js';
+import { WHY_PREFIX, canonicalEntityType } from './work-topology.js';
 import { capRecallForAgent, type RecallForAgentResult, type RecallScope } from './recall-agent-view.js';
 import type {
   RememberInput,
@@ -133,7 +133,7 @@ export function shownEntity(entity: Entity): Entity {
   };
 }
 
-// `type` stays optional: `replace` on an existing name inherits the stored
+// `type` stays optional: append or replace on an existing name inherits the stored
 // type (#333 T4), so the resolved input can legitimately carry none.
 // rememberInTransaction resolves it against the row and refuses when there is
 // no row to inherit from.
@@ -154,13 +154,12 @@ function resolveRememberInput(
   if (input.note === undefined) {
     if (!input.name) throw new Error('remember needs `name` and `type`, or `note`');
     // ABSENT and BLANK are different inputs, and only the first one is a
-    // request to inherit. `replace` waives an omitted `type` — it takes the
+    // request to inherit. An existing name waives an omitted `type` — it takes the
     // one the memory has — but an empty string is never a type: a truthiness
     // test here would send `''` down the retype branch and blank the stored
     // type of the memory being corrected. The transports' `z.string().min(1)`
     // stops that before it arrives; this is the direct-caller copy.
     if (input.type === '') throw new Error('remember needs `name` and `type`, or `note`');
-    if (input.type === undefined && !input.replace) throw new Error('remember needs `name` and `type`, or `note`');
     // #523: the structured form gets the same credential redaction the note
     // form has always had (note-derive.ts), so which argument carried a
     // connection string no longer decides whether it is stored. `name` and
@@ -210,6 +209,25 @@ function rememberInTransaction(
   db: ReturnType<typeof getDatabase>,
   kg: KnowledgeGraph,
 ): RememberResult {
+  const healed = withFullProjectTag(args.tags, args.currentProject);
+  let retagged: RememberResult['retagged'];
+  if (healed.retagged) {
+    const plainTag = healed.retagged.from;
+    // Preserve #511's already-filed plain tag before resolving collisions.
+    const touchedNames = [args.name, ...(args.relations ?? []).filter(rel => rel.type === 'supersedes').map(rel => rel.to)];
+    const keepsPlain = touchedNames.some(name => db
+      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
+      .get(name, plainTag) !== undefined);
+    if (!keepsPlain) {
+      args = { ...args, tags: healed.tags };
+      retagged = healed.retagged;
+    }
+  }
+  const scopedTags = args.tags ?? [];
+  const scopes = [...new Set(scopedTags.filter(tag => tag.startsWith('project:')).map(tag => tag.slice(8)))];
+  const scope = args.project !== undefined ? args.project : scopes.length === 1 ? scopes[0] : undefined;
+  args = { ...args, name: resolveProjectMemoryName(db, args.name, scope, args.projectIds, true),
+    relations: args.relations?.map(rel => ({ ...rel, to: resolveProjectMemoryName(db, rel.to, scope, args.projectIds) })) };
   // Only existence + namespace are consumed below — a full kg.getEntity()
   // here cost 4 queries (entity, observations, tags, relations) with the
   // observation text materialized and thrown away, on the write hot path
@@ -248,19 +266,12 @@ function rememberInTransaction(
     ...(existing ? [args.name] : []),
     ...(args.relations ?? []).filter((rel) => rel.type === 'supersedes').map((rel) => rel.to),
   ];
-  let retagged: RememberResult['retagged'];
-  const healed = withFullProjectTag(args.tags, args.currentProject);
-  if (healed.retagged) {
-    const plainTag = healed.retagged.from;
-    const keepsPlain = touched.some((name) => db
-      .prepare('SELECT 1 FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name = ? AND t.tag = ?')
-      .get(name, plainTag) !== undefined);
-    if (!keepsPlain) {
-      args = { ...args, tags: healed.tags };
-      retagged = healed.retagged;
-    }
-  }
   const tagProjects = [...new Set((args.tags ?? []).filter((t) => t.startsWith('project:')).map((t) => t.slice('project:'.length)))];
+  // An inferred checkout does not move an existing shared memory into that
+  // project. Explicit scope/tag changes still pass through the ownership guard.
+  if (args.projectIsDefault && !args.replace && existing && tagProjects.length === 0 && projectTagsOf(db, existing.id).length === 0) {
+    args = { ...args, project: null };
+  }
   if (tagProjects.some((p) => p.trim() === '')) {
     throw new Error('MeMesh did not store this memory: its tag `project:` names no project; give the project after the colon, or leave the tag out.');
   }
@@ -275,8 +286,17 @@ function rememberInTransaction(
     // A write that declares its project (or declares none) may change only
     // memories of that same project (or of none).
     for (const name of touched) {
-      const refusal = projectOwnershipRefusal(db, name, declaredProject);
+      const refusal = projectOwnershipRefusal(db, name, declaredProject, args.projectIds);
       if (refusal !== undefined) throw new Error(`MeMesh did not store this memory: ${refusal}.`);
+    }
+  }
+  // The memory this write updates may be filed under an earlier id of the same checkout: it
+  // keeps that one project tag (a memory belongs to one project) instead of gaining a second.
+  if (typeof args.project === 'string' && existing) {
+    const filed = filedUnder(projectTagsOf(db, existing.id), args.project, args.projectIds);
+    if (filed !== undefined && filed !== args.project) {
+      const current = `project:${args.project}`;
+      args = { ...args, project: filed, tags: args.tags?.filter((t) => t !== current) };
     }
   }
 
@@ -287,7 +307,7 @@ function rememberInTransaction(
     );
   }
 
-  // `type` omitted (only reachable with `replace`, per resolveRememberInput):
+  // An omitted `type` inherits from the existing name, for append or replace.
   // take the one the memory already has. When there is no memory to inherit
   // from, `replace` would CREATE one — and defaulting its type to
   // NOTE_DEFAULT_TYPE here is exactly the silent reclassification the
@@ -302,24 +322,8 @@ function rememberInTransaction(
   const entityType = args.type !== undefined ? canonicalEntityType(args.type) : existing?.type;
   if (entityType === undefined) {
     throw new Error(
-      `\`replace\` on "${args.name}": there is no memory named "${args.name}" to inherit a type from, `
+      `There is no memory named "${args.name}" to inherit a type from, `
       + 'so this call would create one with no type — pass `type` to create it.',
-    );
-  }
-
-  // A decision is stored with the reason it was made and what would make it
-  // stop holding. Without it the conclusion is all a later reader sees, and
-  // it reads as a rule that holds forever. Checked when the decision is
-  // created or rewritten, not on an append. An untrusted writer (a note
-  // file, an import, an accepted dream proposal) is never refused here — a
-  // memory must not be dropped for a missing field; its line in the briefing
-  // says "(no reason recorded)" instead.
-  if (DECISION_TYPES.has(entityType) && (!existing || args.replace) && args.trustOverride !== 'untrusted'
-    && !(args.observations ?? []).some((o) => o.startsWith(WHY_PREFIX))) {
-    throw new Error(
-      `MeMesh did not store this ${entityType}: ${/^[aeiou]/i.test(entityType) ? 'an' : 'a'} ${entityType} needs \`why\` — the reason for it and what would make it `
-      + 'stop holding (for example: "Postgres is too heavy to deploy for one user; revisit if we add a hosted tier"). '
-      + 'Pass `why`, or an observation that starts with "Why: ".',
     );
   }
 
@@ -363,7 +367,7 @@ function rememberInTransaction(
     // go back. Replacing a memory's text must not silently untag it from its
     // project.
     if (tags === undefined) tags = previousTags;
-  } else if (derived && existing) {
+  } else if (derived && existing && existing.status !== 'archived') {
     // A note appended to a memory that already exists (the same text again,
     // or an explicit `name`): its first line must not overwrite the title the
     // memory already has, and a repeat must add nothing — including for the
@@ -415,7 +419,16 @@ function rememberInTransaction(
       } catch { stampLocalMetadata = false; }
     }
   }
-  if (stampLocalMetadata) kg.updateEntityMetadata(args.name, (current) => buildLocalMetadata(
+  // A memory that is not trusted (an import, a note from a folder nobody vouched
+  // for) stays that way when a call that did not decide trust writes to it. The
+  // stamp below would otherwise make it `trusted` with a local provenance, and an
+  // import would walk into every session by being added to. Only a caller that
+  // says `trustOverride: 'trusted'` (`--trust`, the person's own memory folder)
+  // changes that, and the row is left exactly as it was. That includes a
+  // `replace`: an agent that read an injected note and is told to "tidy" it with
+  // `replace` must not turn it into a trusted memory. A new name is the
+  // caller's own memory; there is no other way to trust an existing one.
+  if (stampLocalMetadata) kg.updateEntityMetadata(args.name, (current) => (args.trustOverride === undefined && (current as EntityMetadata).trust === 'untrusted' ? current : buildLocalMetadata(
     current as EntityMetadata,
     {
       trust: args.trustOverride,
@@ -431,7 +444,7 @@ function rememberInTransaction(
         ...(args.provenanceOverride ?? {}),
       },
     }
-  ));
+  )));
   if (replacedVersion) {
     // The new version is a new history entry and is redacted like any other
     // caller text; the entries the row already held are kept as stored
@@ -573,6 +586,8 @@ function searchAndScore(args: RecallInput): {
     limit: args.limit,
     includeArchived: args.include_archived,
     namespace: args.namespace,
+    // cross_project is the one explicit way to see relations into other projects.
+    scopeRelations: !args.cross_project,
   });
   const entities = summarizeReplacedHistory(searched.entities).map(shownEntity);
   return {
@@ -653,7 +668,7 @@ export async function recallWithConflicts(args: RecallInput) {
 function recallIds(args: RecallInput, requestedIds: number[]) {
   const ids = [...new Set(requestedIds)];
   const kg = new KnowledgeGraph(getDatabase());
-  const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, filterRelations: true, relationIncludeArchived: args.include_archived });
+  const rows = kg.getEntitiesByIds(ids, { includeArchived: true, namespace: args.namespace, projectScope: args.projectScope, relations: { scope: args.projectScope, namespace: args.namespace, includeArchived: args.include_archived } });
   const byId = new Map(rows.map(entity => [entity.id, entity]));
   const results: NonNullable<RecallForAgentResult['results']> = ids.map(id => {
     const entity = byId.get(id);
@@ -724,11 +739,13 @@ export function learn(args: LearnInput): LearnResult {
 
 /**
  * Archive an entity (soft-delete) or remove a specific observation.
- * Never permanently deletes data.
+ * An archived entity is kept and can be recalled with `include_archived`;
+ * removing one observation deletes that observation row for good.
  */
 export function forget(args: ForgetInput): ForgetResult {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  args = { ...args, name: resolveProjectMemoryName(db, args.name, args.project, args.projectIds) };
 
   // Observation-level forget: remove specific observation, keep entity active.
   //

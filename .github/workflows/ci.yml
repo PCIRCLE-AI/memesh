@@ -72,45 +72,17 @@ concurrency:
 
 jobs:
   build-and-test:
-    name: Build & Test (${{ matrix.os }}, Node ${{ matrix.node }})
+    name: Build & Test (${{ matrix.os }}, Node ${{ matrix.major }})
     runs-on: ${{ matrix.os }}
-    # 40 is a bound, not a target. Measured over 19 runs (2026-09-28..30):
-    # green ubuntu legs take 5-15 minutes, macOS 7-13, Windows 22-40. Four of
-    # 38 Windows legs hit this cap with no failing test (one had finished
-    # 223 of 286 files) — a slower runner paying the same per-test cost, not
-    # a hang. That cost is Windows-only: tests that create a fresh temp dir
-    # and SQLite database per test pay ~1 s each there and ~30 ms on ubuntu.
-    # Raising the cap would only move the cancellations; removing that
-    # per-test cost is the fix. The suite is fully serial (shared SQLite
-    # HOME), so nothing inside one leg can run in parallel to absorb it.
-    timeout-minutes: 40
+    # Windows runs native ACL checks in the serial suite.
+    timeout-minutes: ${{ matrix.os == 'windows-latest' && 90 || 40 }}
     strategy:
       fail-fast: false
       # Which runtimes this matrix covers, and why each is here.
       #
-      #   20 — GONE. It was kept while `engines` still said `>=20` on the
-      #        rule written here: "the leg goes when the claim goes, not
-      #        before." The claim went (`>=22.13.0`), so the leg went. Node 20
-      #        was passing on all three OSes when it was removed — this was a
-      #        support-policy change, not a fix.
-      #   22 — LTS (Jod), and the floor. `engines` names 22.13.0 specifically
-      #        because that is where `node:sqlite` stopped needing
-      #        `--experimental-sqlite` and gained `loadExtension`,
-      #        `enableLoadExtension` and `db.function`; the matrix cannot
-      #        pin a patch, so this leg runs whatever 22.x is current and
-      #        `tests/ci-matrix-covers-engines.test.ts` is what actually holds
-      #        the two together.
-      #   24 — LTS (Krypton). Was untested entirely, which is the gap this
-      #        matrix change exists to close: the LTS line most users are
-      #        actually on had no coverage at all.
-      #   26 — Current, ubuntu only. Deliberately not on macOS or Windows:
-      #        `better-sqlite3@12.9.0` publishes NO prebuilt binary for Node
-      #        26's ABI (147). Measured: `prebuild-install warn install No
-      #        prebuilt binaries found (target=26.5.1 ... platform=darwin)`
-      #        followed by a `node-gyp rebuild`, which took 18s on
-      #        macOS/arm64 and needs a full toolchain — MSVC on Windows. One
-      #        Linux leg gives early warning that Node 26 works at all
-      #        without paying for a source build on three runners.
+      #   22 and 24: minimum security patch in each supported line, all OSes.
+      #   26: minimum security patch, exercised on Linux and macOS. Node 26
+      #       Windows remains outside this matrix; do not infer it passed.
       #
       # ubuntu/24 also enforces the coverage floor. Coverage runs the same
       # suite with v8 instrumentation and thresholds, and the numbers do not
@@ -118,16 +90,24 @@ jobs:
       # separate job on this same OS and Node, running the whole suite a
       # second time; the first `include` entry adds `coverage` to the existing
       # ubuntu/24 leg (it creates no new leg), so the suite runs once there.
-      # An include entry matches only the original os/node values, so it cannot attach to the Node 26 leg.
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
-        node: ['22', '24']
+        node: ['22.23.5', '24.22.3']
         include:
+          # Keep required check names stable when the pinned patch versions change.
+          - node: '22.23.5'
+            major: '22'
+          - node: '24.22.3'
+            major: '24'
           - os: ubuntu-latest
-            node: '24'
+            node: '24.22.3'
             coverage: true
           - os: ubuntu-latest
-            node: '26'
+            node: '26.13.1'
+            major: '26'
+          - os: macos-latest
+            node: '26.13.1'
+            major: '26'
 
     steps:
       - name: Checkout
@@ -157,9 +137,18 @@ jobs:
         run: npm ci
 
       - name: Build source and generated artifacts
+        id: build_source
         run: npm run build
 
+      - name: Windows packaged upgrade
+        if: ${{ runner.os == 'Windows' && matrix.major == '24' }}
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: npm run test:packaged:upgrade
+
       - name: Release gates (the same ones the publish path runs)
+        id: release_gates
         # `npm run verify:release`, not a hand-listed copy of what it contains.
         #
         # This used to enumerate typecheck + version coherence + mirror drift as
@@ -178,6 +167,28 @@ jobs:
         # Its first command is `npm run lint` (zero warnings), so lint is not a
         # separate step: that ran the same script twice in every leg.
         run: npm run verify:release
+
+      - name: Diagnose Windows messages entry timeout
+        if: ${{ failure() && runner.os == 'Windows' && steps.release_gates.outcome == 'failure' }}
+        timeout-minutes: 2
+        run: node scripts/diagnose-windows-messages-entry.mjs
+
+      - name: Windows native boundaries
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.build_source.outcome == 'success' }}
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: |
+          $nativeFailed = $false
+          node scripts/run-tests-isolated.mjs tests/core/windows-permissions.test.ts --testNamePattern compares.split.and.combined.Windows.allows
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
+          node scripts/run-tests-isolated.mjs tests/core/conversation-message-entry.test.ts --testNamePattern explicit.destination.without.source
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
+          node scripts/run-tests-isolated.mjs tests/hooks/stop-handoff.test.ts --testNamePattern keeps.locked.quote.reads
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
+          node scripts/run-tests-isolated.mjs tests/network/conversation-courier.test.ts --testNamePattern CLI.copy.remains.queued
+          if ($LASTEXITCODE -ne 0) { $nativeFailed = $true }
+          if ($nativeFailed) { exit 1 }
 
       - name: Run tests${{ matrix.coverage && ' with the coverage floor' || '' }}
         # Temp folders on the runner's own temp disk. On Windows, TEMP points
@@ -257,7 +268,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '22.23.5'
           cache: 'npm'
 
       - name: Install dependencies
@@ -301,7 +312,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: '22'
+          node-version: '22.23.5'
           cache: 'npm'
 
       - name: Install dependencies

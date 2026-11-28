@@ -3,7 +3,8 @@ import express from 'express';
 import { rateLimit } from 'express-rate-limit';
 import { z } from 'zod';
 import { randomBytes, timingSafeEqual } from 'crypto';
-import { openDatabase, closeDatabase, getDatabase, } from '../../db.js';
+import { isIP } from 'net';
+import { openDatabase, closeDatabase, getDatabase, failureMessage, } from '../../db.js';
 import { remember, recallWithConflicts, forget, exportMemories, importMemories, learn, shownEntity, } from '../../core/operations.js';
 import { KnowledgeGraph } from '../../knowledge-graph.js';
 import { MEMORY_DATA_NOTICE } from '../../core/work-topology.js';
@@ -11,7 +12,7 @@ import { readConfig, updateConfig, } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX } from '../../core/session-limit.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH } from '../../core/agent-scope-id.js';
 import { BRIEFING_LEVELS } from '../../core/briefing-level.js';
-import { isDoctorFixPermissionError, PluginRefreshBudgetError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
+import { isDoctorFixPermissionError, removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
 import { computePatterns } from '../../core/patterns.js';
 import { computeAnalytics, computePmAnalytics } from '../../core/analytics.js';
 import { computeStats } from '../../core/stats.js';
@@ -19,13 +20,14 @@ import { computeProjects } from '../../core/projects.js';
 import { getTaskState } from '../../core/task-state-store.js';
 import { readBriefingIndex } from '../../core/briefing.js';
 import { INDEX_STALE_DAYS } from '../../core/briefing-index.js';
-import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, MessageSchema as MessageBody, } from '../schemas.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
+import { RememberSchema as RememberBody, RecallSchema as RecallBody, ForgetSchema as ForgetBody, ExportSchema as ExportBody, ImportSchema as ImportBody, HttpLearnSchema as LearnBody, WhySchema as WhyBody, UserPatternsSchema, } from '../schemas.js';
 import { checkForUpdate, getLastUpdateCheck, getUpdateCheck } from '../../core/version-check.js';
 import { getCurrentInstallChannel, getInstallChannelSupport } from '../../core/install-channel.js';
 import { getDbPath, getMemeshDirFromDbPath, redactTextValues, redactUserPaths } from '../../core/paths.js';
 import { removeGroupAndOtherAccess } from '../../core/file-mode.js';
-import { diagnoseDatabaseFailure } from '../../core/database-diagnosis.js';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from '../../core/windows-permissions.js';
+import { databaseOpenFailureReport } from '../../core/database-diagnosis.js';
+import { assertNodeSupported, isUnsupportedNode } from '../../storage/sqlite.js';
 import { RETIRED_ROUTES } from './retired-routes.js';
 import fs from 'fs';
 import path from 'path';
@@ -57,13 +59,131 @@ const serverAuthRequired = new WeakMap();
 function memeshDir() {
     return getMemeshDirFromDbPath();
 }
-function loadOrCreateRemoteToken() {
+function windowsTokenEntry(file, directory, expected) {
+    const entry = fs.lstatSync(file, { bigint: true });
+    if (entry.ino === 0n || entry.isSymbolicLink() || !(directory ? entry.isDirectory() : entry.isFile())
+        || path.relative(file, fs.realpathSync(file)) !== ''
+        || (expected && (entry.dev !== expected.dev || entry.ino !== expected.ino))) {
+        throw new Error(`Unsafe or changed remote token path: ${file}.`);
+    }
+    return entry;
+}
+function removeWindowsTokenStage(file, owned) {
+    try {
+        windowsTokenEntry(file, owned.isDirectory(), owned);
+        if (owned.isDirectory())
+            fs.rmdirSync(file);
+        else
+            fs.unlinkSync(file);
+    }
+    catch { }
+}
+function prepareWindowsTokenDirectory(directory) {
+    if (!fs.lstatSync(directory, { throwIfNoEntry: false })) {
+        const parent = path.dirname(directory);
+        for (let ancestor = parent;; ancestor = path.dirname(ancestor)) {
+            const entry = fs.lstatSync(ancestor, { throwIfNoEntry: false });
+            if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) {
+                throw new Error(`Unsafe remote token parent: ${ancestor}.`);
+            }
+            if (path.dirname(ancestor) === ancestor)
+                break;
+        }
+        fs.mkdirSync(parent, { recursive: true });
+        windowsTokenEntry(parent, true);
+        const staged = fs.mkdtempSync(path.join(parent, '.remote-token-dir-'));
+        const owned = windowsTokenEntry(staged, true);
+        try {
+            makeWindowsPathsPrivate([staged]);
+            windowsTokenEntry(staged, true, owned);
+            if (!fs.lstatSync(directory, { throwIfNoEntry: false })) {
+                try {
+                    fs.renameSync(staged, directory);
+                }
+                catch (error) {
+                    if (!fs.lstatSync(directory, { throwIfNoEntry: false }))
+                        throw error;
+                }
+            }
+        }
+        finally {
+            removeWindowsTokenStage(staged, owned);
+        }
+    }
+    const owned = windowsTokenEntry(directory, true);
+    verifyWindowsPathsPrivate([directory]);
+    return windowsTokenEntry(directory, true, owned);
+}
+function loadWindowsToken(file) {
+    const directory = path.dirname(file);
+    const root = prepareWindowsTokenDirectory(directory);
+    if (!fs.lstatSync(file, { throwIfNoEntry: false })) {
+        const staged = path.join(directory, `.remote-token-${randomBytes(8).toString('hex')}`);
+        const fd = fs.openSync(staged, 'wx', 0o600);
+        let owned;
+        try {
+            let value;
+            try {
+                owned = fs.fstatSync(fd, { bigint: true });
+                windowsTokenEntry(staged, false, owned);
+                makeWindowsPathsPrivate([staged]);
+                windowsTokenEntry(directory, true, root);
+                if (windowsTokenEntry(staged, false, owned).nlink !== 1n)
+                    throw new Error('Remote token stage has another link.');
+                value = randomBytes(32).toString('hex');
+                fs.writeFileSync(fd, value + '\n');
+            }
+            finally {
+                fs.closeSync(fd);
+            }
+            windowsTokenEntry(staged, false, owned);
+            try {
+                fs.linkSync(staged, file);
+                return { value, freshlyCreated: true };
+            }
+            catch (error) {
+                if (error.code !== 'EEXIST')
+                    throw error;
+            }
+        }
+        finally {
+            if (owned)
+                removeWindowsTokenStage(staged, owned);
+        }
+    }
+    const owned = windowsTokenEntry(file, false);
+    const fd = fs.openSync(file, 'r');
+    try {
+        const opened = fs.fstatSync(fd, { bigint: true });
+        if (opened.dev !== owned.dev || opened.ino !== owned.ino)
+            throw new Error(`Remote token path changed: ${file}.`);
+        verifyWindowsPathsPrivate([file]);
+        windowsTokenEntry(directory, true, root);
+        windowsTokenEntry(file, false, owned);
+        return { value: fs.readFileSync(fd, 'utf8').trim(), freshlyCreated: false };
+    }
+    finally {
+        fs.closeSync(fd);
+    }
+}
+function requireUsableFileToken(value, tokenPath) {
+    if (value.length < 16) {
+        throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
+    }
+}
+export function loadOrCreateRemoteToken() {
     const fromEnv = process.env.MEMESH_REMOTE_TOKEN;
+    const tokenPath = path.join(memeshDir(), 'remote-token');
     if (fromEnv && fromEnv.length >= 16) {
-        return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false };
+        return { token: Buffer.from(fromEnv, 'utf8'), freshlyCreated: false, source: 'env', envIgnored: false, tokenPath };
+    }
+    const envIgnored = fromEnv !== undefined && fromEnv !== '';
+    if (process.platform === 'win32') {
+        const { value, freshlyCreated } = loadWindowsToken(path.resolve(tokenPath));
+        requireUsableFileToken(value, tokenPath);
+        return { token: Buffer.from(value, 'utf8'), freshlyCreated, source: 'file', envIgnored, tokenPath };
     }
     const dir = memeshDir();
-    const tokenPath = path.join(dir, 'remote-token');
     fs.mkdirSync(dir, { recursive: true });
     removeGroupAndOtherAccess(dir);
     const generated = randomBytes(32).toString('hex');
@@ -79,18 +199,30 @@ function loadOrCreateRemoteToken() {
             fs.chmodSync(tokenPath, 0o600);
         }
         catch { }
-        return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true };
+        return { token: Buffer.from(generated, 'utf8'), freshlyCreated: true, source: 'file', envIgnored, tokenPath };
     }
     catch (err) {
         if (err?.code !== 'EEXIST')
             throw err;
     }
     const value = fs.readFileSync(tokenPath, 'utf8').trim();
-    if (value.length < 16) {
-        throw new Error(`Existing ${tokenPath} is too short (<16 chars). Delete it and restart memesh-http to regenerate.`);
-    }
+    requireUsableFileToken(value, tokenPath);
     removeGroupAndOtherAccess(tokenPath);
-    return { token: Buffer.from(value, 'utf8'), freshlyCreated: false };
+    return { token: Buffer.from(value, 'utf8'), freshlyCreated: false, source: 'file', envIgnored, tokenPath };
+}
+export function remoteTokenStartupNotice(load) {
+    if (load.freshlyCreated) {
+        const permissions = process.platform === 'win32' ? 'restricted Windows access' : 'mode 600';
+        return (`\nMeMesh HTTP: bearer token generated for remote access.\n` +
+            (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : '') +
+            `  Token file: ${load.tokenPath} (${permissions})\n` +
+            `  Use header: Authorization: Bearer <token>\n` +
+            `  Rotate by deleting ${load.tokenPath} and restarting.\n` +
+            `  Override: set MEMESH_REMOTE_TOKEN (at least 16 characters).\n\n`);
+    }
+    return (`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
+        `Token loaded from ${load.source === 'env' ? 'MEMESH_REMOTE_TOKEN' : load.tokenPath}.\n` +
+        (load.envIgnored ? `  MEMESH_REMOTE_TOKEN is shorter than 16 characters and was ignored.\n` : ''));
 }
 function constantTimeEquals(a, b) {
     const max = Math.max(a.length, b.length);
@@ -292,9 +424,6 @@ app.post('/v1/doctor/fix', (req, res) => handlePost(DoctorFixBody, req, res, asy
     catch (error) {
         if (error instanceof HttpError)
             throw error;
-        if (error instanceof PluginRefreshBudgetError) {
-            throw new HttpError(500, 'doctor.repair-incomplete', error.message);
-        }
         if (isDoctorFixPermissionError(error)) {
             throw new HttpError(500, 'operation.permission-denied', 'MeMesh cannot modify the local files required for this repair. Start `memesh serve` from your own Terminal, and retry. If it still fails, run `memesh doctor`.');
         }
@@ -337,7 +466,7 @@ function sendError(res, err, fallbackStatus, fallbackCode) {
     res.status(fallbackStatus).json({
         success: false,
         errorCode: fallbackCode,
-        error: err instanceof Error ? err.message : String(err),
+        error: failureMessage(err),
     });
 }
 function zodErrorText(error) {
@@ -384,7 +513,7 @@ function handleGet(res, produce) {
 }
 app.post('/v1/remember', (req, res) => handlePost(RememberBody, req, res, (data) => remember({ ...data, sourceHost: 'http' })));
 app.post('/v1/recall', (req, res) => handlePost(RecallBody, req, res, async (data) => {
-    const result = await recallWithConflicts(data.ids !== undefined ? { ...data, projectScope: null } : data);
+    const result = await recallWithConflicts(data);
     const { entities, conflicts, retrieval } = result;
     return { data_notice: MEMORY_DATA_NOTICE, entities, retrieval, ...('results' in result ? { results: result.results } : {}), ...(conflicts.length > 0 ? { conflicts } : {}) };
 }));
@@ -406,34 +535,6 @@ for (const [retiredRoute, error] of Object.entries(RETIRED_ROUTES)) {
 app.post('/v1/export', (req, res) => handlePost(ExportBody, req, res, exportMemories));
 app.post('/v1/import', (req, res) => handlePost(ImportBody, req, res, importMemories));
 app.post('/v1/learn', (req, res) => handlePost(LearnBody, req, res, (data) => learn({ ...data, sourceHost: 'http' })));
-app.post('/v1/message', (req, res) => {
-    const controller = new AbortController();
-    function cleanupListeners() {
-        req.removeListener('aborted', abortIfOpen);
-        res.removeListener('close', abortIfOpen);
-        res.removeListener('finish', cleanupListeners);
-    }
-    function abortIfOpen() {
-        if (!res.writableEnded)
-            controller.abort();
-        cleanupListeners();
-    }
-    req.once('aborted', abortIfOpen);
-    res.once('close', abortIfOpen);
-    res.once('finish', cleanupListeners);
-    handlePost(MessageBody, req, res, async (data) => {
-        try {
-            return await executeAgentMessageAction(getDatabase(), data, {
-                transport: 'http',
-                sourceHost: 'http',
-                signal: controller.signal,
-            });
-        }
-        finally {
-            cleanupListeners();
-        }
-    });
-});
 app.post('/v1/why', (req, res) => handlePost(WhyBody, req, res, async (data) => {
     const { explainCommits } = await import('../../core/why.js');
     return explainCommits(getDatabase(), {
@@ -535,7 +636,21 @@ app.post('/v1/demo/reset', (_req, res) => handleGet(res, async () => {
     return seedDemo(getDatabase(), { reset: true });
 }));
 app.get('/v1/projects', (_req, res) => handleGet(res, () => computeProjects(getDatabase())));
-app.get('/v1/patterns', (_req, res) => handleGet(res, () => computePatterns(getDatabase())));
+const PatternsQuerySchema = z.object({
+    categories: z.union([z.string(), z.array(z.string())]).optional()
+        .transform((v) => (v === undefined ? undefined : (Array.isArray(v) ? v : [v]).flatMap((s) => s.split(',')).map((s) => s.trim()).filter(Boolean)))
+        .pipe(UserPatternsSchema.shape.categories),
+});
+app.get('/v1/patterns', (req, res) => {
+    if (Object.keys(req.query).some((key) => key.startsWith('categories['))) {
+        res.status(400).json({ success: false, errorCode: 'validation.bad-param', error: 'categories: use ?categories=a,b or repeat ?categories=a&categories=b' });
+        return;
+    }
+    const query = parseQuery(PatternsQuerySchema, req, res);
+    if (!query)
+        return;
+    handleGet(res, () => computePatterns(getDatabase(), query.categories));
+});
 const DreamProposalsQuerySchema = z.object({
     status: z.enum(['pending', 'applied', 'rejected', 'all']).default('pending'),
 });
@@ -656,13 +771,26 @@ const ALLOW_REMOTE_BY_ENV = /^(1|true|yes)$/i.test(process.env.MEMESH_HTTP_ALLOW
 function normalizeHost(host) {
     return host.trim().toLowerCase().replace(/^\[(.*)\]$/, '$1');
 }
-function isLoopbackHost(host) {
+export function isLoopbackHost(host) {
     const normalized = normalizeHost(host);
-    return normalized === 'localhost'
-        || normalized === '::1'
-        || normalized === '127.0.0.1'
-        || normalized.startsWith('127.')
-        || normalized.startsWith('::ffff:127.');
+    if (normalized === 'localhost')
+        return true;
+    const family = isIP(normalized);
+    if (family === 4)
+        return normalized.startsWith('127.');
+    if (family !== 6)
+        return false;
+    let canonical;
+    try {
+        canonical = new URL(`http://[${normalized}]/`).hostname.replace(/^\[|\]$/g, '');
+    }
+    catch {
+        return false;
+    }
+    if (canonical === '::1')
+        return true;
+    const mapped = /^::ffff:([0-9a-f]{1,4}):[0-9a-f]{1,4}$/.exec(canonical);
+    return mapped !== null && (parseInt(mapped[1], 16) >> 8) === 127;
 }
 app.use((req, res) => {
     res.status(404).json({
@@ -673,6 +801,7 @@ app.use((req, res) => {
     });
 });
 export function startServer(host = HOST, port = PORT, opts) {
+    assertNodeSupported();
     const allowRemote = opts?.allowRemote ?? ALLOW_REMOTE_BY_ENV;
     const isRemote = !isLoopbackHost(host);
     if (!allowRemote && isRemote) {
@@ -683,21 +812,9 @@ export function startServer(host = HOST, port = PORT, opts) {
             'and no bearer token is generated. Add --host <address> to bind somewhere reachable.\n');
     }
     if (isRemote) {
-        const { token, freshlyCreated } = loadOrCreateRemoteToken();
-        remoteToken = token;
-        if (freshlyCreated) {
-            const dir = memeshDir();
-            const tokenPath = path.join(dir, 'remote-token');
-            process.stderr.write(`\nMeMesh HTTP: bearer token generated for remote access.\n` +
-                `  Token file: ${tokenPath} (mode 600)\n` +
-                `  Use header: Authorization: Bearer <token>\n` +
-                `  Rotate by deleting ${tokenPath} and restarting.\n` +
-                `  Override: set MEMESH_REMOTE_TOKEN.\n\n`);
-        }
-        else {
-            process.stderr.write(`MeMesh HTTP: remote bind requires Authorization: Bearer <token>. ` +
-                `Token loaded from ${process.env.MEMESH_REMOTE_TOKEN ? 'MEMESH_REMOTE_TOKEN' : path.join(memeshDir(), 'remote-token')}.\n`);
-        }
+        const loaded = loadOrCreateRemoteToken();
+        remoteToken = loaded.token;
+        process.stderr.write(remoteTokenStartupNotice(loaded));
     }
     try {
         openDatabase();
@@ -705,15 +822,10 @@ export function startServer(host = HOST, port = PORT, opts) {
         db.prepare('SELECT COUNT(*) FROM entities').get();
     }
     catch (err) {
+        if (isUnsupportedNode(err))
+            throw err;
         const message = err instanceof Error ? err.message : String(err);
-        const dbPath = getDbPath();
-        console.error('\n❌ MeMesh startup failed: database cannot be opened\n');
-        console.error(`   Database path: ${dbPath}`);
-        console.error(`   Error: ${message}\n`);
-        const { diagnosis, fix } = diagnoseDatabaseFailure(err, dbPath);
-        if (diagnosis !== message)
-            console.error(`   Diagnosis: ${diagnosis}`);
-        console.error(`Fix: ${fix}\n`);
+        console.error(databaseOpenFailureReport(err, getDbPath()));
         throw new Error(`Database initialization failed: ${message}`, { cause: err });
     }
     const injectedUpdateSeam = Boolean(opts?.updateCheckImpl || opts?.lastUpdateCheckImpl);

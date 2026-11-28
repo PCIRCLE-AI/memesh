@@ -18,6 +18,22 @@ describe('transcript-extractor: parsing', () => {
   beforeEach(() => { tmp = mkdtempSync(join(tmpdir(), 'memesh-tx-parse-')); });
   afterEach(() => { rmSync(tmp, { recursive: true, force: true }); });
 
+  it('does not attribute native skill bodies to the user while preserving genuine turns', () => {
+    const entries = [
+      { type: 'user', uuid: 'command', message: { content: '<command-message>fixture</command-message>\n<command-name>/fixture</command-name>\n<command-args>synthetic argument</command-args>' } },
+      { type: 'user', parentUuid: 'command', isMeta: true, message: { content: 'Expanded synthetic skill body' } },
+      { type: 'user', parentUuid: 'command', isMeta: true, message: { content: [{ type: 'text', text: 'Array synthetic skill body' }] } },
+      { type: 'user', isMeta: false, message: { content: 'Genuine explicit non-meta user' } },
+      { type: 'user', message: { content: [{ type: 'text', text: 'Genuine user without meta flag' }] } },
+      { type: 'assistant', message: { content: [{ type: 'thinking', thinking: 'private' }, { type: 'text', text: 'Visible assistant stays visible' }] } },
+    ];
+    expect(parseVisibleConversation(Buffer.from(entries.map(entry => JSON.stringify(entry)).join('\n')))).toEqual([
+      { role: 'user', text: 'Genuine explicit non-meta user' },
+      { role: 'user', text: 'Genuine user without meta flag' },
+      { role: 'assistant', text: 'Visible assistant stays visible' },
+    ]);
+  });
+
   it('skips non-record JSON lines without losing visible turns on either side', () => {
     const lines = [
       JSON.stringify({ type: 'user', message: { content: 'visible before' } }),

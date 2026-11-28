@@ -9,11 +9,9 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { MemeshDatabase } from '../storage/sqlite.js';
 import { getDatabase, openInitialisedDatabase } from '../db.js';
-import { AGENT_MESSAGE_PROJECT_TABLES } from './agent-scope-id.js';
-import { guardDatabaseFiles } from './file-mode.js';
+import { guardDatabaseFiles, hasPagesWaiting, immutableAddress } from './file-mode.js';
 
 export interface ProjectTagCount {
   project: string;
@@ -31,26 +29,6 @@ export interface RenameProjectResult {
   renamed: number;
   applied: boolean;
   affectedNames: string[];
-  /**
-   * Durable-message rows whose `project` scope carries the `from` name.
-   *
-   * A project identity lives in entity tags, proposals and durable messages.
-   * The `project` column of the durable-message tables is
-   * half the key of an inbox. Renaming only the tags left the messages behind
-   * — on the maintainer's own graph, `memesh` and `memesh-llm-memory` (the same
-   * repository before and after a GitHub rename; the old name still redirects)
-   * held 38 and 28 messages in two separate scopes, and a recipient polling
-   * under one never saw the other. So the rename moves both, in one
-   * transaction, under the same dry-run-by-default discipline.
-   */
-  messageRows: number;
-  /**
-   * Message rows left in place because moving them would violate a UNIQUE
-   * constraint — the destination project already holds an equivalent row.
-   * Reported rather than forced: deleting a caller's rows to satisfy a rename
-   * is the owner's decision, not this function's.
-   */
-  messageRowsBlocked: number;
   /** Proposal rows moved with their project, so accepting one cannot revive the old scope. */
   proposalRows: number;
 }
@@ -99,40 +77,16 @@ export function renameProjectTag(
   if (refusal) throw new Error(refusal);
   if (!opts?.apply) return previewOnCopy(conn, from, to);
 
-  const { affected, plan, merged, renamed, messagePlan, messageRows } = planRename(conn, from, to);
+  const { affected, plan, merged, renamed } = planRename(conn, from, to);
   const proposalIds = proposalRowsForProject(conn, from);
-  let messageRowsBlocked = 0;
 
-  if (affected.length > 0 || messageRows > 0 || proposalIds.length > 0) {
+  if (affected.length > 0 || proposalIds.length > 0) {
     const del = conn.prepare('DELETE FROM tags WHERE entity_id = ? AND tag = ?');
     const upd = conn.prepare('UPDATE tags SET tag = ? WHERE entity_id = ? AND tag = ?');
-    const movedRows: Array<{ table: string; rid: number }> = [];
     const tx = conn.transaction(() => {
       for (const p of plan) {
         if (p.action === 'merge') del.run(p.id, fromTag);
         else upd.run(toTag, p.id, fromTag);
-      }
-      for (const { table, rowIds } of messagePlan) {
-        if (rowIds.length === 0) continue;
-        const move = conn.prepare(`UPDATE ${table} SET project = ? WHERE rowid = ?`);
-        for (const rid of rowIds) {
-          // Row by row, not one bulk UPDATE: a single unique collision would
-          // otherwise abort the statement and silently move nothing. Only a
-          // unique collision means "the destination already holds this row";
-          // any other failure (a read-only file, a full disk) aborts the whole
-          // rename instead of being reported as left in place (#519).
-          try {
-            move.run(to, rid);
-            movedRows.push({ table, rid });
-          } catch (err) {
-            const code = (err as { errcode?: unknown } | null)?.errcode;
-            // 2067: a UNIQUE index; 1555: a PRIMARY KEY. The error alone does
-            // not say the destination holds this row: a trigger's own write can
-            // collide too, in this table or another (#519). So look it up.
-            if ((code !== 2067 && code !== 1555) || !destinationHolds(conn, table, rid, to)) throw err;
-            messageRowsBlocked += 1;
-          }
-        }
       }
       if (proposalIds.length > 0) {
         const move = conn.prepare('UPDATE dream_proposals SET project = ? WHERE id = ?');
@@ -140,18 +94,11 @@ export function renameProjectTag(
       }
       // Read the state back instead of trusting the statements: a trigger can
       // turn an UPDATE or DELETE into a silent no-op (RAISE(IGNORE)) or undo it
-      // afterwards, which would leave a memory in `from` while its messages move
-      // to `to`, or the reverse. Any mismatch throws and rolls everything back.
+      // afterwards. Any mismatch throws and rolls the tags and proposals back.
       const hasTag = conn.prepare('SELECT 1 FROM tags WHERE entity_id = ? AND tag = ?');
       for (const p of plan) {
         if (hasTag.get(p.id, fromTag) || !hasTag.get(p.id, toTag)) {
           throw new Error(`entity ${p.id} does not carry ${toTag} in place of ${fromTag} after the rename (a trigger or constraint changed the result)`);
-        }
-      }
-      for (const { table, rid } of movedRows) {
-        const row = conn.prepare(`SELECT project FROM ${table} WHERE rowid = ?`).get(rid) as { project: string } | undefined;
-        if (row?.project !== to) {
-          throw new Error(`${table} row ${rid} is not scoped to ${to} after the rename (a trigger or constraint changed the result)`);
         }
       }
       if (proposalIds.length > 0) {
@@ -174,8 +121,6 @@ export function renameProjectTag(
     renamed,
     applied: !!opts?.apply,
     affectedNames: affected.map((e) => e.name),
-    messageRows,
-    messageRowsBlocked,
     proposalRows: proposalIds.length,
   };
 }
@@ -207,51 +152,14 @@ function planRename(conn: MemeshDatabase, from: string, to: string) {
   const merged = plan.filter((p) => p.action === 'merge').length;
   const renamed = plan.filter((p) => p.action === 'rename').length;
 
-  // Table names come from a hardcoded list, never from caller input.
-  const messagePlan = AGENT_MESSAGE_PROJECT_TABLES.map((table) => {
-    try {
-      const rows = conn.prepare(`SELECT rowid AS rid FROM ${table} WHERE project = ?`)
-        .all(from) as Array<{ rid: number }>;
-      return { table, rowIds: rows.map((r) => r.rid) };
-    } catch (err) {
-      // Only a schema older than the durable-message tables has nothing to
-      // move. Any other read failure (an I/O error) must abort: treating it as
-      // "no rows" would move the message and strand its delivery (#519).
-      if (!/no such table/i.test(err instanceof Error ? err.message : String(err))) throw err;
-      return { table, rowIds: [] as number[] };
-    }
-  });
-  const messageRows = messagePlan.reduce((n, t) => n + t.rowIds.length, 0);
-  return { affected, plan, merged, renamed, messagePlan, messageRows };
+  return { affected, plan, merged, renamed };
 }
 
-/** Does anything carry project `from`: an entity tag, proposal or durable-message row? */
+/** Does anything carry project `from`: an entity tag or proposal? */
 export function hasRenameWork(from: string, db?: MemeshDatabase): boolean {
-  const { affected, messageRows } = planRename(db ?? getDatabase(), from, from);
-  return affected.length > 0 || messageRows > 0 || proposalRowsForProject(db ?? getDatabase(), from).length > 0;
-}
-
-/**
- * Does project `to` already hold a row that row `rid` would duplicate under
- * one of the table's unique keys? Keys are read from the schema. Expression
- * and partial indexes are not checked: a collision on one aborts the rename
- * rather than being counted as left in place.
- */
-function destinationHolds(conn: MemeshDatabase, table: string, rid: number, to: string): boolean {
-  const quote = (name: string) => `"${name.replace(/"/g, '""')}"`;
-  const indexes = conn.prepare('SELECT name FROM pragma_index_list(?) WHERE "unique" = 1 AND partial = 0')
-    .all(table) as Array<{ name: string }>;
-  for (const { name } of indexes) {
-    const cols = conn.prepare('SELECT name, coll FROM pragma_index_xinfo(?) WHERE key = 1 ORDER BY seqno')
-      .all(name) as Array<{ name: string | null; coll: string }>;
-    if (!cols.some((c) => c.name === 'project') || cols.some((c) => c.name === null || !/^\w+$/.test(c.coll))) continue;
-    const match = cols.map((c) => (c.name === 'project'
-      ? `d.project = ? COLLATE ${c.coll}`
-      : `d.${quote(c.name!)} = s.${quote(c.name!)} COLLATE ${c.coll}`)).join(' AND ');
-    // Table names come from a hardcoded list; column names and collations from the schema.
-    if (conn.prepare(`SELECT 1 FROM ${table} s, ${table} d WHERE s.rowid = ? AND d.rowid <> s.rowid AND ${match} LIMIT 1`).get(rid, to)) return true;
-  }
-  return false;
+  const conn = db ?? getDatabase();
+  const { affected } = planRename(conn, from, from);
+  return affected.length > 0 || proposalRowsForProject(conn, from).length > 0;
 }
 
 /**
@@ -314,12 +222,9 @@ export function openReadOnlyForPreview(
   try {
     return open(dbPath);
   } catch (err) {
-    // SQLite keeps the -wal beside the real file, not beside a symlink to it.
-    let realPath = dbPath;
-    try { realPath = fs.realpathSync(dbPath); } catch { /* keep the given path */ }
-    const wal = `${realPath}-wal`;
-    const hasWal = fs.existsSync(wal) && fs.statSync(wal).size > 0;
-    if (hasWal || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err))) throw err;
-    return open(`${pathToFileURL(dbPath).href}?immutable=1`);
+    // Pages waiting in a -wal, or a rollback journal a crash left behind, would be skipped by an immutable read:
+    // it would show changes that were never committed. Neither can be skipped, so the original error stands.
+    if (hasPagesWaiting(dbPath) || !/readonly|unable to open/i.test(err instanceof Error ? err.message : String(err))) throw err;
+    return open(immutableAddress(dbPath));
   }
 }

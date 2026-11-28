@@ -49,14 +49,27 @@ function registeredToolNames(handlers) {
   return [...handlers.matchAll(/^ {4}name: '([a-z_]+)'/gm)].map((match) => match[1]);
 }
 
-function handlerSchemaMappings(handlers, names) {
+function delegatedSchema(block, moduleSource) {
+  const call = block.match(/\b([A-Za-z][A-Za-z0-9]*)\(args,\s*\{\s*session:/);
+  if (!call) return null;
+  const functionStart = moduleSource.search(new RegExp(`export (?:async )?function ${call[1]}\\(`));
+  if (functionStart === -1) return null;
+  const nextExport = moduleSource.indexOf('\nexport ', functionStart + 1);
+  const functionSource = moduleSource.slice(functionStart, nextExport === -1 ? undefined : nextExport);
+  const parsed = functionSource.match(/const action = ([A-Za-z][A-Za-z0-9]*Schema)\.parse\(input\)/);
+  if (!parsed || !new RegExp(`export const ${parsed[1]}\\s*=`).test(moduleSource)) return null;
+  return parsed[1];
+}
+
+function handlerSchemaMappings(handlers, names, conversationMessaging) {
   return names.map((name) => {
     const start = handlers.indexOf(`if (name === '${name}')`);
     if (start === -1) return { name, schema: null };
     const next = handlers.indexOf("\n    if (name === '", start + 1);
     const block = handlers.slice(start, next === -1 ? undefined : next);
     const schemas = [...block.matchAll(/parseOrFail\(([A-Za-z]+Schema), args\)/g)].map(match => match[1]);
-    return { name, schema: uniqueSorted(schemas).join(',') || null };
+    const delegated = delegatedSchema(block, conversationMessaging);
+    return { name, schema: uniqueSorted([...schemas, ...(delegated ? [delegated] : [])]).join(',') || null };
   });
 }
 
@@ -126,7 +139,7 @@ export function checkCurrentDocumentationContracts(input) {
   const documentedTools = architectureToolRows(input.architecture);
   if (documentedTools === null) errors.push('ARCHITECTURE MCP handler table is missing or malformed');
   else {
-    const mappings = handlerSchemaMappings(input.handlers, toolNames);
+    const mappings = handlerSchemaMappings(input.handlers, toolNames, input.conversationMessaging);
     const expected = mappings.map(({ name, schema }) => `${name}:${schema}`).sort();
     const actual = documentedTools.map(({ name, schema }) => `${name}:${schema}`).sort();
     if (toolNames.length !== tools.length
@@ -272,8 +285,10 @@ export function checkCurrentDocumentationContracts(input) {
       if (!changelogAnchors.has(anchor)) errors.push(`LongMemEval references missing CHANGELOG heading ${anchor}`);
     }
   }
-  const engineFloor = input.packageJson.engines?.node?.match(/(\d+\.\d+\.\d+)/)?.[1];
-  if (!engineFloor || !input.reproduce.includes(`Node.js >= ${engineFloor}`)) {
+  const parts = (input.packageJson.engines?.node ?? '').split('||').map((part) => part.trim());
+  const floors = parts.map((part) => /^(?:\^|>=\s*)(\d+\.\d+\.\d+)$/.exec(part)?.[1]);
+  const nodeLines = input.reproduce.split('\n').filter((line) => line.includes('Node.js'));
+  if (floors.some((floor) => !floor) || !nodeLines.some((line) => floors.every((floor) => line.includes(floor)))) {
     errors.push('LongMemEval reproduction Node floor differs from package.json');
   }
 

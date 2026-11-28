@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { npmSync, envWithNpmCache } from './lib/npm-bin.mjs';
+import { npmSync, envWithNpmCache, parsePackResult } from './lib/npm-bin.mjs';
 
 export const CLAUDE_PLUGIN_ROOT_PREFIX = '${CLAUDE_PLUGIN_ROOT}/';
 
@@ -138,9 +138,10 @@ function packFiles(root) {
       encoding: 'utf8',
       env: envWithNpmCache(npmCache),
     });
-    let report;
-    try { report = JSON.parse(String(stdout)); } catch { throw new Error('npm pack --dry-run did not return valid JSON'); }
-    const entry = Array.isArray(report) ? report[0] : report;
+    let entry;
+    try { entry = parsePackResult(stdout); } catch (cause) {
+      throw new Error('npm pack --dry-run did not return one valid package report', { cause });
+    }
     if (!entry || !Array.isArray(entry.files)) throw new Error('npm pack --dry-run returned no file list');
     return entry.files;
   } catch (error) {

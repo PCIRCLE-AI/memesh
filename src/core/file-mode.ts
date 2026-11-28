@@ -1,4 +1,6 @@
 import fs from 'fs';
+import { pathToFileURL } from 'url';
+import { makeWindowsPathsPrivate } from './windows-permissions.js';
 
 /**
  * A path as ONE word of a command memesh prints for the owner to paste into a
@@ -76,6 +78,31 @@ export function databaseFiles(dbPath: string): [string, string, string] {
   return [real, `${real}-wal`, `${real}-shm`];
 }
 
+/** Does `file` exist and hold at least one byte? */
+export function holdsBytes(file: string): boolean {
+  try { return fs.statSync(file).size > 0; } catch { return false; }
+}
+
+/** Can this process write to `target`? */
+export function isWritable(target: string): boolean {
+  try { fs.accessSync(target, fs.constants.W_OK); return true; } catch { return false; }
+}
+
+/**
+ * Pages waiting in a -wal, or a rollback journal a crash left behind. An
+ * immutable read would skip them and show changes that were never committed
+ * (or miss committed ones), so neither can be skipped.
+ */
+export function hasPagesWaiting(dbPath: string): boolean {
+  const [real, wal] = databaseFiles(dbPath);
+  return holdsBytes(wal) || holdsBytes(`${real}-journal`);
+}
+
+/** The address that opens a database file for reads only: no locks, no sidecars. */
+export function immutableAddress(file: string): string {
+  return `${pathToFileURL(file).href}?immutable=1`;
+}
+
 /**
  * Everything MeMesh does to the database's files before SQLite opens them,
  * for every opener (core, hooks, read-only or not): other users lose access,
@@ -93,6 +120,11 @@ export function guardDatabaseFiles(dbPath: string): void {
  * to it. The owner's write bit is never added (#520).
  */
 export function requirePrivateWritableDirectory(dir: string, purpose: string): void {
+  if (process.platform === 'win32') {
+    if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a directory, and ${purpose}`);
+    makeWindowsPathsPrivate([dir], dir);
+    return;
+  }
   removeGroupAndOtherAccess(dir);
   const mode = fs.statSync(dir).mode & 0o777;
   if ((mode & 0o077) !== 0) {
@@ -125,7 +157,7 @@ const letters = (bits: number) => OWNER_LETTERS.filter(([bit]) => bits & bit).ma
  * A non-empty sidecar with more permissions is left alone by SQLite, so a
  * read-only database next to it still opens for reads.
  */
-export function refuseMismatchedSidecars(dbPath: string): void {
+export function refuseMismatchedSidecars(dbPath: string, options: { readOnly?: boolean } = {}): void {
   if (process.platform === 'win32') return; // no owner/group/other bits there
   const [real, wal, shm] = databaseFiles(dbPath);
   const database = fs.statSync(real, { throwIfNoEntry: false });
@@ -138,6 +170,9 @@ export function refuseMismatchedSidecars(dbPath: string): void {
   for (const sidecar of [wal, shm]) {
     const stat = fs.statSync(sidecar, { throwIfNoEntry: false });
     if (!stat) continue;
+    // Read-only opens can use an existing nonempty sidecar without changing
+    // its owner bits. Empty sidecars can still be chmod'ed by SQLite.
+    if (options.readOnly && stat.size > 0) continue;
     // SQLite copies the whole owner triplet (x included) onto an EMPTY
     // sidecar; a non-empty one only needs read and write.
     const missing = database.mode & ~stat.mode & (stat.size === 0 ? 0o700 : 0o600);

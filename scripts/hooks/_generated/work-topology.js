@@ -24,6 +24,20 @@ export const WORK_LAYER_TYPES = new Set([
     'task-state',
 ]);
 export const DECISION_TYPES = new Set(['decision', 'architecture_decision', 'design_decision']);
+export const PREFERENCE_TYPES = ['preference', 'user_preference'];
+export const SHARED_EXPERIENCE_TYPES = new Set([
+    ...LESSON_TYPES,
+    ...DECISION_TYPES,
+    ...PREFERENCE_TYPES,
+]);
+export const SHARED_EXPERIENCE_TYPE_LIST = [...SHARED_EXPERIENCE_TYPES];
+export const SHARED_FEEDBACK_TYPE = 'feedback';
+export const NOTE_FILE_PROVENANCE = 'note-file';
+export const EDITED_BY_TOOL = 'memory-tool';
+export function isReservedTag(tag) {
+    return tag.trim().toLowerCase().startsWith('source:');
+}
+export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
 export const WHY_PREFIX = 'Why: ';
 export const UNCONFIRMED_DECISION_DAYS = 30;
 export function utcEpoch(at) {
@@ -78,12 +92,13 @@ export function topologyLine(entity, maxChars) {
     const snippet = entity.snippet?.trim();
     const given = (title || snippet || '').replace(/~[0-9a-f]{32}\b/g, '');
     const handle = Number.isInteger(entity.id) && entity.id > 0 ? ` [mem:${entity.id}]` : '';
+    const origin = entity.sharedFrom !== undefined ? ` (from ${entity.sharedFrom})` : '';
     const unconfirmed = entity.unconfirmedDays ? ` (unconfirmed ${entity.unconfirmedDays} days: re-check before relying)` : '';
     const reason = entity.why ? `${WHY_PREFIX}${entity.why}` : '';
     const noReason = entity.why === null ? ' (no reason recorded)' : '';
     const text = reason && isWhyText(given) ? '' : given || (reason ? '' : `${entity.type} memory`);
-    const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length);
-    return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${handle}`);
+    const room = Math.max(8, maxChars - handle.length - unconfirmed.length - noReason.length - origin.length);
+    return stripControlChars(`- [${entity.type}] ${lineBody(text, reason, room)}${noReason}${unconfirmed}${origin}${handle}`);
 }
 const TITLE_FLOOR_CHARS = 40;
 const REASON_SEPARATOR = ' — ';
@@ -110,7 +125,7 @@ function clip(text, maxChars) {
     const flat = text.replace(/\s+/g, ' ').trim();
     if (flat.length <= maxChars)
         return flat;
-    const cut = sliceWholeChars(flat, maxChars);
+    const cut = sliceWholeChars(flat, maxChars - 1);
     const lastSpace = cut.lastIndexOf(' ');
     const base = lastSpace > maxChars * 0.6 ? cut.slice(0, lastSpace) : cut;
     return `${base.trimEnd()}…`;
@@ -143,8 +158,9 @@ export function groupTopology(entities, projectName) {
     const global = [];
     const noProject = [];
     const foreign = [];
+    const shared = [];
     for (const e of entities) {
-        if (e.type === 'task-state' || e.type === 'session-handoff')
+        if (e.type === 'task-state')
             continue;
         if (e.global) {
             global.push(e);
@@ -152,6 +168,10 @@ export function groupTopology(entities, projectName) {
         }
         if (e.noProject) {
             noProject.push(e);
+            continue;
+        }
+        if (e.sharedFrom !== undefined) {
+            shared.push(e);
             continue;
         }
         if (e.foreign) {
@@ -190,6 +210,8 @@ export function groupTopology(entities, projectName) {
         sections.push({ heading: 'Global memory — applies across projects:', entities: global });
     if (foreign.length)
         sections.push({ heading: 'From your other projects (may or may not apply here):', entities: foreign });
+    if (shared.length)
+        sections.push({ heading: 'Your preferences from your other projects (may or may not apply here):', entities: shared });
     return sections;
 }
 const MAX_PER_SECTION = 8;
@@ -198,6 +220,11 @@ export const DEFAULT_TOPOLOGY_BUDGET = {
     maxLineChars: 160,
 };
 export const GLOBAL_TOPOLOGY_LIMIT = 3;
+export const SHARED_TOPOLOGY_LIMIT = 3;
+const SHARED_TOPOLOGY_BUDGET = {
+    maxChars: 640,
+    maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
+};
 const GLOBAL_TOPOLOGY_BUDGET = {
     maxChars: 640,
     maxLineChars: DEFAULT_TOPOLOGY_BUDGET.maxLineChars,
@@ -232,16 +259,20 @@ export function buildTopologyLines(entities, projectName, budget) {
         lines.pop();
     return lines;
 }
-export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET, { reserve = 0 } = {}) {
+export function assembleTopologyBlock(stateLines, pools, projectName, budget = DEFAULT_TOPOLOGY_BUDGET) {
     const seen = new Set();
     const candidates = [];
     const globalCandidates = [];
+    const sharedCandidates = [];
     for (const pool of pools) {
         for (const e of pool.entities) {
             if (seen.has(e.name))
                 continue;
             seen.add(e.name);
-            if (pool.global) {
+            if (pool.shared) {
+                sharedCandidates.push(e.sharedFrom !== undefined ? e : { ...e, sharedFrom: 'another project' });
+            }
+            else if (pool.global) {
                 globalCandidates.push(e.global ? e : { ...e, global: true });
             }
             else {
@@ -250,13 +281,22 @@ export function assembleTopologyBlock(stateLines, pools, projectName, budget = D
         }
     }
     const lines = boundStateLines(stateLines);
-    const room = () => budget.maxChars - reserve - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
+    const room = () => budget.maxChars - joinedLength(lines) - (lines.length > 0 ? 2 : 0);
     const topologyLines = room() > 0
         ? buildTopologyLines(candidates, projectName, { ...budget, maxChars: room() })
         : [];
     if (lines.length > 0 && topologyLines.length > 0)
         lines.push('');
     lines.push(...topologyLines);
+    const sharedLines = room() > 0
+        ? buildTopologyLines(sharedCandidates.slice(0, SHARED_TOPOLOGY_LIMIT), projectName, {
+            ...budget,
+            maxChars: Math.min(room(), SHARED_TOPOLOGY_BUDGET.maxChars),
+        })
+        : [];
+    if (lines.length > 0 && sharedLines.length > 0)
+        lines.push('');
+    lines.push(...sharedLines);
     const globalLines = room() > 0
         ? buildTopologyLines(globalCandidates, projectName, {
             ...budget,
@@ -328,7 +368,9 @@ export function hasBriefingContent(lines) {
 }
 export function buildReferenceContext(memoryLines) {
     const safeLines = memoryLines.map((line) => stripControlChars(String(line ?? '')
-        .replace(/[\s\u0085\u001c-\u001e]+/g, ' ')).trim());
+        .replace(/[\s\u0085\u001c-\u001e]+/g, ' '))
+        .replace(/</g, '&lt;')
+        .trim());
     let longestRun = 0;
     for (const line of safeLines) {
         for (const run of line.match(/`+/g) ?? []) {
@@ -344,6 +386,38 @@ export function buildReferenceContext(memoryLines) {
         fence,
     ].join('\n');
 }
+export const MAX_OPENING_CONTEXT_BYTES = 8000;
+export function buildOpeningContext(taskLines, tailLines, remainingLines, reservedBytes = 0) {
+    const encoder = new TextEncoder();
+    const fits = (lines) => encoder.encode(buildReferenceContext(lines)).length + reservedBytes <= MAX_OPENING_CONTEXT_BYTES;
+    if (!Number.isSafeInteger(reservedBytes) || reservedBytes < 0)
+        throw new Error('Invalid opening context reserved byte count');
+    let tasks = [...taskLines];
+    if (!fits([...tasks, ...tailLines])) {
+        const shorten = (limit) => taskLines.map((line, index) => index === 0 ? line : clip(line, limit));
+        let low = 256, high = MAX_OPENING_CONTEXT_BYTES;
+        if (!fits([...shorten(low), ...tailLines]))
+            throw new Error('Opening context budget cannot fit task dates and session tails');
+        while (low < high) {
+            const limit = Math.ceil((low + high) / 2);
+            if (fits([...shorten(limit), ...tailLines]))
+                low = limit;
+            else
+                high = limit - 1;
+        }
+        tasks = shorten(low);
+    }
+    const kept = [...tasks, ...tailLines];
+    const remaining = [];
+    for (const line of remainingLines) {
+        const next = [...kept, line];
+        if (!fits(next))
+            break;
+        kept.push(line);
+        remaining.push(line);
+    }
+    return { text: hasBriefingContent(kept) ? buildReferenceContext(kept) : '', taskLines: tasks, tailLines: [...tailLines], remainingLines: remaining };
+}
 const PROJECT_ID_HASH_SUFFIX = /~[0-9a-f]{32}$/;
 export function projectLabel(projectId) {
     const label = projectId.replace(PROJECT_ID_HASH_SUFFIX, '');
@@ -353,5 +427,5 @@ export function jsonStringLiteral(value) {
     return JSON.stringify(String(value)).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029');
 }
 export function stripControlChars(s) {
-    return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]+/g, ' ');
+    return s.replace(/[\x00-\x08\x0b\x0c\x0e-\x1f\x7f-\x9f\u061c\u200b\u200e\u200f\u202a-\u202e\u2060-\u2064\u2066-\u2069\ufeff]+/g, ' ');
 }

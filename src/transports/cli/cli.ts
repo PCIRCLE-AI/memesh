@@ -6,16 +6,21 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import {
-  openDatabase, closeDatabase, getDatabase, reindexFts,
+  openDatabase, closeDatabase, getDatabase, reindexFts, explainReadOnlyRefusal, failureMessage,
 } from '../../db.js';
-import type { MemeshDatabase } from '../../storage/sqlite.js';
+import { isUnsupportedNode, nodeProblem, type MemeshDatabase } from '../../storage/sqlite.js';
+import { DatabaseReplacementOutcomeError, repairDatabase } from '../../core/database-repair.js';
+import { copyDatabaseBefore } from '../../core/db-copy.js';
+import { repairCommand } from '../../core/database-diagnosis.js';
 import { remember, recallForAgent, forget, exportMemories, importMemories, learn, setPinned } from '../../core/operations.js';
 import { agentRecallEnvelope } from '../../core/recall-agent-view.js';
-import { readConfig, updateConfig } from '../../core/config.js';
+import { getConfigDir, readConfig, updateConfig } from '../../core/config.js';
 import { SESSION_LIMIT_MIN, SESSION_LIMIT_MAX, resolveSessionLimit } from '../../core/session-limit.js';
 import { updateNoticeForEntryPoint } from '../../core/update-entrypoint.js';
 import { removeRetiredConfigKeys, pluginHostFromDoctorCheck, refreshPluginCache } from '../../core/doctor-fixes.js';
-import { getAgentRouterSocketPath, getDbPath, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
+import { findPackageRoot } from '../../core/package-root.js';
+import { isOnPath } from '../../core/host-presence.js';
+import { getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, homeDir, redactSecrets, redactUserPaths } from '../../core/paths.js';
 import { agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection } from '../../core/agent-scope-id.js';
 import { NAMESPACES } from '../../core/types.js';
 import { deriveNote, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from '../../core/note-derive.js';
@@ -24,31 +29,33 @@ import { ingestNoteDirectory, summarizeNoteIngest } from '../../core/note-ingest
 import { assembleBriefing, readBriefingIndex } from '../../core/briefing.js';
 import { BRIEFING_LEVELS, resolveBriefingLevel } from '../../core/briefing-level.js';
 import { DECISION_TYPES, buildReferenceContext, projectLabel } from '../../core/work-topology.js';
-import { captureChatSession } from '../../core/session-insight.js';
-import { captureChatTurn } from '../../core/turn-signal.js';
+import { captureChatTurn } from '../../core/chat-turn.js';
 import {
   DELEGATION_VERDICTS, DelegationInputError, ENVELOPE_MAX_BYTES, recordDelegation, setDelegationVerdict,
 } from '../../core/delegation.js';
-import { inspectHosts, allWired, type SetupSeams, type HostStatus } from '../../core/setup.js';
+import { inspectHosts, setupVerdict, type SetupSeams, type HostStatus } from '../../core/setup.js';
 import { installHooks } from '../../core/install-hooks.js';
+import { formatJourney, refreshExistingJourneyRecord, runInstallJourney, runPostInstallJourney } from '../../core/doctor-journey.js';
 import { getTaskState, setTaskState, TaskStateUnreadableError } from '../../core/task-state-store.js';
 import { TASK_STATE_FIELDS, taskStateLines, type TaskStateField } from '../../core/task-state.js';
 import type { LessonSeverity, MergeStrategy, ExportResult } from '../../core/types.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../../core/agent-messaging.js';
-import { executeAgentMessageAction } from '../agent-messaging.js';
+import { executeConversationMessageAction } from '../conversation-messaging.js';
+import { ConversationMessages, renderConversationMessage } from '../../core/conversation-messages.js';
 import { hostSessionFromEnv } from '../../core/host-session.js';
-import {
-  getAgentMessageStorageReport,
-  normalizeAgentMessageCutoff,
-  pruneTerminalAgentMessagePayloads,
-} from '../../core/agent-message-storage.js';
-import {
-  assertSecureLocalHostRuntimeSupported,
-  ensureRouterTokenFile,
-} from '../../host-runtime/config.js';
+import { exportSigningKey, signExport, verifyExport } from '../../core/export-signature.js';
 import { pluginHostConfigRoot, versionedPluginCacheRoots } from '../../core/install-channel.js';
-import { shellQuote } from '../../core/file-mode.js';
+import { belongsToAnotherUser, databaseFiles, isWritable, shellQuote } from '../../core/file-mode.js';
+import { registerNetworkCommand } from '../../network/command.js';
+import { bootstrapNetworkBridge } from '../../network/auto-start.js';
 import { ZodError } from 'zod';
+
+/** What the kg previews print when the database cannot be opened read-only. */
+function readOnlyOpenFailure(err: unknown): string {
+  const message = err instanceof Error ? err.message : String(err);
+  return isUnsupportedNode(err)
+    ? `Error: ${message}`
+    : `Error: memesh cannot open its database read-only (${message}). Run \`memesh doctor\`.`;
+}
 
 // DX: every CLI command that touches the DB used to repeat
 //   openDatabase(); try { ...body... } finally { closeDatabase(); }
@@ -62,11 +69,17 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   // and says what to do about it; it was simply the only command that did.
   //
   // Only the OPEN is wrapped. A throw from `fn` is the command's own
-  // business and keeps its own reporting.
+  // business and keeps its own reporting (see `failureMessage` for a write refused
+  // because the folder is read-only).
   try {
     openDatabase();
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    // A Node below the floor is not a database problem; one sentence, no doctor hint.
+    if (isUnsupportedNode(err)) {
+      console.error(`Error: ${message}`);
+      process.exit(1);
+    }
     console.error(`Error: memesh cannot open its database.`);
     console.error(`       ${message}`);
     console.error(`       Run \`memesh doctor\` — it names the file, the likely cause and the way back.`);
@@ -79,9 +92,74 @@ async function withDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
   }
 }
 
+/**
+ * The `memesh remember` command that stores a first memory IN `project`.
+ * `--tags project:<id>` is what files a memory under a project; without it
+ * the memory belongs to no project and shows up in every project's briefing.
+ * Literal values, no `<placeholders>`: a shell reads `<name>` as a redirect, so
+ * the line must run as printed.
+ */
+function firstMemoryCommand(project: string): string {
+  const tag = `project:${project}`;
+  const word = /^[\w.~:@%+=,/-]+$/.test(tag) ? tag : shellQuote(tag);
+  return `memesh remember --name first-memory --type note --obs "what to remember" --tags ${word}`;
+}
+
+/**
+ * `withDatabase` for a command that only READS. With no database file yet it
+ * answers from an empty in-memory database, so asking a question does not
+ * create `knowledge-graph.db` and needs no scratch folder to do it. Same
+ * answer as an empty database. It does not leave the memesh folder untouched:
+ * the CLI's update check (the preAction step) still leaves its lock files there
+ * (npm's own logs go under ~/.npm).
+ */
+async function withReadOnlyDatabase<T>(fn: () => T | Promise<T>): Promise<T> {
+  if (fs.existsSync(getDbPath())) return withDatabase(fn);
+  openDatabase(':memory:');
+  try {
+    return await fn();
+  } finally {
+    closeDatabase();
+  }
+}
+
+/**
+ * Every path a memory write would need and cannot have: the folder that holds (or would hold) the database, then the
+ * database file and its -wal/-shm where they exist (a read-only open can itself leave the last two behind, owner-only
+ * and read-only, so they have to be on the list or the fix printed for the others makes things worse). A read-only
+ * briefing still works there, but `memesh remember` would fail, so nothing may tell the user to run it.
+ */
+function unwritableMemoryTargets(dbPath: string): string[] {
+  const found: string[] = [];
+  try {
+    const [real, wal, shm] = databaseFiles(dbPath);
+    let dir = path.dirname(real);
+    while (!fs.existsSync(dir) && path.dirname(dir) !== dir) dir = path.dirname(dir);
+    for (const target of [dir, ...[real, wal, shm].filter((file) => fs.existsSync(file))]) {
+      if (!isWritable(target)) found.push(target);
+    }
+  } catch {
+    // The probe itself failed: say nothing rather than guess.
+  }
+  return found;
+}
+
+/** What the empty briefing says instead of "how to add the first memory" when memories cannot be saved. */
+function cannotSaveMemoriesSentence(targets: string[]): string {
+  const yours: string[] = [];
+  const others: string[] = [];
+  for (const target of targets) {
+    try { (belongsToAnotherUser(fs.statSync(target)) ? others : yours).push(target); } catch { yours.push(target); }
+  }
+  let fix = 'Run `memesh doctor` to see the rest.';
+  if (yours.length > 0) fix += ` To make ${yours.length > 1 ? 'them' : 'it'} writable: chmod u+w ${yours.map(shellQuote).join(' ')}`;
+  if (others.length > 0) fix += ` ${others.join(', ')} ${others.length > 1 ? 'belong' : 'belongs'} to another user, so point MEMESH_DB_PATH at a database in a folder you own.`;
+  return `MeMesh cannot write to ${targets.join(', ')}, so memories cannot be saved. ${fix}`;
+}
+
 /** A refused write is one line (or `{"error"}` with --json) and exit 1, never a stack trace. */
 function printRefusal(err: unknown, json: boolean | undefined): void {
-  const error = err instanceof Error ? err.message : String(err);
+  const error = failureMessage(err);
   if (json) console.log(JSON.stringify({ error }));
   else console.error(`Error: ${error}`);
   process.exitCode = 1;
@@ -247,29 +325,6 @@ export function isPromptAbort(err: unknown): boolean {
   return err instanceof Error && err.name === 'AbortError';
 }
 
-/**
- * True when `tool` resolves to an executable on the current PATH — the same
- * question the upgrade script's `command -v` checks ask, answered up front so
- * a missing prerequisite is one plain sentence before anything runs, not a
- * mid-run death. Windows executables carry a PATHEXT extension (`npm.cmd`,
- * not `npm`), so each extension is tried there.
- */
-function isOnPath(tool: string): boolean {
-  const exts = process.platform === 'win32'
-    ? (process.env.PATHEXT ?? '.EXE;.CMD;.BAT;.COM').split(';').filter(Boolean)
-    : [''];
-  for (const dir of (process.env.PATH ?? '').split(path.delimiter)) {
-    if (!dir) continue;
-    for (const ext of exts) {
-      try {
-        fs.accessSync(path.join(dir, tool + ext), fs.constants.X_OK);
-        return true;
-      } catch { /* not in this dir — keep looking */ }
-    }
-  }
-  return false;
-}
-
 /** Write a host config once, without a check-then-create race. */
 export function createHostConfigAtomically(
   host: string,
@@ -310,11 +365,8 @@ function wireUserHooks(): string {
 
 // One list, in core. The CLI's private copy was the fourth.
 
-const packageJsonPath = path.resolve(
-  path.dirname(fileURLToPath(import.meta.url)),
-  '../../../package.json'
-);
-const packageRoot = path.dirname(packageJsonPath);
+const packageRoot = findPackageRoot(import.meta.url);
+const packageJsonPath = path.join(packageRoot, 'package.json');
 const pkg = JSON.parse(fs.readFileSync(packageJsonPath, 'utf8'));
 
 /** How human-readable `recall` says the size cap (#494) left results out. */
@@ -331,11 +383,11 @@ program
 
 // First-use update notice at the terminal (#308: any door). One stderr line,
 // once a day per installed version, from the same resolver the hooks use —
-// so a snooze or "never ask again" given in a session also silences the CLI.
-// stderr, never stdout: commands that print JSON stay parseable. Commands
-// that ARE about updates or setup speak for themselves and are skipped.
+// so turning updates off (`updateCheck` false) also silences the CLI.
+// stderr, never stdout: commands that print JSON stay parseable. Update and
+// setup commands already provide their own status and are skipped.
 const UPDATE_NOTICE_SILENT_COMMANDS = new Set([
-  'status', 'update', 'doctor', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
+  'status', 'update', 'doctor', 'repair', 'config', 'upgrade-plugin', 'serve', 'setup', 'install-hooks', 'uninstall-hooks',
   // Called by the Hermes plugin, not typed by a person: nobody reads its stderr.
   'hermes',
 ]);
@@ -350,6 +402,32 @@ program.hook('preAction', (_thisCommand, actionCommand) => {
   const line = updateNoticeForEntryPoint({ currentVersion: pkg.version, entryPoint: 'cli' });
   if (line) process.stderr.write(`${line}\n`);
 });
+
+// Repair bypasses withDatabase: opening a damaged file for normal writes comes too early.
+program.command('repair')
+  .description('Preserve the original, salvage readable memories and validate before replacement')
+  .option('--database <path>', 'Database to repair', getDbPath())
+  .option('--from-backup [path]', 'Use a verified memory backup (newest usable one when omitted)')
+  .action(async (opts) => {
+    try {
+      closeDatabase();
+      const result = await repairDatabase(opts.database, { fromBackup: opts.fromBackup });
+      if (result.status === 'healthy') { console.log('The database is healthy; nothing was changed.'); return; }
+      console.log(result.method === 'built-in'
+        ? `Repaired. Used MeMesh built-in salvage because system sqlite3 recovery did not succeed: ${result.reason}`
+        : `Repaired using ${result.method === 'backup' ? 'a verified memory backup' : 'system sqlite3 recovery'}.`);
+      console.log(`Recovered: ${result.tables?.filter((table) => ['entities','observations','relations','tags'].includes(table.name)).map((table) => `${table.name} ${table.copied}`).join(', ')}.`);
+      const incomplete = result.tables?.filter((table) => !table.complete).map((table) => table.name);
+      if (incomplete?.length) console.log(`Not fully readable (damaged pages were skipped): ${incomplete.join(', ')}.`);
+      console.log(`Damaged copy retained at ${result.damagedCopy} (with its journal files).`);
+      if (result.backup) console.log(`Newest usable backup: ${result.backup.file} (${result.backup.at}, ${result.backup.memories} memories). To use it: ${repairCommand(opts.database, result.backup.file)}`);
+      console.log('Restart every AI tool that was open during the repair.');
+    } catch (error) {
+      console.error(error instanceof DatabaseReplacementOutcomeError
+        ? cliErrorText(error) : `Repair stopped: ${cliErrorText(error)}`);
+      process.exitCode = 1;
+    }
+  });
 
 // --- remember ---
 // Two forms:
@@ -367,13 +445,15 @@ program
   .argument('[text]', 'Quick-capture text — title, observations and name are derived from it (type defaults to note)')
   .description('Store knowledge as an entity (use flags for explicit form, or positional text for quick capture)')
   .option('--name <name>', 'Entity name')
-  .option('--type <type>', 'Entity type (omit it with --replace to keep the type the memory already has)')
+  .option('--type <type>', 'Entity type (required for a new name; omit to keep an existing memory’s type)')
   .option('--title <title>', 'Short human-readable label shown as the headline (name stays the stable machine key)')
   .option('--obs <observations...>', 'Observations (space-separated)')
-  .option('--why <text>', 'For a decision: why it was made and what would make it stop holding (stored as "Why: …"; required to create a decision)')
+  .option('--why <text>', 'For a decision: why it was made and what would make it stop holding (stored as "Why: …"; optional)')
   .option('--tags <tags...>', 'Tags (space-separated)')
   .option('--replace', 'Rewrite the memory named by --name instead of appending; its previous version is kept in metadata.replaced_history')
   .option('--namespace <namespace>', 'Namespace: personal, team, or global. On a NEW memory this places it (default personal); on one that already exists it MOVES it out of the scope it is in — omit the flag to leave it alone.')
+  .option('--project <name>', 'Project to file the memory under (default: the current directory’s project, the same default as learn)')
+  .option('--no-project', 'Store the memory with no project')
   // The two relation types that DO something. MCP and HTTP callers could state
   // them through `relations`; the CLI had no way to state any relation at all,
   // so `contradicts` — the thing every recall checks for — was unreachable from
@@ -431,12 +511,9 @@ program
       if (!opts.obs || opts.obs.length === 0) opts.obs = [String(text)];
       else opts.obs = [...opts.obs, String(text)];
     }
-    // `--replace` with a `--name` inherits the stored type (#333 T4), so it is
-    // a complete call without `--type`. This check runs BEFORE the
-    // RememberSchema.safeParse below and is the CLI's own copy of the rule —
-    // relaxing only the schema would have left the terminal rejecting the
-    // documented correction call while MCP and HTTP accepted it.
-    if (note === undefined && (!opts.name || (!opts.type && opts.replace !== true))) {
+    // Existing named memories inherit their type for append and replace.
+    // The guarded writer requires an explicit type when the name is new.
+    if (note === undefined && !opts.name) {
       console.error(
         'Error: provide --name and --type, OR --name with --replace to correct a memory that exists, OR pass quick-capture text as a positional arg.\n' +
         '  memesh remember --name "auth" --type "decision" --obs "Use OAuth 2.0" --why "the IdP only speaks OAuth; revisit if we self-host auth"\n' +
@@ -493,13 +570,26 @@ program
       }
     }
 
+    const explicitProject = requireProjectFlag(typeof opts.project === 'string' ? opts.project : undefined);
+    const tagNamesProject = opts.tags?.some((tag: string) => tag.startsWith('project:') && tag.slice('project:'.length).trim() !== '') === true;
+    const projectDeclaration: string | null | undefined = opts.project === false
+      ? null
+      : explicitProject ?? (tagNamesProject ? undefined : getProjectName());
     await withDatabase(async () => {
       let result;
       try {
         result = remember({
           name: opts.name,
           type: opts.type,
+          projectIsDefault: typeof opts.project !== 'string' && opts.project !== false && !tagNamesProject,
           tags: opts.tags,
+          // The project this write declares: `--no-project` (false) is none,
+          // `--project` is that one, and with neither it is this directory's
+          // project (what learn defaults to) unless a `project:` tag already
+          // names one — the tag decides then, as it does for MCP.
+          ...(projectDeclaration === undefined ? {} : { project: projectDeclaration }),
+          // This directory's checkout may have stored the memory under an earlier id.
+          ...(typeof projectDeclaration === 'string' ? { projectIds: getProjectIds() } : {}),
           // #511: this directory's project, resolved only when a project tag needs it.
           ...(opts.tags?.some((tag: string) => tag.startsWith('project:')) ? { currentProject: getProjectName() } : {}),
           namespace: opts.namespace,
@@ -515,13 +605,17 @@ program
       } catch (err) {
         // remember() refuses an unusable note (e.g. only control characters)
         // with one sentence; a stack trace would bury it.
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        const message = failureMessage(err);
+        console.error(`Error: ${message}`);
         process.exit(1);
       }
       if (opts.json) {
         console.log(JSON.stringify(result));
       } else {
         console.log(`✅ Stored "${result.name}" (${result.observations} observations, ${result.tags} tags)`);
+        if (typeof projectDeclaration === 'string' && opts.project === undefined) {
+          console.log(`   filed under project ${projectDeclaration}; use --no-project to store it without one`);
+        }
         if (result.retagged) console.log(`   tag ${result.retagged.from} names this project; stored as ${result.retagged.to}`);
         // The derived shape, so a wrong title is fixable in one more call.
         if (result.derived) {
@@ -601,7 +695,7 @@ program
       // recallForAgent: recall + conflicts + the agent-facing size cap (#494); see its docstring.
       const result = await recallForAgent({
         ...input,
-        ...(ids !== undefined ? { projectScope: `project:${getProjectName()}` } : {}),
+        ...(ids !== undefined ? { projectScope: getProjectIds().map(id => `project:${id}`) } : {}),
       });
       const { entities, conflicts, retrieval, entities_omitted } = result;
 
@@ -695,7 +789,7 @@ program
 // --- forget ---
 program
   .command('forget')
-  .description('Archive an entity or remove an observation (soft-delete, recoverable)')
+  .description('Archive an entity (reversible) or permanently remove one observation')
   .requiredOption('--name <name>', 'Entity name')
   .option('--observation <text>', 'Remove specific observation only', nonEmpty('--observation'))
   .option('--json', 'Output as JSON')
@@ -712,6 +806,8 @@ program
         result = forget({
           name: opts.name,
           observation: opts.observation,
+          project: getProjectName(),
+          projectIds: getProjectIds(),
         });
       } catch (err) {
         // A refusal (the selector only matches a redacted line, #523) is one
@@ -798,7 +894,16 @@ program
         namespace: opts.namespace,
         limit: opts.limit,
       });
-      const json = JSON.stringify(result, null, 2);
+      // Signed with a secret that stays in this folder, so `import` here can
+      // tell this file from one that came from elsewhere. Without a usable
+      // secret the file is still a valid backup; it just imports as untrusted.
+      let signed: Record<string, unknown> = result as unknown as Record<string, unknown>;
+      try {
+        signed = { ...signed, signature: signExport(signed, exportSigningKey(getMemeshDirFromDbPath(), { create: true })) };
+      } catch (err) {
+        process.stderr.write(`Note: this file is not signed (${err instanceof Error ? err.message : String(err)}), so importing it here marks every memory untrusted.\n`);
+      }
+      const json = JSON.stringify(signed, null, 2);
       if (opts.out) {
         // Check the parent directory first. "ENOENT surfaces through commander
         // with the path in the message" was the intent; what reached the user
@@ -837,11 +942,11 @@ program
   .argument('[file]', 'Path to JSON export file')
   .option('--namespace <ns>', 'Override namespace for all imported entities')
   .option('--merge <strategy>', 'Merge strategy: skip | overwrite | append', 'skip')
-  .option('--restore-archived', 'Requires --merge append or overwrite (an error with skip, the default): bring back a local memory you archived (forgot) when the file names it. Without this it stays archived and untouched.')
+  .option('--restore-archived', 'Bring back a local memory you archived (forgot) when the file names it; without this it stays archived. With the default --merge skip it only makes the memory active again and replaces nothing.')
   .option('--notes <dir>', 'Ingest every frontmatter note file (*.md with name/description/metadata.type) under <dir>: one memory per file, tagged source:note-file; a changed file replaces its memory, a vanished one is tagged source:note-file:missing. Read-only on the directory.')
   .option('--project <name>', 'With --notes: the project tag for ingested memories (default: the current directory\'s project)')
   .option('--json', 'With --notes: output the ingestion result as JSON')
-  .option('--trust', 'For restoring your OWN backup only: also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for a file you did not produce yourself.')
+  .option('--trust', 'For restoring your OWN backup (or, with --notes, a folder of notes you wrote): also mark every imported memory trusted, so it is injected into new sessions like your own. Behind a confirmation (or --yes). Not for anything you did not produce yourself.')
   .option('--yes', 'With --trust: skip the confirmation prompt')
   .action(async (file, opts, cmd: Command) => {
     if (opts.notes !== undefined) {
@@ -852,16 +957,42 @@ program
       // Both flags mean something for a JSON bundle and nothing here; taking
       // them silently would let a user believe notes went into "team", or
       // were merged some other way.
-      const ignored = ['namespace', 'merge', 'restoreArchived', 'trust', 'yes'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
+      const ignored = ['namespace', 'merge', 'restoreArchived'].filter((k) => cmd.getOptionValueSource(k) === 'cli');
       if (ignored.length > 0) {
         console.error(`Error: --notes does not take ${ignored.map((k) => `--${k.replace(/[A-Z]/g, (c) => `-${c.toLowerCase()}`)}`).join(' or ')}. Note files always go to the personal namespace and a changed file replaces its memory.`);
         process.exit(1);
       }
+      if (opts.yes && !opts.trust) {
+        console.error('Error: --yes only applies with --trust.');
+        process.exit(1);
+      }
       const notesProject = requireProjectFlag(opts.project);
+      // Notes from a folder are untrusted (recall works, nothing is injected
+      // unasked) unless the person says the folder is their own.
+      if (opts.trust && !opts.yes) {
+        if (!process.stdin.isTTY) {
+          console.error(`Not a terminal and --yes not given — nothing was changed. Re-run with: memesh import --notes ${shellQuoteIfNeeded(String(opts.notes))} --trust --yes`);
+          process.exit(1);
+        }
+        const { createInterface } = await import('node:readline/promises');
+        const rl = createInterface({ input: process.stdin, output: process.stdout });
+        let answer = '';
+        try {
+          answer = (await rl.question(`Trust the notes in ${opts.notes}? Their memories will be injected into new sessions like your own. Only do this for a folder you wrote yourself. [y/N] `)).trim().toLowerCase();
+        } catch (err) {
+          if (!isPromptAbort(err)) throw err;
+        } finally {
+          rl.close();
+        }
+        if (answer !== 'y' && answer !== 'yes') {
+          console.log('Not trusted — nothing was written.');
+          process.exit(1);
+        }
+      }
       await withDatabase(() => {
         let result;
         try {
-          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName() });
+          result = ingestNoteDirectory({ dir: String(opts.notes), project: notesProject ?? getProjectName(), trusted: opts.trust === true });
         } catch (err) {
           const code = (err as NodeJS.ErrnoException)?.code;
           console.error(code === 'ENOENT'
@@ -883,6 +1014,7 @@ program
         }
         if (allRefused) console.error(`Error: every note file found was refused; nothing was imported.`);
         console.log(`Notes: ${summarizeNoteIngest(result)} (${result.discovered} note files found)`);
+        if (!opts.trust && (result.created.length + result.replaced.length) > 0) console.log('  stored as untrusted — recall works, auto-injection does not. Add --trust for a folder you wrote yourself.');
         for (const s of result.skipped) console.error(`  skipped ${s.path}: ${s.reason}`);
         if (result.markedMissing.length) console.log(`  file gone, memory kept and tagged source:note-file:missing: ${result.markedMissing.join(', ')}`);
         if (result.more) console.log(`  ${result.more} more file(s) past the per-run cap — run the command again to continue`);
@@ -943,6 +1075,14 @@ program
         process.exit(1);
       }
 
+      // A file this folder signed and nobody changed is the user's own backup.
+      let signature: ReturnType<typeof verifyExport> = 'absent';
+      try {
+        signature = verifyExport(data, exportSigningKey(getMemeshDirFromDbPath(), { create: false }));
+      } catch {
+        // No secret in this folder (or an unsupported platform): nothing can verify, so the file stays untrusted.
+      }
+
       // `--trust` is for restoring your OWN backup, so it is confirmed before
       // anything is written — after every check above that can fail (file,
       // JSON, --merge, --namespace) has already passed.
@@ -990,13 +1130,13 @@ program
           namespace: opts.namespace,
           merge_strategy: opts.merge as MergeStrategy,
           restore_archived: opts.restoreArchived === true,
-        }, { trust: opts.trust === true });
+        }, { trust: opts.trust === true, ownBackup: signature === 'valid' });
       } catch (err) {
         // importMemories refuses a bundle it cannot read, and says why in one
         // sentence. Uncaught, that sentence arrived on top of a ten-frame Node
         // dump with the absolute install path — the same treatment the JSON
         // and ENOENT cases above already get.
-        console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+        console.error(`Error: ${failureMessage(err)}`);
         process.exit(1);
       }
       // `imported` alone did not say whether it REPLACED something already
@@ -1006,6 +1146,10 @@ program
       // had happened from the output.
       const overwriteNote = result.overwritten > 0 ? ` (${result.overwritten} overwritten)` : '';
       console.log(`Imported: ${result.imported}${overwriteNote}, Skipped: ${result.skipped}, Appended: ${result.appended}`);
+      if (result.skipped > 0) {
+        console.log(`Skipped: ${memories(result.skipped)} already here, left as they are.`);
+      }
+      const untrusted = result.imported - result.trusted;
       if (opts.trust) {
         // Everything else about this run (skipped, kept archived, appended)
         // is already on the lines above — this adds only what THOSE lines
@@ -1015,11 +1159,16 @@ program
         if (result.appended > 0) line += ` ${memories(result.appended)} appended kept their own trust.`;
         console.log(line);
       } else {
+        if (signature === 'valid' && result.imported > 0) {
+          console.log(`Verified: this file was exported from this MeMesh folder and has not been changed, so memories that were trusted when exported are trusted again. Trusted: ${result.trusted}.`);
+        } else if (signature === 'invalid') {
+          console.log('This file\'s signature does not match this MeMesh folder: it came from elsewhere or was changed, so it is treated as an outside file.');
+        }
         // A plain `append` demotes an existing TRUSTED local memory to
         // untrusted too (unrelated to `--trust`, true since before #407) —
         // split so that clause never gets folded into "imported".
-        if (result.imported > 0) {
-          let line = `${memories(result.imported)} imported as untrusted — recall works, auto-injection does not.`;
+        if (untrusted > 0) {
+          let line = `${memories(untrusted)} imported as untrusted — recall works, auto-injection does not.`;
           // `--merge overwrite` REPLACES an existing entity's observations —
           // safe only for a row this run just created or overwrote from
           // nothing, where the file's content and the local content are
@@ -1028,7 +1177,9 @@ program
           // had. Suggesting the same command for those would offer to
           // destroy data it never touched, in the name of trusting it.
           const wouldAlsoReplace = result.skipped + result.appended;
-          if (wouldAlsoReplace === 0) {
+          if (signature === 'valid') {
+            line += ' They were untrusted when exported, so they stay that way.';
+          } else if (wouldAlsoReplace === 0) {
             line += ` If this file is your own backup, run: memesh import ${shellQuoteIfNeeded(file)}${describeImportFlags(cmd, opts, 'overwrite')} --trust`;
           } else {
             line += ` (--trust --merge overwrite not suggested: it would also replace ${memories(wouldAlsoReplace)} already here.)`;
@@ -1039,10 +1190,16 @@ program
           console.log(`Marked untrusted because this file added text to them: ${memories(result.appended)} you already had.`);
         }
       }
+      if (result.restored > 0) {
+        console.log(`Restored: ${memories(result.restored)} you archived (forgot), active again.`);
+      }
       // Said on stdout, with the way back: the entities are unchanged, so
       // nothing else in the output would tell the user the file named them.
+      // Only this memory is brought back; nothing already here is replaced.
       if (result.kept_archived > 0) {
-        console.log(`Kept archived: ${result.kept_archived} (you archived these; the file names them, so they were left untouched). Add --restore-archived to bring them back.`);
+        const merge = cmd.getOptionValueSource('merge') === 'cli' ? ` --merge ${opts.merge}` : '';
+        const namespace = cmd.getOptionValueSource('namespace') === 'cli' ? ` --namespace ${opts.namespace}` : '';
+        console.log(`Kept archived: ${memories(result.kept_archived)} you archived (forgot), left alone. To restore, run: memesh import ${shellQuoteIfNeeded(file)}${merge}${namespace} --restore-archived`);
       }
       // Named, not merely counted, and on stderr — a relation the restore
       // could not rebuild is information the user lost, and the only way to
@@ -1102,62 +1259,6 @@ program
     });
   });
 
-// --- local agent messages ---
-//
-// A host-neutral process boundary for runners that cannot keep an MCP tool
-// call open.  `watch` emits JSONL and returns after one bounded poll batch;
-// the host owns restart/retry with the returned opaque cursor.  No subcommand
-// executes payload content, and read commands never write an ACK.
-const messageCmd = program
-  .command('message')
-  .description('Send, discover, wait for, fetch, and explicitly receipt local agent messages');
-
-function parseCliMessagePayload(raw: string, contentType: string): unknown {
-  if (contentType !== 'application/json') return raw;
-  try {
-    return JSON.parse(raw) as unknown;
-  } catch {
-    throw new Error('stdin must contain valid JSON when --content-type is application/json.');
-  }
-}
-
-function boundedCliDeclaration(value: string, option: string, maxCharacters: number): string {
-  const normalized = value.trim();
-  if (normalized.length === 0 || normalized.length > maxCharacters) {
-    throw new Error(`${option} must be a non-empty string of at most ${maxCharacters} characters.`);
-  }
-  return normalized;
-}
-
-/** `input` is stdin; a parameter only so a test can choose where the chunks end. */
-export async function readCliMessagePayloadFromStdin(
-  contentType: string,
-  input: AsyncIterable<string | Uint8Array> = process.stdin,
-): Promise<unknown> {
-  // Bytes are joined first and decoded once: a chunk boundary can fall inside a
-  // multi-byte character, and decoding each chunk alone would turn it into U+FFFD.
-  const chunks: Buffer[] = [];
-  let bytes = 0;
-  for await (const chunk of input) {
-    const buffer = typeof chunk === 'string' ? Buffer.from(chunk, 'utf8') : Buffer.from(chunk);
-    bytes += buffer.length;
-    if (bytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-      throw new Error(`stdin payload exceeds ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes.`);
-    }
-    chunks.push(buffer);
-  }
-  if (bytes === 0) {
-    throw new Error('stdin payload is empty.');
-  }
-  const raw = Buffer.concat(chunks).toString('utf8');
-  const payload = parseCliMessagePayload(raw, contentType);
-  const encodedBytes = Buffer.byteLength(JSON.stringify(payload), 'utf8');
-  if (encodedBytes > AGENT_MESSAGE_JSON_MAX_BYTES) {
-    throw new Error(`payload must be at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes when encoded as JSON.`);
-  }
-  return payload;
-}
-
 function cliErrorText(error: unknown): string {
   if (error instanceof ZodError) {
     return error.issues.map(issue => `${issue.path.length ? `${issue.path.join('.')}: ` : ''}${issue.message}`).join('; ');
@@ -1165,384 +1266,103 @@ function cliErrorText(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-async function runCliMessage(input: unknown): Promise<void> {
-  await withDatabase(async () => {
+// --- local agent messages ---
+//
+// Conversation messages use messages.db, not the knowledge graph.
+const conversationMessageCmd = program
+  .command("message")
+  .description("Send, discover, read, and audit local conversation messages");
+
+export async function readConversationMessageBodyFromStdin(
+  input: AsyncIterable<string | Uint8Array> = process.stdin,
+): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of input) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk, "utf8") : Buffer.from(chunk));
+  }
+  return Buffer.concat(chunks).toString("utf8");
+}
+
+function conversationSession(action: "send" | "read"): string {
+  const session = hostSessionFromEnv();
+  if (!session) throw new Error(`Cannot ${action} a conversation message without a host session identity.`);
+  return session;
+}
+
+async function runConversationMessageAction(input: unknown, context: { session?: string; owner?: boolean } = {}, json = true): Promise<void> {
+  try {
+    const result = await executeConversationMessageAction(input, context);
+    if (json) console.log(JSON.stringify(result));
+    else console.dir(result, { depth: null, maxArrayLength: null, maxStringLength: null, colors: Boolean(process.stdout.isTTY) });
+  } catch (error) {
+    console.error(`Error: ${cliErrorText(error)}`);
+    process.exitCode = 1;
+  }
+}
+
+conversationMessageCmd
+  .command("discover")
+  .description("Discover local registered conversations")
+  .action(() => runConversationMessageAction({ action: "discover" }, { session: hostSessionFromEnv() }));
+
+conversationMessageCmd
+  .command("send")
+  .description("Send one conversation message; body is read from stdin, never argv")
+  .requiredOption("--recipient <id>", "Registered recipient conversation ID")
+  .requiredOption("--kind <kind>", "task | question | review_request | result")
+  .requiredOption("--payload-stdin", "Read message body from stdin, never argv")
+  .option("--reply-to <message-id>", "Message ID this replies to")
+  .action(async (opts) => {
     try {
-      const result = await executeAgentMessageAction(getDatabase(), input, {
-        transport: 'cli',
-        sourceHost: 'cli',
-        hostSession: hostSessionFromEnv(),
-      });
-      console.log(JSON.stringify(result));
+      await runConversationMessageAction({
+        action: "send", recipient: opts.recipient, kind: opts.kind,
+        body: await readConversationMessageBodyFromStdin(), reply_to: opts.replyTo,
+      }, { session: conversationSession("send") });
     } catch (error) {
       console.error(`Error: ${cliErrorText(error)}`);
       process.exitCode = 1;
     }
   });
-}
 
-function isAgentPollResult(value: unknown): value is { events: unknown[]; next_cursor: string } {
-  if (typeof value !== 'object' || value === null) return false;
-  const candidate = value as Record<string, unknown>;
-  return Array.isArray(candidate.events) && typeof candidate.next_cursor === 'string';
-}
-
-messageCmd
-  .command('discover')
-  .description('Discover active leased agents in one project without sending or acknowledging messages')
-  .requiredOption('--project <name>', 'Project scope')
-  .option('--limit <n>', 'Maximum live agents, 1-100', wholeNumber('--limit'), 50)
-  .action((opts) => runCliMessage({
-    action: 'discover', project: opts.project, limit: opts.limit,
-  }));
-
-messageCmd
-  .command('send')
-  .description(`Durably send one exact-recipient message (payload 64 KiB; complete native envelope 16 KiB; idempotent)`)
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--sender <id>', 'Stable sender agent/host ID')
-  .option('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--recipient-handle <handle>', 'Discover handle for a registered session')
-  .option('--target-kind <kind>', 'principal | session')
-  .option('--intended-session <id>', 'Principal target only: the one session of that principal this message is meant for')
-  .option('--fallback-to-principal', 'Session target only: if that session refuses it, send it to its principal, meant for that session')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption(
-    '--payload-stdin',
-    `Read untrusted text or JSON from stdin, never argv (stdin read cap ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes; JSON-encoded durable payload cap ${AGENT_MESSAGE_JSON_MAX_BYTES}; exact-session complete native envelope cap ${AGENT_NATIVE_MESSAGE_MAX_BYTES})`,
-  )
-  .option('--content-type <type>', 'text/plain | application/json', 'text/plain')
-  .option('--privacy <scope>', 'private | team', 'private')
-  .option('--correlation-id <id>', 'Conversation or task correlation ID')
-  .option('--reply-to <message-id>', 'Message ID this replies to')
+conversationMessageCmd
+  .command("read")
+  .description("Read one message addressed to this host conversation")
+  .requiredOption("--message-id <id>", "Message ID")
   .action(async (opts) => {
-    requireOneOf(opts.contentType, ['text/plain', 'application/json'], '--content-type');
-    requireOneOf(opts.privacy, ['private', 'team'], '--privacy');
-    if (opts.targetKind !== undefined) requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
     try {
-      await runCliMessage({
-        action: 'send',
-        project: opts.project,
-        sender: opts.sender,
-        recipient: opts.recipient,
-        recipient_handle: opts.recipientHandle,
-        target_kind: opts.targetKind,
-        intended_session: opts.intendedSession,
-        fallback_to_principal: opts.fallbackToPrincipal,
-        idempotency_key: opts.idempotencyKey,
-        payload: await readCliMessagePayloadFromStdin(opts.contentType),
-        content_type: opts.contentType,
-        privacy: opts.privacy,
-        correlation_id: opts.correlationId,
-        reply_to: opts.replyTo,
-      });
+      await runConversationMessageAction({ action: "read", message_id: opts.messageId }, { session: conversationSession("read") });
     } catch (error) {
-      console.error(`Error: ${error instanceof Error ? error.message : String(error)}`);
+      console.error(`Error: ${cliErrorText(error)}`);
       process.exitCode = 1;
     }
   });
 
-messageCmd
-  .command('watch')
-  .description('Wait once for an exact-recipient event batch and emit privacy-minimized JSONL')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--cursor <token>', 'Opaque cursor returned by an earlier watch/poll')
-  .option('--wait-ms <ms>', 'Bounded wait, 0-30000 milliseconds', wholeNumber('--wait-ms', 0), 30_000)
-  .option('--limit <n>', 'Maximum events, 1-100', wholeNumber('--limit'), 20)
-  .action(async (opts) => {
-    await withDatabase(async () => {
-      console.log(JSON.stringify({
-        type: 'ready',
-        project: opts.project,
-        recipient: opts.recipient,
-        cursor: opts.cursor ?? null,
-      }));
-      try {
-        const result = await executeAgentMessageAction(getDatabase(), {
-          action: 'poll',
-          project: opts.project,
-          recipient: opts.recipient,
-          cursor: opts.cursor,
-          wait_ms: opts.waitMs,
-          limit: opts.limit,
-        }, {
-          transport: 'cli',
-          sourceHost: 'cli',
-        });
-        if (!isAgentPollResult(result)) {
-          throw new Error('Message watch returned an invalid poll result.');
-        }
-        console.log(JSON.stringify({
-          type: result.events.length > 0 ? 'events' : 'timeout',
-          ...result,
-        }));
-      } catch (error) {
-        console.error(JSON.stringify({
-          type: 'error',
-          error: cliErrorText(error),
-        }));
-        process.exitCode = 1;
-      }
-    });
-  });
-
-messageCmd
-  .command('fetch')
-  .description('Fetch one payload routed to the exact principal or session without acknowledging it')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .option('--target-kind <kind>', 'principal | session', 'principal')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .action((opts) => {
-    requireOneOf(opts.targetKind, ['principal', 'session'], '--target-kind');
-    return runCliMessage({
-      action: 'fetch', project: opts.project, recipient: opts.recipient,
-      target_kind: opts.targetKind, message_id: opts.messageId,
-    });
-  });
-
-messageCmd
-  .command('intake')
-  .description('Record fetched/ingested state without implying ACK')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--state <state>', 'fetched | ingested')
-  .action(async (opts) => {
-    requireOneOf(opts.state, ['fetched', 'ingested'], '--state');
-    await runCliMessage({
-      action: 'intake', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey, intake_state: opts.state,
-    });
-  });
-
-messageCmd
-  .command('ack')
-  .description('Record explicit recipient acknowledgement')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .action((opts) => runCliMessage({
-    action: 'ack', project: opts.project, recipient: opts.recipient,
-    message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-  }));
-
-messageCmd
-  .command('disposition')
-  .description('Record a workflow disposition independently from ACK')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--value <state>', 'accepted | rejected | completed | cancelled | deferred')
-  .option('--detail <text>', 'Optional bounded explanation')
-  .action(async (opts) => {
-    requireOneOf(opts.value, ['accepted', 'rejected', 'completed', 'cancelled', 'deferred'], '--value');
-    await runCliMessage({
-      action: 'disposition', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-      disposition: opts.value, detail: opts.detail,
-    });
-  });
-
-messageCmd
-  .command('activation')
-  .description('Record host activation outcome independently from ACK/disposition')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .requiredOption('--idempotency-key <key>', 'Stable retry key')
-  .requiredOption('--value <state>', 'woken | manual_resume_required | unsupported | failed')
-  .option('--detail <text>', 'Optional bounded explanation')
-  .action(async (opts) => {
-    requireOneOf(opts.value, ['woken', 'manual_resume_required', 'unsupported', 'failed'], '--value');
-    await runCliMessage({
-      action: 'activation', project: opts.project, recipient: opts.recipient,
-      message_id: opts.messageId, idempotency_key: opts.idempotencyKey,
-      activation: opts.value, detail: opts.detail,
-    });
-  });
-
-messageCmd
-  .command('receipts')
-  .description('Read receipt facts for one message routed to the logical recipient')
-  .requiredOption('--project <name>', 'Project scope')
-  .requiredOption('--recipient <id>', 'Stable recipient agent/host ID')
-  .requiredOption('--message-id <id>', 'Message ID')
-  .action((opts) => runCliMessage({
-    action: 'receipts', project: opts.project, recipient: opts.recipient, message_id: opts.messageId,
-  }));
-
-const messageStorageCmd = messageCmd
-  .command('storage')
-  .description('Inspect or bound durable agent-message payload storage without deleting lifecycle audit facts');
-
-messageStorageCmd
-  .command('report')
-  .description('Report logical payload, unresolved protection, reusable pages, and SQLite/WAL size')
-  .requiredOption('--cutoff <iso-time>', 'Terminal workflows strictly older than this ISO timestamp are prunable')
-  .action(async (opts) => {
-    await withDatabase(() => {
-      const report = getAgentMessageStorageReport(getDatabase(), {
-        cutoff: opts.cutoff,
-        databasePath: getDbPath(),
-      });
-      console.log(JSON.stringify({
-        policy: {
-          cutoff: normalizeAgentMessageCutoff(opts.cutoff),
-          quota_bytes: process.env.MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES ?? null,
-          automatic_pruning: false,
-        },
-        ...report,
-      }));
-    });
-  });
-
-messageStorageCmd
-  .command('prune')
-  .description('Dry-run one bounded terminal-payload tombstone batch; --apply performs it')
-  .requiredOption('--cutoff <iso-time>', 'Terminal workflows strictly older than this ISO timestamp are eligible')
-  .option('--batch-size <n>', 'Maximum payloads in this transaction, 1-1000', wholeNumber('--batch-size'), 100)
-  .option('--apply', 'Write hash-bound tombstones; without this flag nothing is changed')
-  .option('--actor <id>', 'Bounded audit actor', 'local-owner-cli')
-  .action(async (opts) => {
-    await withDatabase(() => {
-      const result = pruneTerminalAgentMessagePayloads(getDatabase(), {
-        cutoff: opts.cutoff,
-        databasePath: getDbPath(),
-        batchSize: opts.batchSize,
-        dryRun: !opts.apply,
-        actor: opts.actor,
-      });
-      console.log(JSON.stringify(result));
-    });
-  });
-
-// --- local agent hosts ---
-//
-// This writes reusable owner-private configuration only. Managed hosts create
-// a fresh exact session after their native input boundary is ready. The
-// ordinary Codex path instead binds only the thread ID supplied by its own
-// SessionStart hook. Its explicit config is an optional stable-principal
-// override for one real workspace; plugin sessions auto-register without it.
-const agentCmd = program
-  .command('agent')
-  .description('Set up reusable owner-private local host configuration');
-
-agentCmd
-  .command('setup')
-  .description('Write this host\'s local config (a stable principal identity) for message routing. Required for claude, gemini, and codex (the separately managed app-server runner — also needs `memesh-host-codex` launched afterward); optional only for codex-session, since ordinary Codex plugin sessions auto-register per thread without it. The routing project always comes from the host\'s own working directory (claude) or its --workspace (codex, codex-session, gemini) — no flag decides it. See docs/platforms/agent-messaging.md.')
-  .argument('<host>', 'codex-session | codex | claude | gemini')
-  .option('--project <name>', 'Ignored for routing (#474) — the project always comes from the host\'s own working directory or --workspace. Accepted only so an older script that still passes it does not fail; a given value is still written into the config for reference, never used to route.')
-  .requiredOption('--principal <id>', 'Stable logical recipient ID')
-  .option('--workspace <path>', 'Managed Codex/Gemini workspace', process.cwd())
-  .option('--model <id>', 'Ignored — no host tells MeMesh which model a session runs, so none is declared. Accepted only so an older script that still passes it does not fail; the value is not written.')
-  .option('--work-summary <text>', 'Optional declared current work summary')
-  .option('--json', 'Output machine-readable setup result')
-  .action((host, opts) => {
-    requireOneOf(host, ['codex-session', 'codex', 'claude', 'gemini'], '<host>');
-    assertSecureLocalHostRuntimeSupported();
-    if (opts.model !== undefined) {
-      process.stderr.write('--model is ignored: no host tells MeMesh which model a session runs, so discovery shows none.\n');
-    }
-    const messageDir = path.dirname(getDbPath());
-    const hostsDir = path.join(messageDir, 'hosts');
-    fs.mkdirSync(hostsDir, { recursive: true, mode: 0o700 });
-    const hostsStat = fs.lstatSync(hostsDir);
-    if (!hostsStat.isDirectory() || hostsStat.isSymbolicLink() || (hostsStat.mode & 0o077) !== 0) {
-      throw new Error('The managed host config directory must be a real owner-private directory.');
-    }
-
-    const filename = host === 'gemini' ? 'gemini-acp.json' : `${host}.json`;
-    const configPath = path.join(hostsDir, filename);
-    const routerTokenFile = path.join(messageDir, 'agent-router.token');
-    ensureRouterTokenFile(routerTokenFile);
-    const common = {
-      router_socket: getAgentRouterSocketPath(),
-      token_file: routerTokenFile,
-      // `send` refuses a path-shaped recipient, so a host configured under
-      // one would register a principal that nothing can address: the
-      // failure would surface as an error about the SENDER's argument, hours
-      // later, rather than about this config. Refuse it here, with the same
-      // message, at the moment the config is written.
-      principal_id: requireAgentScopeArg(opts.principal, 'recipient', '--principal'),
-      // #474: --project no longer decides routing for any host (see the
-      // flag's own help text above). Validate and keep it only when
-      // explicitly given, so an older script that still passes it does not
-      // fail, and the written config never claims a project value nobody
-      // asked for.
-      ...(opts.project === undefined ? {} : { project: requireAgentScopeArg(opts.project, 'project', '--project') }),
-      ...(opts.workSummary === undefined ? {} : { work_summary: boundedCliDeclaration(opts.workSummary, '--work-summary', 200) }),
-    };
-    let sessionWorkspace: string | undefined;
-    if (host === 'codex-session') {
-      try {
-        sessionWorkspace = fs.realpathSync(path.resolve(opts.workspace));
-      } catch (error) {
-        if (error instanceof Error) error.message = `--workspace: ${error.message}`;
-        throw error;
-      }
-    }
-    const config = host === 'codex-session'
-      ? { ...common, workspace: sessionWorkspace }
-      : host === 'codex'
-        ? { ...common, control_socket: path.join(hostsDir, 'codex-app-server.sock'), workspace: path.resolve(opts.workspace) }
-        : host === 'claude'
-          ? { ...common, server_name: 'memesh-channel' }
-          : { ...common, workspace: path.resolve(opts.workspace), command: 'gemini', args: [] };
-    createHostConfigAtomically(host, configPath, config);
-
-    const launchCommand = host === 'codex-session'
-      ? null
-      : host === 'codex'
-        ? `memesh-host-codex --config ${shellQuote(configPath)}`
-        : host === 'claude'
-          ? 'claude --dangerously-load-development-channels server:memesh-channel'
-          : `memesh-host-acp --config ${shellQuote(configPath)}`;
-    const registrationCommand = host === 'claude'
-      ? `claude mcp add --transport stdio --scope user memesh-channel -- memesh-host-claude --config ${shellQuote(configPath)}`
-      : null;
-    const result = {
-      host,
-      config_path: configPath,
-      mode: host === 'codex-session'
-        ? 'ordinary-session-native-queue'
-        : host === 'claude' ? 'session-owned-channel' : 'memesh-managed-session',
-      session_identity: host === 'codex-session' ? 'codex-thread-id-at-session-start' : 'generated-per-process',
-      ordinary_sessions: host === 'codex-session' ? 'automatic-thread-scoped-with-workspace-override' : 'presence-only/inbound-unavailable',
-      registration_command: registrationCommand,
-      launch_command: launchCommand,
-      next_command: registrationCommand ?? launchCommand ?? 'Restart Codex in the configured workspace to apply the identity override',
-    };
-    console.log(opts.json ? JSON.stringify(result) : [
-      `Created owner-private ${host} config: ${configPath}`,
-      'No active or stopped ordinary session was attached.',
-      ...(registrationCommand ? [`Register once: ${registrationCommand}`] : []),
-      ...(launchCommand ? [`Launch: ${launchCommand}`] : [
-        'This optional override gives that workspace a stable named principal.',
-        'Restart Codex in the configured workspace to apply it.',
-      ]),
-    ].join('\n'));
-  });
+conversationMessageCmd
+  .command("status")
+  .description("Show the full 14-day owner audit trail for one message or all messages")
+  .option("--message-id <id>", "Optional message ID")
+  .option("--json", "Emit the complete audit as JSON")
+  .action((opts) => runConversationMessageAction(
+    { action: "status", message_id: opts.messageId },
+    { session: hostSessionFromEnv(), owner: true },
+    Boolean(opts.json),
+  ));
 
 // --- briefing ---
 // The shell-reachable half of A1c. Claude Code gets this block pushed by the
 // session-start hook; an MCP client gets it from the `briefing` tool; and an
-// agent that has only a shell — the OpenClaw/Hermes integration pattern —
+// agent that has only a shell — the Hermes integration pattern —
 // gets it here. Same assembly, same fence, one owner (core/briefing.ts).
 program
   .command('briefing')
   .description('The assembled work topology for a project — decisions, lessons, knowledge and recent activity; task state and the durable-memory index are included at standard/full. Level is `minimal` (default), `standard`, or `full` — change it with `memesh config set briefing <level>`, or override per-session with the MEMESH_BRIEFING env var (env wins over config).')
   .option('--project <name>', 'Project name (default: the current directory’s project)')
-  .option('--recipient <id>', 'Exact recipient; enables recipient-scoped unread message guidance')
+  .option('--recipient <id>', 'Legacy recipient accepted for compatibility; briefing does not add inbox instructions')
   .option('--index', 'Only the index of durable memories (decisions, lessons, patterns, references), newest first')
   .option('--json', 'Output as JSON')
   .action(async (opts) => {
     const projectFlag = requireProjectFlag(opts.project);
-    await withDatabase(() => {
+    await withReadOnlyDatabase(() => {
       if (opts.index) {
         // The same section a `standard`/`full`-level briefing closes with
         // (#323), alone: what is known here, one line each, without the
@@ -1563,23 +1383,25 @@ program
         console.log(JSON.stringify(result));
         return;
       }
-      // #360 round 3, item 1: `result.empty` means there was nothing to
-      // show at this level at all (only reachable at `minimal` — see
-      // `BriefingResult.empty`'s doc comment) — a preamble wrapped around
-      // an empty fence is not a briefing, so print one short line instead
-      // of `result.text` (which is `''` here) and exit 0, same as every
-      // other branch of this command.
+      // Nothing to show at the selected level: print the first-memory hint
+      // instead of an empty reference fence. Legacy inbox rows do not create
+      // briefing context, at standard/full as well as minimal.
       if (result.empty) {
-        console.log(`Nothing to brief at level ${result.level} — no project memories yet.`);
+        const cannotWrite = unwritableMemoryTargets(getDbPath());
+        console.log(`Nothing to brief at level ${result.level} — no project memories yet. ${cannotWrite.length > 0
+          ? cannotSaveMemoriesSentence(cannotWrite)
+          : `To add the first one to this project, change the quoted text and run: ${firstMemoryCommand(result.project)}`}`);
         return;
       }
       console.log(result.text);
       if (result.entityCount === 0 && !result.hasTaskState && !result.hasHandoff && result.index.shown === 0 && result.index.older === 0) {
         // Outside the fence: a hint to the human, not memory content. Still
-        // reachable here (unlike the branch above) — e.g. `standard`/`full`
-        // on an empty graph, where the index's own empty-state line keeps
-        // `result.empty` false but there is still nothing ranked to hint at.
-        console.log(`\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
+        // Only reached when some context was rendered but none of these
+        // memory/task counters is present; a fully empty graph returned above.
+        const cannotWrite = unwritableMemoryTargets(getDbPath());
+        console.log(cannotWrite.length > 0
+          ? `\n${cannotSaveMemoriesSentence(cannotWrite)}`
+          : `\nCapture happens automatically as you work; or set the task state:  memesh task --goal "…"`);
       }
     });
   });
@@ -1693,8 +1515,9 @@ program
 program
   .command('setup')
   .description('Detect Claude Code / Codex / Gemini on this machine, wire memesh into each, and verify')
-  .option('--check', 'Only report wiring status per host; change nothing (exit 1 if a present host is unwired)')
+  .option('--check', 'Only report wiring status per host; change nothing. Exit 1 if a present host is unwired, if no host is found, or if nothing could be confirmed wired; exit 0 when everything that can be checked is wired (a host that could not be checked is named, with how to check it)')
   .option('--yes', 'Apply every wiring action without asking')
+  .option('--no-journey', 'Do not run the install journey afterwards (same as MEMESH_SKIP_POST_INSTALL_JOURNEY=1)')
   .action(async (opts) => {
     const { spawnSync, execFileSync } = await import('child_process');
 
@@ -1716,8 +1539,8 @@ program
         return { status: null, stderr: err instanceof Error ? err.message : String(err) };
       }
     };
-    // isOnPath is the module-scope PATH walker upgrade-plugin already uses —
-    // one predicate, no `which`/`where` subprocess per host.
+    // isOnPath is core/host-presence.ts's PATH walker, the one `memesh doctor` and
+    // upgrade-plugin use — one predicate, no `which`/`where` subprocess per host.
     const seams: SetupSeams = { home: () => homeDir(), isOnPath, run: runSeam };
 
     const render = (statuses: HostStatus[]) => {
@@ -1729,19 +1552,30 @@ program
     };
 
     let statuses = inspectHosts(seams);
+    const verdict = setupVerdict(statuses);
+
+    // No host at all is not "Everything present is wired": nothing was wired,
+    // and exit 0 would tell a script (and the person) that the install worked.
+    if (!statuses.some((st) => st.present)) {
+      render(statuses);
+      console.error(`\n${verdict.closing}`);
+      console.log('\nThe install journey was not run, because nothing was set up. Check the core features any time: memesh doctor --journey');
+      process.exit(verdict.exitCode);
+    }
 
     if (opts.check) {
       render(statuses);
-      process.exit(allWired(statuses) ? 0 : 1);
+      if (verdict.closing) console.log(`\n${verdict.closing}`);
+      process.exit(verdict.exitCode);
     }
 
     const pending = statuses.filter((st) => st.present && st.actions.length > 0);
     if (pending.length === 0) {
       render(statuses);
-      console.log(allWired(statuses)
-        ? '\nEverything present is wired. Nothing to do.'
-        : '\nNothing to wire automatically — see the lines above.');
-      process.exit(allWired(statuses) ? 0 : 1);
+      if (verdict.closing) console.log(`\n${verdict.closing}`);
+      // A host is present and wired: that is a real install to check.
+      if (verdict.exitCode === 0) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
+      process.exit(verdict.exitCode);
     }
 
     render(statuses);
@@ -1767,6 +1601,7 @@ program
     }
 
     let failed = false;
+    let hooksWritten = false;
     for (const st of pending) {
       for (const action of st.actions) {
         if (!confirmAll && rl) {
@@ -1774,7 +1609,15 @@ program
           if (answer !== 'y' && answer !== 'yes') { console.log('  skipped'); continue; }
         }
         if (action.kind === 'install-hooks') {
-          console.log(`  ✅ ${wireUserHooks()}`);
+          // A refusal here (an unreadable settings file, a folder it cannot write) must not stop the
+          // other hosts' actions: report it, go on, and exit 1 at the end.
+          try {
+            console.log(`  ✅ ${wireUserHooks()}`);
+            hooksWritten = true;
+          } catch (err) {
+            // Not `failed`: the hooks are still unwired, so the check after the loop is exit 1 by itself.
+            console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+          }
         } else if (action.cmd) {
           const actionArgs = Array.isArray(action.args) ? action.args : [];
           const r = runSeam(action.cmd, actionArgs);
@@ -1789,14 +1632,19 @@ program
     console.log('\nAfter wiring:');
     statuses = inspectHosts(seams);
     render(statuses);
-    process.exit(failed || !allWired(statuses) ? 1 : 0);
+    const after = setupVerdict(statuses);
+    if (after.closing) console.log(`\n${after.closing}`);
+    // The hooks are in settings.json now; a Claude Code session that is already open does not have them.
+    if (hooksWritten) console.log('\nRestart Claude Code (or open a new session) for hooks to take effect.');
+    if (!failed && after.exitCode === 0) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'setup', journeyFlag: opts.journey });
+    process.exit(failed ? 1 : after.exitCode);
   });
 
 // --- task ---
 // The human-driven half of task-state. The MCP tool is how an agent records
 // this mid-session; this is how you set it yourself, and how you read back
 // what is stored — the whole state, at any briefing level. The next session is
-// told the fresh state only at level `standard`/`full`, not at the default.
+// told the fresh state at every level, including the default.
 program
   .command('task')
   .description('Show or update where the work stands on this project')
@@ -1894,7 +1742,7 @@ configCmd
     for (const { key, value } of rows) console.log(`  ${key}: ${value}`);
   });
 
-const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'briefing']);
+const ALLOWED_KEYS = new Set(['autoUpdate', 'sessionLimit', 'autoCapture', 'updateCheck', 'promptRecall', 'briefing']);
 
 /**
  * `set`, `unset` and `get` refuse a key `ALLOWED_KEYS` does not list, in the
@@ -1910,8 +1758,9 @@ function requireAllowedKey(key: string): void {
 const KEY_VALIDATORS: Record<string, (value: string) => string | null> = {
   autoUpdate: (v) => ['off', 'patch', 'minor', 'major'].includes(v) ? null : 'must be one of: off, patch, minor, major',
   autoCapture: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
-  // "Never ask again" sets this to false from a hook; this is the way back.
+  // Turns the background version check off (false) or back on (true).
   updateCheck: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
+  promptRecall: (v) => ['true', 'false', '1', '0'].includes(v) ? null : 'must be one of: true, false, 1, 0',
   // #360 — reject here so a typo'd level is a loud CLI error, not a value
   // that only surfaces later as a traced-and-defaulted "invalid" reason.
   briefing: (v) => (BRIEFING_LEVELS as readonly string[]).includes(v)
@@ -2017,7 +1866,8 @@ configCmd
 configCmd
   .command('set')
   .description(`Set an ordinary config value: autoCapture (true|false), sessionLimit (a whole number, ${SESSION_LIMIT_MIN}-${SESSION_LIMIT_MAX}), `
-    + 'autoUpdate (off|patch|minor|major), updateCheck (true|false), '
+    + 'autoUpdate (off|patch|minor|major — the largest version bump MeMesh may install by itself; major when HOME is the system account home or no account home is available, including containers and other database locations; CI and another test/sandbox HOME default to off unless explicitly enabled there; any off wins: config set autoUpdate off also writes the HOME control config), updateCheck (true|false), '
+    + 'promptRecall (true|false — whether a prompt is searched for memories to show beside it), '
     + 'briefing (minimal|standard|full — controls what a session start gets; MEMESH_BRIEFING env var overrides this)')
   .argument('<key>', 'Config key — see `memesh config list` for valid keys')
   .argument('<value>', 'Config value — see this command\'s description for each key\'s valid values')
@@ -2042,12 +1892,37 @@ configCmd
       // #431 — enforces the documented range, matching the HTTP write path.
       coerced = wholeNumber('sessionLimit', SESSION_LIMIT_MIN, SESSION_LIMIT_MAX)(value);
     }
-    if (key === 'autoCapture' || key === 'updateCheck') {
+    if (key === 'autoCapture' || key === 'updateCheck' || key === 'promptRecall') {
       coerced = value === 'true' || value === '1';
     }
     updateConfig({ [key]: coerced } as never);
     const displayValue = String(value);
     console.log(`✅ Set ${key} = ${displayValue}`);
+    if (key === 'autoUpdate' && value !== 'off') {
+      // HOME's shared config and the system account's read-only config can still hold updates off.
+      void import('../../core/auto-update.js').then(({ updateControlDir, accountMemeshDir, accountConfigHolding }) => {
+        const held = accountConfigHolding(getConfigDir(), updateControlDir()) ?? accountConfigHolding(getConfigDir(), accountMemeshDir());
+        if (held === null) return;
+        console.log(held.kind === 'off'
+          ? `   Automatic updates are still off: ${held.path} says off, and that one wins. Set it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config set autoUpdate ${value}`
+          : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file, then set it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config set autoUpdate ${value}`);
+      });
+    }
+    if (key === 'autoUpdate' && value === 'off') {
+      // This process reads and writes the config of ITS data directory (MEMESH_DIR). A MeMesh started without that
+      // variable looks in HOME's ~/.memesh and would never see this off, and would update. An explicit
+      // off is written where every MeMesh looks.
+      void import('../../core/auto-update.js').then(({ propagateOff }) => {
+        const out = propagateOff(getConfigDir());
+        if (out.path === null) return;
+        if (out.error === null) {
+          console.log(`   Also written to ${out.path}, so a MeMesh started without MEMESH_DIR sees it too.`);
+        } else {
+          console.error(`⚠️  Could not write it to ${out.path} (${out.error}): a MeMesh started without MEMESH_DIR may still update. Set MEMESH_AUTO_UPDATE=off there.`);
+          process.exitCode = 1;
+        }
+      });
+    }
 
   });
 
@@ -2064,6 +1939,16 @@ configCmd
       return;
     }
     console.log(`✅ Removed ${key}`);
+    if (key === 'autoUpdate') {
+      // Removing the data config setting does not remove HOME's shared off or the account's read-only off.
+      void import('../../core/auto-update.js').then(({ updateControlDir, accountMemeshDir, accountConfigHolding }) => {
+        const held = accountConfigHolding(getConfigDir(), updateControlDir()) ?? accountConfigHolding(getConfigDir(), accountMemeshDir());
+        if (held === null) return;
+        console.log(held.kind === 'off'
+          ? `   Automatic updates are still off: ${held.path} says off. Remove it there too: MEMESH_DIR=${path.dirname(held.path)} memesh config unset autoUpdate`
+          : `   Automatic updates are still off: ${held.path} cannot be read (${held.why}), and an unreadable config counts as off. Repair or delete that file.`);
+      });
+    }
   });
 
 // --- export-schema ---
@@ -2139,6 +2024,18 @@ program
       // autoUpdateCheck: a user-launched serve is online by definition, so it
       // fills the npm update cache itself instead of nagging the user to.
       startServer(opts.host, opts.port, { allowRemote: opts.allowRemote, autoUpdateCheck: true });
+      // A signal's default action skips the 'exit' listeners, which close a running message-expiry pass.
+      process.once('SIGINT', () => process.exit(130));
+      process.once('SIGTERM', () => process.exit(143));
+      // A machine whose only MeMesh client is a long-running server (a Hermes host, say) runs no
+      // Claude or Codex hook, so nothing else would ever start the updater there. The server is
+      // not registered as a running host: replacing files under it is safe (it keeps running the
+      // old version until it restarts), and waiting for it would mean waiting for ever.
+      void import('../../core/auto-update.js').then(({ ATTEMPT_INTERVAL_MS, dispatchAutoUpdate }) => {
+        const dispatch = () => { void dispatchAutoUpdate(packageRoot); };
+        dispatch();
+        setInterval(dispatch, ATTEMPT_INTERVAL_MS).unref();
+      });
     } catch (err) {
       // startServer refuses a non-loopback bind without an opt-in, and the
       // refusal is a good actionable sentence. Thrown out of an async action
@@ -2152,8 +2049,9 @@ program
 // --- update ---
 program
   .command('update')
-  .description('Update MeMesh to latest version (npm global installs)')
-  .action(async () => {
+  .description('Update MeMesh now, the same verified way the automatic update does (npm global and plugin installs)')
+  .option('--reinstall', 'Put this version back through the same checks instead of moving to a newer one (repairs a damaged or unverifiable install)')
+  .action(async (opts: { reinstall?: boolean }) => {
     const { getCurrentInstallChannel, getInstallChannelSupport } = await import('../../core/install-channel.js');
     const install = getCurrentInstallChannel({ packageRoot });
     const installSupport = getInstallChannelSupport(install, packageRoot);
@@ -2164,40 +2062,22 @@ program
       process.exit(1);
     }
 
-    const { checkForUpdate } = await import('../../core/version-check.js');
-    const check = await checkForUpdate(pkg.version);
-
-    if (!check.checkSucceeded || !check.latestVersion) {
-      console.error('❌ Unable to check npm for the latest MeMesh version right now.');
-      console.error('   Try again later, or update manually: npm install -g @pcircle/memesh@latest');
-      process.exit(1);
-    }
-
-    if (!check.updateAvailable) {
-      console.log(`✅ Already on latest version (${pkg.version})`);
-      return;
-    }
-
-    console.log(`🔄 Updating ${pkg.version} → ${check.latestVersion}...`);
-
-    try {
-      const { runGlobalUpdate } = await import('../../core/updater.js');
-      const result = runGlobalUpdate(check.latestVersion);
-      console.log(`✅ Updated to ${result.installedVersion}`);
-    } catch (err) {
-      const message = err instanceof Error ? err.message : 'unknown error';
-      console.error(`❌ Update failed: ${message}`);
-      console.error('   This command supports npm global installs.');
-      console.error('   Try manually: npm install -g @pcircle/memesh@latest');
-      process.exit(1);
-    }
+    // One path: the verified, reversible update the automatic updater takes (source check,
+    // database backup, pinned install, read-back). Not a bare `npm install -g`.
+    const { runManualUpdate } = await import('../../core/auto-update.js');
+    console.log(opts.reinstall
+      ? `🔄 Reinstalling MeMesh ${pkg.version}: its source is verified before anything is installed...`
+      : `🔄 Checking for a newer MeMesh than ${pkg.version} and verifying it before anything is installed...`);
+    const result = runManualUpdate(packageRoot, undefined, { reinstall: opts.reinstall === true });
+    for (const line of result.lines) (result.code === 0 ? console.log : console.error)(line);
+    process.exit(result.code);
   });
 
 // --- upgrade-plugin ---
 //
-// Claude Code's plugin marketplace pins versions at install time and never
-// auto-updates. The bundled scripts/upgrade-plugin.sh closes that gap, but
-// reaching it meant hand-substituting the installed version into
+// Claude Code's plugin marketplace pins versions at install time. This command only REPAIRS: the bundled
+// scripts/upgrade-plugin.sh puts back the commit the plugin registry recorded (it does not move to a newer one:
+// `memesh update` verifies a release first). Reaching the script meant hand-substituting the installed version into
 // ~/.claude/plugins/cache/pcircle-memesh/memesh/<version>/scripts/... — a
 // path shape most users get wrong on the first try. This command finds the
 // running MeMesh installation first, then the newest installed plugin version,
@@ -2224,7 +2104,7 @@ export function resolveUpgradePluginScript(
 
 program
   .command('upgrade-plugin')
-  .description('Upgrade the Claude Code plugin install (finds and runs its bundled upgrade script)')
+  .description('Repair the Claude Code plugin install: puts back the commit it recorded (use `memesh update` to move to a newer release)')
   .action(async () => {
     const { spawnSync } = await import('child_process');
     const configRoot = pluginHostConfigRoot('claude-code');
@@ -2298,21 +2178,11 @@ const kgCmd = program
  */
 function backUpDatabase(label: string): { dbPath: string; backupPath: string } {
   const dbPath = getDbPath();
-  const backupDir = path.join(path.dirname(dbPath), 'backups');
-  const stamp = new Date().toISOString().replace(/[:.]/g, '-');
-  const backupPath = path.join(backupDir, `kg-before-${label}-${stamp}.db`);
-  fs.mkdirSync(backupDir, { recursive: true, mode: 0o700 });
-  // Owner-private like the database: opening it set the umask to 077.
-  getDatabase().prepare('VACUUM INTO ?').run(backupPath);
-  return { dbPath, backupPath };
+  const copy = copyDatabaseBefore(getDatabase(), `kg-before-${label}`);
+  if (copy.kind === 'failed') throw new Error(copy.reason);
+  return { dbPath, backupPath: copy.path };
 }
 
-function restoreCommand(dbPath: string, backupPath: string): string {
-  // sqlite3 reads the dot-command argument as a double-quoted string, then
-  // the shell reads the whole command: quote for both.
-  const dotQuoted = `"${backupPath.replace(/\\/g, '\\\\').replace(/"/g, '\\"')}"`;
-  return `sqlite3 ${shellQuoteIfNeeded(dbPath)} ${shellQuoteIfNeeded(`.restore ${dotQuoted}`)}`;
-}
 
 kgCmd
   .command('backfill-relations')
@@ -2365,7 +2235,7 @@ kgCmd
       try {
         readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
       } catch (err) {
-        console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+        console.error(readOnlyOpenFailure(err));
         process.exitCode = 1;
         return;
       }
@@ -2435,7 +2305,7 @@ kgCmd
         console.log(`  idempotency: marked ${result.orphansMarkedProcessed} new orphan${result.orphansMarkedProcessed === 1 ? '' : 's'} as attempted.`);
       }
       console.log(`  Backup: ${backup.backupPath}`);
-      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(backup.dbPath, backup.backupPath)}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${repairCommand(backup.dbPath, backup.backupPath)}`);
     });
   });
 
@@ -2505,7 +2375,6 @@ kgCmd
         // A project identity is half the key of a durable-message inbox, so a
         // rename that moved only the tags left the messages in a scope nobody
         // polls. Reported separately because it is a different kind of row.
-        console.log(`  ${preview.messageRows - preview.messageRowsBlocked} durable agent-message row(s) scoped to ${opts.from} would move to ${to}${preview.messageRowsBlocked > 0 ? `, ${preview.messageRowsBlocked} would be left in place (${to} already holds an equivalent row)` : ''}`);
         console.log(`  ${preview.proposalRows} proposal row(s) would move to ${to}`);
         console.log(`\nNothing written. Re-run with --apply to commit (the DB is backed up first).`);
         return;
@@ -2546,10 +2415,9 @@ kgCmd
       if (opts.json) { console.log(JSON.stringify({ ...result, backupPath }, null, 2)); return; }
       console.log(`✅ project:${opts.from} → project:${to}`);
       console.log(`  ${result.renamed} renamed, ${result.merged} merged (${result.affectedEntities} entities total)`);
-      console.log(`  ${result.messageRows - result.messageRowsBlocked} agent-message row(s) moved${result.messageRowsBlocked > 0 ? `, ${result.messageRowsBlocked} left in place (${to} already holds an equivalent row)` : ''}`);
       console.log(`  ${result.proposalRows} proposal row(s) moved`);
       console.log(`  Backup: ${backupPath}`);
-      console.log(`  Restore if needed (stop every memesh process first): ${restoreCommand(dbPath, backupPath)}`);
+      console.log(`  Restore if needed (stop every memesh process first): ${repairCommand(dbPath, backupPath)}`);
     };
 
     // --to is a NEW routing identity — the same shape `agent setup` and the
@@ -2607,7 +2475,7 @@ kgCmd
     try {
       readOnlyDb = (await import('../../core/project-tags.js')).openReadOnlyForPreview(getDbPath());
     } catch (err) {
-      console.error(`Error: memesh cannot open its database read-only (${err instanceof Error ? err.message : String(err)}). Run \`memesh doctor\`.`);
+      console.error(readOnlyOpenFailure(err));
       process.exitCode = 1;
       return;
     }
@@ -2630,7 +2498,21 @@ program
   .option('--url <url>', 'Base URL for --probe-http', 'http://127.0.0.1:3737')
   .option('--fix', 'Apply the whitelisted fixes doctor prescribes (asks per fix; --yes skips asking)')
   .option('--yes', 'With --fix: apply without asking')
+  .option('--journey', 'Instead of the health report, run the install journey once (store, search, send, read back) in a throwaway folder; exit 1 if any step fails. Never opens your memory database. It reads the saved journey result (post-install-journey.json in ~/.memesh) and replaces it only if it is already there and valid.')
   .action(async (opts) => {
+    if (opts.journey) {
+      const clash = [opts.fix && '--fix', opts.yes && '--yes', opts.probeHttp && '--probe-http'].filter(Boolean);
+      if (clash.length > 0) {
+        console.error(`Error: --journey runs on its own and cannot be combined with ${clash.join(', ')}.`);
+        process.exit(1);
+      }
+      const journey = await runInstallJourney({ packageRoot });
+      refreshExistingJourneyRecord(journey, pkg.version);
+      if (opts.json) console.log(JSON.stringify(journey, null, 2));
+      else for (const line of formatJourney(journey)) (journey.ok ? console.log : console.error)(line);
+      process.exitCode = journey.ok ? 0 : 1;
+      return;
+    }
     const { formatDoctorReport, runDoctor } = await import('../../core/doctor.js');
     let result = await runDoctor({
       packageRoot,
@@ -2647,6 +2529,8 @@ program
     // open already removes other users' access, and the owner's own bits are
     // the owner's decision (#520). Destructive database reset
     // branches remain human decisions.
+    // A fix that failed (a ❌ line) is a failed run, even when the report after it is only a warning.
+    let fixFailed = false;
     if (opts.fix) {
       // The dispatch is a Record, not an if-chain, so a fourth fixId added
       // in doctor.ts fails to COMPILE here instead of prompting the user
@@ -2667,6 +2551,10 @@ program
         },
         'plugin-cache-refresh': (check) => refreshPluginCache(packageRoot, pluginHostFromDoctorCheck(check)).output || 'plugin cache refreshed',
       };
+      // Say why the hook wiring is left alone: with no agent host installed,
+      // writing Claude Code's settings would configure a program that is not there.
+      const noHost = result.checks.find((c) => c.code === 'hook-wiring.no-host');
+      if (noHost) console.log(`Skipped: hook wiring. ${noHost.summary} ${noHost.fix ?? ''}`.trim());
       const fixable = result.checks.filter((c) => c.fixId && (c.status === 'warn' || c.status === 'fail'));
       if (fixable.length === 0) {
         console.log('Nothing on the --fix whitelist to apply.');
@@ -2690,6 +2578,7 @@ program
             console.log(`  ✅ ${FIX_ACTIONS[check.fixId!](check)}`);
           } catch (err) {
             console.error(`  ❌ ${err instanceof Error ? err.message : String(err)}`);
+            fixFailed = true;
           }
         }
         rl?.close();
@@ -2737,7 +2626,7 @@ program
       }
     }
 
-    if (result.status === 'FAIL') {
+    if (result.status === 'FAIL' || fixFailed) {
       process.exitCode = 1;
     }
   });
@@ -2879,8 +2768,11 @@ dreamCmd
       try {
         result = applyProposal(getDatabase(), proposalId(id), kg);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        console.error('See pending ids with: memesh dream list');
+        // A write refused because the data folder is read-only names the folder and the fix; the "pending ids" hint
+        // belongs to a proposal that is not there, not to a refusal that has nothing to do with the id.
+        const why = explainReadOnlyRefusal(err);
+        console.error(why ?? (err instanceof Error ? err.message : String(err)));
+        if (!why) console.error('See pending ids with: memesh dream list');
         process.exit(1);
       }
       console.log(`Applied proposal #${result.proposalId}`);
@@ -2906,8 +2798,11 @@ dreamCmd
       try {
         rejectProposal(getDatabase(), proposalId(id), opts.reason);
       } catch (err) {
-        console.error(err instanceof Error ? err.message : String(err));
-        console.error('See pending ids with: memesh dream list');
+        // A write refused because the data folder is read-only names the folder and the fix; the "pending ids" hint
+        // belongs to a proposal that is not there, not to a refusal that has nothing to do with the id.
+        const why = explainReadOnlyRefusal(err);
+        console.error(why ?? (err instanceof Error ? err.message : String(err)));
+        if (!why) console.error('See pending ids with: memesh dream list');
         process.exit(1);
       }
       console.log(`Rejected proposal #${id}`);
@@ -2927,10 +2822,19 @@ program
   .option('--scope <scope>', 'user (default) or project — project writes to ./.claude/settings.json', 'user')
   .option('--dry-run', 'Show what would change without modifying any file')
   .option('--force-over-plugin', 'Write user-level hooks even when Claude Code\'s plugin runtime already wires them. Causes double-firing — only use if you genuinely want both surfaces.')
+  .option('--no-journey', 'Do not run the install journey afterwards (same as MEMESH_SKIP_POST_INSTALL_JOURNEY=1)')
   .action(async (opts) => {
     requireOneOf(opts.scope, ['user', 'project'], '--scope');
     const { installHooks } = await import('../../core/install-hooks.js');
     const scope = opts.scope === 'project' ? 'project' : 'user';
+    // Hooks wired onto a Node that cannot run MeMesh do nothing useful: say so before the success lines.
+    let nodeIssue: ReturnType<typeof nodeProblem> = null;
+    try { nodeIssue = nodeProblem(); } catch { /* a check that could not finish is no reason to refuse an install */ }
+    if (nodeIssue) {
+      console.log(`WARNING: ${nodeIssue.message}`);
+      console.log('  The hooks below are wired anyway, but none of MeMesh works until that is fixed.');
+      console.log('');
+    }
     try {
       const result = installHooks({
         pluginRoot: packageRoot,
@@ -2960,25 +2864,23 @@ program
         console.log(`Citation contract ${result.citationRule.action}: ${result.citationRule.path}`);
       }
 
+        if (!opts.dryRun) await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'install-hooks', journeyFlag: opts.journey });
         return;
       }
       console.log(`${opts.dryRun ? '[dry-run] ' : ''}Settings: ${result.settingsPath}`);
       console.log(`${opts.dryRun ? '[dry-run] Would add ' : 'Added '}${result.added} hook entr${result.added === 1 ? 'y' : 'ies'}, ${opts.dryRun ? 'would skip ' : 'skipped '}${result.skipped} already-installed.`);
+      // "No file was written" is only true when the citation contract did not need writing either.
+      const ruleWritten = result.citationRule.action !== 'unchanged' && result.citationRule.action !== 'foreign-file';
+      if (!opts.dryRun && !(result.settingsWritten || result.markerWritten || ruleWritten)) {
+        console.log('Nothing needed to change — no file was written.');
+      }
       if (result.pruned > 0) {
         console.log(`${opts.dryRun ? '[dry-run] Would remove ' : 'Removed '}${result.pruned} retired memesh hook entr${result.pruned === 1 ? 'y' : 'ies'} no longer shipped by this version.`);
       }
       if (result.backupPath) console.log(`Backup: ${result.backupPath}`);
-      // `installHooks` writes this marker whenever settings.json itself was
-      // written (added > 0 || skipped > 0, and not a dry-run) — the same
-      // condition as the settings write itself, NOT the same as the backup
-      // above: `backupSettings` returns null on a fresh install with no
-      // pre-existing settings.json to back up, so gating on `backupPath`
-      // would have hidden this line on exactly the install where a user
-      // most needs to know a new file appeared. Reported for the same
-      // reason the settings path and backup are: a file this command
-      // writes to disk should not be a surprise the user only discovers
-      // via `memesh doctor` or by reading the source.
-      if (!opts.dryRun && (result.added > 0 || result.skipped > 0)) {
+      // Gated on the marker really being written, not on the backup: `backupSettings` returns
+      // null on a fresh install with no settings.json, which is exactly when a new file appeared.
+      if (!opts.dryRun && result.markerWritten) {
         console.log(`Marker: ${result.markerPath}`);
       }
       // The citation contract's fate, reported on BOTH exits. `foreign-file`
@@ -3002,10 +2904,18 @@ program
           console.log(`  - ${c.event} (matcher: ${c.matcher}) — ${c.existingCount} non-memesh hook command${c.existingCount === 1 ? '' : 's'} preserved`);
         }
       }
-      if (!opts.dryRun) {
+      if (!opts.dryRun && result.settingsWritten) {
         console.log('');
         console.log('Restart Claude Code (or open a new session) for hooks to take effect.');
         console.log('Verify with: memesh doctor');
+        await runPostInstallJourney({ packageRoot, version: pkg.version, trigger: 'install-hooks', journeyFlag: opts.journey });
+      } else if (!opts.dryRun && ruleWritten) {
+        // settings.json is unchanged, so the hooks already in place need no restart; only the new rule file does.
+        console.log('');
+        console.log('Open a new Claude Code session for the citation contract to take effect. Verify with: memesh doctor');
+      } else if (!opts.dryRun) {
+        console.log('');
+        console.log('Nothing to restart. Verify with: memesh doctor');
       }
     } catch (err) {
       console.error(`install-hooks failed: ${err instanceof Error ? err.message : String(err)}`);
@@ -3193,35 +3103,162 @@ async function hermesInput(session: unknown): Promise<Record<string, unknown>> {
 
 const HERMES_BASE_TAGS = ['platform:hermes'];
 
+async function hermesProject(): Promise<{ project: string | null; cwd?: string }> {
+  // A gateway's working directory is not a declaration of the user's project.
+  const cwd = process.env.MEMESH_PROJECT_ROOT;
+  if (cwd === undefined) return { project: null };
+  const { resolveMcpProject } = await import('../mcp/project-context.js');
+  const resolution = resolveMcpProject(cwd, []);
+  if ('error' in resolution) {
+    console.error(`Error: ${resolution.error}: ${resolution.reason}`);
+    process.exit(1);
+  }
+  return { project: resolution.project, cwd };
+}
+
+function bootstrapHermesNetworkBridge(): void {
+  const assetsDir = fileURLToPath(new URL('../../network/', import.meta.url));
+  const cliEntry = process.argv[1] ?? fileURLToPath(import.meta.url);
+  // This is deliberately detached from the action: an unavailable bridge must
+  // never make a local message action or memory prefetch unavailable.
+  void bootstrapNetworkBridge({
+    dataDir: path.resolve(getMemeshDirFromDbPath()), dbPath: getDbPath(),
+    bridgeEntry: path.join(assetsDir, 'bridge.js'), assetsDir,
+  }, cliEntry).catch(error => {
+    console.error(`MeMesh Hermes network bridge bootstrap failed: ${cliErrorText(error)}`);
+  });
+}
+
 const hermesCmd = program
   .command('hermes')
-  .description('Capture paths used by the Hermes Agent memory plugin (reads JSON on stdin, prints a JSON result)');
+  .description('The Hermes Agent memory plugin: install it, recall context and capture turns (JSON on stdin and stdout)');
 
 hermesCmd
-  .command('capture-session')
-  .description('Turn a Hermes message list ({"messages": [...]}) into the Stop hook\'s session-insight entities')
+  .command('prompt-context')
+  .description('Read relevant memory for a Hermes prompt, at most two records sharing a 4 KiB context budget')
   .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
   .action(async (opts) => {
     const body = await hermesInput(opts.session);
-    if (!Array.isArray(body.messages)) {
-      console.error('Error: stdin must be {"messages": [...]}');
+    if (typeof body.prompt !== 'string') {
+      console.error('Error: stdin must be {"prompt": "<text>"}');
       process.exit(1);
     }
-    await withDatabase(() => {
-      const result = captureChatSession({
-        sessionId: opts.session,
-        messages: body.messages,
-        sourceHost: 'hermes',
-        baseTags: HERMES_BASE_TAGS,
-        titleLabel: 'hermes',
+    if (body.exclude !== undefined && (!Array.isArray(body.exclude) || !body.exclude.every((id) => Number.isSafeInteger(id) && id > 0))) {
+      console.error('Error: exclude must be an array of positive memory IDs');
+      process.exit(1);
+    }
+    if (body.messages !== undefined && typeof body.messages !== 'boolean') {
+      console.error('Error: messages must be a boolean');
+      process.exit(1);
+    }
+    const project = await hermesProject();
+    const inbox: { messages?: string; messages_error?: string } = {};
+    if (body.messages === true) {
+      inbox.messages = '';
+      try {
+        const store = new ConversationMessages();
+        try {
+          store.register({ id: opts.session, host: 'hermes', machine: store.machine, pid: process.ppid, wake: {} });
+          inbox.messages = store.hookBatch(opts.session).text;
+        } finally { store.close(); }
+      } catch (error) {
+        // Inbox registration needs writes; existing memory recall can still be read-only.
+        inbox.messages_error = cliErrorText(error);
+      }
+    }
+    const config = readConfig();
+    if (config.promptRecall === false || !fs.existsSync(getDbPath())) {
+      console.log(JSON.stringify({ text: '', ids: [], ...inbox }));
+      return;
+    }
+    const { openReadOnlyForPreview } = await import('../../core/project-tags.js');
+    const { selectPromptRecall } = await import('../../core/prompt-recall.js');
+    const db = openReadOnlyForPreview(getDbPath());
+    try {
+      db.pragma('busy_timeout = 1000');
+      const { text, ids } = selectPromptRecall(db, body.prompt, {
+        ...project, platform: 'hermes', excludeConversationSession: opts.session,
+        exclude: new Set(body.exclude as number[] | undefined),
       });
-      console.log(JSON.stringify(result));
+      console.log(JSON.stringify({ text, ids, ...inbox }));
+    } finally {
+      db.close();
+    }
+  });
+
+hermesCmd
+  .command('message')
+  .description('Run one Hermes conversation-message action (JSON on stdin and stdout)')
+  .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
+  .action(async (opts) => {
+    const body = await hermesInput(opts.session);
+    try {
+      const store = new ConversationMessages();
+      try {
+        // This process is short-lived; its Python SDK parent is the host whose
+        // registration must remain discoverable between tool calls.
+        store.register({ id: opts.session, host: 'hermes', machine: store.machine, pid: process.ppid, wake: {} });
+      } finally { store.close(); }
+      bootstrapHermesNetworkBridge();
+      await runConversationMessageAction(body, { session: opts.session });
+    } catch (error) {
+      console.error(`Error: ${cliErrorText(error)}`);
+      process.exitCode = 1;
+    }
+  });
+
+hermesCmd
+  .command('install')
+  .description('Install the Hermes memory provider from this MeMesh package, or refresh a copy MeMesh installed earlier. Automatic updates keep copies installed this way current.')
+  .option('--path <dir>', 'Where to install it (default: $HERMES_HOME/plugins/memesh, HERMES_HOME defaulting to ~/.hermes). Inside a Hermes checkout use <checkout>/plugins/memory/memesh.')
+  .option('--force', 'Replace a directory MeMesh did not install, or a copy you edited. The old directory is saved under the MeMesh data directory first.')
+  .action(async (opts) => {
+    const { HERMES_REASONS, defaultInstallTarget, installProvider, registerInstall } = await import('../../core/hermes-provider.js');
+    const sourceDir = path.join(packageRoot, 'extensions', 'hermes-memesh');
+    if (!fs.existsSync(path.join(sourceDir, '__init__.py'))) {
+      console.error(`Error: this MeMesh package does not contain the Hermes provider (looked in ${sourceDir}).`);
+      console.error('  Update MeMesh (memesh update), or copy extensions/hermes-memesh/ from the repository by hand.');
+      process.exit(1);
+    }
+    let target: string;
+    try {
+      target = typeof opts.path === 'string' && opts.path !== '' ? path.resolve(opts.path) : defaultInstallTarget(process.env, null);
+    } catch (err) {
+      // No HERMES_HOME and no home directory: say what to pass instead of crashing with a stack trace.
+      console.error(`Error: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+    const memeshDataDir = getMemeshDirFromDbPath();
+    const result = installProvider({
+      sourceDir, target, version: pkg.version, force: Boolean(opts.force),
+      backupRoot: path.join(memeshDataDir, 'backups'), now: new Date(),
     });
+    if (result.outcome === 'skipped' || result.outcome === 'failed') {
+      console.error(`Hermes provider not installed at ${target}: ${result.reason}`);
+      if (result.outcome === 'skipped' && result.reason.includes('symbolic link')) console.error(`  ${HERMES_REASONS.linkedHint}.`);
+      else if (result.outcome === 'skipped' && result.reason === HERMES_REASONS.busy) console.error('  Run this command again in a minute.');
+      else if (result.outcome === 'skipped') console.error('  Re-run with --force to replace it; the old directory is saved first.');
+      process.exit(1);
+    }
+    console.log(`Hermes provider ${result.outcome} at ${target} (MeMesh ${pkg.version}).`);
+    if (result.backup) console.log(`Previous copy saved at ${result.backup}`);
+    // The copy is in place either way; what registering decides is whether automatic updates will find it later.
+    try {
+      registerInstall(memeshDataDir, target);
+    } catch (err) {
+      console.error(`The copy is in place, but MeMesh could not record it for automatic updates (${err instanceof Error ? err.message : String(err)}): it will not be refreshed with MeMesh until that is fixed and this command is run again.`);
+      process.exit(1);
+    }
+    const { currentPolicy } = await import('../../core/auto-update.js');
+    const refreshing = currentPolicy().policy === 'off'
+      ? 'Automatic updates are off, so this copy stays at this version until you run this command again.'
+      : 'Automatic MeMesh updates keep this copy current.';
+    console.log(`Activate it with memory.provider: memesh in $HERMES_HOME/config.yaml, then restart Hermes. ${refreshing}`);
   });
 
 hermesCmd
   .command('capture-turn')
-  .description('Store one Hermes turn ({"user": "...", "assistant": "..."}) only if it states a decision or a lesson')
+  .description('Store one Hermes turn ({"user": "...", "assistant": "..."}): what the user said and what the assistant answered, each in full')
   .option('--session <id>', 'Hermes session id (required)', hermesSessionId)
   .action(async (opts) => {
     const body = await hermesInput(opts.session);
@@ -3229,14 +3266,38 @@ hermesCmd
       console.error('Error: stdin must be {"user": "<text>", "assistant": "<text>"}');
       process.exit(1);
     }
+    const { autoCaptureDecision } = await import('../../core/capture-flag.js');
+    if (!autoCaptureDecision(process.env.MEMESH_AUTO_CAPTURE, readConfig().autoCapture).enabled) {
+      console.log(JSON.stringify({ outcome: 'skipped', reason: 'auto-capture is turned off' }));
+      return;
+    }
+    const { project } = await hermesProject();
     await withDatabase(() => {
+      const messagePath = path.join(getMemeshDirFromDbPath(), 'messages.db');
+      let receivedMessages: Array<{ envelope: string; body: string }> = [];
+      if (fs.existsSync(messagePath)) {
+        try {
+          const messages = new ConversationMessages();
+          try {
+            receivedMessages = messages.status(opts.session)
+              .filter(message => message.recipient === opts.session && message.recipient_machine === messages.machine
+                && message.state !== 'rejected' && typeof message.body === 'string')
+              .map(message => ({ envelope: renderConversationMessage(message), body: message.body! }));
+          } finally { messages.close(); }
+        } catch (error) {
+          // A pre-inbox Hermes session is still a valid capture caller. Other
+          // message-store failures must not silently turn injected data into user text.
+          if (!(error instanceof Error) || error.message !== 'Caller conversation is not registered') throw error;
+        }
+      }
       const result = captureChatTurn({
         sessionId: opts.session,
         userText: body.user as string,
         assistantText: body.assistant as string,
         sourceHost: 'hermes',
         namePrefix: 'hermes-turn',
-        baseTags: HERMES_BASE_TAGS,
+        baseTags: project === null ? HERMES_BASE_TAGS : [...HERMES_BASE_TAGS, `project:${project}`],
+        receivedMessages,
       });
       console.log(JSON.stringify(result));
     });
@@ -3397,6 +3458,8 @@ program
       }
     }
   });
+
+registerNetworkCommand(program, new URL('../../network/', import.meta.url));
 
 // Default action: print help when run with no subcommand — the convention
 // of git/npm/docker, and what a first-time user typing `memesh` to see

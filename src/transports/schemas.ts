@@ -5,9 +5,9 @@
 
 import { z } from 'zod';
 import { NAMESPACES } from '../core/types.js';
+import { isReservedTag } from '../core/work-topology.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
 import {
   AGENT_SCOPE_ID_MAX_LENGTH,
   agentScopeIdRejection,
@@ -78,6 +78,8 @@ const workPackageIdentity = {
   ref: z.discriminatedUnion('kind', [digestWorkPackageRef, transcriptWorkPackageRef]),
 };
 const WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+/** `source:` tags are MeMesh's own record of where a memory came from (`isReservedTag`, see refineRemember). */
+const RESERVED_TAG_REASON = 'tags that start with `source:` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example `origin:`.';
 
 export const WorkPackageSchema = z.discriminatedUnion('action', [
   z.object({ action: z.literal('prepare'), project: workPackageText, kind: z.enum(['digest', 'transcript']) }).strict(),
@@ -88,7 +90,8 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
       name: workPackageText,
       type: z.enum(['digest', 'decision', 'lesson_learned', 'fact']),
       observations: z.array(observationField).min(1).max(100),
-      tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')).min(1).max(50),
+      tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')
+        .refine(tag => !isReservedTag(tag), RESERVED_TAG_REASON)).min(1).max(50),
     }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= WORK_PACKAGE_RESULT_MAX_BYTES, 'output_too_large'),
   }).strict().refine(input => (input.ref.kind === 'digest') === (input.result.type === 'digest'), 'result type must match work kind'),
   z.object({
@@ -119,8 +122,18 @@ const rememberShape = {
   namespace: z.enum(NAMESPACES).optional(),
 };
 
+/**
+ * Tags in the `source:` namespace say where MeMesh got a memory (a note file, its own
+ * capture, an explicit lesson). A caller cannot claim one: MCP, HTTP and the CLI all
+ * refuse it here (and a work package result too), naming the reason, so no agent can
+ * dress its memory as something MeMesh imported (`isReservedTag`, above).
+ */
 function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z.RefinementCtx): void {
   for (const [index, tag] of (data.tags ?? []).entries()) {
+    if (isReservedTag(tag)) {
+      ctx.addIssue({ code: 'custom', path: ['tags', index], message: `the tag ${JSON.stringify(tag)} is not allowed: ${RESERVED_TAG_REASON}` });
+      continue;
+    }
     if (!tag.startsWith('project:')) continue;
     const project = tag.slice('project:'.length);
     // Empty tags retain the existing binding/core refusal. A non-empty tag
@@ -131,14 +144,8 @@ function refineRemember(data: z.infer<z.ZodObject<typeof rememberShape>>, ctx: z
   }
   if (data.note === undefined) {
     if (data.name === undefined) ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-    // `replace` on a named memory inherits the type it already has —
-    // operations.ts only rewrites the stored type when one was PASSED
-    // (`typeGiven`), so that inheritance has always worked; this schema was
-    // the only thing making the documented correction call restate a field
-    // the server would ignore. Scoped to `replace` + `name` on purpose: a
-    // `name` without `replace` is usually a NEW memory, and a new memory with
-    // no type is the silent default this codebase spent a release removing.
-    if (data.type === undefined && !(data.replace && data.name !== undefined)) ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
+    // Only the guarded writer can distinguish an append to an existing name
+    // from a new memory. It inherits the former's type and requires the latter's.
     // `replace` rewrites the observations. With none given (or an empty list)
     // the core clears the memory and stores nothing, so a call that only meant
     // to fix the title (or the tags) emptied the memory it named. Archiving a
@@ -378,12 +385,7 @@ export const TaskStateSchema = z.object({
 // and get a success-shaped response back with nothing recorded.
 }).strict();
 
-// `briefing` reads the SAME inbox key the message tool writes — it counts the
-// deliveries for one exact (project, recipient) — so it must ask the question
-// in the same spelling. Left as free text it would report "0 unread" for a
-// recipient whose messages are all there under the canonical form, which is
-// the split this change exists to close, reappearing on the surface an agent
-// actually reads.
+// Preserve validation of the optional legacy recipient input; briefing no longer reads an inbox.
 export const BriefingSchema = z.object({
   // Exact, like learn and task_state: a lesson stored under a project must be
   // found by a briefing for that same string (no trim, no normalising).
@@ -430,118 +432,5 @@ export const ImprovementSchema = z.discriminatedUnion('action', [
   z.object({
     action: z.literal('status'),
     proposal_id: z.number().int().positive(),
-  }).strict(),
-]);
-
-// One tool owns the whole durable-message lifecycle so MCP clients can
-// discover the ordering rules from one contract.  The split actions are
-// intentional: poll/fetch are reads, while intake, ack, disposition, and
-// activation are separate explicit facts.  No read is allowed to imply ACK.
-const messageProject = agentScopeId('project');
-const messageRecipient = agentScopeId('recipient');
-// `sender` is provenance, not routing: it keys no inbox, and
-// `agent_message_idempotency` is keyed (project, sender, idempotency_key), so
-// canonicalising it would mutate replay-protection keys for no delivery
-// benefit. Left exactly as it was.
-const messageSender = nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH);
-const messageId = nonBlankBounded(255);
-const messageCursor = nonBlankBounded(160);
-const messageIdempotencyKey = nonBlankBounded(200);
-const messageReceiptBase = {
-  project: messageProject,
-  recipient: messageRecipient,
-  message_id: messageId,
-  idempotency_key: messageIdempotencyKey,
-};
-
-export const MessageSchema = z.discriminatedUnion('action', [
-  z.object({
-    action: z.literal('send'),
-    project: messageProject,
-    sender: messageSender,
-    recipient: messageRecipient.optional(),
-    recipient_handle: nonBlankBounded(220).optional(),
-    target_kind: z.enum(['principal', 'session']).optional(),
-    // #497: the one session of a shared principal a principal message is
-    // meant for; and, for a session send, "if that session refuses it, send
-    // it to its principal meant for that session instead".
-    intended_session: agentScopeId('intended_session').optional(),
-    fallback_to_principal: z.boolean().optional(),
-    idempotency_key: messageIdempotencyKey,
-    payload: z.json().refine(
-      (value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_MESSAGE_JSON_MAX_BYTES,
-      { message: `payload must be at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes when encoded as JSON` },
-    ).describe(
-      `Untrusted JSON value. The encoded payload is limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} bytes (64 KiB); native delivery additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB).`,
-    ),
-    content_type: z.enum(['text/plain', 'application/json']).default('text/plain'),
-    privacy: z.enum(['private', 'team']).default('private'),
-    correlation_id: nonBlankBounded(255).optional(),
-    reply_to: messageId.optional(),
-  }).strict().superRefine((send, ctx) => {
-    if ((send.recipient === undefined) === (send.recipient_handle === undefined)) {
-      ctx.addIssue({ code: 'custom', path: ['recipient'], message: 'Provide exactly one of recipient or recipient_handle.' });
-    }
-    if (send.recipient_handle === undefined && send.intended_session !== undefined && (send.target_kind ?? 'principal') !== 'principal') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['intended_session'],
-        message: 'intended_session is only valid with target_kind "principal".',
-      });
-    }
-    if (send.recipient_handle === undefined && send.fallback_to_principal !== undefined && (send.target_kind ?? 'principal') !== 'session') {
-      ctx.addIssue({
-        code: 'custom',
-        path: ['fallback_to_principal'],
-        message: 'fallback_to_principal is only valid with target_kind "session".',
-      });
-    }
-  }),
-  z.object({
-    action: z.literal('poll'),
-    project: messageProject,
-    recipient: messageRecipient,
-    cursor: messageCursor.optional(),
-    wait_ms: z.number().int().min(0).max(30_000).default(0),
-    limit: z.number().int().min(1).max(100).default(20),
-  }).strict(),
-  z.object({
-    action: z.literal('discover'),
-    project: messageProject,
-    limit: z.number().int().min(1).max(100).default(50),
-  }).strict(),
-  z.object({
-    action: z.literal('fetch'),
-    project: messageProject,
-    recipient: messageRecipient,
-    target_kind: z.enum(['principal', 'session']).default('principal'),
-    message_id: messageId,
-  }).strict(),
-  z.object({
-    action: z.literal('intake'),
-    ...messageReceiptBase,
-    intake_state: z.enum(['fetched', 'ingested']),
-  }).strict(),
-  z.object({
-    action: z.literal('ack'),
-    ...messageReceiptBase,
-  }).strict(),
-  z.object({
-    action: z.literal('disposition'),
-    ...messageReceiptBase,
-    disposition: z.enum(['accepted', 'rejected', 'completed', 'cancelled', 'deferred']),
-    detail: z.string().trim().max(1000).optional(),
-  }).strict(),
-  z.object({
-    action: z.literal('activation'),
-    ...messageReceiptBase,
-    activation: z.enum(['woken', 'manual_resume_required', 'unsupported', 'failed']),
-    detail: z.string().trim().max(1000).optional(),
-  }).strict(),
-  z.object({
-    action: z.literal('receipts'),
-    project: messageProject,
-    recipient: messageRecipient,
-    message_id: messageId,
   }).strict(),
 ]);

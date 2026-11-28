@@ -16,7 +16,7 @@ export function createExplicitLesson(rawError, rawFix, projectName, opts) {
     const name = opts?.errorPattern
         ? `lesson-${scope}-${errorPattern}`
         : `lesson-${scope}-${lessonSlug(error)}`;
-    remember({
+    const stored = remember({
         name,
         type: 'lesson_learned',
         observations: [
@@ -36,8 +36,8 @@ export function createExplicitLesson(rawError, rawFix, projectName, opts) {
     });
     getDatabase()
         .prepare('UPDATE entities SET confidence = 1.0 WHERE name = ?')
-        .run(name);
-    return { name };
+        .run(stored.name);
+    return { name: stored.name };
 }
 export { KNOWN_ERROR_PATTERNS } from './project-attribution.js';
 function inferErrorPattern(error) {

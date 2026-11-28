@@ -13,8 +13,6 @@ export declare function resolveBriefingLevel(envValue: string | undefined, confi
 export interface BriefingLevelPolicy {
     global: boolean;
     foreign: boolean;
-    taskState: boolean;
-    index: boolean;
     workPackageNotice: boolean;
 }
 export declare function briefingLevelPolicy(level: BriefingLevel): BriefingLevelPolicy;

@@ -38,7 +38,7 @@ async function bundleCliFromSource(): Promise<void> {
     bundle: true,
     platform: 'node',
     format: 'esm',
-    target: 'node22.13',
+    target: 'node22.16',
     packages: 'bundle',
     external: ['node:*'],
     legalComments: 'none',
@@ -212,17 +212,16 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(exitCode).toBe(0);
   }, 60_000);
 
-  it('refuses a decision with no --why (exit 1, the sentence on stderr, nothing stored) and stores it with --why', () => {
-    const refused = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
-    expect(refused.exitCode).toBe(1);
-    expect(refused.stderr).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(refused.stdout).not.toContain('Stored');
+  it('stores a decision with no --why (exit 0) and with --why', () => {
+    const bare = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere'], { HOME: tmpHome });
+    expect(bare.exitCode, `stderr: ${bare.stderr}`).toBe(0);
 
     const stored = runCli(['remember', '--name=cli-no-why', '--type=decision', '--obs=Use TLS everywhere', '--why=the proxy terminates nothing; revisit if it does'], { HOME: tmpHome });
     expect(stored.exitCode, `stderr: ${stored.stderr}`).toBe(0);
     const db = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const obs = db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'cli-no-why' ORDER BY o.id").all() as { content: string }[];
     db.close();
+    // The second call adds the reason to the decision the first one stored.
     expect(obs.map((o) => o.content)).toEqual(['Use TLS everywhere', 'Why: the proxy terminates nothing; revisit if it does']);
   }, 60_000);
 
@@ -312,12 +311,14 @@ describe('memesh remember CLI: quick-capture form', () => {
     const r = runCli(['remember', '--name=r4', '--obs=new line', '--replace'], { HOME: tmpHome });
     expect(r.exitCode, `stderr: ${r.stderr}`).toBe(0);
     expect(r.stdout).toContain('replaced: the previous version is kept in metadata.replaced_history');
-    // The version is cut to fit: its observation stays, the tag that alone exceeds the cap goes.
+    // The version is cut to fit: its observation and its project tag stay, the tag that alone exceeds the cap goes.
     const read = new MemeshDatabase(path.join(tmpHome, '.memesh', 'knowledge-graph.db'));
     const meta = JSON.parse((read.prepare("SELECT metadata FROM entities WHERE name = 'r4'").get() as { metadata: string }).metadata);
     read.close();
     expect(meta.replaced_history).toHaveLength(1);
-    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [], truncated: true });
+    expect(meta.replaced_history[0]).toMatchObject({ observations: ['old line'], tags: [expect.stringMatching(/^project:/)], truncated: true });
+    // The 70,000-character tag goes; the memory's own project tag (from the directory) may stay.
+    expect((meta.replaced_history[0].tags as string[]).every((tag) => tag.length < 1000)).toBe(true);
     // A normal replace still says it is kept.
     const again = runCli(['remember', '--name=r5', '--type=note', '--obs=old line'], { HOME: tmpHome });
     expect(again.exitCode).toBe(0);
@@ -355,9 +356,21 @@ describe('memesh remember CLI: quick-capture form', () => {
     expect(fixed.exitCode, `stderr: ${fixed.stderr}`).toBe(0);
   }, 60_000);
 
-  it('--name without --replace still needs --type', () => {
+  it('a new --name without --type is refused without saving the memory', () => {
     const r = runCli(['remember', '--name=r3', '--obs=a new memory'], { HOME: tmpHome });
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toContain('--name and --type');
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('There is no memory named "r3" to inherit a type from');
+    expect(r.stderr).toContain('pass `type` to create it');
+    const databasePath = path.join(tmpHome, '.memesh', 'knowledge-graph.db');
+    if (fs.existsSync(databasePath)) {
+      const db = new MemeshDatabase(databasePath, { readOnly: true });
+      try {
+        expect(db.prepare("SELECT name FROM entities WHERE name = 'r3'").all()).toEqual([]);
+      } finally {
+        db.close();
+      }
+    } else {
+      expect(fs.existsSync(databasePath)).toBe(false);
+    }
   }, 60_000);
 });

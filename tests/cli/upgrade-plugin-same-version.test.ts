@@ -29,10 +29,23 @@ function git(cwd: string, ...args: string[]): string {
   }).trim();
 }
 
+/**
+ * Most of this file exercises the swap and the registry write, not who chooses the commit. Those tests run the script
+ * the way a verified update runs it: pinned to the tip of the marketplace's origin (what the old unpinned run used to
+ * fetch and fast-forward to). The tests of the unpinned repair pass MEMESH_UPGRADE_PIN_COMMIT: '' to run it unpinned.
+ */
+function originTip(): Record<string, string> {
+  // A fixture whose origin cannot be read is a broken fixture: running the script unpinned instead would test the repair path
+  // while the test believes it tests the verified one.
+  const tip = git(marketplace, 'ls-remote', 'origin', 'HEAD').split(/\s/)[0];
+  if (!/^[0-9a-f]{40}$/.test(tip)) throw new Error(`the fixture's origin has no readable HEAD (ls-remote said: ${JSON.stringify(tip)})`);
+  return { MEMESH_UPGRADE_PIN_COMMIT: tip };
+}
+
 function runScriptAt(scriptPath: string, envOverride: Record<string, string> = {}): { stdout: string; stderr: string; exitCode: number } {
   const result = spawnSync('bash', [scriptPath], {
     encoding: 'utf8',
-    env: { ...process.env, HOME: home, ...envOverride },
+    env: { ...process.env, HOME: home, ...originTip(), ...envOverride },
   });
   return { stdout: result.stdout ?? '', stderr: result.stderr ?? '', exitCode: result.status ?? 1 };
 }
@@ -129,6 +142,26 @@ function shimSignalParentAfterSuccess(
     '  sleep 0.05',
     'fi',
     'exit "$status"',
+    '',
+  ].join('\n'), { mode: 0o755 });
+  return { PATH: `${shimDir}:${process.env.PATH}` };
+}
+
+/**
+ * Run `js` (node) just before the staged `npm ci`, then run the real npm. These tests used to inject their
+ * mid-run change through the staged package's own postinstall script; the script now installs with --ignore-scripts
+ * (nobody watches a background update, so no dependency may run code), so the change is injected at the same point
+ * through a PATH shim instead.
+ */
+function shimNpmBeforeInstall(js: string): { PATH: string } {
+  const realNpm = execFileSync('which', ['npm'], { encoding: 'utf8' }).trim();
+  const shimDir = fs.mkdtempSync(path.join(home, '.shim-npm-inject-'));
+  const quote = (value: string) => value.replace(/'/g, `'\\''`);
+  fs.writeFileSync(path.join(shimDir, 'inject.js'), js);
+  fs.writeFileSync(path.join(shimDir, 'npm'), [
+    '#!/usr/bin/env bash',
+    `if [ "$1" = ci ]; then node '${quote(path.join(shimDir, 'inject.js'))}'; fi`,
+    `exec '${quote(realNpm)}' "$@"`,
     '',
   ].join('\n'), { mode: 0o755 });
   return { PATH: `${shimDir}:${process.env.PATH}` };
@@ -260,10 +293,14 @@ beforeEach(() => {
   marketplace = path.join(home, '.claude', 'plugins', 'marketplaces', 'pcircle-memesh');
   fs.mkdirSync(marketplace, { recursive: true });
   git(marketplace, 'init', '-q', '-b', 'main');
-  git(marketplace, 'remote', 'add', 'origin', origin);
+  // The address the script requires; git fetches it from the local bare repository.
+  git(marketplace, 'remote', 'add', 'origin', 'https://github.com/PCIRCLE-AI/memesh.git');
+  git(marketplace, 'config', `url.${origin}.insteadOf`, 'https://github.com/PCIRCLE-AI/memesh.git');
   fs.mkdirSync(path.join(marketplace, '.claude-plugin'));
   fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'memesh', version: '4.8.2' }] }));
   fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true }));
+  // The lockfile of the commit decides the dependencies (`npm ci`): a release without one is refused.
+  fs.writeFileSync(path.join(marketplace, 'package-lock.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', lockfileVersion: 3, requires: true, packages: { '': { name: 'fake-memesh', version: '4.8.2' } } }));
   git(marketplace, 'add', '-A');
   git(marketplace, 'commit', '-q', '-m', 'release: prepare v4.8.2');
   git(marketplace, 'push', '-q', '-u', 'origin', 'main');
@@ -537,7 +574,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: headSha });
     const registryBefore = fs.readFileSync(registry, 'utf8');
 
-    const r = runScript(shimInvalidMarketplaceSha());
+    const r = runScript({ ...shimInvalidMarketplaceSha(), MEMESH_UPGRADE_PIN_COMMIT: '' });
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('not a full 40-hex commit');
     expect(fs.existsSync(path.join(live, 'LIVE-MARKER.txt'))).toBe(true);
@@ -558,7 +595,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     expect(fs.existsSync(`${path.dirname(live)}.lock`)).toBe(false);
   });
 
-  posixOnly('a failed npm install leaves the live cache and the registry untouched', () => {
+  posixOnly('a failed npm ci leaves the live cache and the registry untouched', () => {
     // Same-version refresh targets the directory Claude Code is running from.
     // The staged copy must be built next to it and swapped in only after
     // npm install succeeded; otherwise a failure leaves new code with old deps.
@@ -581,7 +618,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     fs.writeFileSync(path.join(shimDir, 'npm'), '#!/usr/bin/env bash\nexit 42\n', { mode: 0o755 });
     const r = runScript({ PATH: `${shimDir}:${process.env.PATH}` });
     expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toContain('npm install failed');
+    expect(r.stderr).toContain('npm ci failed');
     expect(r.stderr).toContain('was not touched');
     expect(fs.existsSync(path.join(live, 'LIVE-MARKER.txt')), 'live cache was replaced').toBe(true);
     expect(fs.existsSync(path.join(live, 'package.json')), 'live cache received staged files').toBe(false);
@@ -866,7 +903,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
     }
 
-    expect(output.stderr).toContain('changed file identity while this upgrade was reading it');
+    expect(output.stderr).toContain('identity-changed');
     expect(output.stderr, 'the safe refusal leaked an internal Node stack').not.toMatch(/\n\s+at\s/);
     expect(fs.lstatSync(registry).isSymbolicLink()).toBe(true);
     expect(fs.readFileSync(target, 'utf8')).toBe(targetBefore);
@@ -886,16 +923,13 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       `fs.renameSync(${JSON.stringify(registry)},${JSON.stringify(target)});`,
       `fs.symlinkSync(${JSON.stringify(target)},${JSON.stringify(registry)});`,
     ].join('');
-    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({
-      name: 'fake-memesh', version: '4.8.2', private: true,
-      scripts: { postinstall: `node -e ${JSON.stringify(swapRegistryPath)}` },
-    }));
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true }));
     fs.writeFileSync(path.join(marketplace, 'fix.js'), 'module.exports = 14;\n');
     git(marketplace, 'add', '-A');
     git(marketplace, 'commit', '-q', '-m', 'fix: registry identity race fixture');
     git(marketplace, 'push', '-q', 'origin', 'main');
 
-    const r = runScript();
+    const r = runScript(shimNpmBeforeInstall(swapRegistryPath));
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('registry file identity changed since this upgrade started');
     expect(fs.lstatSync(registry).isSymbolicLink()).toBe(true);
@@ -921,7 +955,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     const output = { stdout: '', stderr: '' };
     const child = spawn('bash', [SCRIPT], {
       detached: true,
-      env: { ...process.env, HOME: home, ...shimMovePauseAfterSuccess(live, marker) },
+      env: { ...process.env, HOME: home, ...originTip(), ...shimMovePauseAfterSuccess(live, marker) },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
     child.stdout.on('data', (chunk) => { output.stdout += chunk.toString(); });
@@ -967,15 +1001,13 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       `j.plugins["memesh@pcircle-memesh"].unshift(${JSON.stringify(foreign)});`,
       'fs.writeFileSync(p,JSON.stringify(j,null,4));',
     ].join('');
-    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({
-      name: 'fake-memesh', version: '4.8.2', private: true,
-      scripts: { postinstall: `node -e ${JSON.stringify(mutateRegistry)}` },
-    }));
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true }));
+    fs.writeFileSync(path.join(marketplace, 'fix.js'), 'module.exports = 21;\n'); // a commit to install
     git(marketplace, 'add', '-A');
     git(marketplace, 'commit', '-q', '-m', 'fix: registry addition during install');
     git(marketplace, 'push', '-q', 'origin', 'main');
 
-    const r = runScript();
+    const r = runScript(shimNpmBeforeInstall(mutateRegistry));
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('registry changed since this upgrade started');
 
@@ -1008,15 +1040,13 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       'const fs=require("fs");',
       `fs.writeFileSync(${JSON.stringify(registry)}, JSON.stringify({plugins:{"memesh@pcircle-memesh":[{installPath:"/some/unrelated/scope/4.8.2",version:"4.8.2",gitCommitSha:"${'d'.repeat(40)}"}]}}, null, 4));`,
     ].join('');
-    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({
-      name: 'fake-memesh', version: '4.8.2', private: true,
-      scripts: { postinstall: `node -e ${JSON.stringify(mutateRegistry)}` },
-    }));
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true }));
+    fs.writeFileSync(path.join(marketplace, 'fix.js'), 'module.exports = 22;\n'); // a commit to install
     git(marketplace, 'add', '-A');
     git(marketplace, 'commit', '-q', '-m', 'fix: entry replaced mid-upgrade');
     git(marketplace, 'push', '-q', 'origin', 'main');
 
-    const r = runScript();
+    const r = runScript(shimNpmBeforeInstall(mutateRegistry));
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('registry changed since this upgrade started');
     // Proof the mutation actually ran (not a no-op postinstall failing silently):
@@ -1125,7 +1155,7 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     expect(fs.existsSync(`${cacheRoot}.lock`), 'the lock was not released after the detached-HEAD refusal').toBe(false);
   });
 
-  posixOnly('a dirty worktree blocking fast-forward is not misdiagnosed as local commits', () => {
+  posixOnly('a checkout that cannot be fast-forwarded (edited tracked file) does not stop the install: it warns and stays where it is, and nothing is called "local commits"', () => {
     const cacheRoot = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh');
     const live = path.join(cacheRoot, '4.8.2');
     const headSha = git(marketplace, 'rev-parse', 'HEAD');
@@ -1141,13 +1171,13 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true, local: true }));
 
     const r = runScript();
-    expect(r.exitCode).not.toBe(0);
-    expect(r.stderr).toContain('fast-forward failed');
+    // the install uses the release's own files (git archive), so a checkout that cannot be moved does not matter to it
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(r.stderr).toContain('the marketplace checkout was not moved to the release');
     expect(r.stderr).not.toContain('local commits');
     expect(r.stderr).not.toContain('reset --hard');
     expect(fs.readFileSync(path.join(marketplace, 'package.json'), 'utf8')).toContain('"local":true');
-    expect(fs.existsSync(path.join(live, 'LIVE-MARKER.txt'))).toBe(true);
-    expect(fs.existsSync(`${cacheRoot}.lock`), 'the merge failure left the lock behind').toBe(false);
+    expect(fs.existsSync(`${cacheRoot}.lock`), 'the lock was left behind').toBe(false);
   });
 
   posixOnly('releases the lock on both success and failure, so a later run is not blocked', () => {
@@ -1229,15 +1259,13 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
       'j.plugins["memesh@pcircle-memesh"][0].note="mutated-mid-run";',
       `fs.writeFileSync(${JSON.stringify(registry)}, JSON.stringify(j, null, 4));`,
     ].join('');
-    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({
-      name: 'fake-memesh', version: '4.8.2', private: true,
-      scripts: { postinstall: `node -e ${JSON.stringify(mutateRegistry)}` },
-    }));
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true }));
+    fs.writeFileSync(path.join(marketplace, 'fix.js'), 'module.exports = 23;\n'); // a commit to install
     git(marketplace, 'add', '-A');
     git(marketplace, 'commit', '-q', '-m', 'fix: unrelated field mutated mid-upgrade');
     git(marketplace, 'push', '-q', 'origin', 'main');
 
-    const r = runScript();
+    const r = runScript(shimNpmBeforeInstall(mutateRegistry));
     expect(r.exitCode).not.toBe(0);
     expect(r.stderr).toContain('registry changed since this upgrade started');
     const after = JSON.parse(fs.readFileSync(registry, 'utf8'));
@@ -1276,5 +1304,189 @@ describe('upgrade-plugin.sh: same version, different commit', () => {
     const leftovers = fs.readdirSync(path.dirname(live)).filter((n) => n.startsWith('.previous-'));
     expect(leftovers.length, 'the previous cache must still be on disk for the manual recovery command to work').toBe(1);
     expect(fs.existsSync(path.join(path.dirname(live), leftovers[0], 'LIVE-MARKER.txt')), 'the previous cache itself was corrupted, not just left in place').toBe(true);
+  });
+});
+
+describe('upgrade-plugin.sh without a pin is a repair: it puts back what is recorded and installs nothing else', () => {
+  const UNPINNED = { MEMESH_UPGRADE_PIN_COMMIT: '' };
+
+  posixOnly('never installs the newer release that happens to be on the marketplace checkout, and does not move or fetch the checkout', () => {
+    const cacheRoot = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh');
+    const live = path.join(cacheRoot, '4.8.2');
+    const recorded = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: recorded });
+    // A newer release lands on main and on the checkout: nobody has verified it.
+    fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'memesh', version: '9.9.9' }] }));
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'release 9.9.9 (never verified)');
+    git(marketplace, 'push', '-q', 'origin', 'main');
+    const checkoutBefore = git(marketplace, 'rev-parse', 'HEAD');
+    const registryBefore = fs.readFileSync(registry, 'utf8');
+
+    const r = runScript(UNPINNED);
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(fs.existsSync(path.join(cacheRoot, '9.9.9')), 'the unverified newer release was installed').toBe(false);
+    expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
+    expect(git(marketplace, 'rev-parse', 'HEAD')).toBe(checkoutBefore);
+    expect(r.stdout).not.toContain('Fetching');
+  });
+
+  // As root a mode of 000 does not stop a read, so the first read could not be made to fail.
+  const rootUser = typeof process.getuid === 'function' && process.getuid() === 0;
+  it.skipIf(process.platform === 'win32' || rootUser)('a first read of the registry that fails for a moment (and a second that works) does not let the checkout\'s unverified HEAD be installed: it is refused, and nothing changes', () => {
+    const cacheRoot = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh');
+    const live = path.join(cacheRoot, '4.8.2');
+    const recorded = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: recorded });
+    // HEAD holds a newer release nobody verified
+    fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'memesh', version: '9.9.9' }] }));
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'an unverified 9.9.9');
+    const registryBefore = fs.readFileSync(registry, 'utf8');
+    // The registry cannot be read at first; it can again as soon as git is asked to show a file of the checkout (a host that was
+    // busy writing it, say). A script that carries on after the first, failed read reads it a second time, successfully.
+    fs.chmodSync(registry, 0o000);
+    const realGit = execFileSync('which', ['git'], { encoding: 'utf8' }).trim();
+    const shimDir = fs.mkdtempSync(path.join(home, '.shim-git-heal-'));
+    const quote = (value: string) => value.replace(/'/g, `'\\''`);
+    fs.writeFileSync(path.join(shimDir, 'git'), [
+      '#!/usr/bin/env bash',
+      `if [ "$1" = -C ] && [ "$3" = show ]; then chmod 644 '${quote(registry)}'; fi`,
+      `exec '${quote(realGit)}' "$@"`,
+      '',
+    ].join('\n'), { mode: 0o755 });
+    try {
+      const r = runScript({ ...UNPINNED, PATH: `${shimDir}:${process.env.PATH}` });
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain('does not say which commit is installed');
+      expect(r.stdout).not.toContain('Target version');
+      expect(fs.existsSync(path.join(cacheRoot, '9.9.9'))).toBe(false);
+      fs.chmodSync(registry, 0o600);
+      expect(fs.readFileSync(registry, 'utf8')).toBe(registryBefore);
+    } finally { try { fs.chmodSync(registry, 0o600); } catch { /* gone */ } }
+  });
+
+  posixOnly('puts back the RECORDED commit, not the checkout\'s HEAD (same version, different content, live cache deleted)', () => {
+    const cacheRoot = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh');
+    const live = path.join(cacheRoot, '4.8.2');
+    fs.writeFileSync(path.join(marketplace, 'RECORDED-ONLY.txt'), 'in the recorded commit\n');
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'the recorded release');
+    const recorded = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: recorded });
+    // HEAD moves on, keeping the version: this commit was never verified, and must not be what comes back.
+    fs.rmSync(path.join(marketplace, 'RECORDED-ONLY.txt'));
+    fs.writeFileSync(path.join(marketplace, 'HEAD-ONLY.txt'), 'only in the unverified HEAD\n');
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'unverified, same version');
+    fs.rmSync(live, { recursive: true, force: true });
+
+    const r = runScript(UNPINNED);
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(fs.existsSync(path.join(live, 'RECORDED-ONLY.txt'))).toBe(true);
+    expect(fs.existsSync(path.join(live, 'HEAD-ONLY.txt'))).toBe(false);
+    expect(JSON.parse(fs.readFileSync(registry, 'utf8')).plugins['memesh@pcircle-memesh'][0].gitCommitSha).toBe(recorded);
+  });
+
+  posixOnly('refuses when the registry does not record which commit is installed: there is nothing verified to put back', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    writeRegistry({ installPath: live, version: '4.8.2' });
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'must survive\n');
+    const r = runScript(UNPINNED);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('does not record a commit that is available in the marketplace checkout');
+    expect(r.stderr).toContain('memesh update');
+    expect(fs.existsSync(path.join(live, 'LIVE-MARKER.txt'))).toBe(true);
+  });
+
+  posixOnly('refuses when the recorded commit is not in the marketplace checkout', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: 'a'.repeat(40) });
+    const r = runScript(UNPINNED);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('does not record a commit that is available in the marketplace checkout');
+  });
+
+  posixOnly('refuses a recorded commit whose marketplace.json holds another version than the registry says', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    const recorded = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '1.2.3', gitCommitSha: recorded });
+    const r = runScript(UNPINNED);
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('refusing to guess');
+    expect(r.stderr).toContain('memesh update');
+  });
+});
+
+describe('upgrade-plugin.sh without a pin is a repair of the recorded commit only', () => {
+  const unpinned = (extra: Record<string, string> = {}) => runScript({ MEMESH_UPGRADE_PIN_COMMIT: '', ...extra });
+
+  posixOnly.each([
+    ['a registry that cannot be read', (reg: string) => { fs.chmodSync(reg, 0o000); }],
+    ['a registry with a malformed memesh entry', (reg: string) => { fs.writeFileSync(reg, JSON.stringify({ plugins: { 'memesh@pcircle-memesh': 'nope' } })); }],
+    ['a registry with no memesh entry', (reg: string) => { fs.writeFileSync(reg, JSON.stringify({ plugins: {} })); }],
+  ])('%s: nothing verified to put back, so nothing is installed (the checkout\'s unverified commit is never archived)', (_label, breakIt) => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'the running cache\n');
+    const sha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: sha });
+    // origin and the checkout hold a newer, never-verified release
+    fs.writeFileSync(path.join(marketplace, '.claude-plugin', 'marketplace.json'), JSON.stringify({ plugins: [{ name: 'memesh', version: '9.9.9' }] }));
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'an unverified release');
+    breakIt(registry);
+    try {
+      const r = unpinned();
+      expect(r.exitCode).toBe(1);
+      expect(r.stderr).toContain('does not say which commit is installed');
+      expect(r.stdout).not.toContain('Target version');
+      expect(fs.existsSync(path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/9.9.9'))).toBe(false);
+      expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toBe('the running cache\n');
+    } finally { try { fs.chmodSync(registry, 0o600); } catch { /* gone */ } }
+  });
+
+  posixOnly('runtime dependencies are installed with npm ci and --ignore-scripts: no preinstall, postinstall or prepare of the package runs', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    const sha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: sha.slice(0, -1) + (sha.endsWith('0') ? '1' : '0') });
+    const marker = path.join(home, 'SCRIPT-RAN');
+    const hook = `node -e "require('fs').appendFileSync(${JSON.stringify(marker)}, process.env.npm_lifecycle_event + '\\\\n')"`;
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true, scripts: { preinstall: hook, install: hook, postinstall: hook, prepare: hook, prepublish: hook } }));
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'a package with lifecycle scripts');
+    git(marketplace, 'push', '-q', 'origin', 'main');
+    const r = runScript();
+    expect(r.exitCode, r.stderr).toBe(0);
+    expect(fs.existsSync(marker), 'a lifecycle script of the package ran').toBe(false);
+  });
+
+  posixOnly('a release with no lockfile is refused: its dependencies cannot be pinned, and the live cache is not touched', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'the running cache\n');
+    const sha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: sha.slice(0, -1) + (sha.endsWith('0') ? '1' : '0') });
+    git(marketplace, 'rm', '-q', 'package-lock.json');
+    git(marketplace, 'commit', '-q', '-m', 'drop the lockfile');
+    git(marketplace, 'push', '-q', 'origin', 'main');
+    const r = runScript();
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('carries no package-lock.json');
+    expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toBe('the running cache\n');
+  });
+
+  posixOnly('a lockfile that does not match package.json stops the install with npm\'s own words, instead of resolving newer versions and rewriting the lock', () => {
+    const live = path.join(home, '.claude/plugins/cache/pcircle-memesh/memesh/4.8.2');
+    fs.writeFileSync(path.join(live, 'LIVE-MARKER.txt'), 'the running cache\n');
+    const sha = git(marketplace, 'rev-parse', 'HEAD');
+    writeRegistry({ installPath: live, version: '4.8.2', gitCommitSha: sha.slice(0, -1) + (sha.endsWith('0') ? '1' : '0') });
+    fs.writeFileSync(path.join(marketplace, 'package.json'), JSON.stringify({ name: 'fake-memesh', version: '4.8.2', private: true, dependencies: { 'left-pad': '1.3.0' } }));
+    git(marketplace, 'add', '-A');
+    git(marketplace, 'commit', '-q', '-m', 'package.json ahead of its lock');
+    git(marketplace, 'push', '-q', 'origin', 'main');
+    const r = runScript();
+    expect(r.exitCode).toBe(1);
+    expect(r.stderr).toContain('npm ci failed');
+    expect(r.stderr).toMatch(/in sync|lock file|EUSAGE/i);
+    expect(fs.readFileSync(path.join(live, 'LIVE-MARKER.txt'), 'utf8')).toBe('the running cache\n');
   });
 });

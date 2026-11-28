@@ -41,16 +41,16 @@ describe('MCP first tool call carries the update notice (#308: any entry point)'
     expect(second.content).toHaveLength(1);
   });
 
-  it('says nothing when the snooze is active, and nothing on an error result', async () => {
+  it('says nothing when updates are turned off, and nothing on an error result', async () => {
     fs.writeFileSync(path.join(tmpDir, `update-check.${CURRENT_VERSION}.json`), JSON.stringify({
       currentVersion: CURRENT_VERSION, latestVersion: '99.0.0', checkSucceeded: true,
       lastSuccessfulCheckAt: new Date().toISOString(), lastAttemptAt: new Date().toISOString(),
     }));
-    fs.writeFileSync(path.join(tmpDir, 'update-snooze.json'), JSON.stringify({ target: '99.0.0', level: 1, since: new Date().toISOString() }));
+    fs.writeFileSync(path.join(tmpDir, 'config.json'), JSON.stringify({ updateCheck: false }));
     const quiet = await handleTool('recall', { cross_project: true, query: 'anything' });
     expect(quiet.content).toHaveLength(1);
     resetFirstCallNoticeForTests();
-    fs.rmSync(path.join(tmpDir, 'update-snooze.json'));
+    fs.rmSync(path.join(tmpDir, 'config.json'));
     const failed = await handleTool('recall', { limit: 'not-a-number' });
     expect(failed.isError).toBe(true);
     expect(failed.content).toHaveLength(1);

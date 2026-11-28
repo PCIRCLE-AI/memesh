@@ -4,6 +4,29 @@ import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { hookTargetsFromManifest, validateArtifactPaths, validateHookTargets, validatePluginEntrypoints } from '../scripts/check-plugin-hook-artifact.mjs';
+import { parsePackResult } from '../scripts/lib/npm-bin.mjs';
+
+describe('single-package npm pack JSON', () => {
+  const entry = { filename: 'memesh.tgz', files: [{ path: 'scripts/hooks/messages.js' }] };
+
+  it.each([
+    ['array', [entry]],
+    ['direct', entry],
+    ['package-name keyed', { '@pcircle/memesh': entry }],
+  ])('reads the %s format', (_name, report) => {
+    expect(parsePackResult(JSON.stringify(report))).toEqual(entry);
+  });
+
+  it.each([null, [], {}, [entry, entry], { first: entry, second: entry }, ['not a package']])(
+    'rejects an empty, malformed or ambiguous report: %j', (report) => {
+      expect(() => parsePackResult(JSON.stringify(report))).toThrow();
+    },
+  );
+
+  it('rejects invalid JSON', () => {
+    expect(() => parsePackResult('{')).toThrow();
+  });
+});
 
 describe('plugin hook artifact integrity', () => {
   let root: string;
@@ -84,7 +107,7 @@ describe('plugin hook artifact integrity', () => {
         cwd: repoRoot, encoding: 'utf8', shell: process.platform === 'win32', timeout: 120000,
       });
       expect(pack.status, pack.stderr).toBe(0);
-      const tarball = path.join(packDir, JSON.parse(pack.stdout)[0].filename);
+      const tarball = path.join(packDir, parsePackResult(pack.stdout).filename);
       const untar = spawnSync('tar', ['-xzf', tarball, '-C', packDir], { encoding: 'utf8', timeout: 60000 });
       expect(untar.status, untar.stderr).toBe(0);
       const packageRoot = path.join(packDir, 'package');

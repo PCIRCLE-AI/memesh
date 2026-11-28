@@ -52,11 +52,6 @@ describe('every declared hook states its own budget', () => {
     expect(untimed, 'a hook with no timeout can hold up the user for the harness default').toEqual([]);
   });
 
-  it('keeps Codex SessionEnd within its host timeout ceiling', () => {
-    const sessionEnd = declaredHooks().filter((hook) => hook.event === 'SessionEnd');
-    expect(sessionEnd, 'fixture: SessionEnd is not declared').toHaveLength(1);
-    expect(sessionEnd[0].timeout, 'Codex clamps SessionEnd hooks above 3 seconds').toBeLessThanOrEqual(3);
-  });
 });
 
 describe('the SQLite lock wait fits inside the smallest budget', () => {
@@ -213,25 +208,4 @@ describe('the read-only hooks apply the same cap they cannot get from openHookDb
       `pre-edit-recall.js paid ${targetWaitedMs}ms vs guard-check.js's own ${referenceWaitedMs}ms single-wait reference (measured in this same run) — looks like more than one busy_timeout wait`,
     ).toBeLessThan(referenceWaitedMs * 1.6);
   }, 180_000);
-});
-
-describe('the PreCompact budget is the external one', () => {
-  it('declares the timeout the harness enforces', () => {
-    // pre-compact.js used to arm `setTimeout(() => process.exit(0), 10_000)
-    // .unref()` as well. It could not fire: everything after stdin's `end`
-    // in that file is one synchronous block, so the event loop never gets a
-    // turn between the handler starting and the process exiting, and a JS
-    // timer cannot interrupt the blocking SQLite call it was written for.
-    //
-    // Its REMOVAL is deliberately not pinned here. The only assertion
-    // available would be `source.not.toMatch(/setTimeout\(/)` — a check on
-    // source text, which this repository has learned to distrust: it passes
-    // for dead code and fails on a comment (it did, on the comment three
-    // lines above this one). A timer that can never fire has no observable
-    // behaviour to assert in either direction. What IS assertable is the
-    // timeout that replaced it, which lives outside the process.
-    const preCompact = declaredHooks().find((h) => h.event === 'PreCompact');
-    expect(preCompact, 'fixture: PreCompact is not declared at all').toBeDefined();
-    expect(preCompact?.timeout, 'the external timeout is gone').toBe(10);
-  });
 });

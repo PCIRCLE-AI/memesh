@@ -1,8 +1,7 @@
-import { SESSION_HANDOFF_TYPE } from './session-handoff.js';
 import { DECISION_TYPES } from './work-topology.js';
 export const NOISE_TYPES = new Set([
     'session_keypoint', 'commit', 'weekly-summary', 'session-insight',
-    'session-summary', 'session_identity', 'session-identity', SESSION_HANDOFF_TYPE,
+    'session-summary', 'session_identity', 'session-identity',
 ]);
 export const RADAR_AXES = [
     { axis: 'lessons', types: ['lesson_learned', 'lesson', 'mistake'] },

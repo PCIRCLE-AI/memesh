@@ -11,8 +11,6 @@ export interface RenameProjectResult {
     renamed: number;
     applied: boolean;
     affectedNames: string[];
-    messageRows: number;
-    messageRowsBlocked: number;
     proposalRows: number;
 }
 export declare function listProjectTags(db?: MemeshDatabase): ProjectTagCount[];

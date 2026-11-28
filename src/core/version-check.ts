@@ -1,6 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { execFile } from 'child_process';
+import { requireNpmInvocation } from './npm-launch.js';
 import { memeshDir } from './paths.js';
 import { compareSemVerPrecedence, normalizeRegistryVersion, parseSemVer } from './semver.js';
 
@@ -344,7 +345,8 @@ function writeStoredUpdateCheck(
     // fail, clean up the temp file and bail (caller's catch
     // swallows since cache writes are best-effort).
     const tempPath = `${targetPath}.${process.pid}.${Math.random().toString(36).slice(2, 10)}.tmp`;
-    fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2));
+    // Owner-only whatever the caller's umask: rename keeps the temp file's mode.
+    fs.writeFileSync(tempPath, JSON.stringify(stored, null, 2), { mode: 0o600 });
     try {
       fs.renameSync(tempPath, targetPath);
     } catch (renameErr) {
@@ -421,9 +423,10 @@ export async function checkForUpdate(
   try {
     const [latestOutcome, deprecationOutcome] = await Promise.all([
       new Promise<LatestOutcome>((resolve) => {
+        const npm = requireNpmInvocation(['show', '@pcircle/memesh', 'version']);
         execFileImpl(
-          'npm',
-          ['show', '@pcircle/memesh', 'version'],
+          npm.command,
+          npm.args,
           { timeout: timeoutMs },
           (err, stdout) => {
             if (err) {
@@ -438,9 +441,10 @@ export async function checkForUpdate(
         );
       }),
       new Promise<DeprecationOutcome>((resolve) => {
+        const npm = requireNpmInvocation(['view', `@pcircle/memesh@${currentVersion}`, 'deprecated']);
         execFileImpl(
-          'npm',
-          ['view', `@pcircle/memesh@${currentVersion}`, 'deprecated'],
+          npm.command,
+          npm.args,
           { timeout: timeoutMs },
           (err, stdout, stderr) => {
             if (err) {
@@ -497,7 +501,7 @@ export async function checkForUpdate(
     if (latestOutcome.outcome === 'ok') {
       // Version lookup succeeded. The deprecation sub-call's outcome
       // is surfaced via lastError (and via the version-aware
-      // staleness gate in decideAutoUpdateHook), so partial failure
+      // staleness gate), so partial failure
       // doesn't have to suppress the version-fresh signal. Hiding
       // latestVersion just because deprecation timed out would tell
       // the user "update unavailable" while in fact `memesh update`

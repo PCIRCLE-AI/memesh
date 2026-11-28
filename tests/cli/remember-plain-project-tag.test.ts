@@ -24,7 +24,7 @@ describe('#511 memesh remember with a plain-name project tag', () => {
   });
   afterEach(() => {
     removeTempDir(home);
-    fs.rmSync(repo, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 });
+    removeTempDir(repo);
   });
 
   function run(args: string[]): { status: number; stdout: string; stderr: string } {

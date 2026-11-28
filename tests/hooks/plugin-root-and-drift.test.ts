@@ -95,12 +95,10 @@ describe('hook → dist dynamic imports must be Windows-safe', () => {
     });
   }
 
-  it('importFromPluginRoot loads a real module cross-platform', async () => {
-    // Prove the helper actually resolves + loads, using this repo as its own
-    // plugin root and a dist module that exists after `npm run build`. If dist
-    // is absent (pre-build source checkout), skip rather than false-fail.
-    const repoRoot = path.resolve(__dirname, '..', '..');
-    if (!fs.existsSync(path.join(repoRoot, 'dist', 'core', 'config.js'))) return;
+  // Prove the helper actually resolves + loads, using this repo as its own plugin root and a dist module that exists
+  // after `npm run build`. In a pre-build source checkout it shows as skipped, not passed.
+  const repoRoot = path.resolve(__dirname, '..', '..');
+  it.skipIf(!fs.existsSync(path.join(repoRoot, 'dist', 'core', 'config.js')))('importFromPluginRoot loads a real module cross-platform', async () => {
     const mod = await importFromPluginRoot(repoRoot, 'dist/core/config.js');
     expect(typeof mod.readConfig).toBe('function');
   });

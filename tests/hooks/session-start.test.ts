@@ -5,10 +5,10 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { pathToFileURL } from 'node:url';
-import { expectPrivateDir, expectPrivateFile } from '../helpers/permissions.js';
+import { expectPrivateDir, expectPrivateFile, windowsAclFixture } from '../helpers/permissions.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
 // The cap the hook itself imports — a literal here would drift from it.
-import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { TOPOLOGY_CANDIDATE_CAP } from '../../src/core/work-topology.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { recallListName } from '../../scripts/hooks/_stop-notes.js';
@@ -17,14 +17,10 @@ const require = createRequire(import.meta.url);
 // Non-git identity is basename + real-path hash; derive seeds through the
 // hook's own mirror so the seeded tag and the hook's derived tag cannot
 // disagree (the rule itself is pinned in tests/core/project-identity.test.ts).
-const { getProjectName: mirrorProjectName, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
+const { getProjectName: mirrorProjectName, getProjectIds: mirrorProjectIds, WORK_PACKAGE_NOTICE } = require('../../scripts/hooks/_shared.js');
 const projTag = (name: string) => `project:${mirrorProjectName('/tmp/' + name)}`;
 
-// The fresh task state and the durable-memory index are `standard`-level
-// content. The default level is `minimal`, which injects neither, so a test
-// whose subject is one of them — or the gate that keeps a memory out of the
-// ranked block AND the index — runs at `standard` on purpose instead of leaning
-// on the default.
+// Pin the level explicitly when a test exercises standard.
 const STANDARD = { MEMESH_BRIEFING: 'standard' } as const;
 
 // The other direction: a test about what happens when NOTHING sets the level
@@ -92,7 +88,7 @@ describe('Feature: Session Start Hook', () => {
    *  retains only a 120-character audit prefix. The handle regex is anchored to the end
    *  of a line, so a `[mem:N]` written inside an observation is not counted. */
   function rankedIds(session: NonNullable<ReturnType<typeof readLatestSessionFile>>): Set<number> {
-    const beforeIndex = renderedContexts.get(session.sessionId)!.split('Index of durable memories for')[0];
+    const beforeIndex = renderedContexts.get(session.sessionId)!.split('Recently written memories')[0];
     return new Set([...beforeIndex.matchAll(/ \[mem:(\d{1,10})\]$/gm)].map((m) => Number(m[1])));
   }
 
@@ -243,8 +239,10 @@ describe('Feature: Session Start Hook', () => {
       // The dedup KEY must not be there. Measured over ten real sessions
       // under the old name-first format, the number of injected memories the
       // transcript went on to mention was zero — the names were pure cost.
-      expect(injected).not.toContain('oauth-pkce-decision');
-      expect(injected).not.toContain('lesson-flaky-timeout');
+      // (The recent index after it lists a memory by its title, else its name, as measured.)
+      const ranked = injected.split('Recently written memories')[0];
+      expect(ranked).not.toContain('oauth-pkce-decision');
+      expect(ranked).not.toContain('lesson-flaky-timeout');
 
       // Headings describe the WORK, not where the row came from, and name the
       // project by its LABEL: the project id ends in a 32-hex routing hash,
@@ -367,7 +365,7 @@ describe('Feature: Session Start Hook', () => {
       // correctly deduped block.
       // Counted in the ranked part only: the durable-memory index (#323)
       // closes the block and lists the same lesson again by design.
-      const ranked = injected.split('Index of durable memories for')[0];
+      const ranked = injected.split('Recently written memories')[0];
       const occurrences = ranked.split('raising the vitest timeout').length - 1;
       expect(occurrences).toBe(1);
     });
@@ -514,68 +512,21 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames).toContain('global-item');
   });
 
-  it('Regression: generic SessionStart does not leak unread recipient activity', async () => {
-    // A REAL schema and a REAL send. A hand-rolled deliveries row cannot be
-    // inserted at all — the schema enforces the FK to agent_messages — so a
-    // fixture that fakes the tables proves nothing about this path.
-    const { openDatabase, closeDatabase, getDatabase } = await import('../../src/db.js');
-    const { executeAgentMessageAction } = await import('../../src/transports/agent-messaging.js');
-    const { getProjectName } = await import('../../src/core/paths.js');
-    // The same derivation the hook uses, not a scrape of its banner.
-    const project = getProjectName('/tmp/testproj');
-
-    openDatabase(dbPath);
-    const prevSocket = process.env.MEMESH_ROUTER_SOCKET;
-    process.env.MEMESH_ROUTER_SOCKET = path.join(testDir, 'no-router.sock');
-    try {
-      const sent = await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project, sender: 'codex-reviewer', recipient: 'claude-implementer',
-        idempotency_key: 'hook-unread-1', payload: { text: 'review done' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' }) as { message_id: string };
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'send', project, sender: 'codex-reviewer', recipient: 'gemini-reviewer',
-        idempotency_key: 'hook-unread-1b', payload: { text: 'another review done' }, content_type: 'application/json',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      closeDatabase();
-
-      const generic = runHook({ cwd: '/tmp/testproj' });
-      const ctx1 = String((generic.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
-      expect(ctx1).not.toContain('message waiting');
-      expect(ctx1).not.toContain('claude-implementer');
-      expect(ctx1).not.toContain('gemini-reviewer');
-
-      openDatabase(dbPath);
-      await executeAgentMessageAction(getDatabase(), {
-        action: 'intake', project, recipient: 'claude-implementer', message_id: sent.message_id,
-        intake_state: 'fetched', idempotency_key: 'hook-intake-1',
-      }, { transport: 'mcp', sourceHost: 'test-host' });
-      closeDatabase();
-
-      const fetched = runHook({ cwd: '/tmp/testproj' });
-      expect(String((fetched.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '')).not.toContain('message waiting');
-    } finally {
-      try { closeDatabase(); } catch { /* already closed */ }
-      if (prevSocket === undefined) delete process.env.MEMESH_ROUTER_SOCKET; else process.env.MEMESH_ROUTER_SOCKET = prevSocket;
-    }
-  });
-
-  // #474: SessionStart tells an agent its own messaging address whenever a
-  // recipient resolves, in both the model-visible field (so the agent can
-  // actually use it as `sender`) and the human-visible one (the same
-  // convention `recipientRejectionLine` already follows). No database is
-  // seeded — the no-database exit path is one of the four `output()` call
-  // sites the address line was wired into, and the cheapest to exercise.
-  it('states the session\'s own messaging address once a recipient resolves', () => {
-    const project = mirrorProjectName('/tmp/testproj');
+  // Conversation messages have their own whole-body hook. A stale principal
+  // override must not restore the retired address/protocol or hide memories.
+  it('preserves project memory without a retired principal address when a recipient is configured', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('project-memory', 'decision');
+    db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(1, 'PROJECT_MEMORY_HEAD complete middle PROJECT_MEMORY_TAIL');
+    db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('testproj'));
+    db.close();
     const out = runHook({ cwd: '/tmp/testproj' }, { MEMESH_RECIPIENT: 'claude-implementer' });
     const ctx = String((out.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '');
-    expect(ctx).toContain(`project "${project}"`);
-    expect(ctx).toContain('recipient "claude-implementer"');
-    expect(ctx).toContain('use "claude-implementer" as sender');
-    expect(ctx).toContain('message discover');
-    // Same line in the human-visible banner too, matching the existing
-    // recipientRejectionLine/channelFlagWarningLine convention.
-    expect(out.systemMessage as string).toContain('recipient "claude-implementer"');
+    expect(ctx).toContain('[decision] PROJECT_MEMORY_HEAD complete middle PROJECT_MEMORY_TAIL');
+    for (const text of [ctx, String(out.systemMessage ?? '')]) {
+      expect(text).not.toContain('claude-implementer');
+      expect(text).not.toMatch(/messaging address|as sender|message (?:discover|poll|fetch|intake)/i);
+    }
   });
 
   it('states no messaging address when no recipient resolves', () => {
@@ -619,29 +570,65 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames, 'global memory must reach a project it was never tagged with').toContain('always-memesh-on-failure');
   });
 
-  it('#323: the injected block closes with the durable-memory index, and its ids are recorded as shown', () => {
+  /** The stored instant the same-time ordering tests give every row (UTC, in the past). */
+  const TIED_AT = '2026-01-01 00:00:00';
+
+  it('the injected block closes with the recent index — every memory by title and handle, bookkeeping left out — and its ids are recorded as shown', () => {
     const db = createTestDb();
-    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
-    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    // One fixed instant for every row: the tie is real, not a second boundary the wall clock may cross.
+    const ins = db.prepare(`INSERT INTO entities (name, type, created_at) VALUES (?, ?, '${TIED_AT}')`);
+    const obs = db.prepare(`INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, '${TIED_AT}')`);
     const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
-    const d = ins.run('idx-decision', 'decision').lastInsertRowid as number;
-    obs.run(d, 'Keep the index capped at forty lines');
-    tag.run(d, projTag('indexproj'));
+    const older = ins.run('idx-decision-older', 'decision').lastInsertRowid as number;
+    obs.run(older, 'Keep the index capped at forty lines');
+    tag.run(older, projTag('indexproj'));
+    const newer = ins.run('idx-decision-newer', 'decision').lastInsertRowid as number;
+    obs.run(newer, 'Keep the ranked block short');
+    tag.run(newer, projTag('indexproj'));
     const c = ins.run('commit-idx', 'commit').lastInsertRowid as number;
     obs.run(c, 'chore: bump the lockfile');
     tag.run(c, projTag('indexproj'));
     db.close();
 
-    const output = runHook({ cwd: '/tmp/indexproj' }, STANDARD);
+    const output = runHook({ cwd: '/tmp/indexproj' }, { ...STANDARD, MEMESH_SESSION_LIMIT: '1' });
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     // The heading names the project by its label; the hashed id stays in the tag.
-    const section = injected.split('Index of durable memories for "indexproj" (newest first):')[1];
+    const section = injected.split('Recently written memories in "indexproj" (newest first; recall a [mem:id] to read one):')[1];
     expect(section, 'index section present').toBeDefined();
-    expect(section).toContain(`- [decision] Keep the index capped at forty lines (no reason recorded) [mem:${d}]`);
-    expect(section).not.toContain('bump the lockfile');
-    expect(section).toMatch(/\(index cost: 1 line, \d+ bytes ≈ \d+ tokens; cap 40 lines \/ 3072 bytes\)/);
+    // These rows have no title column: the line carries the name, as the index was judged.
+    expect(section.split('\n').filter((l) => l.startsWith('- '))).toEqual([
+      // Written in the same second: the later write is listed first.
+      `- idx-decision-newer [mem:${newer}]`,
+      `- idx-decision-older [mem:${older}]`,
+    ]);
+    expect(section).not.toContain(`[mem:${c}]`);
     const session = readLatestSessionFile();
-    expect(session!.entityIds).toContain(d);
+    expect(session!.entityIds).toEqual(expect.arrayContaining([older, newer]));
+  });
+
+  it('shows at most ten user conversation titles and never an assistant conversation title', () => {
+    const db = createTestDb();
+    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
+    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
+    const project = projTag('conversation-index');
+    for (let i = 0; i < 11; i++) {
+      const id = ins.run(`user-conversation-${i}`, 'conversation').lastInsertRowid as number;
+      obs.run(id, `User conversation ${i}`);
+      tag.run(id, project);
+      tag.run(id, 'role:user');
+    }
+    const assistant = ins.run('assistant-conversation', 'conversation').lastInsertRowid as number;
+    obs.run(assistant, 'Assistant conversation');
+    tag.run(assistant, project);
+    tag.run(assistant, 'role:assistant');
+    db.close();
+
+    const output = runHook({ cwd: '/tmp/conversation-index' }, STANDARD);
+    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
+    const section = injected.split('Recent user conversation titles:')[1].split('Recently written memories')[0];
+    expect(section.match(/^- /gm)).toHaveLength(10);
+    expect(section).not.toContain('assistant-conversation');
   });
 
   it('#323: a memory shown ONLY through the index is recorded as injected, so citing it is credited', () => {
@@ -677,7 +664,7 @@ describe('Feature: Session Start Hook', () => {
     for (const id of indexOnly) expect(session.entityIds).toContain(id);
   });
 
-  it('#323: the hook index excludes archived, other-project and global memories', () => {
+  it('the hook index keeps this project\'s memories, never archived or other-project ones, global or not', () => {
     const db = createTestDb();
     db.exec("ALTER TABLE entities ADD COLUMN status TEXT NOT NULL DEFAULT 'active'");
     db.exec("ALTER TABLE entities ADD COLUMN namespace TEXT DEFAULT 'personal'");
@@ -691,37 +678,25 @@ describe('Feature: Session Start Hook', () => {
       return id;
     };
     const kept = add('kept', 'active', 'personal', 'scopeproj', 'Kept project decision');
-    add('archived', 'archived', 'personal', 'scopeproj', 'Archived project decision');
-    add('global', 'active', 'global', 'scopeproj', 'Global tagged decision');
-    add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
+    const archived = add('archived', 'archived', 'personal', 'scopeproj', 'Archived project decision');
+    const global = add('global', 'active', 'global', 'foreignproj', 'Global decision of another project');
+    const foreign = add('foreign', 'active', 'personal', 'foreignproj', 'Other project decision');
     db.close();
 
     const output = runHook({ cwd: '/tmp/scopeproj' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const section = injected.split('Index of durable memories for')[1] ?? '';
-    expect(section).toContain(`Kept project decision (no reason recorded) [mem:${kept}]`);
-    expect(section).not.toContain('Archived project decision');
-    expect(section).not.toContain('Global tagged decision');
-    expect(section).not.toContain('Other project decision');
-    expect(section).toMatch(/\(index cost: 1 line,/);
+    const section = injected.split('Recently written memories')[1] ?? '';
+    expect(section).toContain(`- kept [mem:${kept}]`);
+    expect(section).not.toContain(`[mem:${global}]`);
+    expect(section).not.toContain(`[mem:${archived}]`);
+    expect(section).not.toContain(`[mem:${foreign}]`);
   });
 
-  // The `truncated` contract, guarded ON THE HOOK PATH. `src/core/briefing.ts`
-  // computes the same flag and has its own test, but this file's copy at
-  // `scripts/hooks/session-start.js` is a SECOND, parallel computation, and
-  // mutating it to `{ truncated: false }` left this suite fully green. That
-  // flag is the whole difference between `N more` and `N+ more` — between a
-  // total and a floor — and on this path the line goes straight into an
-  // agent's injected context. So the assertion has to drive the real hook
-  // process, exactly as every other test here does; importing
-  // `buildBriefingIndex` would re-test the core path and leave the hook's
-  // copy as unguarded as it was. Both directions are pinned, because a
-  // hardcoded `true` lies in the other direction just as loudly.
   function seedIndexRows(project: string, count: number): void {
     const db = createTestDb();
     db.exec('BEGIN');
-    const ins = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)');
-    const obs = db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)');
+    const ins = db.prepare(`INSERT INTO entities (name, type, created_at) VALUES (?, ?, '${TIED_AT}')`);
+    const obs = db.prepare(`INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, '${TIED_AT}')`);
     const tag = db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)');
     for (let i = 0; i < count; i++) {
       const id = ins.run(`cap-${i}`, 'decision').lastInsertRowid as number;
@@ -732,31 +707,14 @@ describe('Feature: Session Start Hook', () => {
     db.close();
   }
 
-  /** The index's own "there is more" line, whatever its count. */
-  const MORE_LINE = /- (\d+)(\+?) more — memesh recall/;
-
-  it('#323: under the candidate cap the hook reports the overflow as an exact count', () => {
-    // Comfortably over INDEX_MAX_LINES (40) so a `more` line exists at all,
-    // and far under INDEX_CANDIDATE_CAP so nothing was cut off by the query.
+  it('the hook index lists the 30 most recently written memories, newest first', () => {
     seedIndexRows('capunder', 60);
     const output = runHook({ cwd: '/tmp/capunder' }, STANDARD);
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const section = injected.split('Index of durable memories for')[1] ?? '';
-    const m = section.match(MORE_LINE);
-    expect(m, 'fixture did not overflow the rendered window, so there is no more-line to check').not.toBeNull();
-    expect(m![2], 'an exact remainder was marked as a floor').toBe('');
-  }, 30000);
-
-  it('#323: at the candidate cap the hook marks the overflow as a floor, not a total', () => {
-    // Exactly INDEX_CANDIDATE_CAP rows: the hook's query returns the cap, so
-    // rows beyond it exist unseen and every count downstream is a lower bound.
-    seedIndexRows('capover', INDEX_CANDIDATE_CAP);
-    const output = runHook({ cwd: '/tmp/capover' }, STANDARD);
-    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    const section = injected.split('Index of durable memories for')[1] ?? '';
-    const m = section.match(MORE_LINE);
-    expect(m, 'the capped fixture rendered no more-line at all').not.toBeNull();
-    expect(m![2], 'a truncated count was reported as if it were the total').toBe('+');
+    const section = injected.split('Recently written memories')[1] ?? '';
+    const ids = [...section.matchAll(/ \[mem:(\d+)\]$/gm)].map((m) => Number(m[1]));
+    // Same timestamp for every row: keep the last 30 writes, newest id first.
+    expect(ids).toEqual(Array.from({ length: 30 }, (_, i) => 60 - i));
   }, 30000);
 
   it('#323: a failed index read says so and records an error — never the empty-state line', () => {
@@ -789,23 +747,27 @@ describe('Feature: Session Start Hook', () => {
     const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
     expect(injected).toContain('A ranked decision');
     // Named by its label, like every other heading: the id's routing hash is not repeated.
-    expect(injected).toMatch(/Index of durable memories for "brokenidx": could not be read this session — run `memesh doctor`\./);
+    expect(injected).toMatch(/Recently written memories for "brokenidx": could not be read this session — run `memesh doctor`\./);
     expect(injected).not.toMatch(/~[0-9a-f]{32}/);
-    expect(injected).not.toContain('No durable memories');
+    expect(injected).not.toContain('most recent memories all look out of date');
     const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
       .trim().split('\n').map((l) => JSON.parse(l));
     // The broken table fails the session-handoff read too; each read records
     // its own labelled error, and this test is about the index's.
-    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error' && String(o.reason).startsWith('briefing-index:'));
+    const err = outcomes.find((o) => o.hook === 'session-start' && o.outcome === 'error' && String(o.reason).startsWith('recent-index:'));
     expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^handoff: uncaught /.test(String(o.reason)))).toBe(true);
     expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^decisions: uncaught /.test(String(o.reason))),
       'a failed decisions-first read must be recorded, not silent').toBe(true);
+    // The shared pool (other projects' preferences) reads the same column: its failure is
+    // recorded under its own label too. Labelled `lessons` it was stderr-only.
+    expect(outcomes.some((o) => o.hook === 'session-start' && o.outcome === 'error' && /^shared: uncaught /.test(String(o.reason))),
+      'a failed shared-pool read must be recorded, not silent').toBe(true);
     expect(run.stderr).toContain('[memesh session-start] decisions:');
     // The locus plus a LABEL, never the exception's message. This file is
     // permanent, exportable and meant to be pasteable into an issue, and the
     // message SQLite produced here quotes the failing statement; `reason`
     // passes through redactSecrets but not redactUserPaths.
-    expect(err?.reason).toMatch(/^briefing-index: uncaught [A-Za-z][\w-]*$/);
+    expect(err?.reason).toMatch(/^recent-index: uncaught [A-Za-z][\w-]*$/);
     expect(err?.reason, 'the raw exception message reached the outcome file').not.toContain('no such column');
     expect(err?.reason).not.toContain('/');
     // The full text is still on stderr, so nothing is lost.
@@ -837,7 +799,7 @@ describe('Feature: Session Start Hook', () => {
     expect(injected).toContain('Decision with no metadata recorded');
   });
 
-  it('#323: a project with no durable memories injects the empty-state line, not nothing', () => {
+  it('a project with nothing in scope gets no index section, and no block at all when nothing else is there', () => {
     const db = createTestDb();
     const c = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run('commit-only', 'commit').lastInsertRowid as number;
     db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(c, 'fix: something');
@@ -845,9 +807,8 @@ describe('Feature: Session Start Hook', () => {
     db.close();
 
     const output = runHook({ cwd: '/tmp/emptyindexproj' }, STANDARD);
-    const injected = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
-    expect(injected).toContain('- No durable memories (decisions, lessons, patterns, references) for "emptyindexproj" yet.');
-    expect(injected, 'the routing hash must not reach the heading').not.toMatch(/~[0-9a-f]{32}/);
+    const injected = (output.hookSpecificOutput as { additionalContext?: string } | undefined)?.additionalContext ?? '';
+    expect(injected).not.toContain('Recently written memories');
   });
 
   // The line the terminal shows a first-time user on a project with no memories
@@ -958,6 +919,17 @@ describe('Feature: Session Start Hook', () => {
     expect(session?.entityNames).toContain('legacy-entity');
   });
 
+  it('reads an untagged legacy task state without a status column', () => {
+    const db = createTestDb();
+    db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(
+      `task-state:${mirrorProjectName('/tmp/anyproject')}`, 'task-state',
+      JSON.stringify({ task_state: { goal: 'LEGACY_READONLY_TASK', stated_at: { goal: new Date().toISOString() } } }),
+    );
+    db.close();
+    const output = runHook({ cwd: '/tmp/anyproject' }, STANDARD);
+    expect((output.hookSpecificOutput as { additionalContext: string }).additionalContext).toContain('LEGACY_READONLY_TASK');
+  });
+
   it('Scenario: Always exits with valid JSON output on invalid input', () => {
     const hookPath = path.resolve('scripts/hooks/session-start.js');
     const result = execFileSync('node', [hookPath], {
@@ -985,6 +957,7 @@ describe('Feature: Session Start Hook', () => {
     const other = path.join(dir, recallListName('other-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
     fs.writeFileSync(other, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own, other]);
     const legacy = path.join(testDir, 'session-recalled-files.json');
     fs.writeFileSync(legacy, JSON.stringify(['/src/auth.ts']), 'utf8');
 
@@ -1002,6 +975,7 @@ describe('Feature: Session Start Hook', () => {
     fs.mkdirSync(dir, { recursive: true });
     const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own]);
     const loader = path.join(testDir, 'fault.mjs');
     fs.writeFileSync(loader, `import fs from 'node:fs';
 import { syncBuiltinESMExports } from 'node:module';
@@ -1036,6 +1010,7 @@ syncBuiltinESMExports();
     fs.mkdirSync(dir, { recursive: true });
     const own = path.join(dir, recallListName('this-session'));
     fs.writeFileSync(own, JSON.stringify(['/src/auth.ts']), 'utf8');
+    if (process.platform === 'win32') makeWindowsPathsPrivate([dir, own]);
 
     runHook({ cwd: '/tmp/anyproject', session_id: 'this-session', agent_type: 'x', source: 'compact' });
 
@@ -1064,12 +1039,30 @@ syncBuiltinESMExports();
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(1, projTag('permtest'));
     db.close();
 
-    runHook({ cwd: '/tmp/permtest' });
+    const input = { cwd: '/tmp/permtest', session_id: 'permtest' };
+    runHook(input);
 
     const [sessionFile] = fs.readdirSync(sessionsDir).filter((file) => file.endsWith('.json'));
     expect(sessionFile).toBeTruthy();
     expectPrivateDir(sessionsDir);
-    expectPrivateFile(path.join(sessionsDir, sessionFile));
+    const file = path.join(sessionsDir, sessionFile);
+    expectPrivateFile(file);
+    if (process.platform === 'win32') {
+      runHook(input);
+      expectPrivateFile(file);
+      const original = fs.readFileSync(file, 'utf8');
+      const acl = windowsAclFixture(file, 'deny');
+      try {
+        runHook(input);
+        expect(fs.readFileSync(file, 'utf8')).toBe(original);
+        expect(windowsAclFixture(file, 'read')).toEqual(acl);
+        expect(fs.readdirSync(sessionsDir)).toEqual([sessionFile]);
+        const outcomes = fs.readFileSync(path.join(testDir, 'hook-outcomes.jsonl'), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        expect(outcomes).toContainEqual(expect.objectContaining({ hook: 'session-start', outcome: 'error', reason: expect.stringContaining('sessions-write:') }));
+      } finally {
+        windowsAclFixture(file, 'restore');
+      }
+    }
   });
 
   it('Scenario: Scoring — top entities by score appear first in the persisted entityNames list', () => {
@@ -1193,7 +1186,8 @@ syncBuiltinESMExports();
   // to keep the OLDEST of such a tie, and the lesson query had no ORDER BY at all,
   // so a new session never saw the newest memories.
   describe('Scenario: equal scores resolve newest-first (#401)', () => {
-    const seedTied = (db: Database, count: number, type = 'commit', prefix = 'tied') => {
+    // A knowledge-layer type: commits are mechanical capture and take none of the project's slots.
+    const seedTied = (db: Database, count: number, type = 'note', prefix = 'tied') => {
       for (let i = 1; i <= count; i++) {
         db.prepare("INSERT INTO entities (name, type, confidence, status) VALUES (?, ?, 0.9, 'active')").run(`${prefix}-${i}`, type);
         db.prepare('INSERT INTO observations (entity_id, content) VALUES (?, ?)').run(i, `observation ${i}`);
@@ -1349,7 +1343,7 @@ syncBuiltinESMExports();
       foreign: 'From your other projects',
       global: 'Global memory — applies across projects',
       taskStateFresh: 'Stated about',
-      index: 'Index of durable memories for',
+      index: 'Recently written memories',
       workPackage: 'Work packages: check work_package prepare',
     };
 
@@ -1357,10 +1351,11 @@ syncBuiltinESMExports();
      *  sections, and none of the rest. One definition, used by every test
      *  about the default and by the explicit `minimal` test below. */
     function expectMinimalBlock(injected: string, label: string): void {
-      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence'] as const) {
+      // The recent index is shown at every level, minimal included.
+      for (const key of ['decisions', 'lessons', 'knowledge', 'evidence', 'taskStateFresh', 'index'] as const) {
         expect(injected, `${label} must contain "${HEADINGS[key]}"`).toContain(HEADINGS[key]);
       }
-      for (const key of ['foreign', 'global', 'taskStateFresh', 'index', 'workPackage'] as const) {
+      for (const key of ['foreign', 'global', 'workPackage'] as const) {
         expect(injected, `${label} must NOT contain "${HEADINGS[key]}"`).not.toContain(HEADINGS[key]);
       }
     }
@@ -1383,15 +1378,14 @@ syncBuiltinESMExports();
       const output = runHook({ cwd: PROJECT_CWD }, noSettingEnv());
       const unset = (output.hookSpecificOutput as { additionalContext: string }).additionalContext;
       expectMinimalBlock(unset, 'no setting');
-      // Anti-vacuity: the same fixture DOES carry the task state and the index
-      // at `standard`, so their absence above is the level, not the fixture.
+      // Both levels carry the fresh task state and index.
       const standard = injectedContextAt('standard');
       expect(standard).toContain(HEADINGS.taskStateFresh);
       expect(standard).toContain(HEADINGS.index);
       expect(unset, 'no setting must be byte-identical to an explicit minimal').toBe(injectedContextAt('minimal'));
     });
 
-    it('B2: standard adds task state and the durable index, still no global/foreign/notice', () => {
+    it('B2: standard includes task state and the recent index, still no global/foreign/notice', () => {
       seedEverySection();
       const injected = injectedContextAt('standard');
 
@@ -1411,29 +1405,27 @@ syncBuiltinESMExports();
       }
     });
 
-    it('B2: size relation — minimal < standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
+    it('B2: size relation — minimal = standard < full, and standard <= 60% of full (measured, not asserted-then-bent)', () => {
       seedEverySection();
       const minimal = injectedContextAt('minimal');
       const standard = injectedContextAt('standard');
       const full = injectedContextAt('full');
 
-      expect(minimal.length).toBeLessThan(standard.length);
+      expect(minimal).toBe(standard);
       expect(standard.length).toBeLessThan(full.length);
       const ratio = standard.length / full.length;
       expect(ratio, `standard (${standard.length}) must be <= 60% of full (${full.length}); measured ${(ratio * 100).toFixed(1)}%`)
         .toBeLessThanOrEqual(0.6);
     });
 
-    it('B3: a stale task state is ONE line at every level; a fresh one is the full block at standard/full', () => {
-      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
+    it('B3: an old task state remains visible with its age at every level', () => {
+      const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString();
       seedEverySection({ taskUpdatedAt: staleAt });
-
       for (const level of ['minimal', 'standard', 'full']) {
         const injected = injectedContextAt(level);
-        expect(injected, `${level}: stale must not show the multi-line block`).not.toContain('Stated about');
-        const staleLines = injected.split('\n').filter((l) => l.includes('was last stated') && l.includes('72h'));
-        expect(staleLines, `${level}: exactly one stale line`).toHaveLength(1);
-        expect(staleLines[0]).toContain('memesh task');
+        expect(injected, level).toContain('Stated about');
+        expect(injected, level).toContain('4 days ago');
+        expect(injected, level).toContain('Ship #360');
       }
     });
 
@@ -1449,41 +1441,31 @@ syncBuiltinESMExports();
       const justOver = new Date(Date.now() - 73 * 60 * 60 * 1000).toISOString();
       seedEverySection({ taskUpdatedAt: justOver });
       const staleInjected = injectedContextAt('standard');
-      expect(staleInjected).not.toContain('Stated about');
-      expect(staleInjected).toContain('72h');
+      expect(staleInjected).toContain('Stated about');
+      expect(staleInjected).toContain('3 days ago');
+      expect(staleInjected).toContain('Ship #360');
     });
 
-    // The age parser itself is pinned in tests/core/task-state.test.ts; this
-    // pins the hook's wiring to it: every stored shape whose age cannot be
-    // established renders the one "age could not be established" line and
-    // never the fresh block, at EVERY level: `minimal` is the default, and
-    // the flag must survive there exactly as the stale one does.
+    // Invalid, ambiguous and future timestamps retain the value without a guessed age.
     it.each([
       ['a missing updated_at', { omitTaskUpdatedAt: true }],
       ['an unparseable updated_at', { taskUpdatedAt: 'not-a-date' }],
       ['a future-dated updated_at (+2h)', { taskUpdatedAt: new Date(Date.now() + 2 * 60 * 60 * 1000).toISOString() }],
       ['a timezone-less updated_at', { taskUpdatedAt: '2026-09-20T10:00:00' }],
       ['a date-only updated_at', { taskUpdatedAt: '2026-09-20' }],
-    ])('B3: %s is one "age could not be established" line at every level, never the fresh block', (_label, seed) => {
+    ])('B3: %s preserves the task with unknown age at every level', (_label, seed) => {
       seedEverySection(seed);
       for (const level of ['minimal', 'standard', 'full']) {
         const injected = injectedContextAt(level);
-        expect(injected, `${level}: no fresh block`).not.toContain(HEADINGS.taskStateFresh);
-        const flagLines = injected.split('\n').filter((l) => l.includes('age could not be established'));
-        expect(flagLines, `${level}: exactly one age-unknown line`).toHaveLength(1);
-        expect(flagLines[0]).toContain('memesh task');
+        expect(injected, level).toContain(HEADINGS.taskStateFresh);
+        expect(injected, level).toContain('at some point');
+        expect(injected, level).toContain('Ship #360');
+        if ('taskUpdatedAt' in seed) expect(injected, level).not.toContain(seed.taskUpdatedAt);
       }
     });
 
-    // `full` is byte-identical to the output from before levels existed —
-    // except when the task state is stale, since staleness handling replaces
-    // the task-state block at EVERY level including `full`. Only those lines
-    // differ. Before levels a task state was always shown as the multi-line
-    // block, and that renderer is identical to the current one for a FRESH
-    // task state, so the FRESH phase below stands in for "what the
-    // pre-levels output would be" on this fixture, and the test needs no
-    // old build.
-    it('full diverges from a HEAD-equivalent (fresh) run only in the task-state block, for a stale task state', () => {
+    // Age changes the task-state block, while other sections remain unchanged.
+    it('full changes only the task-state block when its date changes', () => {
       seedEverySection();
       const freshCtx = injectedContextAt('full');
       expect(freshCtx, 'fresh must show the multi-line task-state block (HEAD-equivalent)').toContain('Stated about');
@@ -1499,8 +1481,9 @@ syncBuiltinESMExports();
       const staleAt = new Date(Date.now() - 100 * 60 * 60 * 1000).toISOString(); // 100h old
       seedEverySection({ taskUpdatedAt: staleAt });
       const staleCtx = injectedContextAt('full');
-      expect(staleCtx, 'stale must show the one-line flag, not the multi-line block').not.toContain('Stated about');
-      expect(staleCtx).toContain('72h');
+      expect(staleCtx).toContain('Stated about');
+      expect(staleCtx).toContain('4 days ago');
+      expect(staleCtx).toContain('Ship #360');
       expect(staleCtx).toContain(HEADINGS.workPackage);
 
       // Split each output at the first blank line inside the fence — that
@@ -1867,21 +1850,16 @@ syncBuiltinESMExports();
         }
       });
 
-      it('database has the schema but zero rows: minimal injects nothing, standard keeps the honest empty-index line, full is unchanged', () => {
+      it('database has the schema but zero rows: minimal and standard inject nothing, full only its work-package notice', () => {
         createScoringDb().close();
-        const minimal = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
-        expect(minimal.hookSpecificOutput, 'minimal: no hookSpecificOutput at all').toBeUndefined();
-
-        const standard = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'standard' });
-        const standardCtx = (standard.hookSpecificOutput as { additionalContext: string }).additionalContext;
-        // #323's guarantee is preserved: the index's own empty-state line is
-        // informative content, not "nothing" — it is NOT suppressed.
-        expect(standardCtx).toContain('No durable memories');
-        expect(standardCtx).not.toContain(HEADINGS.workPackage);
-
+        for (const level of ['minimal', 'standard']) {
+          const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: level });
+          expect(output.hookSpecificOutput, `${level}: no hookSpecificOutput at all`).toBeUndefined();
+        }
         const full = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'full' });
         const fullCtx = (full.hookSpecificOutput as { additionalContext: string }).additionalContext;
-        expect(fullCtx).toContain('No durable memories');
+        // An empty recent index has no section: nothing in scope is not a list to show.
+        expect(fullCtx).not.toContain(HEADINGS.index);
         expect(fullCtx).toContain(HEADINGS.workPackage);
       });
 
@@ -1931,7 +1909,22 @@ syncBuiltinESMExports();
         const record = outcomes.find((r) => typeof r.reason === 'string' && r.reason.includes('nothing to inject'));
         expect(record, 'a "nothing to inject" outcome record must exist for the no-entities-table state').toBeTruthy();
         expect(record.reason).toContain('"minimal"');
-        expect(record.reason).toContain('no entities table yet');
+        expect(record.reason).toContain('no memory tables yet');
+      });
+
+      // The schema is created table by table (no transaction around it), and
+      // a session that opens the file in that window sees `entities` without
+      // `tags`. That is "no memories yet", not a read failure.
+      it('a schema that is only partly created is "no memories yet": no error line, no error record', () => {
+        const partial = new Database(dbPath);
+        partial.exec('CREATE TABLE entities (id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL UNIQUE, type TEXT NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, metadata JSON)');
+        partial.close();
+        const output = runHook({ cwd: EMPTY_CWD }, { MEMESH_BRIEFING: 'minimal' });
+        expect(String(output.systemMessage)).not.toContain('memories not loaded');
+        const outcomes = fs.readFileSync(path.join(path.dirname(dbPath), 'hook-outcomes.jsonl'), 'utf8')
+          .trim().split('\n').map((l) => JSON.parse(l));
+        expect(outcomes.filter((r) => r.outcome === 'error'), 'a half-built schema was recorded as an error').toEqual([]);
+        expect(outcomes.some((r) => typeof r.reason === 'string' && r.reason.includes('no memory tables yet'))).toBe(true);
       });
 
       // Recording a reason adds only a `recorded` argument to output() calls
@@ -2023,7 +2016,7 @@ syncBuiltinESMExports();
 });
 
 describe('SessionStart: the session handoff leads the injected context (#434 step 2)', () => {
-  const HEADER = 'Where the last session left off';
+  const HEADER = 'Last reply from a recent session';
   let dir: string;
   let dbFile: string;
   let cwd: string;
@@ -2052,6 +2045,10 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     const id = db.prepare('INSERT INTO entities (name, type) VALUES (?, ?)').run(name, type).lastInsertRowid as number;
     db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(id, text, sqliteAgo(hoursAgo));
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, tag);
+    if (type === 'conversation') {
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, 'role:assistant');
+      db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(id, `session:${name}`);
+    }
     return id;
   }
   let startSequence = 0;
@@ -2066,11 +2063,59 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     return { context: String(out.hookSpecificOutput?.additionalContext ?? ''), banner: String(out.systemMessage ?? '') };
   }
 
+  it.each(['foreign', 'qualified', 'alias', 'priority', 'legacy'])('task-state scope: %s respects checkout ownership', (variant) => {
+    const alias = (mirrorProjectIds(cwd) as string[]).find(id => id !== project)!;
+    expect(alias).toBeTruthy();
+    const literal = `task-state:${project}`;
+    const addState = (db: Database, name: string, goal: string, tag?: string) => {
+      const id = db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(name, 'task-state', JSON.stringify({
+        task_state: { goal, stated_at: { goal: new Date().toISOString() } },
+      })).lastInsertRowid;
+      if (tag) db.prepare('INSERT INTO tags(entity_id,tag) VALUES (?,?)').run(id, `project:${tag}`);
+    };
+    seed(db => {
+      if (variant !== 'legacy') addState(db, literal, 'FOREIGN_TASK_MUST_NOT_INJECT', 'foreign-checkout');
+      if (variant === 'qualified' || variant === 'priority') addState(db, `${literal}@${project}~2`, 'LOCAL_QUALIFIED_TASK', project);
+      if (variant === 'alias' || variant === 'priority') addState(db, `task-state:${alias}@${alias}`, 'LOCAL_ALIAS_TASK', alias);
+      if (variant === 'legacy') addState(db, literal, 'UNTAGGED_LEGACY_TASK');
+    });
+    const { context } = start('standard');
+    expect(context).not.toContain('FOREIGN_TASK_MUST_NOT_INJECT');
+    if (variant === 'qualified' || variant === 'priority') expect(context).toContain('LOCAL_QUALIFIED_TASK');
+    if (variant === 'priority') expect(context).not.toContain('LOCAL_ALIAS_TASK');
+    if (variant === 'alias') expect(context).toContain('LOCAL_ALIAS_TASK');
+    if (variant === 'legacy') expect(context).toContain('UNTAGGED_LEGACY_TASK');
+    expect(Buffer.byteLength(context)).toBeLessThanOrEqual(8000);
+  });
+
+  it('allocates the full opening to supported task fields and three tails before memories, matching compiled briefing', () => {
+    const date = new Date().toISOString();
+    const state = { goal: '界'.repeat(300), next: '次'.repeat(300), blocked: '阻'.repeat(300), done: '完'.repeat(300), stated_at: { goal: date, next: date, blocked: date, done: date } };
+    seed(db => {
+      db.prepare('INSERT INTO entities(name,type,metadata) VALUES (?,?,?)').run(`task-state:${project}`, 'task-state', JSON.stringify({ task_state: state }));
+      for (let i = 1; i <= 3; i++) addEntity(db, `conversation:budget-${i}`, 'conversation', '答'.repeat(300) + `BUDGET_TAIL_${i}`, `project:${project}`);
+      for (let i = 0; i < 8; i++) addEntity(db, `budget-memory-${i}`, 'decision', `MEMORY_${i} ` + '知'.repeat(200), `project:${project}`);
+    });
+    const { context } = start('full');
+    const cli = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'], {
+      env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: dir, MEMESH_AUTO_UPDATE: 'off', MEMESH_BRIEFING: 'full' }, encoding: 'utf8', timeout: 20000,
+    });
+    expect(cli.status, cli.stderr).toBe(0);
+    const briefing = JSON.parse(cli.stdout.trim());
+    for (const text of [context, briefing.text]) {
+      expect(Buffer.byteLength(text)).toBeLessThanOrEqual(8000);
+      for (const value of ['界', '次', '阻', '完']) expect(text).toContain(value.repeat(300));
+      expect(text).toContain(date);
+      for (let i = 1; i <= 3; i++) expect(text).toContain(`BUDGET_TAIL_${i}`);
+    }
+    expect(briefing.hasTaskState).toBe(true); expect(briefing.hasHandoff).toBe(true); expect(briefing.empty).toBe(false);
+  });
+
   it.each(['minimal', 'standard', 'full'])('at %s the handoff is the first thing in the fence, once', (level) => {
     let id = 0;
     seed((db) => {
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: we keep one SQLite file.', `project:${project}`);
-      id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'HANDOFF-TEXT: next, open the PR.', `project:${project}`);
+      id = addEntity(db, `conversation:${project}`, 'conversation', 'HANDOFF-TEXT: next, open the PR.', `project:${project}`);
     });
     const { context } = start(level);
     const body = context.slice(context.indexOf('```'));
@@ -2081,7 +2126,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
   });
 
   it('renders the same handoff block as the briefing tool', () => {
-    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'PARITY-TEXT: next, write the notes.', `project:${project}`, 80); });
+    seed((db) => { addEntity(db, `conversation:${project}`, 'conversation', 'PARITY-TEXT: next, write the notes.', `project:${project}`, 80); });
     const hookLines = start('standard').context.split('\n');
     const cli = spawnSync('node', [path.resolve('dist/transports/cli/cli.js'), 'briefing', '--project', project, '--json'], {
       env: { ...process.env, HOME: dir, USERPROFILE: dir, MEMESH_DB_PATH: dbFile, MEMESH_DIR: dir, MEMESH_AUTO_UPDATE: '0', MEMESH_BRIEFING: 'standard' },
@@ -2090,13 +2135,31 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(cli.status, cli.stderr).toBe(0);
     const coreLines = String(JSON.parse(cli.stdout.trim()).text).split('\n');
     const block = (lines: string[]) => { const i = lines.findIndex((l) => l.startsWith(HEADER)); return lines.slice(i, i + 2); };
-    expect(block(hookLines)[0]).toContain('may be out of date');
+    expect(block(hookLines)[0]).toContain('3 days ago');
     expect(block(hookLines)).toEqual(block(coreLines));
   }, 40_000);
 
+  it('shows only the latest reply from each of the three newest sessions', () => {
+    seed((db) => {
+      let firstId = 0;
+      for (let i = 0; i < 4; i++) {
+        const id = addEntity(db, `conversation:tail-${i}`, 'conversation', `TAIL-${i}`, `project:${project}`);
+        if (i === 0) firstId = id;
+      }
+      db.prepare('INSERT INTO observations (entity_id, content, created_at) VALUES (?, ?, ?)').run(firstId, 'OK', sqliteAgo(1));
+    });
+    const { context } = start('minimal');
+    expect(context.split(HEADER)).toHaveLength(4);
+    expect(context).toContain('OK');
+    expect(context).toContain('TAIL-3');
+    expect(context).toContain('TAIL-2');
+    expect(context).not.toContain('TAIL-1');
+    expect(context).not.toContain('TAIL-0');
+  });
+
   it('credits a cited handoff: its id is in the injected-set record', () => {
     let id = 0;
-    seed((db) => { id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'CITE-TEXT: next, ship it.', `project:${project}`); });
+    seed((db) => { id = addEntity(db, `conversation:${project}`, 'conversation', 'CITE-TEXT: next, ship it.', `project:${project}`); });
     start('minimal');
     const sessionsDir = path.join(dir, 'sessions');
     const files = fs.readdirSync(sessionsDir).filter((f) => f.endsWith('.json'));
@@ -2107,7 +2170,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
 
   it('shows no archived (forgotten) handoff', () => {
     seed((db) => {
-      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ARCHIVED-HANDOFF', `project:${project}`);
+      const id = addEntity(db, `conversation:${project}`, 'conversation', 'ARCHIVED-HANDOFF', `project:${project}`);
       db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(id);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
@@ -2118,29 +2181,30 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(start('standard').context, 'the positive control is missing').toContain('DECISION-TEXT');
   });
 
-  it('the banner is honest about a handoff: shown alone, missing, expired, or another project\'s', () => {
+  it('the banner is honest about a handoff: shown alone, old, unknown age, or another project\'s', () => {
     // Handoff only.
-    seed((db) => { addEntity(db, `session-handoff:${project}`, 'session-handoff', 'ONLY-HANDOFF', `project:${project}`); });
+    seed((db) => { addEntity(db, `conversation:${project}`, 'conversation', 'ONLY-HANDOFF', `project:${project}`); });
     let out = start('minimal');
     expect(out.context).toContain('ONLY-HANDOFF');
     expect(out.banner).not.toMatch(/no memories/);
-    expect(out.banner).toContain('handoff from the last session');
-    // Expired: nothing is shown, and the banner says so; the record says why.
+    expect(out.banner).toContain('tails from 1 recent session(s)');
+    // Old and unknown-age session tails remain visible and the banner stays honest.
     seed((db) => { db.prepare("UPDATE observations SET created_at = ? WHERE content = 'ONLY-HANDOFF'").run(sqliteAgo(15 * 24)); });
     out = start('minimal');
-    expect(out.context).not.toContain('ONLY-HANDOFF');
-    expect(out.banner).toMatch(/no memories/);
-    const records = fs.readFileSync(path.join(dir, 'hook-outcomes.jsonl'), 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
-    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).toMatch(/session handoff not shown \(expired\)/);
-    expect(records.filter((r) => r.hook === 'session-start').at(-1)?.reason).not.toContain('ONLY-HANDOFF');
+    expect(out.context).toContain('ONLY-HANDOFF');
+    expect(out.banner).toContain('tails from 1 recent session(s)');
+    seed((db) => { db.prepare("UPDATE observations SET created_at = 'invalid' WHERE content = 'ONLY-HANDOFF'").run(); });
+    out = start('minimal');
+    expect(out.context).toContain('age unknown');
+    expect(out.context).toContain('ONLY-HANDOFF');
     // Another project's handoff only.
     seed((db) => {
-      db.prepare("DELETE FROM entities WHERE type = 'session-handoff'").run();
-      addEntity(db, 'session-handoff:elsewhere~' + 'd'.repeat(32), 'session-handoff', 'FOREIGN-ONLY', 'project:elsewhere~' + 'd'.repeat(32));
+      db.prepare("DELETE FROM entities WHERE type = 'conversation'").run();
+      addEntity(db, 'conversation:elsewhere~' + 'd'.repeat(32), 'conversation', 'FOREIGN-ONLY', 'project:elsewhere~' + 'd'.repeat(32));
     });
     out = start('full');
     expect(out.context).not.toContain('FOREIGN-ONLY');
-    expect(out.banner).not.toContain('handoff from the last session');
+    expect(out.banner).not.toContain('tails from 1 recent session(s)');
   });
 
   it('does not credit a [mem:N] that appears inside the handoff\'s own text', () => {
@@ -2150,10 +2214,11 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     let handoffId = 0;
     seed((db) => {
       for (let i = 0; i < 10; i++) {
-        const id = addEntity(db, `pool-decision-${i}`, 'decision', `POOL-DECISION-${i}`, `project:${project}`);
+        // The cited one belongs to another project: no section (the recent index included) renders it.
+        const id = addEntity(db, `pool-decision-${i}`, 'decision', `POOL-DECISION-${i}`, i === 0 ? 'project:another-project' : `project:${project}`);
         if (i === 0) oldestId = id;
       }
-      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', `We relied on the earlier decision [mem:${oldestId}]`, `project:${project}`);
+      handoffId = addEntity(db, `conversation:${project}`, 'conversation', `We relied on the earlier decision [mem:${oldestId}]`, `project:${project}`);
     });
     const { context } = start('minimal', { MEMESH_SESSION_LIMIT: '10' });
     expect(context, 'the cited decision was rendered after all, so this test proves nothing').not.toContain('POOL-DECISION-0\n');
@@ -2174,11 +2239,12 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     let shownId = 0; let hiddenId = 0; let handoffId = 0;
     seed((db) => {
       for (let i = 0; i < 10; i++) {
-        const id = addEntity(db, `cite-decision-${i}`, 'decision', `CITE-DECISION-${i}`, `project:${project}`);
+        // The hidden one belongs to another project: no section (the recent index included) renders it.
+        const id = addEntity(db, `cite-decision-${i}`, 'decision', `CITE-DECISION-${i}`, i === 0 ? 'project:another-project' : `project:${project}`);
         if (i === 0) hiddenId = id;
         if (i === 9) shownId = id;
       }
-      handoffId = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'placeholder', `project:${project}`);
+      handoffId = addEntity(db, `conversation:${project}`, 'conversation', 'placeholder', `project:${project}`);
     });
     const setBody = (body: string) => seed((db) => { db.prepare('UPDATE observations SET content = ? WHERE entity_id = ?').run(body, handoffId); });
     const run = () => { start('minimal', { MEMESH_SESSION_LIMIT: '10' }); return latestInjected(); };
@@ -2195,8 +2261,8 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     // It cites a pool memory that was never rendered, twice: never credited.
     setBody(`hidden one [mem:${hiddenId}]\nand again [mem:${hiddenId}]`);
     expect(run()).not.toContain(hiddenId);
-    // The handoff is not shown at all (expired): nothing is subtracted, the rendered memory counts.
-    seed((db) => { db.prepare('UPDATE observations SET content = ?, created_at = ? WHERE entity_id = ?').run(`[mem:${shownId}]`, sqliteAgo(15 * 24), handoffId); });
+    // An archived session tail is not shown: the rendered memory still counts.
+    seed((db) => { db.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(handoffId); });
     const expired = run();
     expect(expired).toContain(shownId);
     expect(expired).not.toContain(handoffId);
@@ -2204,7 +2270,7 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
 
   it('shows no handoff that fails the trust gate', () => {
     seed((db) => {
-      const id = addEntity(db, `session-handoff:${project}`, 'session-handoff', 'UNTRUSTED-HANDOFF', `project:${project}`);
+      const id = addEntity(db, `conversation:${project}`, 'conversation', 'UNTRUSTED-HANDOFF', `project:${project}`);
       db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify({ trust: 'untrusted' }), id);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
@@ -2213,17 +2279,17 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
     expect(context).not.toContain('UNTRUSTED-HANDOFF');
   });
 
-  it('shows neither another project\'s handoff nor one past 14 days', () => {
+  it('shows an old session tail but not another project\'s', () => {
     seed((db) => {
-      addEntity(db, 'session-handoff:someone-else~' + 'b'.repeat(32), 'session-handoff', 'FOREIGN-HANDOFF', 'project:someone-else~' + 'b'.repeat(32));
-      addEntity(db, `session-handoff:${project}`, 'session-handoff', 'EXPIRED-HANDOFF', `project:${project}`, 15 * 24);
+      addEntity(db, 'conversation:someone-else~' + 'b'.repeat(32), 'conversation', 'FOREIGN-HANDOFF', 'project:someone-else~' + 'b'.repeat(32));
+      addEntity(db, `conversation:${project}`, 'conversation', 'EXPIRED-HANDOFF', `project:${project}`, 15 * 24);
       addEntity(db, 'a-decision', 'decision', 'DECISION-TEXT: kept.', `project:${project}`);
     });
     for (const level of ['minimal', 'full']) {
       const { context } = start(level);
-      expect(context, level).not.toContain(HEADER);
+      expect(context, level).toContain(HEADER);
       expect(context).not.toContain('FOREIGN-HANDOFF');
-      expect(context).not.toContain('EXPIRED-HANDOFF');
+      expect(context).toContain('EXPIRED-HANDOFF');
     }
   });
 
@@ -2233,12 +2299,12 @@ describe('SessionStart: the session handoff leads the injected context (#434 ste
       for (let i = 1; i <= 5; i++) addEntity(db, `crowd-other-${i}`, 'decision', `CROWD-OTHER-${i}`, 'project:crowd-elsewhere~' + 'c'.repeat(32));
       db.exec('BEGIN');
       for (let i = 0; i < TOPOLOGY_CANDIDATE_CAP + 10; i++) {
-        addEntity(db, `session-handoff:old-name-${i}`, 'session-handoff', 'an old handoff', `project:${project}`);
+        addEntity(db, `conversation:old-name-${i}`, 'conversation', 'an old handoff', `project:${project}`);
       }
       db.exec('COMMIT');
     });
     // The ranked sections only — the durable index lists the decision too.
-    const ranked = start('full').context.split('Index of durable memories')[0];
+    const ranked = start('full').context.split('Recently written memories')[0];
     expect(ranked).toContain('CROWD-DECISION survives.');
     for (let i = 1; i <= 5; i++) expect(ranked, `other decision ${i}`).toContain(`CROWD-OTHER-${i}`);
   }, 60_000);

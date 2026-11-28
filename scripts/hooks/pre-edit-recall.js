@@ -11,18 +11,22 @@
 // dangerous every time.
 
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'path';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { closeSync, existsSync, readFileSync, realpathSync } from 'fs';
 import {
   buildReferenceContext,
   containsFileNameLiterally,
   ensurePrivateDir,
   getDbPath,
   getMemeshDirFromDbPath,
-  getProjectName,
   gitRepoRoot,
   HOOK_BUSY_TIMEOUT_MS,
   isTrustedForAutoContext,
   writePrivateJson,
+  assertWindowsHookStateDirectory,
+  openWindowsHookState,
+  prepareWindowsHookState,
+  windowsHookStateDeadline,
+  writeWindowsHookStateInPlace,
   hookMatchExpression,
   hookPhraseExpression,
   loadActiveGuards,
@@ -34,8 +38,10 @@ import {
   SESSION_SNAPSHOT_TYPES,
   recordHookOutcome,
   openMemeshDb,
+  hookNodeProblem,
+  NODE_TOO_OLD_REASON,
 } from './_shared.js';
-import { redactMemoryText } from './_generated/core-paths.js';
+import { getProjectIds, redactMemoryText } from './_generated/core-paths.js';
 import { pruneSessionState, recallListName, SESSION_ID_RE } from './_stop-notes.js';
 import { readSnippets, toTopologyEntity } from './_generated/briefing-pools.js';
 import { LESSON_TYPE_LIST } from './_generated/work-topology.js';
@@ -80,7 +86,15 @@ process.stdin.on('data', (chunk) => { input += chunk; });
 process.stdin.on('end', () => {
   try {
     const data = JSON.parse(input);
-    const contexts = editInputs(data).map(recallFile).filter(Boolean);
+    // Once per run: an apply_patch that names several files is still one hook run, with one sentence and one record.
+    if (hookNodeProblem('pre-edit-recall')) {
+      payload = data;
+      record('error', NODE_TOO_OLD_REASON);
+      return;
+    }
+    const batch = {};
+    const contexts = editInputs(data).map(target => recallFile(target, batch)).filter(Boolean);
+    if (batch.state?.dirty) recordSeen(batch.state);
     if (contexts.length) console.log(JSON.stringify({ hookSpecificOutput: {
       hookEventName: 'PreToolUse', additionalContext: contexts.join('\n\n'),
     } }));
@@ -102,7 +116,7 @@ function editInputs(data) {
   return paths.length ? [...new Set(paths)].map(file_path => ({ ...data, tool_input: { file_path, content: command } })) : [data];
 }
 
-function recallFile(data) {
+function recallFile(data, batch) {
   try {
     payload = data;
     if (!data.tool_input) {
@@ -134,21 +148,13 @@ function recallFile(data) {
       && (!hasAgent || (typeof data.agent_id === 'string' && SESSION_ID_RE.test(data.agent_id)))
       ? throttleFileFor(data.session_id, hasAgent ? data.agent_id : null)
       : null;
-    let seenFiles = [];
-    try {
-      if (throttleFile && existsSync(throttleFile)) {
-        const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
-        seenFiles = Array.isArray(raw) ? raw : [];
-      }
-    } catch {
-      seenFiles = [];
-    }
-    const throttled = seenFiles.includes(fileKey);
-
     if (!existsSync(dbPath)) {
       record('skipped', SKIP_REASONS.noDatabaseForRecall);
       return pass();
     }
+
+    const state = batch.state ??= readRecallState(throttleFile);
+    const throttled = state.seenFiles.includes(fileKey);
 
     // Project used to scope RECALL — derived from the EDITED FILE's own
     // location, not cwd (#358 AC3): a file living in another repository
@@ -168,30 +174,23 @@ function recallFile(data) {
     // cwd's project" OR — out of scope for #358 and its own source of
     // cross-project noise.
     //
-    // Measured with a PATH-shim `git` wrapper against three fixtures (#358
-    // round 7), current code vs. HEAD (no per-file project scoping) run
-    // against the same three fixtures the same way:
-    //   - repo with a remote: 2 now (gitRepoRoot's `rev-parse
-    //     --show-toplevel`, then getProjectName's own `config --get
-    //     remote.origin.url`, which finds the remote and stops) vs. 1 at
-    //     HEAD (`getProjectName(cwd)` alone, the remote check only).
-    //   - non-repo fallback: 3 now (gitRepoRoot's call finds no repo, so
-    //     getProjectName runs again on cwd instead: `config --get
-    //     remote.origin.url` then `rev-parse --show-toplevel`, both empty)
-    //     vs. 2 at HEAD (the same two, minus gitRepoRoot's own call).
-    //   - repo with no remote: 4 now (the with-remote two, plus
-    //     getProjectName's own fallback `rev-parse --show-toplevel` and
-    //     `rev-parse --git-common-dir` once the remote check is empty) vs.
-    //     3 at HEAD (the same three, minus gitRepoRoot's own call).
-    // Adds exactly one git process per unthrottled edit in every case. Each
-    // is capped at 2 s (`tryGit`), so where git itself stalls the hook's
-    // 5-second timeout is reached one call sooner than before (#366). The
-    // throttled path (every repeat edit of the same file) pays for none of it.
+    // Measured with a PATH-shim `git` wrapper, one unthrottled edit: 3 git
+    // processes for a repo with a remote, a repo without one and a plain
+    // directory alike — gitRepoRoot's `rev-parse --show-toplevel` (cached, so
+    // getProjectIds reuses it), `config --get remote.origin.url`, and
+    // `rev-parse --git-common-dir` (or, outside a repository, the cwd's own
+    // root check). getProjectIds derives every id (remote, its earlier
+    // spellings, the path's two forms) from these, once per directory. Each is
+    // capped at 2 s (`tryGit`), so with git stalling 1 s a call the hook takes
+    // about 3 s of its 5-second timeout (#366). The throttled path (every
+    // repeat edit of the same file) pays for none of it.
     // Guards are global by design: a mistake recorded in one project is
     // usually a mistake everywhere (the pipe-eats-exit-code shape), and the
     // warning names its
     // source lesson either way.
     let projectName = null;
+    // Every id this repository's memories may carry (its remote's id and its path's ids): a read matches all of them, a write uses one.
+    let projectIds = null;
     // The edited file's own path, forward-slash-normalised, for the literal
     // confirmation's path-suffix check (#358 round 3 item 3b) — `relPath` is
     // relative to the file's repo root, `absPath` is always set. `null`
@@ -206,12 +205,14 @@ function recallFile(data) {
         // its project. A symlinked directory can make the git-plumbing
         // identity resolution key off the symlink's own path instead of the
         // real repository; feeding it an already-resolved directory
-        // sidesteps that without touching `resolveProjectIdentity` itself.
+        // sidesteps that without touching `resolveProjectIds` itself.
         const { dir: fileDir, tail: missingTail } = realpathNearestExisting(absoluteFileDir);
         // One call serves both project scoping and the path-suffix check
         // below.
         const repoRoot = gitRepoRoot(fileDir);
-        projectName = repoRoot ? getProjectName(fileDir) : getProjectName(data.cwd);
+        const identityDir = repoRoot ? fileDir : data.cwd;
+        projectIds = getProjectIds(identityDir);
+        projectName = projectIds[0];
 
         // `fileDir` is only the nearest ancestor that EXISTS — right for
         // project identity, wrong as the file's own directory. A `Write`
@@ -241,7 +242,8 @@ function recallFile(data) {
         }
         editedPath = { relPath, absPath, absPathAsGiven };
       } catch {
-        projectName = getProjectName(data.cwd);
+        projectIds = getProjectIds(data.cwd);
+        projectName = projectIds[0];
       }
     }
 
@@ -337,19 +339,20 @@ function recallFile(data) {
           // satisfy this exact-tag strategy for any file ever edited that
           // session. `commit` stays eligible: a commit can genuinely be about
           // the file being edited.
-          const projectTag = `project:${projectName}`;
+          const projectTags = (projectIds ?? [projectName]).map((id) => `project:${id}`);
+          const projectTagMarks = projectTags.map(() => '?').join(',');
           const tagResults = db.prepare(`
             SELECT DISTINCT e.id, e.name, e.type, e.metadata
             FROM entities e
             JOIN tags t1 ON t1.entity_id = e.id
             JOIN tags t2 ON t2.entity_id = e.id
             WHERE t1.tag = ?
-              AND t2.tag = ?
+              AND t2.tag IN (${projectTagMarks})
               ${SESSION_SNAPSHOT_EXCLUSION_SQL}
             ${statusFilter}
             LIMIT ?
           `).all(
-            `file:${fileName}`, projectTag,
+            `file:${fileName}`, ...projectTags,
             ...SESSION_SNAPSHOT_TYPE_LIST, MAX_RESULTS * 3
           );
           results.push(...tagResults.filter((row) => isTrustedForAutoContext(row.metadata)));
@@ -431,19 +434,23 @@ function recallFile(data) {
               // can reject any of these, and a tight LIMIT applied BEFORE
               // confirmation can starve it — 9 candidates that all fail
               // confirmation hid a 10th, genuinely-matching row entirely.
+              //
+              // The index first (CROSS JOIN): joined the other way SQLite runs
+              // the match once per active memory, past the 5-second timeout on
+              // a large graph (tests/core/fts-query-plan.test.ts).
               ftsResults = matchExpr === null ? [] : db.prepare(`
                 SELECT DISTINCT e.id, e.name, e.type, e.metadata
-                FROM entities e
-                JOIN entities_fts fts ON fts.rowid = e.id
+                FROM entities_fts fts
+                CROSS JOIN entities e ON fts.rowid = e.id
                 JOIN tags t ON t.entity_id = e.id
                 WHERE entities_fts MATCH ?
-                  AND t.tag = ?
+                  AND t.tag IN (${projectTagMarks})
                   ${SESSION_SNAPSHOT_EXCLUSION_SQL}
                 ${statusFilter}
                 ORDER BY fts.rank, e.id DESC
                 LIMIT ?
               `).all(
-                matchExpr, projectTag,
+                matchExpr, ...projectTags,
                 ...SESSION_SNAPSHOT_TYPE_LIST, CANDIDATE_WINDOW
               );
             } catch (err) {
@@ -555,7 +562,12 @@ function recallFile(data) {
           // anything was shown) — but not after a fault: that run looked at
           // nothing, and marking the file seen would switch recall off for
           // the whole session.
-          if (!recallFault && throttleFile) recordSeen(throttleFile, seenFiles, fileKey);
+          if (!recallFault && throttleFile && !state.denied) {
+            state.seenFiles.push(fileKey);
+            if (state.seenFiles.length > 100) state.seenFiles = state.seenFiles.slice(-50);
+            state.addedKeys.push(fileKey);
+            state.dirty = true;
+          }
         }
       }
     } finally {
@@ -648,6 +660,34 @@ function pass() {
   // Empty output = no additional context. Allow other patch targets to recall.
 }
 
+function readRecallState(throttleFile) {
+  const state = { throttleFile, seenFiles: [], addedKeys: [], denied: false, dirty: false };
+  try {
+    if (throttleFile && process.platform === 'win32') {
+      // One ACL read for this hook's session; publication still checks the same inode.
+      const windows = prepareWindowsHookState(throttleFile, windowsHookStateDeadline(5000) - 3000);
+      state.windows = { ...windows, deadline: windowsHookStateDeadline(5000) };
+      if (windows.file) {
+        const fd = openWindowsHookState(windows, 'r');
+        try {
+          const raw = JSON.parse(readFileSync(fd, 'utf8'));
+          state.seenFiles = Array.isArray(raw) ? raw : [];
+        } finally { closeSync(fd); }
+      }
+    } else if (throttleFile && existsSync(throttleFile)) {
+      const raw = JSON.parse(readFileSync(throttleFile, 'utf8'));
+      state.seenFiles = Array.isArray(raw) ? raw : [];
+    }
+  } catch (err) {
+    if (process.platform === 'win32' && !(err instanceof SyntaxError)) {
+      state.denied = true;
+      reportListError(throttleFile, err);
+    }
+    state.seenFiles = [];
+  }
+  return state;
+}
+
 /**
  * Write a warning to stderr at most once per distinct message per day.
  *
@@ -717,7 +757,34 @@ function realpathNearestExisting(dir) {
   return { dir, tail: '' };
 }
 
-function recordSeen(throttleFile, seenFiles, fileKey) {
+function reportListError(throttleFile, err) {
+  try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
+  record('error', `pre-edit list: ${hookErrorReason(err)}`);
+}
+
+function mergeSeenFiles(throttleFile, addedKeys, windowsState) {
+  let seenFiles = [];
+  try {
+    if (windowsState?.file) {
+      const fd = openWindowsHookState(windowsState, 'r');
+      try { seenFiles = JSON.parse(readFileSync(fd, 'utf8')); }
+      finally { closeSync(fd); }
+    } else if (!windowsState && existsSync(throttleFile)) {
+      seenFiles = JSON.parse(readFileSync(throttleFile, 'utf8'));
+    }
+  } catch (err) {
+    if (!(err instanceof SyntaxError)) throw err;
+  }
+  if (!Array.isArray(seenFiles)) seenFiles = [];
+  for (const key of addedKeys) {
+    if (seenFiles.includes(key)) continue;
+    seenFiles.push(key);
+    if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
+  }
+  return seenFiles;
+}
+
+function recordSeen({ throttleFile, addedKeys, windows: windowsState }) {
   // One ledger row per run, however many steps fail: a list that cannot be
   // kept means the next edit of the file shows its memories again, and that
   // must be queryable, not only a line on stderr.
@@ -728,14 +795,18 @@ function recordSeen(throttleFile, seenFiles, fileKey) {
     record('error', `pre-edit list: ${hookErrorReason(err)}`);
   };
   try {
-    seenFiles.push(fileKey);
-    // Cap at 100 to prevent unbounded growth
-    if (seenFiles.length > 100) seenFiles = seenFiles.slice(-50);
-    ensurePrivateDir(THROTTLE_DIR);
-    writePrivateJson(throttleFile, seenFiles);
+    if (windowsState) {
+      const state = windowsState.directory ? windowsState : prepareWindowsHookState(throttleFile, windowsState.deadline, true);
+      writeWindowsHookStateInPlace(state, mergeSeenFiles(throttleFile, addedKeys, state));
+      assertWindowsHookStateDirectory(state);
+    } else {
+      ensurePrivateDir(THROTTLE_DIR);
+      writePrivateJson(throttleFile, mergeSeenFiles(throttleFile, addedKeys));
+    }
   } catch (err) {
-    try { process.stderr.write(`[memesh] could not keep the per-session recall list ${throttleFile}: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-    fault(err);
+    reportListError(throttleFile, err);
+    faulted = true;
+    if (windowsState) return;
   }
   pruneSessionState(THROTTLE_DIR, Date.now(), fault);
 }

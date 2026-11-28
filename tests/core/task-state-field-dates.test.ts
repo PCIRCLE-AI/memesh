@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { briefingTaskStateLines, mergeTaskState, parseTaskState, taskStateLines } from '../../src/core/task-state.js';
+import { mergeTaskState, parseTaskState, taskStateLines } from '../../src/core/task-state.js';
 import { boundTaskStateLines } from '../../src/core/work-topology.js';
 
 const NOW = '2026-10-07T08:00:00.000Z';
@@ -20,12 +20,12 @@ describe('#406 each task-state field keeps its stated date', () => {
       legacy_updated_at: OLD, stated_at: { goal: NOW } });
     expect(state.stated_at).toEqual({ goal: NOW });
     expect(read(state)).toEqual(state);
-    const injected = briefingTaskStateLines(state, 'alpha', now).join('\n');
+    const injected = taskStateLines(state, 'alpha', now).join('\n');
     expect(injected).toContain('new goal');
-    expect(injected).not.toContain('old release');
-    expect(injected).not.toContain('old step');
-    expect(injected).not.toContain('old blocker');
-    expect(injected).toContain('not shown as current');
+    expect(injected).toContain('Had just finished: (unknown date) old release');
+    expect(injected).toContain('Next: (unknown date) old step');
+    expect(injected).toContain('Blocked: (unknown date) old blocker');
+    expect(injected).toContain('unknown date');
     const full = taskStateLines(state, 'alpha', now).join('\n');
     expect(full).toContain('Had just finished:');
     expect(full).toContain('old release');
@@ -37,7 +37,6 @@ describe('#406 each task-state field keeps its stated date', () => {
     const { state } = mergeTaskState({ goal: 'yesterday goal', done: 'ten-days-old work', updated_at: yesterday }, { goal: 'today goal' }, NOW);
     expect(state).toMatchObject({ done: 'ten-days-old work', legacy_updated_at: yesterday });
     expect(state.stated_at).toEqual({ goal: NOW });
-    expect(briefingTaskStateLines(state, 'alpha', now).join('\n')).not.toContain('ten-days-old work');
     expect(taskStateLines(state, 'alpha', now).join('\n')).toContain('Had just finished: (unknown date) ten-days-old work');
     const nextWrite = mergeTaskState(state, { next: 'new step' }, '2026-10-08T08:00:00Z').state;
     expect(nextWrite.legacy_updated_at).toBe(yesterday);
@@ -51,7 +50,7 @@ describe('#406 each task-state field keeps its stated date', () => {
   it('does not guess a missing legacy date from a new goal', () => {
     const { state } = mergeTaskState({ done: 'undated work' }, { goal: 'new goal' }, NOW);
     expect(state).toMatchObject({ done: 'undated work', stated_at: { goal: NOW } });
-    expect(briefingTaskStateLines(state, 'alpha', now).join('\n')).not.toContain('undated work');
+    expect(taskStateLines(state, 'alpha', now).join('\n')).toContain('Had just finished: (unknown date) undated work');
     expect(taskStateLines(state, 'alpha', now).join('\n')).toContain('unknown date');
   });
 
@@ -71,7 +70,7 @@ describe('#406 each task-state field keeps its stated date', () => {
     expect(state).toMatchObject({ goal: 'goal', stated_at: { goal: OLD }, updated_at: NOW });
     expect(state.stated_at?.done).toBeUndefined();
     expect(previous.stated_at?.done).toBe(OLD);
-    expect(briefingTaskStateLines(state, 'alpha', now).join('\n')).not.toContain('Goal: goal');
+    expect(taskStateLines(state, 'alpha', now).join('\n')).toContain(`Goal: (stated ${OLD}; 8 days ago) goal`);
   });
 
   it('does not migrate a legacy record on an unchanged write', () => {
@@ -86,65 +85,68 @@ describe('#406 each task-state field keeps its stated date', () => {
 
   it.each([{ stated_at: null }, { stated_at: 7 }, { stated_at: [] }])('a malformed date map does not fall back to a fresh record timestamp: %j', ({ stated_at }) => {
     const state = read({ done: 'old work', updated_at: NOW, stated_at });
-    expect(briefingTaskStateLines(state, 'alpha', now).join('\n')).not.toContain('old work');
-    expect(briefingTaskStateLines(state, 'alpha', now).join('\n')).toContain('age could not be established');
+    expect(taskStateLines(state, 'alpha', now).join('\n')).toContain('Had just finished: (unknown date) old work');
   });
 
   it.each([undefined, 'not-a-date', '2026-10-07', '2026-10-07T08:00:00', '2026-10-08T08:00:00Z'])('an unknown or future field date is not refreshed by updated_at: %s', (date) => {
       const state = read({ goal: 'fresh goal', done: 'old work', updated_at: NOW,
         stated_at: { goal: NOW, ...(date === undefined ? {} : { done: date }) } });
-      const lines = briefingTaskStateLines(state, 'alpha', now).join('\n');
+      const lines = taskStateLines(state, 'alpha', now).join('\n');
       expect(lines).toContain('fresh goal');
-      expect(lines).not.toContain('old work');
-      expect(lines).toContain('not shown as current');
+      expect(lines).toContain('Had just finished: (unknown date) old work');
+      if (date) expect(lines.split('\n').find(line => line.includes('old work'))).not.toContain(date);
     });
 
   it('judges the 72-hour boundary separately for each field', () => {
     const state = read({ goal: 'fresh goal', done: 'expired work', updated_at: NOW,
       stated_at: { goal: '2026-10-04T08:00:00.000Z', done: '2026-10-04T07:59:59.999Z' } });
-    const lines = briefingTaskStateLines(state, 'alpha', now).join('\n');
+    const lines = taskStateLines(state, 'alpha', now).join('\n');
     expect(lines).toContain('fresh goal');
-    expect(lines).not.toContain('expired work');
+    expect(lines).toContain('expired work');
+    expect(lines).toContain('2026-10-04T07:59:59.999Z');
   });
 
   it('accepts ordinary clock skew without accepting a distant future field', () => {
     const state = read({ goal: 'goal', done: 'future work', updated_at: NOW,
       stated_at: { goal: '2026-10-07T08:05:00Z', done: '2026-10-07T08:05:01Z' } });
-    const lines = briefingTaskStateLines(state, 'alpha', now).join('\n');
+    const lines = taskStateLines(state, 'alpha', now).join('\n');
     expect(lines).toContain('Goal:');
     expect(lines).toContain(' goal');
-    expect(lines).not.toContain('future work');
+    expect(lines).toContain('Had just finished: (unknown date) future work');
+    expect(lines).not.toContain('2026-10-07T08:05:01Z');
   });
 
-  it('minimal hides fresh values but still reports omitted old fields', () => {
+  it('includes fresh and old fields with their own dates', () => {
     const state = read({ goal: 'fresh goal', done: 'old work', updated_at: NOW, stated_at: { goal: NOW, done: OLD } });
-    const lines = briefingTaskStateLines(state, 'alpha', now, { includeFresh: false }).join('\n');
-    expect(lines).not.toContain('fresh goal');
-    expect(lines).not.toContain('old work');
-    expect(lines).toContain('not shown as current');
+    const lines = taskStateLines(state, 'alpha', now).join('\n');
+    expect(lines).toContain('fresh goal');
+    expect(lines).toContain('old work');
+    expect(lines).toContain('8 days ago');
   });
 
-  it('uses the newest actual field date for an entirely stale state', () => {
+  it('shows each actual field date for an old state', () => {
     const state = read({ goal: 'old goal', done: 'older work', updated_at: NOW,
       stated_at: { goal: OLD, done: '2026-09-25T08:00:00Z' } });
-    const lines = briefingTaskStateLines(state, 'alpha', now);
-    expect(lines).toHaveLength(1);
-    expect(lines[0]).toContain('8 days ago');
-    expect(lines[0]).not.toContain('old goal');
+    const lines = taskStateLines(state, 'alpha', now);
+    expect(lines).toHaveLength(3);
+    expect(lines[1]).toContain('8 days ago');
+    expect(lines[1]).toContain('old goal');
+    expect(lines[2]).toContain('12 days ago');
+    expect(lines[2]).toContain('older work');
   });
 
   it('keeps the stated date visible when a long done line is bounded for injection', () => {
     const state = read({ done: 'x'.repeat(300), updated_at: NOW, stated_at: { done: NOW } });
-    const lines = boundTaskStateLines(briefingTaskStateLines(state, 'alpha', now));
+    const lines = boundTaskStateLines(taskStateLines(state, 'alpha', now));
     expect(lines.join('\n')).toContain(NOW);
     expect(lines.join('\n')).toContain('today');
   });
 
-  it('redacts a credential across the full stored field set before omitting an old field', () => {
+  it('redacts a credential across the full stored field set while including an old field', () => {
     const marker = 'split-password-fixture';
     const state = read({ goal: marker, done: ['-----END ', 'PRIVATE KEY-----'].join(''), updated_at: NOW,
       stated_at: { goal: NOW, done: OLD } });
-    const text = briefingTaskStateLines(state, 'alpha', now).join('\n');
+    const text = taskStateLines(state, 'alpha', now).join('\n');
     expect(text).not.toContain(marker);
     expect(text).toContain('REDACTED');
   });

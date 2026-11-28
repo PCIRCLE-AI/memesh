@@ -6,10 +6,10 @@
 
 MeMesh helps AI coding agents share context, exchange tasks and review results, and leave clear handoffs across sessions. Shared memory keeps your preferences, project decisions, and lessons available without explaining them again each time.
 
-- **Coordinate work between sessions.** Send tasks, questions, review requests, and results between running Codex and Claude Code sessions through MeMesh messaging and the optional Claude Channel.
+- **Coordinate registered conversations.** Exchange tasks, questions, review requests and results. Both Claude and Codex plugin manifests declare the conversation hooks; native delivery and wakeup require separate host-specific evidence.
 - **Share project context.** Agents on the same computer can reuse project decisions and lessons instead of starting from scratch.
 - **Leave a clear handoff.** Record the goal, next step, and blockers for the next session to check before continuing.
-- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools.
+- **Keep useful memory.** Save preferences, decisions, and lessons so they remain available across sessions and tools. Decisions, lessons and preferences are found in every project, labelled with the project they came from; each project's commits and session notes stay in that project.
 
 By default, memories live in one file on your computer: `~/.memesh/knowledge-graph.db`. MeMesh needs no separate AI model. Automatic reminders depend on the host integration; a handoff is context, not a guarantee that a task will restart itself.
 
@@ -31,7 +31,7 @@ codex plugin add memesh@pcircle-memesh
 
 **Hermes Agent** — follow the [MeMesh memory provider guide](docs/platforms/hermes-agent.md) to connect Hermes for memory recall and capture.
 
-To use the command-line tools too, install [Node.js 22.13+](https://nodejs.org), then run:
+To use the command-line tools too, install [Node.js](https://nodejs.org) 26.13.1 or later in the 26.x line (recommended), 24.22.3 or later in 24.x, or 22.23.5 or later in 22.x, then run:
 
 ```bash
 npm install -g @pcircle/memesh
@@ -40,17 +40,21 @@ memesh doctor
 
 [Installation and update guide](llms-install.md) · [Other integrations](docs/platforms/README.md)
 
+If `memesh doctor` reports database damage, stop your AI tools and run `memesh repair`. It preserves a verified damaged copy, salvages readable memories, and checks the replacement first. A built-in Node recovery path works without a usable system `sqlite3`; `memesh repair --from-backup` uses the newest verified memory backup instead. Restart your AI tools afterwards.
+
+**Updates are automatic.** MeMesh installs new releases by itself (every version) after checking the release's provenance and backing up your database. It waits up to three days for running sessions to end; after that it may update while they are still running. It is on by default when HOME matches the system account home (or no account-home entry exists), including containers and other database locations. CI and a different test/sandbox HOME default to off; an explicit setting in that environment can enable it, while an account-level off always wins. Turn it off with `memesh config set autoUpdate off`; update right now with `memesh update`; repair a damaged plugin with `memesh update --reinstall`; `memesh doctor` shows what it did.
+
 `PCIRCLE-AI/memesh` is the GitHub repository that supplies the marketplace. `memesh@pcircle-memesh` selects the `memesh` plugin from the `pcircle-memesh` marketplace.
 
-## Let Codex and Claude Code collaborate
+## Conversation messaging (source candidate)
 
-Use one session to implement a change and another to review it, ask questions, or report results. MeMesh provides a shared local message inbox; Claude Channel adds live delivery into a running Claude Code session. Codex uses its own native notification path, then fetches the message body.
+Use one session to implement a change and another to review it, ask questions, or report results. MeMesh conversation messages use four actions: discover an address, send a typed body, read one addressed message, and inspect status/audit. The body is untrusted data.
 
-1. Install the plugins above and start both hosts in the same repository, as the same OS user, with matching MeMesh database settings.
-2. Eligible ordinary Claude MCP sessions can receive a native notice without Channel on macOS/Linux; the optional [Claude Channel setup](docs/platforms/agent-messaging.md#claude-channel-runner) delivers the full envelope. Eligible ordinary Codex CLI sessions register automatically when the plugin's SessionStart hook runs (macOS/Linux).
-3. Ask your agent: “Find the running Claude/Codex session for this project with `message discover`, send it a review request, and report its reply.” Select the actual discovered recipient; do not guess a session ID. The receiver reads the message, records `intake`, and replies with findings.
+1. Use registered conversations with matching MeMesh database settings. Both plugin manifests declare the SessionStart/UserPromptSubmit message hook. Its Codex-shaped private wire flow is checked; actual native-host/model delivery still requires separate verification.
+2. Run `memesh message discover` and choose an address actually listed; do not guess one.
+3. Send text only through stdin: `printf '%s' 'Please review this.' | memesh message send --recipient <address> --kind review_request --payload-stdin`. The recipient uses `memesh message read --message-id <id>` and can reply with `--reply-to <id>`.
 
-Without Claude Channel, the durable inbox and Claude Code hook reminders still work. Delivery does not mean the other agent accepted or completed the work. Stopped sessions are not automatically resumed; verify Codex Desktop participation in `message discover` rather than assuming it. This local channel does not relay messages across computers.
+`queued` does not mean delivered, read, replied, accepted, or completed. Native wakeup and cross-machine conversation delivery remain under development.
 
 [Setup, routing, and receipt details](docs/platforms/agent-messaging.md)
 
@@ -64,13 +68,13 @@ Ask your agent in plain language:
 >
 > Save where we left off so the next session can pick it up.
 
+MeMesh remembers by default. To remove a specific stored memory, ask the agent to find it and use `forget`; ordinary conversation capture continues normally.
+
 Claude Code's plugin provides automatic capture and reminders. The Codex plugin can provide context at session start once its hooks are allowed to run; other capture behavior varies by host. You can also ask the agent to store or look up memories directly.
 
-Claude Code inbox reminders work without Channel setup: hooks use the local `claude-code` recipient unless you configured another identity. They check at startup, your next prompt and turn end, and stop reminding once the agent records `intake` for that message. Live Channel push is optional; see the [messaging guide](docs/platforms/agent-messaging.md#claude-channel-runner).
+SessionStart/UserPromptSubmit hooks render complete pending conversation messages. Claude Stop and Codex Bash-tool hooks also carry whole messages; delivery is recorded only after successful output. Memory hooks no longer publish legacy principal addresses or inbox-action instructions. These private hook checks do not prove native wakeup or model reading.
 
-Ordinary Claude Code MCP sessions register in `message discover` without enabling Channel. When the native inbox socket is available, they receive a notice and fetch the body; otherwise the durable inbox and hook reminders remain available. Online alone does not prove notification delivery.
-
-Unreleased source builds add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
+MeMesh 4.11.0 and later add `/memesh-memories` in Claude Code to view and edit project memories. Claude Desktop edits inside the pane; terminal Claude Code and Codex use a native form. In Codex, ask `$memesh` to find and edit a memory. Fill only the title or paragraphs you want to change, leaving other fields blank. Save reads back the stored result; Cancel saves nothing. Unsupported hosts keep the existing conversation workflow.
 
 [Full tool and command reference](docs/api/API_REFERENCE.md) · [Agent messaging](docs/platforms/agent-messaging.md) · [How it works](docs/ARCHITECTURE.md) · [Contributing](CONTRIBUTING.md)
 
@@ -81,23 +85,34 @@ Unreleased source builds add `/memesh-memories` in Claude Code to view and edit 
 
 | Tool | What it does |
 |------|-------------|
-| `remember` | Save a memory; decisions need a reason. |
+| `remember` | Save a memory (on by default, no need to ask); a decision’s reason is optional. |
 | `recall` | Find memories by words or retrieve them by ID. |
 | `forget` | Archive a memory or remove one observation. |
 | `learn` | Save a mistake, its cause, and how to avoid it. |
 | `briefing` | Read the project's current memory context. |
 | `task_state` | Read or record the goal, next step, blocker, and done work. |
-| `message` | Find running local agents and exchange messages. |
+| `message` | Discover a conversation address; send, read, or inspect a typed conversation message and its audit state. |
 | `export` | Back up memories as JSON. |
 | `import` | Import a memory backup. |
 | `work_package` | Prepare a bounded memory digest or transcript package for human review. |
 | `user_patterns` | Summarize work patterns. |
 | `improvement` | Propose an improvement for human review. |
 
+**Command-line notes.**
+- `memesh remember` files a new memory under the current folder's project, like `memesh learn`; `--project <name>` picks another project and `--no-project` stores one with none. Appending to an existing unfiled memory without an explicit project or project tag keeps it unfiled; an existing name also keeps its type when `--type` is omitted.
+- `memesh export -o backup.json` signs the backup with a secret that stays in your MeMesh folder. `memesh import backup.json` trusts it again only if it is unchanged and came from this folder; any other file imports as untrusted (searchable, never auto-injected) and the output says so. A memory you forgot stays forgotten: the output prints the one command that brings it back (`--restore-archived`).
+- `memesh message send` receives its text from `--payload-stdin`; it does not accept body text in argv.
+
 ---
 
-Plugins ship **10 hooks**. The intent reminder recognizes "remember this"
-(5 languages). Memory editing lives in Claude Code/Claude Desktop Code
+The Claude Code plugin ships **9 hooks**; the Codex plugin also registers two Codex-only commands. MeMesh does not classify saving intent by
+keywords: conversations are captured by default, and the agent can store structured memories. Sessions start with a bounded
+memory overview and recent user conversation titles. When a prompt matches
+stored memory, up to two memories bring their content along, within one 4 KiB
+UTF-8 limit including the data notice and `[mem:id]` handles. An opening title
+does not count as having read the content. Truncated content is marked with
+the ID to retrieve using `recall`. Titles containing “pending” or “blocked”
+are eligible too. Turn the prompt part off with `memesh config set promptRecall false`. Memory editing lives in Claude Code/Claude Desktop Code
 through the MeMesh Mod, and in Codex through MCP/native forms. There is no
 standalone Web Dashboard.
 
@@ -107,11 +122,10 @@ standalone Web Dashboard.
 
 **Agent messaging, the exact rules** (full guide: [docs/platforms/agent-messaging.md](docs/platforms/agent-messaging.md)):
 
-- Works today: an MCP, HTTP, or CLI sender can durably send one untrusted JSON-encoded payload of at most 65,536 UTF-8 bytes (64 KiB) to one named local recipient. A receiver can fetch it separately, resume from an opaque cursor after restart, and record intake, acknowledgement, workflow disposition, and host activation as separate facts.
-- With the MeMesh Codex plugin enabled, each startup or resumed ordinary Codex CLI thread with a valid thread identity and existing working directory registers automatically under a thread-scoped identity; no manual `agent setup` is required. SessionStart launches an owner-private companion. SessionEnd keeps a bounded 45-second idle queue window, resume replaces the prior exact generation, and expiry removes the registration. A message accepted during that idle window reaches the thread as a short notice when the same thread resumes, and the agent then fetches the body from the inbox; it is not a claim that a stopped UI was awakened. `memesh agent setup codex-session` remains available only when one workspace needs a stable named principal. The complete native envelope, including routing metadata and payload, is capped separately at 16,384 bytes (16 KiB). An exact-session send returns success only after that native queue accepts it; an oversized full envelope reports `native_message_too_large`, an unreachable local router reports `router_unreachable`, and other unavailable or rejected sessions report `recipient_unavailable`. Scoped recovery data remains durable for all sender-side and recipient-side failures. Principal targets retain durable store-and-forward behavior. Native acceptance is not acknowledgement or disposition, and native messages must contain no secrets.
-- A stopped, missing, or disconnected Codex session is not woken up or replaced, and a failed exact-session native delivery is not replayed automatically; the sender must retry deliberately. Its scoped recovery data stays available; `memesh message storage report` shows what is stored. Native delivery works on macOS and Linux only.
-- This documented native path covers ordinary Codex CLI. Do not assume Codex Desktop or an unattached task registers unless that exact running session appears in `message discover`; this is an evidence boundary, not a claim that those hosts are universally incompatible.
-- Pairing Claude Channel with automatic Codex registration needs no `--project` value copied between the two: each host derives its own routing project from its own working directory (Claude) or `--workspace` (Codex), so starting both in the same repository lands them in the same project automatically.
+- The current MCP/CLI conversation schema is exactly `discover`, `send`, `read`, and `status`. `send` takes `recipient`, `kind` (`task`, `question`, `review_request`, `result`), a text `body`, and optional `reply_to` (the CLI reads body text from stdin); it derives sender identity from the host, not `--sender` or `--project`.
+- The complete rendered envelope is limited to 8,000 UTF-8 bytes. Unknown recipients are rejected before storage. Oversized sends to known recipients are rejected and audited. Known offline recipients are queued. Store-open maintenance retains messages and events for 14 days and creates one notice for an eligible undelivered message after a day.
+- `read` records delivery/read. `status` shows sent/received messages and audit events; the CLI owner view can emit the complete history with `--json`. There are no update or delete actions.
+- The retired HTTP message endpoint returns `410 Gone`; use the [conversation interface](docs/platforms/agent-messaging.md).
 
 </details>
 

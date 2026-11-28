@@ -12,14 +12,14 @@ npm install -g @pcircle/memesh
 
 ## Local Collaboration Surfaces
 
-Use the `message` MCP tool, `POST /v1/message`, or `memesh message` commands when agent discovery, exact recipient, cursor recovery, or explicit receipts matter. All three expose the same local actions: `send`, `poll`, `discover`, `fetch`, `intake`, `ack`, `disposition`, `activation`, and `receipts`.
+Use the `message` MCP tool or `memesh message` for the four conversation actions: `discover`, `send`, `read`, and `status`. The host supplies the sender identity; CLI send bodies come from stdin. The complete rendered message is limited to 8,000 UTF-8 bytes.
 
-- Delivery is durable. A verified registered host adapter receives native push without polling; `poll`/`watch` remain compatibility and diagnostic surfaces for hosts without a verified inbound channel.
-- `discover` is a bounded read of active registrations in one project. It returns routing identity, host kind, declared work metadata (`model` is always `null`), generation, and lease expiry without sending or acknowledging a message.
-- Poll and fetch are reads; neither implies ACK or workflow acceptance.
-- A stopped model session is not resumed or replaced. Managed adapters register only a currently active session; exact-session messages never reroute.
+- Messages and events are retained for 14 days; an eligible undelivered message produces one notice after a day. A known offline recipient can be queued. Queueing and push do not prove delivery or workflow acceptance.
+- `discover` returns registered conversations. Send to the exact returned address; local addresses are conversation IDs and remote addresses add `@machine`.
+- `read` returns complete pending messages and records delivery/read. Replies reference the original message ID. Neither implies the requested work was completed.
+- Native wakeup and model-visible delivery need host-specific evidence; registration alone does not prove either.
 
-The `team` namespace remains useful for shared durable knowledge and coarse handoffs. Use unique entity names because supplying an existing name can update or move that memory. Topic routing, claims/leases, TTL, cross-machine delivery, and universal host resume remain outside the current local message surface.
+`POST /v1/message` is retired and returns `410 Gone`. Use the conversation MCP tool or CLI. Cross-machine conversation delivery transfers messages between joined machines; memory remains local. Universal host resume is not implied.
 
 ## Option A: HTTP API
 
@@ -113,8 +113,8 @@ MeMesh binds a session to the project of the client's workspace root. For a clie
 You have access to MeMesh persistent memory through the host application.
 
 Use recall before project-specific work where prior decisions, bug fixes, or conventions may matter.
-Use remember for durable decisions, architecture choices, project conventions, and recurring patterns.
-Send `why` with every decision: the reason, and what would make it stop holding.
+Saving is on by default: use remember for decisions, architecture choices, project conventions, patterns and user preferences, without waiting to be asked.
+When known, add optional `why` to a decision: the reason, and what would make it stop holding. A decision without it is still stored.
 Use learn for mistakes, root causes, fixes, and prevention notes.
 Keep memories concise. Include tags such as project:<id> (the `project` field of `memesh briefing --json`), topic:<area>, and tech:<tool>.
 Do not claim memory was checked or written unless the tool/API call succeeded.

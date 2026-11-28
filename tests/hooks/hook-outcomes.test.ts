@@ -1,8 +1,10 @@
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
-import { execFileSync, execFile } from 'child_process';
+import { execFileSync, execFile, spawn } from 'child_process';
 import fs from 'fs';
 import path from 'path';
 import os from 'os';
+import { DatabaseSync } from 'node:sqlite';
+import { pathToFileURL } from 'node:url';
 import {
   captureLivenessNotice,
   serializeHookOutcome,
@@ -20,7 +22,34 @@ import {
   RECORD_TEXT_MAX,
   type HookOutcomeRecord,
 } from '../../src/core/capture-liveness.js';
-import { recordHookOutcome, sliceUtf16UnitsSurrogateSafe } from '../../scripts/hooks/_shared.js';
+import { recordHookOutcome, sliceUtf16UnitsSurrogateSafe, hookErrorReason, hookCaughtReason } from '../../scripts/hooks/_shared.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
+
+describe('SQLite lock outcome labels', () => {
+  it('classifies primary and extended SQLite busy/locked codes without reading messages', () => {
+    for (const errcode of [5, 6, 261, 517, 773, 262, 518]) {
+      const error = { code: 'ERR_SQLITE_ERROR', errcode, get message() { throw new Error('message must not be read'); } };
+      expect(hookCaughtReason(error)).toBe('MEMESH_DB_LOCKED');
+      expect(hookErrorReason(error)).toBe('uncaught MEMESH_DB_LOCKED');
+    }
+    for (const code of ['SQLITE_BUSY', 'SQLITE_BUSY_RECOVERY', 'SQLITE_BUSY_SNAPSHOT', 'SQLITE_BUSY_TIMEOUT', 'SQLITE_LOCKED', 'SQLITE_LOCKED_SHAREDCACHE', 'SQLITE_LOCKED_VTAB']) {
+      expect(hookCaughtReason({ code })).toBe('MEMESH_DB_LOCKED');
+    }
+  });
+
+  it('preserves other errors and rejects malformed or unqualified numeric codes', () => {
+    for (const errcode of [undefined, '5', -251, 5.5, NaN, Infinity, 0x100000005, 0x80000005, 19, 15, 2067]) {
+      expect(hookCaughtReason({ code: 'ERR_SQLITE_ERROR', errcode })).toBe('ERR_SQLITE_ERROR');
+    }
+    expect(hookCaughtReason({ code: 'EIO', errcode: 5 })).toBe('EIO');
+    expect(hookCaughtReason({ name: 'Error', errcode: 5, message: 'database is locked' })).toBe('Error');
+    expect(hookCaughtReason({ code: 'SQLITE_PROTOCOL' })).toBe('SQLITE_PROTOCOL');
+    expect(hookCaughtReason({ code: 'SQLITE_BUSY_UNKNOWN' })).toBe('SQLITE_BUSY_UNKNOWN');
+    expect(hookCaughtReason({ code: { toString() { throw new Error('must not coerce'); } }, name: 'SyntaxError' })).toBe('SyntaxError');
+    expect(hookErrorReason({ code: '/private/secret', name: 'Error' })).toBe('uncaught Error');
+    expect(hookCaughtReason(null)).toBe('error');
+  });
+});
 
 /**
  * The guard for issue #327: every capture-hook exit path leaves a record.
@@ -38,6 +67,18 @@ import { recordHookOutcome, sliceUtf16UnitsSurrogateSafe } from '../../scripts/h
  * hooks call it.
  */
 describe('hook outcome records', () => {
+  const postCommitEntry = (JSON.parse(fs.readFileSync(path.resolve('hooks/hooks.json'), 'utf8')) as {
+    hooks?: { PostToolUse?: Array<{ hooks?: Array<{ command?: unknown; timeout?: unknown }> }> };
+  }).hooks?.PostToolUse
+    ?.flatMap((group) => group.hooks ?? [])
+    .find((hook) => hook.command === '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/post-commit.js');
+  if (typeof postCommitEntry?.timeout !== 'number' || !Number.isFinite(postCommitEntry.timeout) || postCommitEntry.timeout <= 0) {
+    throw new Error('hooks.json must declare a positive post-commit timeout');
+  }
+  const POST_COMMIT_HOOK_TIMEOUT_MS = postCommitEntry.timeout * 1000;
+  const A13_LOCKED_COMMITS = 25;
+  // Fixture capacity, not a product SLA: 25 lock attempts plus base and two drains.
+  const A13_TIMEOUT_MS = (A13_LOCKED_COMMITS + 3) * POST_COMMIT_HOOK_TIMEOUT_MS + 15_000;
   let testDir: string;
   let memeshDir: string;
   let repoDir: string;
@@ -62,12 +103,27 @@ describe('hook outcome records', () => {
     return execFileSync('git', ['-C', repoDir, ...args], { encoding: 'utf8', timeout: 15000 });
   }
 
-  function runHook(hook: string, input: object, extraEnv: Record<string, string> = {}): void {
+  it('B-F14 writer persists only safe nonnegative integer counts, including zero', () => {
+    const previous = { MEMESH_DIR: process.env.MEMESH_DIR, MEMESH_DB_PATH: process.env.MEMESH_DB_PATH };
+    process.env.MEMESH_DIR = memeshDir; delete process.env.MEMESH_DB_PATH;
+    try {
+      for (const count of [0, 2, Number.MAX_SAFE_INTEGER, -1, 1.5, '2', NaN, Infinity, Number.MAX_SAFE_INTEGER + 1]) {
+        recordHookOutcome(process.env, { hook: 'note-ingest', outcome: 'skipped', count });
+      }
+      const records = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+      expect(records.map((r) => r.count)).toEqual([0, 2, Number.MAX_SAFE_INTEGER, undefined, undefined, undefined, undefined, undefined, undefined]);
+    } finally {
+      if (previous.MEMESH_DIR === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = previous.MEMESH_DIR;
+      if (previous.MEMESH_DB_PATH === undefined) delete process.env.MEMESH_DB_PATH; else process.env.MEMESH_DB_PATH = previous.MEMESH_DB_PATH;
+    }
+  });
+
+  function runHook(hook: string, input: object, extraEnv: Record<string, string> = {}, timeout = 20000): void {
     execFileSync('node', [path.resolve(`scripts/hooks/${hook}.js`)], {
       input: JSON.stringify(input),
       env: { ...process.env, MEMESH_DIR: memeshDir, HOME: testDir, ...extraEnv },
       encoding: 'utf8',
-      timeout: 20000,
+      timeout,
       stdio: ['pipe', 'pipe', 'pipe'],
     });
   }
@@ -116,6 +172,309 @@ describe('hook outcome records', () => {
   }
 
   // ── post-commit ──────────────────────────────────────────────────────────
+
+  const commitPayload = () => ({ tool_name: 'Bash', cwd: repoDir,
+    tool_input: { command: 'git commit --allow-empty -m synthetic' },
+    tool_response: { stdout: '', stderr: '', isError: false, interrupted: false } });
+  const graphPath = () => path.join(memeshDir, 'knowledge-graph.db');
+  function postCommit(extraEnv: Record<string, string> = {}, timeout = 20000) {
+    try {
+      runHook('post-commit', commitPayload(), { MEMESH_DB_PATH: graphPath(), ...extraEnv }, timeout);
+    } catch (error) {
+      const phaseFile = extraEnv.MEMESH_A13_PHASE;
+      if (phaseFile) try {
+        const permitted = new Set(['git-begin', 'git-end', 'git-error', 'sqlite-prepare-begin', 'sqlite-prepare-end', 'sqlite-prepare-error', 'sqlite-exec-begin', 'sqlite-exec-end', 'sqlite-exec-error', 'sqlite-close-begin', 'sqlite-close-end', 'sqlite-close-error', 'sqlite-run-begin', 'sqlite-run-end', 'sqlite-run-error', 'sqlite-get-begin', 'sqlite-get-end', 'sqlite-get-error', 'sqlite-all-begin', 'sqlite-all-end', 'sqlite-all-error', 'marker-wx-begin', 'marker-wx-end', 'marker-wx-error']);
+        const phases = fs.existsSync(phaseFile) ? fs.readFileSync(phaseFile, 'utf8').trim().split('\n').flatMap((line) => {
+          try {
+            const value = JSON.parse(line);
+            return Array.isArray(value) && value.length === 2 && permitted.has(value[0]) && Number.isSafeInteger(value[1]) && value[1] >= 0 ? [value] : [];
+          } catch { return []; }
+        }).slice(-80) : [];
+        process.stderr.write(`[test] A13 child phases ${JSON.stringify(phases)}\n`);
+      } catch { /* phase evidence must not replace the child error */ }
+      throw error;
+    }
+  }
+  function gitCallRecorder() {
+    const log = path.join(testDir, `git-calls-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+    const phases = path.join(testDir, `a13-phases-${Date.now()}-${Math.random().toString(16).slice(2)}.jsonl`);
+    const recorder = path.join(testDir, `git-recorder-${Date.now()}-${Math.random().toString(16).slice(2)}.cjs`);
+    fs.writeFileSync(recorder, `const fs = require('node:fs');
+const cp = require('node:child_process');
+const { DatabaseSync, StatementSync } = require('node:sqlite');
+const started = process.hrtime.bigint();
+const permitted = new Set(['git-begin', 'git-end', 'git-error', 'sqlite-prepare-begin', 'sqlite-prepare-end', 'sqlite-prepare-error', 'sqlite-exec-begin', 'sqlite-exec-end', 'sqlite-exec-error', 'sqlite-close-begin', 'sqlite-close-end', 'sqlite-close-error', 'sqlite-run-begin', 'sqlite-run-end', 'sqlite-run-error', 'sqlite-get-begin', 'sqlite-get-end', 'sqlite-get-error', 'sqlite-all-begin', 'sqlite-all-end', 'sqlite-all-error', 'marker-wx-begin', 'marker-wx-end', 'marker-wx-error']);
+function phase(name) { try { if (permitted.has(name)) fs.appendFileSync(process.env.MEMESH_A13_PHASE, JSON.stringify([name, Number((process.hrtime.bigint() - started) / 1000000n)]) + '\\n'); } catch {} }
+const original = cp.execFileSync;
+cp.execFileSync = function (command, args, ...rest) {
+  // [WORKAROUND: Test records only; Git still executes.]
+  if (command === 'git') fs.appendFileSync(process.env.MEMESH_GIT_CALLS, JSON.stringify(args ?? []) + '\\n');
+  if (command !== 'git') return original.call(this, command, args, ...rest);
+  phase('git-begin'); try { const result = original.call(this, command, args, ...rest); phase('git-end'); return result; } catch (error) { phase('git-error'); throw error; }
+};
+for (const method of ['prepare', 'exec', 'close']) {
+  const original = DatabaseSync.prototype[method];
+  DatabaseSync.prototype[method] = function (...args) { phase('sqlite-' + method + '-begin'); try { const result = original.apply(this, args); phase('sqlite-' + method + '-end'); return result; } catch (error) { phase('sqlite-' + method + '-error'); throw error; } };
+}
+for (const method of ['run', 'get', 'all']) {
+  const original = StatementSync.prototype[method];
+  StatementSync.prototype[method] = function (...args) { phase('sqlite-' + method + '-begin'); try { const result = original.apply(this, args); phase('sqlite-' + method + '-end'); return result; } catch (error) { phase('sqlite-' + method + '-error'); throw error; } };
+}
+const write = fs.writeFileSync;
+fs.writeFileSync = function (file, data, options) { if (options?.flag !== 'wx') return write.call(this, file, data, options); phase('marker-wx-begin'); try { const result = write.call(this, file, data, options); phase('marker-wx-end'); return result; } catch (error) { phase('marker-wx-error'); throw error; } };
+require('node:module').syncBuiltinESMExports();
+`);
+    const calls = () => fs.existsSync(log)
+      ? fs.readFileSync(log, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line) as string[])
+      : [];
+    return { env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --require=${JSON.stringify(recorder)}`, MEMESH_GIT_CALLS: log, MEMESH_A13_PHASE: phases }, calls };
+  }
+  function emptyCommit(label: string, seconds?: number) {
+    execFileSync('git', ['-C', repoDir, '-c', 'core.hooksPath=/dev/null', 'commit', '--allow-empty', '--no-gpg-sign', '-qm', label], {
+      env: { ...process.env, ...(seconds === undefined ? {} : { GIT_AUTHOR_DATE: `${seconds} +0000`, GIT_COMMITTER_DATE: `${seconds} +0000` }) },
+      timeout: 15000,
+    });
+    return { full: git(['rev-parse', 'HEAD']).trim(), name: `commit-${git(['rev-parse', '--short', 'HEAD']).trim()}` };
+  }
+  function commitNames() {
+    const db = new DatabaseSync(graphPath(), { readOnly: true });
+    try { return db.prepare("SELECT name FROM entities WHERE type='commit' ORDER BY name").all().map(row => String(row.name)); }
+    finally { db.close(); }
+  }
+  function markerFile() {
+    const dir = path.join(memeshDir, 'post-commit-heads');
+    return path.join(dir, fs.readdirSync(dir).find(name => name.endsWith('.json'))!);
+  }
+  function marker() { return JSON.parse(fs.readFileSync(markerFile(), 'utf8')); }
+  function faultFor(name: string, locked = false) {
+    const file = path.join(testDir, 'commit-fault.mjs'), hits = path.join(testDir, 'fault-hits.jsonl');
+    fs.writeFileSync(file, `import { DatabaseSync } from 'node:sqlite';
+import { appendFileSync } from 'node:fs';
+const prepare = DatabaseSync.prototype.prepare;
+DatabaseSync.prototype.prepare = function(sql) {
+  const db = this, stmt = prepare.call(this, sql), run = stmt.run;
+  if (/INSERT.*INTO entities/i.test(sql)) stmt.run = function(...args) {
+    if (args.includes(${JSON.stringify(name)})) {
+      appendFileSync(${JSON.stringify(hits)}, JSON.stringify({ target: ${JSON.stringify(name)}, inTransaction: db.isTransaction })+'\\n');
+      throw Object.assign(new Error('synthetic commit write failure'), ${locked ? "{code:'ERR_SQLITE_ERROR',errcode:517}" : "{code:'EIO'}"});
+    }
+    return run.apply(this, args);
+  };
+  return stmt;
+};
+`);
+    return { env: { NODE_OPTIONS: `${process.env.NODE_OPTIONS ?? ''} --import=${pathToFileURL(file).href}` }, hits };
+  }
+
+  it.each([21, 30])('A-13 drains the oldest 20 of %i, retains the range, and records exact remaining count', (size) => {
+    const base = emptyCommit('base'); postCommit();
+    const start = marker();
+    const commits = Array.from({ length: size }, (_, i) => emptyCommit(`pending-${i}`));
+    postCommit();
+    expect(commitNames()).toEqual([base.name, ...commits.slice(0, 20).map(c => c.name)].sort());
+    expect(marker().heads).toEqual(start.heads);
+    const first = records('post-commit');
+    const deferred = first.find(r => r.reason === SKIP_REASONS.commitsLeftForNextRun)!;
+    expect(deferred.count).toBe(size - 20);
+    expect(first.some(r => r.outcome === 'wrote' && r.run === deferred.run)).toBe(true);
+    const added = size === 30 ? [emptyCommit('arrived-between-runs')] : [];
+    postCommit();
+    expect(commitNames()).toEqual([base.name, ...commits.map(c => c.name), ...added.map(c => c.name)].sort());
+    expect(Object.values(marker().heads)).toContain(git(['rev-parse', 'HEAD']).trim());
+    expect(records('post-commit').filter(r => r.reason === SKIP_REASONS.commitsLeftForNextRun)).toHaveLength(1);
+  }, 30000);
+
+  it('A-13 drains interleaved branches and merge in four runs, counting archived names as handled', () => {
+    const base = emptyCommit('base', 1700000000); postCommit();
+    const start = marker();
+    git(['checkout', '-qb', 'left']);
+    for (let i = 0; i < 30; i++) emptyCommit(`left-${i}`, 1700000010 + i * 2);
+    git(['checkout', '-qb', 'right', base.full]);
+    for (let i = 0; i < 30; i++) emptyCommit(`right-${i}`, 1700000011 + i * 2);
+    git(['-c', 'core.hooksPath=/dev/null', 'merge', '--no-ff', '--no-gpg-sign', '-m', 'merge', 'left']);
+    const head = git(['rev-parse', 'HEAD']).trim();
+    const range = git(['log', '--reverse', '--format=%h', `${base.full}..HEAD`]).trim().split('\n').map(h => `commit-${h}`);
+    expect(range).toHaveLength(61);
+    for (let round = 1; round <= 4; round++) {
+      postCommit();
+      expect(commitNames()).toEqual([base.name, ...range.slice(0, Math.min(round * 20, 61))].sort());
+      if (round < 4) expect(marker().heads).toEqual(start.heads);
+      if (round === 1) {
+        const db = new DatabaseSync(graphPath());
+        try { db.prepare("UPDATE entities SET status='archived' WHERE name=?").run(range[0]); } finally { db.close(); }
+      }
+    }
+    expect(Object.values(marker().heads)).toContain(head);
+    expect(records('post-commit').filter(r => r.reason === SKIP_REASONS.commitsLeftForNextRun).map(r => r.count)).toEqual([41, 21, 1]);
+    const next = emptyCommit('after-merge'); postCommit();
+    expect(commitNames()).toEqual([base.name, ...range, next.name].sort());
+    const db = new DatabaseSync(graphPath(), { readOnly: true });
+    try { expect(db.prepare('SELECT status FROM entities WHERE name=?').get(range[0])?.status).toBe('archived'); } finally { db.close(); }
+  }, 45000);
+
+  it('A-13 retains a legacy head baseline while draining 21 commits', () => {
+    const base = emptyCommit('legacy-base'); postCommit();
+    const start = marker();
+    fs.writeFileSync(markerFile(), JSON.stringify({ head: base.full }));
+    const pending = Array.from({ length: 21 }, (_, i) => emptyCommit(`legacy-pending-${i}`));
+    postCommit();
+    expect(commitNames()).toEqual([base.name, ...pending.slice(0, 20).map(c => c.name)].sort());
+    expect(marker().heads).toEqual(start.heads);
+    postCommit();
+    expect(commitNames()).toEqual([base.name, ...pending.map(c => c.name)].sort());
+    expect(Object.values(marker().heads)).toContain(pending.at(-1)!.full);
+  }, 20000);
+
+  it('A-13 persists a missing-marker parent before graph lock and catches both commits later', () => {
+    const base = emptyCommit('base'); postCommit();
+    fs.unlinkSync(markerFile());
+    const first = emptyCommit('first-pending');
+    const holder = new DatabaseSync(graphPath());
+    // Force graph opening to need the WAL-mode transition, before capture
+    // can run and persist a fallback baseline after a failed write.
+    holder.exec('PRAGMA journal_mode=DELETE');
+    expect(holder.prepare('PRAGMA journal_mode').get()?.journal_mode).toBe('delete');
+    holder.exec('BEGIN IMMEDIATE');
+    try { postCommit(); } finally { holder.exec('ROLLBACK'); holder.close(); }
+    expect(fs.readdirSync(path.join(memeshDir, 'post-commit-heads')).filter(name => name.endsWith('.json'))).toHaveLength(1);
+    expect(Object.values(marker().heads)).toContain(base.full);
+    expect(commitNames()).toEqual([base.name]);
+    expect(records('post-commit').some(r => r.reason === 'uncaught MEMESH_DB_LOCKED')).toBe(true);
+    const second = emptyCommit('second-pending'); postCommit();
+    expect(commitNames()).toEqual([base.name, first.name, second.name].sort());
+  }, 20000);
+
+  it('A-13 records a skipped outcome when the whole range was already processed', () => {
+    const base = emptyCommit('base'); postCommit();
+    const start = marker();
+    const next = emptyCommit('already-stored'); postCommit();
+    const db = new DatabaseSync(graphPath());
+    try { db.prepare("UPDATE entities SET status='archived' WHERE name=?").run(next.name); } finally { db.close(); }
+    fs.writeFileSync(markerFile(), JSON.stringify(start));
+    const before = records('post-commit').length;
+    postCommit();
+    const fresh = records('post-commit').slice(before);
+    expect(fresh).toHaveLength(1);
+    expect(fresh[0].outcome).toBe('skipped');
+    expect(fresh[0].reason).toBe(SKIP_REASONS.commitsAlreadyProcessed);
+    expect(Object.values(marker().heads)).toContain(next.full);
+    expect(commitNames()).toEqual([base.name, next.name].sort());
+  });
+
+  it('A-13 retains 25 commits across sequential graph-lock failures with an existing marker', () => {
+    const base = emptyCommit('base'); postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
+    const start = marker();
+    const holder = new DatabaseSync(graphPath());
+    const pending: Array<{ full: string; name: string }> = [];
+    holder.exec('BEGIN IMMEDIATE');
+    try {
+      for (let i = 0; i < A13_LOCKED_COMMITS; i++) {
+        pending.push(emptyCommit(`blocked-${i}`));
+        const ledger = () => fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8').trim().split('\n').map(line => JSON.parse(line));
+        const before = ledger().length;
+        const recorder = gitCallRecorder();
+        postCommit(recorder.env, POST_COMMIT_HOOK_TIMEOUT_MS);
+        expect(recorder.calls().filter(args => args.includes('show') && args.includes('-s') && args.includes('--format=%s'))).toHaveLength(1);
+        const fresh = ledger().slice(before).filter(row => row.hook === 'post-commit');
+        expect(fresh).toHaveLength(2);
+        expect(new Set(fresh.map(row => row.run)).size).toBe(1);
+        expect(fresh.some(row => row.reason === 'uncaught MEMESH_DB_LOCKED')).toBe(true);
+        expect(fresh.find(row => row.reason === SKIP_REASONS.commitsLeftForNextRun)?.count).toBe(i + 1);
+        expect(marker().heads).toEqual(start.heads);
+        expect(commitNames()).toEqual([base.name]);
+      }
+      expect(commitNames()).toEqual([base.name]);
+    } finally { holder.exec('ROLLBACK'); holder.close(); }
+    postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
+    expect(commitNames()).toEqual([base.name, ...pending.slice(0, 20).map(c => c.name)].sort());
+    expect(records('post-commit').filter(r => r.reason === SKIP_REASONS.commitsLeftForNextRun).at(-1)?.count).toBe(5);
+    expect(marker().heads).toEqual(start.heads);
+    postCommit({}, POST_COMMIT_HOOK_TIMEOUT_MS);
+    expect(commitNames()).toEqual([base.name, ...pending.map(c => c.name)].sort());
+    expect(Object.values(marker().heads)).toContain(pending.at(-1)!.full);
+  }, A13_TIMEOUT_MS);
+
+  it('A-13 captures after a native lock releases only after the first failed run', async () => {
+    const base = emptyCommit('base'); postCommit();
+    const pending = emptyCommit('release-after-error');
+    const recorder = gitCallRecorder();
+    const ready = path.join(testDir, 'native-holder-ready');
+    const released = path.join(testDir, 'native-holder-released');
+    const holder = spawn(process.execPath, ['--input-type=module', '-e', `
+      import { DatabaseSync } from 'node:sqlite';
+      import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+      const db = new DatabaseSync(${JSON.stringify(graphPath())});
+      db.exec('BEGIN IMMEDIATE');
+      writeFileSync(${JSON.stringify(ready)}, 'ready');
+      const deadline = Date.now() + 4000;
+      const timer = setInterval(() => {
+        const seen = existsSync(${JSON.stringify(recorder.env.MEMESH_A13_PHASE)}) && readFileSync(${JSON.stringify(recorder.env.MEMESH_A13_PHASE)}, 'utf8').includes('sqlite-run-error');
+        if (!seen && Date.now() < deadline) return;
+        if (!seen) process.exitCode = 2;
+        else writeFileSync(${JSON.stringify(released)}, 'released-after-run-error');
+        try { db.exec('ROLLBACK'); } finally { db.close(); clearInterval(timer); }
+      }, 5);
+    `], { stdio: 'ignore' });
+    const holderDone = new Promise<number | null>((resolve) => {
+      holder.once('error', () => resolve(null));
+      holder.once('exit', resolve);
+    });
+    const until = async (check: () => boolean, label: string) => {
+      const deadline = Date.now() + 5000;
+      while (!check() && Date.now() < deadline) await new Promise(resolve => setTimeout(resolve, 10));
+      if (!check()) throw new Error(`timed out waiting for ${label}`);
+    };
+    try {
+      await until(() => fs.existsSync(ready), 'native holder');
+      postCommit(recorder.env, POST_COMMIT_HOOK_TIMEOUT_MS);
+      expect(await holderDone).toBe(0);
+      expect(fs.readFileSync(released, 'utf8')).toBe('released-after-run-error');
+      expect(fs.readFileSync(recorder.env.MEMESH_A13_PHASE!, 'utf8')).toContain('sqlite-run-error');
+      expect(commitNames()).toEqual([base.name, pending.name].sort());
+      expect(marker().failures).toEqual({});
+    } finally {
+      if (holder.exitCode === null && holder.signalCode === null) holder.kill('SIGTERM');
+      await holderDone;
+    }
+  }, 15000);
+
+  it('A-13 continues after a write error and persists full-SHA failure counts through three attempts', () => {
+    const base = emptyCommit('base'); postCommit();
+    const start = marker();
+    const otherKey = 'b'.repeat(64), otherFailure = 'a'.repeat(40);
+    fs.writeFileSync(markerFile(), JSON.stringify({ ...start, heads: { ...start.heads, [otherKey]: base.full }, failures: { [otherFailure]: 2 } }));
+    const pending = Array.from({ length: 20 }, (_, i) => emptyCommit(`pending-${i}`));
+    const fault = faultFor(pending[0].name);
+    for (let attempt = 1; attempt <= 3; attempt++) {
+      postCommit(fault.env);
+      expect(commitNames()).toEqual([base.name, ...pending.slice(1).map(c => c.name)].sort());
+      expect(marker().failures).toEqual({ [otherFailure]: 2, [pending[0].full]: attempt });
+      expect(marker().heads[otherKey]).toBe(base.full);
+      if (attempt < 3) expect(Object.values(marker().heads).every(h => h === base.full)).toBe(true);
+    }
+    expect(Object.values(marker().heads)).toContain(pending.at(-1)!.full);
+    expect(records('post-commit').filter(r => r.reason === SKIP_REASONS.commitsNotStoredWriteFailed).map(r => r.count)).toEqual([1]);
+    const hits = fs.readFileSync(fault.hits, 'utf8').trim().split('\n').map(line => JSON.parse(line));
+    expect(hits).toHaveLength(3);
+    expect(hits.every(hit => hit.inTransaction === true)).toBe(true);
+    postCommit(fault.env);
+    expect(fs.readFileSync(fault.hits, 'utf8').trim().split('\n')).toHaveLength(3);
+  }, 30000);
+
+  it('A-13 treats an after-open snapshot lock as retryable without incrementing failures', () => {
+    const base = emptyCommit('base'); postCommit();
+    const start = marker();
+    const first = emptyCommit('locked'), next = emptyCommit('later');
+    const fault = faultFor(first.name, true);
+    postCommit(fault.env);
+    expect(fs.readFileSync(fault.hits, 'utf8').trim().split('\n')).toHaveLength(1);
+    expect(commitNames()).toEqual([base.name]);
+    expect(marker().heads).toEqual(start.heads);
+    expect(marker().failures).toEqual({});
+    expect(records('post-commit').some(r => r.reason === 'uncaught MEMESH_DB_LOCKED')).toBe(true);
+    postCommit();
+    expect(commitNames()).toEqual([base.name, first.name, next.name].sort());
+  }, 20000);
 
   it('#526 a real Claude hook records Claude with an inherited CODEX_HOME', () => {
     runHook('post-commit', { tool_name: 'Bash', tool_input: { command: 'git status' }, cwd: repoDir }, {
@@ -220,8 +579,8 @@ describe('hook outcome records', () => {
   });
 
   it.each([
-    'post-commit', 'pre-compact', 'guard-check', 'pre-edit-recall',
-    'decision-nudge', 'session-summary', 'user-prompt-intent',
+    'post-commit', 'guard-check', 'pre-edit-recall',
+    'session-summary', 'user-prompt-intent', 'prompt-recall',
   ])('%s persists an error LABEL, never the exception message (#327 S2)', (hook) => {
     // V8's JSON errors quote the text they choked on, so a message-as-reason
     // copies the payload — here a planted marker — into a permanent,
@@ -246,71 +605,55 @@ describe('hook outcome records', () => {
 
   // ── session-summary ──────────────────────────────────────────────────────
 
-  it('session-summary records a SKIPPED for each of its named bails', () => {
-    runHook('session-summary', { session_id: 's1', cwd: repoDir, was_in_agentic_loop: false });
-    runHook('session-summary', { session_id: 's2', cwd: repoDir });
+  it('session-summary records why a Stop cannot capture an assistant reply', () => {
+    const empty = path.join(testDir, 'empty.jsonl');
+    fs.writeFileSync(empty, '');
+    runHook('session-summary', { session_id: 'no-path', cwd: repoDir });
     runHook('session-summary', {
-      session_id: 's3', cwd: repoDir, transcript_path: path.join(testDir, 'gone.jsonl'),
+      session_id: 'missing-file', cwd: repoDir, transcript_path: path.join(testDir, 'gone.jsonl'),
     });
+    runHook('session-summary', { session_id: 'empty-file', cwd: repoDir, transcript_path: empty });
+    runHook('session-summary', { session_id: 'no-project', last_assistant_message: 'Reply' });
+    runHook('session-summary', { cwd: repoDir, last_assistant_message: 'Reply' });
     const rows = records('session-summary');
     expect(rows.map((r) => r.reason)).toEqual([
-      'not an agentic loop',
-      'transcript_path absent',
-      'the transcript file named by the payload is gone',
+      SKIP_REASONS.transcriptPathAbsent,
+      SKIP_REASONS.transcriptGone,
+      SKIP_REASONS.noAssistantText,
+      SKIP_REASONS.noRecallSessionRecord,
+      SKIP_REASONS.cwdAbsent,
+      SKIP_REASONS.noSessionId,
     ]);
     expect(rows.every((r) => r.outcome === 'skipped')).toBe(true);
   });
 
-  it('session-summary records a WROTE naming the session entity', () => {
-    const transcript = path.join(testDir, 't.jsonl');
-    let nextId = 0;
-    const toolUse = (name: string, input: object) => {
-      const id = `completed-${++nextId}`;
-      return [
-        { type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } },
-        { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
-      ].map((entry) => JSON.stringify(entry)).join('\n');
-    };
-    fs.writeFileSync(transcript, [
-      toolUse('Edit', { file_path: path.join(repoDir, 'a.ts') }),
-      toolUse('Edit', { file_path: path.join(repoDir, 'b.ts') }),
-      toolUse('Bash', { command: 'npm test' }),
-      toolUse('Bash', { command: 'npm run build' }),
-    ].join('\n'));
-    runHook('session-summary', {
-      session_id: 'sess-write', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,
+  it('session-summary records a WROTE naming the stored assistant conversation', () => {
+    const reply = 'Recorded the result.\nThe full reply is preserved.';
+    runHook('session-summary', { session_id: 'sess-write', cwd: repoDir, last_assistant_message: reply });
+    const [record] = records('session-summary');
+    expect(record).toMatchObject({
+      outcome: 'wrote',
+      reason: 'stored assistant conversation; assistant text from payload',
+      entity: expect.stringMatching(/^conversation-/),
     });
-    const rows = records('session-summary');
-    expect(rows.length).toBeGreaterThanOrEqual(1);
-    const last = rows[rows.length - 1];
-    expect(last.outcome, `expected a write, got ${JSON.stringify(last)}`).toBe('wrote');
-    // Only 4 tool calls (2 edits + 2 Bash), no error — only Rule 1 (`-files`)
-    // matches; Rule 2 needs an error and Rule 3 needs 20+ calls. `entity`
-    // names whichever entity actually landed the write, not a fixed guess
-    // at which of the three this Stop touched (round-4 fix: the previous
-    // hardcoded `-summary` here named an entity this scenario never wrote).
-    expect(last.entity).toBe('session-sess-write-files');
-  });
-
-  // ── pre-compact ──────────────────────────────────────────────────────────
-
-  it('pre-compact records a WROTE, and a SKIPPED when the payload is not a compaction', () => {
-    runHook('pre-compact', { session_id: 'pc-1', cwd: repoDir, trigger: 'manual' });
-    runHook('pre-compact', { trigger: 'auto' });
-    const rows = records('pre-compact');
-    expect(rows.length).toBe(2);
-    expect(rows[0].outcome).toBe('wrote');
-    expect(rows[0].entity).toBe('pre-compact-pc-1');
-    expect(rows[1].outcome).toBe('skipped');
-    expect(rows[1].reason).toBe('neither session_id nor transcript_path in the payload');
+    const db = new DatabaseSync(path.join(memeshDir, 'knowledge-graph.db'), { readOnly: true });
+    try {
+      expect(db.prepare(`SELECT e.type, o.content FROM entities e
+        JOIN observations o ON o.entity_id = e.id WHERE e.name = ?`).all(record.entity!))
+        .toEqual([{ type: 'conversation', content: reply }]);
+    } finally {
+      db.close();
+    }
   });
 
   it('capture stays off-limits when auto-capture is disabled, and the record says so', () => {
-    runHook('pre-compact', { session_id: 'pc-2', cwd: repoDir }, { MEMESH_AUTO_CAPTURE: 'false' });
-    const rows = records('pre-compact');
+    runHook('session-summary', {
+      session_id: 'opted-out', cwd: repoDir, last_assistant_message: 'Do not retain this reply.',
+    }, { MEMESH_AUTO_CAPTURE: 'false' });
+    const rows = records('session-summary');
     expect(rows.length).toBe(1);
-    expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe('auto-capture is turned off');
+    expect(rows[0]).toMatchObject({ outcome: 'skipped', reason: SKIP_REASONS.autoCaptureOff });
+    expect(fs.existsSync(path.join(memeshDir, 'knowledge-graph.db'))).toBe(false);
   });
 
   it('redacts a secret before the 200-character reason cap', () => {
@@ -338,11 +681,6 @@ describe('hook outcome records', () => {
     }
   });
 
-  // ── the remaining five hooks ─────────────────────────────────────────────
-  // post-commit, session-summary and pre-compact are covered above; these
-  // five record on every path too, and each needs its own "remove the
-  // record(...) call and this goes red" pin.
-
   it('pre-edit-recall records a SKIPPED when the tool input has no file path', () => {
     runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
     const rows = records('pre-edit-recall');
@@ -351,23 +689,12 @@ describe('hook outcome records', () => {
     expect(rows[0].reason).toBe('no file_path in the tool input');
   });
 
-  it('user-prompt-intent records a SKIPPED for a prompt with no intent', () => {
+  it('user-prompt-intent records its explicit capture skip when conversation identity is absent', () => {
     runHook('user-prompt-intent', { prompt: 'hello there' });
     const rows = records('user-prompt-intent');
     expect(rows.length).toBe(1);
     expect(rows[0].outcome).toBe('skipped');
-    expect(rows[0].reason).toBe('the prompt carried no remember intent and no update decision');
-  });
-
-  it('decision-nudge records a NOTIFIED naming the nudged tool', () => {
-    // Not `wrote`: the nudge is the only effect this hook has, and doctor's
-    // `writes` answers "is memory capture still alive". A nudge is the
-    // opposite of a write — it is what memesh says when nothing was stored.
-    runHook('decision-nudge', { tool_name: 'ExitPlanMode', session_id: 'nudge-1' });
-    const rows = records('decision-nudge');
-    expect(rows.length).toBe(1);
-    expect(rows[0].outcome).toBe('notified');
-    expect(rows[0].entity).toBe('nudge:ExitPlanMode');
+    expect(rows[0].reason).toBe('conversation cwd or session absent');
   });
 
   it('guard-check records a SKIPPED when the payload has no Bash command', () => {
@@ -425,41 +752,40 @@ describe('hook outcome records', () => {
     // time) would NOT catch an RMW regression — it never overlaps — so this
     // fans 40 real hook processes out at once and asserts every line lands.
     const inputs: Array<[string, object]> = [];
-    for (let i = 0; i < 20; i++) inputs.push(['pre-compact', { trigger: 'auto' }]);
+    for (let i = 0; i < 20; i++) inputs.push(['pre-edit-recall', { tool_name: 'Edit', tool_input: {} }]);
     // A TRIGGERED skip (tool_name absent): a not-triggered one would be
     // windowed down to HOOK_OUTCOMES_NOT_TRIGGERED_PER_HOOK by the reader.
     for (let i = 0; i < 20; i++) inputs.push(['post-commit', { tool_input: {} }]);
     await Promise.all(inputs.map(([hook, payload]) => runHookAsync(hook, payload)));
     const raw = fs.readFileSync(path.join(memeshDir, HOOK_OUTCOMES_FILENAME), 'utf8');
     expect(raw.trim().split('\n')).toHaveLength(40);
-    expect(records('pre-compact')).toHaveLength(20);
+    expect(records('pre-edit-recall')).toHaveLength(20);
     expect(records('post-commit')).toHaveLength(20);
   });
 
   it('tolerates a torn last line instead of losing the history', () => {
-    runHook('pre-compact', { session_id: 'torn-1', cwd: repoDir });
+    runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
     const file = path.join(memeshDir, HOOK_OUTCOMES_FILENAME);
-    fs.appendFileSync(file, '{"hook":"pre-comp');
-    const rows = parseHookOutcomes(fs.readFileSync(file, 'utf8')).hooks['pre-compact'] ?? [];
+    fs.appendFileSync(file, '{"hook":"pre-edit');
+    const rows = parseHookOutcomes(fs.readFileSync(file, 'utf8')).hooks['pre-edit-recall'] ?? [];
     expect(rows, 'a hook killed mid-write must cost one record, not the file').toHaveLength(1);
   });
 
   it('the file is bounded: rotation keeps the last 20 PER HOOK', () => {
     const file = path.join(memeshDir, HOOK_OUTCOMES_FILENAME);
-    // Drive it past the size trigger through the real hook, so the bound is
-    // proven on the path that actually writes. A storm of post-commit skips
-    // must not push the single pre-compact record out of the window.
-    for (let i = 0; i < 260; i++) {
-      fs.appendFileSync(file, serializeHookOutcome({
-        hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
-        outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
-      }));
-    }
-    runHook('pre-compact', { trigger: 'auto' });
-    const parsed = parseHookOutcomes(fs.readFileSync(file, 'utf8'));
+    runHook('pre-edit-recall', { tool_name: 'Edit', tool_input: {} });
+    const line = serializeHookOutcome({
+      hook: 'post-commit', at: new Date().toISOString(), host: 'unknown',
+      outcome: 'skipped', reason: SKIP_REASONS.commitLineMissing,
+    });
+    fs.appendFileSync(file, line.repeat(Math.ceil(HOOK_OUTCOMES_ROTATE_BYTES / Buffer.byteLength(line))));
+    expect(fs.statSync(file).size).toBeGreaterThan(HOOK_OUTCOMES_ROTATE_BYTES);
+    runHook('post-commit', { tool_input: {} });
+    const raw = readFileSnapshot(file).bytes.toString('utf8');
+    expect(Buffer.byteLength(raw)).toBeLessThan(HOOK_OUTCOMES_ROTATE_BYTES);
+    const parsed = parseHookOutcomes(raw);
     expect(parsed.hooks['post-commit']).toHaveLength(HOOK_OUTCOMES_PER_HOOK);
-    // The quiet hook wrote through the real process and its record survives.
-    expect(parsed.hooks['pre-compact']).toHaveLength(1);
+    expect(parsed.hooks['pre-edit-recall']).toHaveLength(1);
   });
 
   it('a summary window never grows with the file', () => {

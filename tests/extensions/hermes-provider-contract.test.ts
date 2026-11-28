@@ -126,8 +126,27 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(queue.shutdown_before_initialize).toBe('ok');
   });
 
+  it('never reuses a prefetch from another session or before a reset', () => {
+    expect(queue.after_reset_prefetch).toBe('new:before');
+    expect(queue.explicit_session_prefetch).toBe('new:explicit-new');
+  });
+
+  it('invalidates cached inbox context after a read or a reply', () => {
+    expect(queue.read_invalidates_prefetch).toEqual([1, null, null]);
+    expect(queue.reply_invalidates_prefetch).toEqual([2, null, null]);
+  });
+
+  it('skips unavailable, failed, malformed, oversized or timed-out automatic recall', () => {
+    expect(queue.recall_failures).toEqual(Array(7).fill(''));
+  });
+
+  it('keeps readable memory and reports an unavailable inbox separately', () => {
+    expect(queue.recall_without_inbox).toEqual({ text: 'memory remains readable', ids: [7] });
+    expect(queue.inbox_failure_warnings).toBe(1);
+  });
+
   it('non-primary skips and non-object CLI output leave a log line (F5)', () => {
-    expect(queue.non_primary_debug).toBe(2);
+    expect(queue.non_primary_debug).toBe(1);
     expect(queue.non_dict_result).toBeNull();
     expect(queue.non_dict_warnings).toBe(1);
   });
@@ -144,9 +163,35 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     return JSON.parse(r.stdout) as T[];
   }
 
-  it('is available once memesh is on PATH, and the system prompt block is unchanged', () => {
+  function queryMessages<T>(sql: string, ...params: unknown[]): T[] {
+    const r = spawnSync('node', ['-e', `
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(process.argv[1], { readOnly: true });
+      console.log(JSON.stringify(db.prepare(process.argv[2]).all(...JSON.parse(process.argv[3]))));
+    `, path.join(home, '.memesh', 'messages.db'), sql, JSON.stringify(params)], { encoding: 'utf8' });
+    if (r.status !== 0) throw new Error(r.stderr);
+    return JSON.parse(r.stdout) as T[];
+  }
+
+  it('is available once memesh is on PATH, and the system prompt block tells the model to save by default', () => {
     expect(result.available).toBe(true);
     expect(result.system_prompt_block).toContain('MeMesh auto-recalls relevant memory each turn');
+    expect(result.system_prompt_block).toContain('Saving is on by default');
+    expect(result.system_prompt_block).toContain('remove a specific stored memory');
+    expect(result.system_prompt_block).not.toMatch(/only exception|not to save|current_turn/);
+  });
+
+  it('registers the long-lived Hermes SDK session and exposes only the canonical four message actions', () => {
+    expect(result.message_discover.conversations).toContainEqual(expect.objectContaining({ address: 'contract-session', host: 'hermes' }));
+    const rows = queryMessages<{ id: string; host: string; pid: number }>('SELECT id,host,pid FROM conversations WHERE id=?', 'contract-session');
+    expect(rows).toEqual([{ id: 'contract-session', host: 'hermes', pid: result.provider_pid }]);
+    expect(queryMessages<{ id: string }>('SELECT id FROM conversations WHERE id IN (?,?) ORDER BY id', 'switched-session', 'kwargs-session'))
+      .toEqual([{ id: 'kwargs-session' }, { id: 'switched-session' }]);
+    const schema = result.tool_schemas.find((entry: { name: string }) => entry.name === 'memesh_message');
+    expect(schema.parameters.oneOf).toHaveLength(4);
+    expect(schema.parameters.oneOf.map((branch: { properties: { action: { const: string } } }) => branch.properties.action.const))
+      .toEqual(['discover', 'send', 'read', 'status']);
+    expect(schema.parameters.oneOf.every((branch: { additionalProperties: boolean }) => branch.additionalProperties === false)).toBe(true);
   });
 
   it('explicit tools round-trip the HTTP envelope (remember, recall, forget)', () => {
@@ -157,47 +202,52 @@ describe.skipIf(skipReason !== null)('Hermes MemeshProvider against a real memes
     expect(result.forget.success).toBe(true);
   });
 
-  it('a refused write comes back as the server\'s sentence, not a bare status line; with a reason it is stored', () => {
-    expect(result.remember_refused.success).toBe(false);
-    expect(result.remember_refused.error).toMatch(/needs `why`.*reason for it and what would make it stop holding/);
-    expect(result.remember_refused.error).not.toMatch(/^HTTP \d+/);
+  it('returns the actual message rejection reason to the model', () => {
+    expect(result.message_rejected.success).toBe(false);
+    expect(result.message_rejected.error).toContain('unknown_recipient');
+    expect(result.message_rejected.error).toContain('contract-session');
+  });
+
+  it('a decision without a reason is stored; a later call with one adds the reason', () => {
+    expect(result.remember_bare.success).toBe(true);
     expect(result.remember_decision.success).toBe(true);
     expect(query<{ content: string }>(
       "SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.name = 'contract-choice' ORDER BY o.id",
     ).map((r) => r.content)).toEqual(['Chose the plain option', 'Why: it is the least moving parts; revisit if it stops scaling']);
   });
 
-  it('prefetch parses the recall envelope into an injected block', () => {
-    expect(result.prefetch).toContain('[MeMesh recall]');
-    expect(result.prefetch).toMatch(/hermes-turn-contract-session-/);
+  it('prefetch shares the bounded content contract and excludes its own session', () => {
+    expect(result.own_prefetch).toBe('');
+    expect(result.prefetch).toContain('MeMesh reference memory.');
+    expect(result.prefetch).toContain('BullMQ');
+    expect(result.prefetch).toMatch(/\[mem:\d+\]/);
+    expect(Buffer.byteLength(result.prefetch)).toBeLessThanOrEqual(4096);
+    expect(result.repeat_prefetch).toBe('');
+    expect(result.other_reader_prefetch).toBe(result.prefetch);
   });
 
-  it('sync_turn stores nothing for ordinary chat and one row for a decision', () => {
-    const rows = query<{ name: string; metadata: string }>(
-      "SELECT name, metadata FROM entities WHERE type = 'conversation'",
+  it('sync_turn stores both sides of every turn, in full, whatever they say', () => {
+    const rows = query<{ name: string; metadata: string; title: string }>(
+      "SELECT name, metadata, title FROM entities WHERE type = 'conversation' ORDER BY name",
     );
-    expect(rows).toHaveLength(1);
-    expect(rows[0].name).toMatch(/^hermes-turn-contract-session-[0-9a-f]{12}$/);
-    expect(JSON.parse(rows[0].metadata).provenance.source_host).toBe('hermes');
-  });
-
-  it('a second capture of the same messages adds no observations (F7)', () => {
-    expect(result.observations_after_first).toBeGreaterThan(0);
-    expect(result.observations_after_second).toBe(result.observations_after_first);
-  });
-
-  it('on_session_end produces the three session-insight entities, not a transcript', () => {
-    expect(result.session_end.outcome).toBe('wrote');
-    const rows = query<{ name: string; metadata: string }>(
-      "SELECT name, metadata FROM entities WHERE type = 'session-insight' ORDER BY name",
-    );
-    expect(rows.map((r) => r.name)).toEqual([
-      'session-contract-session-files',
-      'session-contract-session-fixes',
-      'session-contract-session-summary',
+    // Two turns, two sides each: ordinary chat is kept like a decision.
+    expect(rows).toHaveLength(4);
+    expect(rows.map((r) => r.name.replace(/-[0-9a-f-]{36}-/, '-')).sort()).toEqual([
+      'hermes-turn-contract-session-assistant', 'hermes-turn-contract-session-assistant',
+      'hermes-turn-contract-session-user', 'hermes-turn-contract-session-user',
     ]);
     for (const r of rows) expect(JSON.parse(r.metadata).provenance.source_host).toBe('hermes');
-    // The raw archive types are gone.
-    expect(query("SELECT name FROM entities WHERE type IN ('conversation-archive', 'conversation-checkpoint')")).toEqual([]);
+    const said = query<{ content: string }>(
+      "SELECT o.content FROM observations o JOIN entities e ON e.id = o.entity_id WHERE e.type = 'conversation' ORDER BY o.content",
+    ).map((r) => r.content);
+    expect(said).toEqual(['Hello! How can I help?', 'We decided to use BullMQ for the job queue.', 'Which queue should we use?', 'hi']);
+    expect(query<{ tag: string }>(
+      "SELECT t.tag FROM tags t JOIN entities e ON e.id = t.entity_id WHERE e.name LIKE '%-user' AND t.tag LIKE 'role:%'",
+    ).map((r) => r.tag)).toEqual(['role:user', 'role:user']);
+  });
+
+  it('compression and session end store nothing and add nothing to the compressed context', () => {
+    expect(result.pre_compress).toBe('');
+    expect(query("SELECT name FROM entities WHERE type IN ('session-insight', 'conversation-archive', 'conversation-checkpoint')")).toEqual([]);
   });
 });

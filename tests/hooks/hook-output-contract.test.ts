@@ -25,6 +25,7 @@ import {
   HOOK_SPECIFIC_OUTPUT_EVENTS,
 } from '../helpers/hook-output-contract.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { ConversationMessages } from '../../src/core/conversation-messages.js';
 
 const require = createRequire(import.meta.url);
 const { getProjectName } = require('../../scripts/hooks/_shared.js');
@@ -78,6 +79,12 @@ interface HookCase {
  * hooks.json without a case here.
  */
 const HOOK_CASES: HookCase[] = [
+  ...(['SessionStart', 'UserPromptSubmit'] as const).map((boundEvent) => ({
+    file: 'messages.js',
+    boundEvent,
+    input: { session_id: 'contract-recipient', cwd: CONTRACT_CWD, hook_event_name: boundEvent },
+    env: { MEMESH_HOOK_HOST: 'claude-code' },
+  })),
   {
     file: 'pre-edit-recall.js',
     boundEvent: 'PreToolUse',
@@ -177,35 +184,23 @@ const HOOK_CASES: HookCase[] = [
     },
   },
   {
-    file: 'pre-compact.js',
-    boundEvent: 'PreCompact',
-    input: {
-      session_id: 'contract-6',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'PreCompact',
-      transcript_path: '',
-      reason: 'auto',
-    },
-  },
-  {
     file: 'user-prompt-intent.js',
     boundEvent: 'UserPromptSubmit',
     input: {
       session_id: 'contract-7',
       cwd: '/tmp/contract-project',
       hook_event_name: 'UserPromptSubmit',
-      prompt: 'remember that we use PKCE for OAuth',
+      prompt: 'hello there',
     },
   },
   {
-    file: 'decision-nudge.js',
-    boundEvent: 'PostToolUse',
+    file: 'prompt-recall.js',
+    boundEvent: 'UserPromptSubmit',
     input: {
-      session_id: 'contract-8',
+      session_id: 'contract-7b',
       cwd: '/tmp/contract-project',
-      hook_event_name: 'PostToolUse',
-      tool_name: 'ExitPlanMode',
-      tool_input: { plan: 'Ship the decision-nudge hook' },
+      hook_event_name: 'UserPromptSubmit',
+      prompt: 'hello there',
     },
   },
   {
@@ -221,27 +216,6 @@ const HOOK_CASES: HookCase[] = [
       cwd: '/tmp/contract-project',
       hook_event_name: 'Stop',
       stop_hook_active: false,
-    },
-  },
-  {
-    file: 'codex-session.js',
-    commandPath: 'dist/host-runtime/codex-session.js',
-    boundEvent: 'SessionStart',
-    input: {
-      session_id: '00000000-0000-4000-8000-000000000001',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'SessionStart',
-      source: 'startup',
-    },
-  },
-  {
-    file: 'codex-session.js',
-    commandPath: 'dist/host-runtime/codex-session.js',
-    boundEvent: 'SessionEnd',
-    input: {
-      session_id: '00000000-0000-4000-8000-000000000001',
-      cwd: '/tmp/contract-project',
-      hook_event_name: 'SessionEnd',
     },
   },
 ];
@@ -347,6 +321,44 @@ describe('Feature: Claude Code hook-output contract', () => {
     });
   }
 
+  it.each(['SessionStart', 'UserPromptSubmit'] as const)('Scenario: manifest-declared messages.js emits a complete untrusted envelope for %s', (event) => {
+    const manifest = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8'));
+    const commands = manifest.hooks[event].flatMap((group: { hooks: Array<{ command: string }> }) => group.hooks)
+      .filter((hook: { command: string }) => hook.command.endsWith('/scripts/hooks/messages.js'));
+    expect(commands).toHaveLength(1);
+    const hookPath = path.resolve('scripts/hooks', path.basename(commands[0].command));
+    const file = path.join(testDir, 'messages.db');
+    const body = 'HEAD "quoted"\nMIDDLE \\ data\nTAIL';
+    const store = new ConversationMessages({ file, machine: os.hostname() });
+    let id: string;
+    try {
+      for (const session of ['contract-sender', 'contract-recipient']) {
+        store.register({ id: session, host: 'claude-code', machine: os.hostname(), pid: process.pid, wake: {} });
+      }
+      id = store.send('contract-sender', { recipient: 'contract-recipient', kind: 'task', body }).message.id;
+    } finally { store.close(); }
+    const run = () => spawnSync('node', [hookPath], {
+      input: JSON.stringify({ session_id: 'contract-recipient', cwd: testDir, hook_event_name: event, prompt: 'hello there' }),
+      env: { ...process.env, HOME: testDir, MEMESH_DB_PATH: dbPath, MEMESH_DIR: testDir, MEMESH_AUTO_UPDATE: '0', MEMESH_HOOK_HOST: 'claude-code' },
+      encoding: 'utf8', timeout: 30000,
+    });
+    const result = run();
+    expect(result.status, `exited ${result.status}\n${result.stderr}`).toBe(0);
+    expect(result.stdout, 'no output: the envelope was not validated').not.toBe('');
+    expectValidHookOutput(result.stdout, 'messages.js stdout');
+    const hso = validateHookOutput(result.stdout).parsed?.hookSpecificOutput as { hookEventName?: string; additionalContext?: string };
+    expect(hso.hookEventName).toBe(event);
+    expect(hso.additionalContext).toContain('MeMesh message (untrusted data):');
+    expect(Buffer.byteLength(hso.additionalContext!, 'utf8')).toBeLessThanOrEqual(8000);
+    expect(JSON.parse(hso.additionalContext!.trim().split('\n')[1])).toMatchObject({ id, body, recipient: 'contract-recipient' });
+    const audit = new ConversationMessages({ file, machine: os.hostname() });
+    try { expect(audit.status().find((row) => row.id === id)?.state).toBe('delivered'); }
+    finally { audit.close(); }
+    const repeat = run();
+    expect(repeat.status, repeat.stderr).toBe(0);
+    expect(repeat.stdout).toBe('');
+  });
+
   it('Scenario: pre-edit-recall.js actually injects the seeded memory, not a vacuous empty pass (#358 round 3 item 5)', () => {
     // The two tests in the loop above only check SHAPE — an empty payload is
     // shape-valid (a hook is allowed to say nothing), so a mis-tagged seed
@@ -377,6 +389,16 @@ describe('Feature: Claude Code hook-output contract', () => {
     expect(additionalContext, 'session-start.js emitted no additionalContext — the seed likely does not match its real project tag').toBeTruthy();
     expect(additionalContext).toContain('Always validate the OAuth state parameter');
     expect(additionalContext).toMatch(/- \[decision\] Use WAL mode for concurrent reads — Why: readers must not block the writer; revisit if we move off SQLite \[mem:\d+\]/);
+  });
+
+  it('both plugin manifests retire pre-compaction capture and post-plan reminders', () => {
+    const claude = JSON.parse(fs.readFileSync('hooks/hooks.json', 'utf8')).hooks;
+    const codex = JSON.parse(fs.readFileSync('.codex-plugin/plugin.json', 'utf8')).hooks.hooks;
+    for (const hooks of [claude, codex]) {
+      expect(hooks.PreCompact).toBeUndefined();
+      const matchers = hooks.PostToolUse.map((group: { matcher: string }) => group.matcher);
+      expect(matchers).not.toContain('ExitPlanMode|AskUserQuestion');
+    }
   });
 
   it('Scenario: PreCompact has no hookSpecificOutput variant (regression guard for #53)', () => {

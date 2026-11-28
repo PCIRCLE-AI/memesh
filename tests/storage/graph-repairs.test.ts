@@ -17,6 +17,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { openDatabase, closeDatabase } from '../../src/db.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
+import { installLegacyMessageSchema } from '../helpers/agent-session-fixture.js';
 import { createExplicitLesson } from '../../src/core/lesson-engine.js';
 import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import {
@@ -1321,6 +1322,7 @@ describe('#451 — lesson, mistake and lesson_learned become one type', () => {
  */
 describe('historical message scope identities spelled as paths', () => {
   function message(db: Db, id: string, project: string, recipient: string): void {
+    installLegacyMessageSchema(db);
     db.prepare(
       `INSERT INTO agent_messages (message_id, project, sender, recipient, content_type, privacy, payload_json, provenance_json)
        VALUES (?, ?, 'author', ?, 'text/plain', 'private', '"x"', '{}')`,
@@ -1375,19 +1377,7 @@ describe('historical message scope identities spelled as paths', () => {
   });
 
   it('leaves `claude-code:session_X` and `session_X` apart, and `memesh` apart from `memesh-llm-memory`', () => {
-    // Both pairs are in the real graph and neither is a mechanical spelling
-    // variant. `claude-code:` exists nowhere in this repository, so there is
-    // no convention to normalise against; `memesh` vs `memesh-llm-memory` IS
-    // one project, but only a network call against one owner's GitHub account
-    // proves it, and a migration running from an arbitrary directory cannot.
-    //
-    // What this covers, precisely: opening the database leaves both pairs
-    // alone. It seeds through raw SQL, so it never calls `canonicalAgentScopeId` and
-    // cannot see a write-path canonicaliser that starts stripping the
-    // `claude-code:` prefix — mutating that function leaves this file green.
-    // That half is guarded in `tests/core/agent-messaging.test.ts` ("two
-    // genuinely different identities stay apart"). Two files, two halves;
-    // neither title should be read as covering the other's.
+    // Opening a legacy graph must not guess mappings for ambiguous identities.
     seed((db) => {
       message(db, 'm1', 'memesh', 'session_01PDMer3P4cVYeHr4KRen3Un');
       message(db, 'm2', 'memesh', 'claude-code:session_01PDMer3P4cVYeHr4KRen3Un');
@@ -1422,20 +1412,4 @@ describe('historical message scope identities spelled as paths', () => {
     ]);
   });
 
-  it('leaves the read-only invariant red so the owner can inspect the ambiguity', () => {
-    const invariantStatus = () => spawnSync(process.execPath, [invariants, '--db', dbPath], { encoding: 'utf8' });
-    seed((db) => {
-      message(db, 'm1', 'sports-platform', '/root');
-    });
-    closeDatabase();
-    const before = invariantStatus();
-    expect(before.status, before.stdout).toBe(1);
-    expect(before.stdout).toContain('agent-message-scope-ids-are-not-filesystem-paths');
-
-    openDatabase(dbPath);
-    closeDatabase();
-    const after = invariantStatus();
-    expect(after.status, after.stdout).toBe(1);
-    expect(after.stdout).toContain('agent_message_deliveries.recipient = "/root"');
-  });
 });

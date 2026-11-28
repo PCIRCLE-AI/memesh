@@ -18,13 +18,13 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "f41bf3eaa883ca4c1c2de6374dc16e601477051a0da0a3a49c2fa50fceed6838",
-      "bytes": 3657
+      "sha256": "1c87b5be8e548331b17ffbb164c01ba18bb764e4fb6ec2d49f85780dea122ccc",
+      "bytes": 3456
     },
     {
       "path": "hooks/hooks.json",
-      "sha256": "12cb874e3a7897ea35ca4e765faf4a2f17c3a4f5dd53df855b187c88ae30c0c5",
-      "bytes": 2767
+      "sha256": "0686a5506ad1bd7d1e4d14e23d249af90154a18ce77851dd230441b274304205",
+      "bytes": 2368
     },
     {
       "path": "hooks/native-memory.js",
@@ -33,8 +33,8 @@
     },
     {
       "path": "scripts/hooks/_claude-channel.js",
-      "sha256": "a3597f9e4f3a347117a555e2acf94129f97617de4587a61b737011be685a162d",
-      "bytes": 7939
+      "sha256": "1981e419131ab28229ee9663a3344bfb6271be21621b72d03a19af2f04cf50a4",
+      "bytes": 7522
     },
     {
       "path": "scripts/hooks/_clear-alias.js",
@@ -42,19 +42,14 @@
       "bytes": 4540
     },
     {
-      "path": "scripts/hooks/_codex-rollout.js",
-      "sha256": "83f4ac3c22ebe9298324a89a981006685f85b37595142a0eb95e887815f86d47",
-      "bytes": 14734
-    },
-    {
-      "path": "scripts/hooks/_generated/agent-message-inbox.js",
-      "sha256": "a217d5939e352fc34146737bff9687a845ae0417bad36976ba97c69c44abf9ed",
-      "bytes": 11278
+      "path": "scripts/hooks/_generated/agent-network-schema.js",
+      "sha256": "b01735104fd55bc662d558b94eb4fc250974524b27fabf040a706074dfe7be09",
+      "bytes": 1317
     },
     {
       "path": "scripts/hooks/_generated/agent-scope-id.js",
-      "sha256": "f78667b12dfa128c2575aaa20029874e9e2bf4f99ac13c98f61bb455897aa2df",
-      "bytes": 3112
+      "sha256": "c531ae4cbf809d98baf8fdb4bb7cc22acab04c161e47e16ca1b37814ea1faa39",
+      "bytes": 2709
     },
     {
       "path": "scripts/hooks/_generated/bash-edited-paths.js",
@@ -63,18 +58,18 @@
     },
     {
       "path": "scripts/hooks/_generated/briefing-index.js",
-      "sha256": "8103d56b58b9ce4e305bf3b4805254f6bda7c450f6abe5ce3da55d7be9d8b0d9",
-      "bytes": 7386
+      "sha256": "497a66971825a577dc516a1f5b4d7d4d7ff3e190b1180315eccb2d3e294684e6",
+      "bytes": 6474
     },
     {
       "path": "scripts/hooks/_generated/briefing-level.js",
-      "sha256": "e06ea5ca2b5a3ad7c4cb292540055d2c9c6c19d48b9a3edb67a93096609b4abe",
-      "bytes": 3687
+      "sha256": "74a1ae2c2125d51038c2700e829d91de2aeb4d0673e7fb59a7850d733724102c",
+      "bytes": 3595
     },
     {
       "path": "scripts/hooks/_generated/briefing-pools.js",
-      "sha256": "f31157f4af8cd6bd3bf3dcc6b41cf845925a81b72bd64a938f85a5e62417cde8",
-      "bytes": 11720
+      "sha256": "64580979c2590ea1b492058d643968826fab8c9265a9793ca70b9a7cc0de01b0",
+      "bytes": 15854
     },
     {
       "path": "scripts/hooks/_generated/capture-flag.js",
@@ -83,23 +78,38 @@
     },
     {
       "path": "scripts/hooks/_generated/capture-liveness.js",
-      "sha256": "2f7facc9ac595cfa64c5eb69c7f794fa616c53bdda907e7bd9f3d7ff5defe7ce",
-      "bytes": 22564
+      "sha256": "15c655888924a141931900e6f63a573ea4fc910eead36b7d406e4d72edc814c9",
+      "bytes": 26694
     },
     {
       "path": "scripts/hooks/_generated/citation-rule.js",
-      "sha256": "754903707c63a2c9ad0e8307055a1c3abee2fccbd122c973d8177b22552b8fff",
-      "bytes": 3743
+      "sha256": "e0a8583ab4cae058a309e58960f9a73e4b656fb86f8c1fe063d20fb356cabd8d",
+      "bytes": 4119
     },
     {
       "path": "scripts/hooks/_generated/codex-session-principal.js",
-      "sha256": "ff9fa8cad5d64655346409d53c4d49047eb0dab3fe55d2d84423b5fb67ea419c",
-      "bytes": 2203
+      "sha256": "f9ccb8233d4a5f36549b0889f8d4a871fe0a8318ecca29de5a62628255ac8c48",
+      "bytes": 754
+    },
+    {
+      "path": "scripts/hooks/_generated/continuation.js",
+      "sha256": "2492efb5626a397e153a7d8145e64e395b9f5d89127699592ec6744dae1d087c",
+      "bytes": 8651
+    },
+    {
+      "path": "scripts/hooks/_generated/conversation-message-migration.js",
+      "sha256": "6ab7ee2cefa6c9a280a0e98092ea8d67c7fb0cc867f51c6feb11026f2a1d37e7",
+      "bytes": 20219
+    },
+    {
+      "path": "scripts/hooks/_generated/conversation-messages.js",
+      "sha256": "f92b752c29c7aeef1db4a4709538318e96de50b5909d425b14ceb593a1854d72",
+      "bytes": 38593
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
-      "sha256": "9ea4a269d337370d6365f91257ea32fe4af3a7176e737dfb192d626846d0741b",
-      "bytes": 23962
+      "sha256": "92d69a158e54cd569c5fd857de7fabcc92e38f9810d12e9c4721ab4c1906eb8b",
+      "bytes": 26414
     },
     {
       "path": "scripts/hooks/_generated/entity-write.js",
@@ -108,8 +118,8 @@
     },
     {
       "path": "scripts/hooks/_generated/file-mode.js",
-      "sha256": "ded7e8ef7218dd3ac81d02d18e28ae3be15143ea1c6bc6cd3b8274c7ba31dc02",
-      "bytes": 6639
+      "sha256": "3bd5f086ba831eef20e53e2dccfeeae35f6c95319e7ddb3ede89b00edf0ce567",
+      "bytes": 7604
     },
     {
       "path": "scripts/hooks/_generated/fts-index.js",
@@ -122,14 +132,64 @@
       "bytes": 4047
     },
     {
+      "path": "scripts/hooks/_generated/host-transcript.js",
+      "sha256": "beada7f3ae10f6ad6400c3d65ecd947c04096ec76dd4982518bdd01ca3e100c9",
+      "bytes": 1203
+    },
+    {
+      "path": "scripts/hooks/_generated/memory-mutation.js",
+      "sha256": "c79235dc5c976657f46610558413e38b0c2fb89689b34402063e5f0b12044479",
+      "bytes": 3377
+    },
+    {
+      "path": "scripts/hooks/_generated/network-identity.js",
+      "sha256": "455eeb7fb3e0a87886356e4a3607559e05151f6511b028f2b7f2851cc9d4f3d3",
+      "bytes": 8816
+    },
+    {
+      "path": "scripts/hooks/_generated/network-roster.js",
+      "sha256": "72a65952edeb45173d2468ea270979b58401d8861baf4bdecc9490ff986beb72",
+      "bytes": 6268
+    },
+    {
+      "path": "scripts/hooks/_generated/network-types.js",
+      "sha256": "57e525a6ab76827f86f8ce8600e23bff8771ceceef333503983805443ff796d8",
+      "bytes": 1864
+    },
+    {
+      "path": "scripts/hooks/_generated/process-identity.js",
+      "sha256": "d4101f310a3c3259cdd84aab5e5dd02c9d08765e2c5090274d2692c891956f1f",
+      "bytes": 1910
+    },
+    {
+      "path": "scripts/hooks/_generated/project-scope.js",
+      "sha256": "a318007976f1f54674253511df2283bfa614516ed9c923f6737dd0a77622c653",
+      "bytes": 2716
+    },
+    {
+      "path": "scripts/hooks/_generated/prompt-recall.js",
+      "sha256": "23bd68311d92fe06c55de94b65a71809ed2824640fa6770e65b9eb364482f77e",
+      "bytes": 15246
+    },
+    {
+      "path": "scripts/hooks/_generated/public-network-context.js",
+      "sha256": "7a67ace84a389c709e534fa1acc5f6c0aabf9bac23f4cf8fb50fb95962a38d58",
+      "bytes": 3986
+    },
+    {
+      "path": "scripts/hooks/_generated/recent-index.js",
+      "sha256": "a7554ecd212c76383b8509c8de2c4ff865e37253be877154b6fefa2d6496f5c5",
+      "bytes": 5770
+    },
+    {
       "path": "scripts/hooks/_generated/repo-state.js",
       "sha256": "754d782760c8c12679579a1e7be18c8196cfe31b1b23712215016ec390654c1b",
       "bytes": 3452
     },
     {
       "path": "scripts/hooks/_generated/schema.js",
-      "sha256": "b993c195b8917773310f8db3f59ccd9f01aa5cda72e064a350d5f2be7b270760",
-      "bytes": 26359
+      "sha256": "448eb5aa06dfaa0499d53d8760038691a244e3a25c4160adee4e65303022a171",
+      "bytes": 15419
     },
     {
       "path": "scripts/hooks/_generated/scoring.js",
@@ -143,8 +203,8 @@
     },
     {
       "path": "scripts/hooks/_generated/session-handoff.js",
-      "sha256": "ce7ebb3629901e97db2db668ad94a54bb1ed656200802900ee64f3509952c0a6",
-      "bytes": 10302
+      "sha256": "780df0b5f7f839b92b33df946ccd205a31146a25b30e1cf9d90a946a266d5089",
+      "bytes": 9417
     },
     {
       "path": "scripts/hooks/_generated/session-limit.js",
@@ -153,13 +213,13 @@
     },
     {
       "path": "scripts/hooks/_generated/sqlite.js",
-      "sha256": "445d3fe3058e2f0bf4fb5359a3a6e9584e377a0794880859ba9cafdddedde9a6",
-      "bytes": 2840
+      "sha256": "2d5b1ae9039466e92b7541406ff2ce210bc1bcfd07bf98c466eb0b68d2d23836",
+      "bytes": 6752
     },
     {
       "path": "scripts/hooks/_generated/task-state.js",
-      "sha256": "060a558ee83481540f04a6c0964b8b874d005fe7cf03dd075c835f37ef691304",
-      "bytes": 10804
+      "sha256": "704649a68aa75fa3196d87d177fcfb3b64f97c5b838eaaf03e0d408b7519ef70",
+      "bytes": 8256
     },
     {
       "path": "scripts/hooks/_generated/time-utils.js",
@@ -172,89 +232,94 @@
       "bytes": 1185
     },
     {
+      "path": "scripts/hooks/_generated/transcript-lines.js",
+      "sha256": "c1e6ff37b81d58c5ea213c7de6ee553c32d8e10fbae00baf1e47ebab4dfe9eb9",
+      "bytes": 2655
+    },
+    {
       "path": "scripts/hooks/_generated/update-notice.js",
-      "sha256": "d5230bdbc6b2930993912596a7bc6beb502a4c9c7a4136579284cbe6a3f31f6e",
-      "bytes": 8838
+      "sha256": "4daaa3f9fc33b3a210f07d839f2ab558ca9565c4b251d0a7324016cdf34353ae",
+      "bytes": 7304
+    },
+    {
+      "path": "scripts/hooks/_generated/windows-permissions.js",
+      "sha256": "bf7cc29182d02c9b5898cca562cb80c2b70899cb264423b26206604c9d0233d5",
+      "bytes": 10494
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",
-      "sha256": "63086e62cca3e491dc9770565a46c9598d2518c8ef89c80e35226cc07d44e913",
-      "bytes": 13903
+      "sha256": "bacd9a2dba2537cf354d4e8c6d005cfcc4ecae81761406d4af3312c5dc2bd903",
+      "bytes": 17097
     },
     {
       "path": "scripts/hooks/_shared.js",
-      "sha256": "a9efd05e201f6224a2496d8e2cd582a11186cca0250c4564ba1290385d28efcc",
-      "bytes": 127314
-    },
-    {
-      "path": "scripts/hooks/_stop-handoff.js",
-      "sha256": "fd292b0ef24f5191404f11f495612d175b455d7e68ef1058f8e5368f13d28758",
-      "bytes": 7963
+      "sha256": "35607a32d4f53240871779d035a2d7b95039e91f45ca2e32c2d4f0b8c364b478",
+      "bytes": 127269
     },
     {
       "path": "scripts/hooks/_stop-notes.js",
-      "sha256": "da9b90b1ce7367721cc1d64b7ca5d19bfee0b6ad3e69cd79a16ca60ac4fc2f65",
-      "bytes": 26184
+      "sha256": "beb15ead534bbbcc28a83e4d804406fd4f77d15b9d604b337f47c80cfe9ed6c7",
+      "bytes": 15889
     },
     {
       "path": "scripts/hooks/auto-update-runner.mjs",
-      "sha256": "4be306189df3748f61d46ab32889e61f2ec3545c371165c76fc2abf67e017ada",
-      "bytes": 9267
+      "sha256": "cf627caf6338f8829436656a68b82b22ec5678dec80bae74702f000a559523af",
+      "bytes": 15428
     },
     {
       "path": "scripts/hooks/codex-busy-message-notice.js",
-      "sha256": "67ff0a1f8c06fd2078b77e287e0fd4f36fc186df9c90a4441921df3e2012ed23",
-      "bytes": 6284
+      "sha256": "44c51c2011bf043e898fecc8dd8f60948a588552c3d98926ac8ea3c6245c6f52",
+      "bytes": 5728
     },
     {
       "path": "scripts/hooks/codex-plan-activity.js",
-      "sha256": "f65b7e799d6d137125eeb00cc673d682ad6505ba7366c914a6644620e71ed9a2",
-      "bytes": 2565
-    },
-    {
-      "path": "scripts/hooks/decision-nudge.js",
-      "sha256": "30fa9379f275d121350b77ae462ea599f12ed390e08025c77134f46cb7aa4943",
-      "bytes": 8814
+      "sha256": "19dbfe14cc42e737916b297746604f603010a0d952fc39dc24ea8f37a2f9fdc8",
+      "bytes": 4881
     },
     {
       "path": "scripts/hooks/guard-check.js",
-      "sha256": "e080e414c990878d06afc3d3770222b2b644df4a471e49fc9b9869903b957c56",
-      "bytes": 4774
+      "sha256": "2221fadfb43c16bfb6e57f8595195dd296f987fd93da417bdde347838790266c",
+      "bytes": 4929
+    },
+    {
+      "path": "scripts/hooks/messages.js",
+      "sha256": "a0f0dd64091b903c66bec8d9a85d79c371831e36c45cc533ab9f8d20e90c8919",
+      "bytes": 3761
     },
     {
       "path": "scripts/hooks/post-commit.js",
-      "sha256": "8556833eec95c93c1c36a2ef39cec3981cd0c0fbb38f8fc0d70fc71564f4725f",
-      "bytes": 19232
-    },
-    {
-      "path": "scripts/hooks/pre-compact.js",
-      "sha256": "0df25bb159ffa181b15e14fe24c74576cfffaff2ba110cd4febf046d2c919f93",
-      "bytes": 11113
+      "sha256": "249de7640191fa0f7d3173ac56c165a6dcb3fd31a8c3b0c696bde87874f9c68a",
+      "bytes": 21796
     },
     {
       "path": "scripts/hooks/pre-edit-recall.js",
-      "sha256": "9e5abb65c6670784de243889e6e1f89225bf17e1cfb832732ae3f6a2bf239b04",
-      "bytes": 39319
+      "sha256": "134b4654400b30078187f46c58b32d50e5f5157c8a9af3f535cdc85f3bc1f5ab",
+      "bytes": 42184
+    },
+    {
+      "path": "scripts/hooks/prompt-recall.js",
+      "sha256": "732ebc74d2fb7359b6dc13a4255c8aed95c75bb534d26e2999e3e6c2f6306808",
+      "bytes": 10396
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "d39c7a9f82d54b0f22bc0c9997fc04e945ef073d7a165f5d5b6ee80198b8676b",
-      "bytes": 98712
+      "sha256": "7305709958ae964a6414eaad4a6a87339351c645d5713dc5863c6237e4ec3d44",
+      "bytes": 99708
     },
     {
       "path": "scripts/hooks/session-summary.js",
-      "sha256": "5d3abbaad3a5947c983f38e3686654a3024e1d068a9a7d8b8515a58a7b4b4bcf",
-      "bytes": 39063
+      "sha256": "b97dd9b0975d2113af0d58de90b87aa1d1a6a866bb5f2cdc344c8fba64742781",
+      "bytes": 13468
     },
     {
       "path": "scripts/hooks/stop-message-gate.js",
-      "sha256": "3532533dd6741b06bcd91aafb3c41b79869171c5317f42ae50057df9db051b3a",
-      "bytes": 8184
+      "sha256": "20c806afaf16f79c7cba83c560d82fc21ce8974edfa2003364cf6659058a3490",
+      "bytes": 6650
     },
     {
       "path": "scripts/hooks/user-prompt-intent.js",
-      "sha256": "fa48c5661a9ad1986954d41655291e377a9f368d65d5d7acecdd9e6c10b66385",
-      "bytes": 16039
+      "sha256": "798d7e9d378221e263a8e2a48067ccdd7a19672d84d6116b927470955a57b3b2",
+      "bytes": 6891
     },
     {
       "path": "skills/memesh-review/SKILL.md",
@@ -263,8 +328,8 @@
     },
     {
       "path": "skills/memesh/SKILL.md",
-      "sha256": "ddba4b49790e7c31c378ae55a013164cdbbf43a9d03c7d8eafd74a9f2fee8705",
-      "bytes": 30127
+      "sha256": "9b0c54c6f066b6d07b26c4f505cd4e2874642f1f7db9de02e59c3b017d886457",
+      "bytes": 23678
     }
   ]
 }

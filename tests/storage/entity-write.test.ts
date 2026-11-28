@@ -194,14 +194,13 @@ describe('kept policy differences between the two writers (characterization)', (
     } finally { handle.db.close(); }
   });
 
-  it('the hook refuses a handoff write onto a different stored type and changes nothing', () => {
+  it('a legacy handoff-shaped name is an ordinary memory name', () => {
     const handle = hookDb();
     try {
       handle.db.prepare("INSERT INTO entities (name, type) VALUES ('session-handoff:px', 'decision')").run();
-      expect(() => shared.captureEntity(handle.db, { name: 'session-handoff:px', type: 'session-handoff', observations: ['h'], replace: true, localHandoff: true }))
-        .toThrow(/stored as type decision/);
+      shared.captureEntity(handle.db, { name: 'session-handoff:px', type: 'decision', observations: ['ordinary content'] });
       const row = handle.db.prepare("SELECT id FROM entities WHERE name = 'session-handoff:px'").get() as { id: number };
-      expect(contents(handle.db, row.id)).toEqual([]);
+      expect(contents(handle.db, row.id)).toEqual(['ordinary content']);
     } finally { handle.db.close(); }
   });
 });

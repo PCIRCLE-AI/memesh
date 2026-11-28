@@ -2,199 +2,65 @@
 
 // User Prompt Intent — UserPromptSubmit hook
 //
-// Detects when the user explicitly asks Claude to remember / save / memorize
-// content from the current session, and injects a context hint reminding Claude
-// to use the memesh `remember` tool for cross-project recall.
-//
-// Why a hint instead of autonomous capture? The user's intent is clear, but
-// "what to remember" usually depends on the surrounding conversation —
-// extracting that requires an LLM round and policy decisions (name, type,
-// observations, namespace). A polite reminder keeps the calling agent in the
-// loop with full conversation context, while still preventing the
-// "I forgot to use memesh" failure mode that motivated this hook.
+// Runs on every prompt and does only deterministic work:
+//   - on a Node that cannot run MeMesh, records why and stays silent;
+//   - stores the full user prompt, with secrets redacted;
+//   - leaves a hook-outcome record on every exit path.
+// It does not classify the prompt's words. Saving is on by default; users can
+// request removal of specific memories through the existing `forget` tool.
+// (The file keeps its old name: renaming it would move the
+// install paths.)
 //
 // Defensive: never blocks user prompts, even on hook failure. Errors are
 // surfaced to stderr (visible in Claude Code debug logs) rather than
 // swallowed — stderr does not affect prompt submission.
-// Gated by `autoCapture` flag (same as other memesh write hooks).
 
 import { pathToFileURL } from 'url';
+import { createHash, randomUUID } from 'crypto';
 import {
-  findAutoUpdateConsent,
-  importFromPluginRoot,
+  AUTO_CAPTURE_TAG,
+  captureConversation,
+  getProjectName,
+  hookSourceHost,
   isAutoCaptureEnabled,
+  redactSecrets,
   hookErrorReason,
   SKIP_REASONS,
   recordHookOutcome,
-  markUpdatePromptAnswered,
-  memeshDir,
-  parseAutoUpdateConsent,
-  readUpdateCheckCache,
-  readUpdatePromptClaim,
-  resolvePluginRoot,
-  unreadMessageLines,
-  SESSION_ID_MISMATCH_REASON,
-  writeAutoUpdateConsent,
-  writeSnooze,
 } from './_shared.js';
-import { join } from 'path';
-import { existsSync, readFileSync, realpathSync } from 'fs';
+import { hookNodeProblem, NODE_TOO_OLD_REASON } from './_shared.js';
+import { realpathSync } from 'fs';
+import { hostname } from 'os';
 
-let installChannelMod = null;
-try {
-  const pluginRoot = resolvePluginRoot(import.meta.url);
-  const modulePath = join(pluginRoot, 'dist/core/install-channel.js');
-  if (existsSync(modulePath)) installChannelMod = await import(pathToFileURL(modulePath).href);
-} catch {
-  // Source checkouts without a build remain non-blocking and cannot self-update.
-}
-
-function currentInstallChannel() {
+function renderedMessageId(prompt) {
+  const prefix = 'MeMesh message (untrusted data):\n';
+  if (!prompt.startsWith(prefix)) return null;
   try {
-    return installChannelMod?.getCurrentInstallChannel({
-      packageRoot: resolvePluginRoot(import.meta.url),
-    }) ?? 'unknown';
+    const message = JSON.parse(prompt.slice(prefix.length));
+    return typeof message?.id === 'string' && message.id ? message.id : null;
   } catch {
-    return 'unknown';
+    return null;
   }
 }
 
-function currentInstalledVersion() {
-  try {
-    const pkg = JSON.parse(readFileSync(join(resolvePluginRoot(import.meta.url), 'package.json'), 'utf8'));
-    return typeof pkg.version === 'string' ? pkg.version : null;
-  } catch { return null; }
-}
-
-/**
- * Record the owner's answer to this session's first-use update notice.
- *
- * Returns 'approved' | 'declined' | 'never' | null. The answer counts only
- * when THIS session was actually shown the notice (a prompt claim exists for
- * session/current/latest), so a stray "no" in unrelated conversation is not
- * a decision about updates.
- *
- *   approved — npm-global only (the one channel with a hook-owned installer);
- *              other channels were told their manual action and cannot be
- *              approved into an install.
- *   declined — "Not now": escalating snooze for this target version, on
- *              every channel. A distinct newer target is offered again.
- *   never    — "Never ask again": config.updateCheck = false; also snoozed so
- *              a host that already read the old config stays quiet.
- */
-async function recordUpdateConsent(sessionId, prompt) {
-  const current = currentInstalledVersion();
-  if (!current || !sessionId) return null;
-  const cache = readUpdateCheckCache(current);
-  const latest = cache?.latestVersion;
-  if (typeof latest !== 'string' || !latest) return null;
-  const decision = parseAutoUpdateConsent(prompt);
-  if (!decision) return null;
-  const channel = currentInstallChannel();
-  const pending = channel === 'npm-global'
-    ? findAutoUpdateConsent(sessionId, current, latest, channel)
-    : null;
-  const claim = readUpdatePromptClaim(sessionId, current, latest);
-  // The notice must have been shown to THIS session and not answered yet.
-  // Once answered, later "no"/"later" in ordinary conversation is not a
-  // decision about updates (it used to escalate the snooze every time).
-  const open = (claim && claim.decision !== 'answered') || pending?.decision === 'pending';
-  if (!open) return null;
-
-  if (decision === 'approved') {
-    if (!pending || pending.decision !== 'pending') return null;
-    if (!writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'approved')) return null;
-    markUpdatePromptAnswered(sessionId, current, latest, 'approved');
-    return 'approved';
-  }
-  // declined | never
-  try { writeSnooze(memeshDir(), latest); } catch { /* best-effort */ }
-  if (pending?.decision === 'pending') {
-    writeAutoUpdateConsent(sessionId, current, latest, pending.channel ?? channel, 'declined');
-  }
-  let recorded = decision;
-  if (decision === 'never') {
-    try {
-      const configMod = await importFromPluginRoot(resolvePluginRoot(import.meta.url), 'dist/core/config.js');
-      configMod.updateConfig({ updateCheck: false });
-    } catch (err) {
-      logError('user-prompt-intent', `could not persist updateCheck=false: ${err?.message || err}`);
-      recorded = 'declined';
-    }
-  }
-  markUpdatePromptAnswered(sessionId, current, latest, recorded);
-  return recorded;
-}
-
-// Patterns compiled at module load — invalid regex MUST fail loudly. Do
-// NOT move into a try block "for safety": a regex compile error is a
-// programmer error, not a runtime condition, and silencing it would hide
-// real bugs.
-//
-// Design principle: when in doubt between matching and not matching, do
-// NOT match — a missed hint is recoverable (user repeats themselves), but
-// a false hint pollutes context and pressures the LLM into a wrong action.
-//
-// Disambiguation policy:
-//   - All imperatives anchored to sentence start (^ or after .!?\n) to skip
-//     interrogatives ("do you remember X?", "What does save to memesh do?").
-//   - For save-class verbs, "memesh" suffix required to avoid false positives
-//     on generic "save this" (could mean clipboard, file, bookmark, etc.).
-//   - Supported languages: English, Spanish, French, Portuguese, Traditional Chinese.
-//     Additional languages welcome via PR (provide native-speaker validation).
-export const INTENT_PATTERNS = [
-  // English: "Remember/memorize this|that"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:remember|memorize)\s+(?:this|that)\b/im,
-  // English: "save/add/store to memesh"
-  /(?:^|[.!?\n]\s*)(?:please\s+)?(?:save|add|put|store|write)\s+(?:(?:this|that|it)\s+)?(?:to|in|into)\s+memesh\b/im,
-
-  // Spanish: "Recordar/memorizar esto|eso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:recordar|memorizar)\s+(?:esto|eso)\b/im,
-  // Spanish: "guardar en memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:guardar|añadir|almacenar)\s+(?:(?:esto|eso)\s+)?(?:en|a)\s+memesh\b/im,
-
-  // French: "Rappeler/mémoriser ceci|cela"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:rappeler|mémoriser)\s+(?:ceci|cela|ça)\b/im,
-  // French: "sauvegarder dans memesh"
-  /(?:^|[.!?\n]\s*)(?:s'il vous plaît\s+)?(?:sauvegarder|enregistrer|ajouter)\s+(?:(?:ceci|cela|ça)\s+)?(?:dans|à)\s+memesh\b/im,
-
-  // Portuguese: "Lembrar/memorizar isto|isso"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:lembrar|memorizar)\s+(?:isto|isso)\b/im,
-  // Portuguese: "salvar em memesh"
-  /(?:^|[.!?\n]\s*)(?:por favor\s+)?(?:salvar|guardar|adicionar|armazenar)\s+(?:(?:isto|isso)\s+)?(?:em|no)\s+memesh\b/im,
-
-  // Traditional Chinese: 記下來, 記到/存到/寫進/存進 memesh|記憶
-  /記下來|記到\s*(?:memesh|記憶)|存到\s*(?:memesh|記憶)|寫進\s*(?:memesh|記憶)|存進\s*(?:memesh|記憶)/,
-];
-
-export function detectRememberIntent(prompt) {
-  if (!prompt || typeof prompt !== 'string') return false;
-  for (const re of INTENT_PATTERNS) {
-    if (re.test(prompt)) return true;
-  }
-  return false;
-}
-
-// The returned string is consumed BY THE LLM as additionalContext, NOT by
-// configuration or by Claude Code itself. Edits here change LLM behavior,
-// not hook behavior.
-export function buildHint() {
-  return [
-    '<memesh-remember-intent>',
-    'The user asked you to save something. Store it with the memesh `remember` tool, keeping',
-    'the facts a future session will need rather than session-local state. The simplest call',
-    'is `note:` with the text (it accepts tags: too); for a structured memory pass name: (stable,',
-    'descriptive), type: (such as decision, pattern, lesson_learned or preference), observations:',
-    'and tags:. A decision also needs why: (the reason for it and what would make it stop holding);',
-    'without it the call is refused.',
-    'Scope: project work gets a project tag, project:<id>, where <id> is the `project` field of the',
-    '`briefing` result (CLI: `memesh briefing --json`); a plain repository name is a different scope',
-    'that this project\'s sessions never see. Machine-wide preferences use namespace=personal, memory',
-    'shared with a team namespace=team, public best practice namespace=global. Leave namespace: out',
-    'for a memory that already exists, because supplying it moves that memory.',
-    'Then tell the user the entity name and id the tool returned.',
-    '</memesh-remember-intent>',
-  ].join('\n');
+export function captureUserConversation(data, env = process.env) {
+  if (!isAutoCaptureEnabled(env)) return { skipped: true, reason: SKIP_REASONS.autoCaptureOff };
+  const prompt = data.prompt ?? data.user_prompt;
+  if (typeof prompt !== 'string' || !prompt.trim()) return { skipped: true, reason: 'empty prompt' };
+  if (!data.cwd || typeof data.session_id !== 'string' || !data.session_id) return { skipped: true, reason: 'conversation cwd or session absent' };
+  const text = redactSecrets(prompt);
+  const messageId = renderedMessageId(prompt);
+  const eventId = data.prompt_id ?? data.turn_id;
+  const identity = typeof eventId === 'string' && eventId ? createHash('sha256').update(JSON.stringify([data.session_id, eventId, 'user'])).digest('hex') : randomUUID();
+  return captureConversation({
+    name: `conversation-${identity}`,
+    type: 'conversation',
+    title: text.split('\n').find(line => line.trim())?.trim().slice(0, 120),
+    observations: [text],
+    tags: [AUTO_CAPTURE_TAG, `project:${getProjectName(data.cwd)}`, `session:${data.session_id}`, 'role:user'],
+    sourceHost: hookSourceHost(data, env),
+    ...(messageId ? { quoteSource: { session: data.session_id, machine: hostname().toLowerCase(), id: messageId } } : {}),
+  }, env);
 }
 
 function logError(scope, msg) {
@@ -239,9 +105,7 @@ if (isMainModule) {
   // See post-commit.js for why every exit path leaves a record (#327). This
   // hook's only effect is the additionalContext it injects, so its outcome is
   // `notified`, not `wrote`: doctor's `writes` answers "is memory capture
-  // still alive", and an injected hint is not a memory. Both branches that
-  // reach it — a remember intent and an update-consent decision — inject and
-  // store nothing, so there is no writing branch here to keep.
+  // still alive", and a message reminder is not a memory.
   let payload = null;
   const record = (outcome, reason, entity) =>
     recordHookOutcome(process.env, { hook: 'user-prompt-intent', outcome, reason, entity, payload });
@@ -266,56 +130,20 @@ if (isMainModule) {
         }
       }
 
-      // Claude Code sends `prompt`. The `user_prompt` fallback is defensive:
-      // Claude Code's transcript format changed once before (2026-05-07), so
-      // we accept either name to survive a similar rename. If both are absent
-      // or non-string, detectRememberIntent's type guard returns false safely.
       payload = data;
-      const prompt = data.prompt ?? data.user_prompt ?? '';
-      const updateDecision = await recordUpdateConsent(data.session_id, prompt);
-      const rememberIntent = detectRememberIntent(prompt);
-      // Messages waiting for the recipient this session declared in
-      // MEMESH_RECIPIENT, or — under Claude Code with the channel configured,
-      // or under Codex with no MEMESH_RECIPIENT at all — the owner-private
-      // host fallback (resolveMessageRecipient).
-      // Read-only and not memory capture, so it is not gated by autoCapture.
-      // Empty when neither source names a recipient. An inbox that cannot be
-      // read is recorded as an `error` of its own (a label, never the
-      // message), next to whatever this prompt's outcome turns out to be, so
-      // a skip below cannot be read as "nothing was waiting". A rejected
-      // MEMESH_RECIPIENT is also recorded, as `notified`.
-      const inboxLines = unreadMessageLines(
-        process.env,
-        (err) => record('error', `inbox: ${hookErrorReason(err)}`),
-        (label) => record('notified', `recipient: MEMESH_RECIPIENT ignored (${label})`),
-        { sessionId: data.session_id, cwd: data.cwd },
-        () => record('notified', SESSION_ID_MISMATCH_REASON),
-      );
-      if (!rememberIntent && !updateDecision && inboxLines.length === 0) {
-        record('skipped', SKIP_REASONS.noPromptIntent);
+      // A Node that cannot run MeMesh cannot capture this prompt.
+      if (hookNodeProblem('user-prompt-intent')) {
+        record('error', NODE_TOO_OLD_REASON);
         return process.exit(0);
       }
-      // Update consent is a user-authorized control decision, not memory
-      // capture; it must still be recorded when auto-capture is disabled.
-      if (!isAutoCaptureEnabled(process.env) && !updateDecision && inboxLines.length === 0) {
-        record('skipped', SKIP_REASONS.autoCaptureOff);
-        return process.exit(0);
+      // The separately declared messages.js hook delivers whole conversation messages.
+      try {
+        const captured = captureUserConversation(data);
+        record(captured.skipped ? 'skipped' : captured.queued ? 'error' : 'wrote', captured.reason);
+      } catch (err) {
+        logError('user-prompt-intent', `capture: ${err?.message || err}`);
+        record('error', `capture: ${hookErrorReason(err)}`);
       }
-
-      const contexts = [];
-      if (updateDecision === 'approved') {
-        contexts.push('The user explicitly approved the MeMesh upgrade. The Stop hook may now update the consented installation.');
-      } else if (updateDecision === 'declined') {
-        contexts.push('The user declined the MeMesh upgrade. It is snoozed for this target version (24h, then 48h, then 7 days on repeated declines); do not install it or mention it again unless a newer version appears.');
-      } else if (updateDecision === 'never') {
-        contexts.push('The user asked never to be asked about MeMesh updates again. updateCheck is now off; do not mention updates. `memesh config set updateCheck true` turns checks back on.');
-      }
-      const hint = rememberIntent && isAutoCaptureEnabled(process.env);
-      if (hint) contexts.push(buildHint());
-      if (inboxLines.length > 0) contexts.push(inboxLines.join('\n'));
-      const out = { hookSpecificOutput: { hookEventName: 'UserPromptSubmit', additionalContext: contexts.join('\n\n') } };
-      process.stdout.write(JSON.stringify(out));
-      record('notified', undefined, `hint:${updateDecision ?? (hint ? 'remember-intent' : 'inbox')}`);
       process.exit(0);
     } catch (err) {
       logError('user-prompt-intent', err?.message || err);

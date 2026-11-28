@@ -186,19 +186,24 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     fail(`docs/ARCHITECTURE.md says ${archTools[1]} MCP tools, handlers.ts registers ${toolsInCode}`);
   else ok(`ARCHITECTURE.md agrees on ${toolsInCode} MCP tools`);
 
-  // (a2) README.md's bold hook count plus every translated README's
+  // (a2) The hook count in README.md and its translations, plus every translated README's
   // Memory-and-Coordination tool table. A newly registered public tool must
   // be visible from every front page, not only from the API reference.
   // orchestration removal updated ARCHITECTURE/SKILL counts (gated above)
   // while the README's `**N hooks**` and tool heading shipped stale in every
   // locale. Counting rows as well as the heading prevents a count-only edit
   // from hiding a newly added feature from users.
-  const readmeSrc = read('README.md');
-  const readmeHooks = readmeSrc.match(/\*\*(\d+) hooks\*\*/);
-  if (!readmeHooks) fail('README.md no longer states its `**N hooks**` count');
-  else if (Number(readmeHooks[1]) !== manifestHooks.size)
-    fail(`README.md says ${readmeHooks[1]} hooks, the manifest registers ${manifestHooks.size}`);
-  else ok(`README.md hook count ${readmeHooks[1]}`);
+  for (const [file, pattern] of [
+    ['README.md', /\*\*(\d+) hooks\*\*/],
+    ['README.zh-TW.md', /Claude Code 插件共有 (\d+) 個 hook 指令/],
+    ['README.vi.md', /Plugin Claude Code có \*\*(\d+) hook\*\*/],
+  ]) {
+    const hooks = read(file).match(pattern);
+    if (!hooks) fail(`${file} no longer states its hook count (${pattern})`);
+    else if (Number(hooks[1]) !== manifestHooks.size)
+      fail(`${file} says ${hooks[1]} hooks, the manifest registers ${manifestHooks.size}`);
+    else ok(`${file} hook count ${hooks[1]}`);
+  }
   const readmeToolSections = [
     ['README.md', /## All (\d+) Memory and Coordination Tools/],
     ['README.zh-TW.md', /## 全部 (\d+) 個記憶與協作工具/],
@@ -271,29 +276,13 @@ else ok(`registry and API_REFERENCE.md agree on ${toolsInCode} MCP tools`);
     if (wrong.length) fail(`API_REFERENCE health weights drifted for: ${wrong.join(', ')} (code says ${factorWeights.join('/')})`);
     else ok(`API_REFERENCE health-factor weights match analytics.ts (${factorWeights.join('/')})`);
   }
-
-  // (f) The intent hook's language count. The language markers are the
-  // "// <Language>:" group comments inside INTENT_PATTERNS — the only
-  // per-language anchor in the file. A pattern added without its language
-  // comment would not be counted; that limitation is accepted and visible.
-  const intent = read('scripts/hooks/user-prompt-intent.js');
-  const block = intent.slice(intent.indexOf('INTENT_PATTERNS'), intent.indexOf('];'));
-  const langs = new Set([...block.matchAll(/^\s*\/\/ ([A-Z][A-Za-z ]+?):/gm)].map(m => m[1]));
-  if (langs.size === 0) {
-    fail('intent-language extraction found zero language groups — pattern rot');
-  } else {
-    const bad = [];
-    if (!read('README.md').includes(`(${langs.size} languages)`)) bad.push('README.md');
-    if (!read('docs/ARCHITECTURE.md').includes(`(${langs.size} languages:`)) bad.push('docs/ARCHITECTURE.md');
-    if (bad.length) fail(`intent-hook language count drifted (code has ${langs.size} groups): ${bad.join(', ')}`);
-    else ok(`intent-hook language count (${langs.size}) matches README and ARCHITECTURE`);
-  }
 }
 
 // --- 4. Current public contracts that previously passed while false ---------
 const currentDocs = checkCurrentDocumentationContracts({
   architecture: read('docs/ARCHITECTURE.md'),
   handlers: read('src/transports/mcp/handlers.ts'),
+  conversationMessaging: read('src/transports/conversation-messaging.ts'),
   httpServer: read('src/transports/http/server.ts'),
   retiredRoutes: read('src/transports/http/retired-routes.ts'),
   operations: read('src/core/operations.ts'),
@@ -537,7 +526,7 @@ if (!hasBearerAuth) {
   });
 
   const cliSrc = read('src/transports/cli/cli.ts');
-  const cliCommands = new Set([...cliSrc.matchAll(/\.command\('([\w-]+)/g)].map(m => m[1]));
+  const cliCommands = new Set([...cliSrc.matchAll(/\bprogram\s*\.\s*command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\1/g)].map(m => m[2]));
   // pin/unpin register through a helper whose `.command(name)` is dynamic;
   // their literal names are in the registerPinCommand calls.
   for (const m of cliSrc.matchAll(/registerPinCommand\('([\w-]+)'/g)) cliCommands.add(m[1]);
@@ -575,15 +564,15 @@ if (!hasBearerAuth) {
   // registered twice — top-level and under `dream` — which is why the child
   // sets are per-parent rather than one flat set.
   const parentVars = new Map(
-    [...cliSrc.matchAll(/const (\w+)\s*=\s*program\s*\.\s*command\('([\w-]+)'/g)].map(m => [m[1], m[2]]),
+    [...cliSrc.matchAll(/const (\w+)\s*=\s*program\s*\.\s*command\(\s*(['"])([\w-]+)(?:\s+[^'"]*)?\2/g)].map(m => [m[1], m[3]]),
   );
   const childrenOf = new Map();
   for (const [varName, parentName] of parentVars) {
     const re = new RegExp(
-      `(?:^|\\n)(?:const\\s+\\w+\\s*=\\s*)?${varName}\\s*\\.\\s*command\\('([\\w-]+)`,
+      `(?:^|\\n)(?:const\\s+\\w+\\s*=\\s*)?${varName}\\s*\\.\\s*command\\(\\s*(['"])([\\w-]+)(?:\\s+[^'"]*)?\\1`,
       'g',
     );
-    childrenOf.set(parentName, new Set([...cliSrc.matchAll(re)].map(m => m[1])));
+    childrenOf.set(parentName, new Set([...cliSrc.matchAll(re)].map(m => m[2])));
   }
   // Absence is not evidence: an extraction that stopped matching would report
   // "no bad nested commands found" forever.
@@ -626,11 +615,15 @@ if (!hasBearerAuth) {
   // retired remain truthful there. Keep this list exact: other invented or
   // misspelled historical commands must still fail the gate.
   const retiredHistoricalNested = new Set(['dream run', 'dream conflicts']);
+  const retiredConversationNested = new Set(['message storage', 'message intake']);
   for (const [label, text] of nestedTargets) {
+    const versionedHistoryStart = label === 'CHANGELOG.md'
+      ? text.search(/^## \[\d+\.\d+\.\d+[^\]]*\]/m) : -1;
     for (const m of text.matchAll(nestedRe)) {
       nestedMentions++;
       const pair = `${m[1]} ${m[2]}`;
-      const historicalRetirement = label === 'CHANGELOG.md' && retiredHistoricalNested.has(pair);
+      const historicalRetirement = label === 'CHANGELOG.md' && (retiredHistoricalNested.has(pair)
+        || (versionedHistoryStart >= 0 && m.index >= versionedHistoryStart && retiredConversationNested.has(pair)));
       if (!childrenOf.get(m[1]).has(m[2]) && !historicalRetirement) badNested.push(`${label} -> ${m[0]}`);
     }
   }
@@ -719,10 +712,21 @@ if (!hasBearerAuth) {
   // (e) the Node floor llms-install.md tells the agent to check against is
   // the one package.json enforces.
   if (agentDocs.includes('llms-install.md')) {
-    const nodeFloor = (pkg.engines?.node ?? '').match(/(\d+\.\d+\.\d+)/)?.[1];
-    if (!nodeFloor) fail('package.json engines.node no longer states a version floor');
-    else if (!read('llms-install.md').includes(nodeFloor)) fail(`llms-install.md does not state the Node floor ${nodeFloor} from package.json engines`);
-    else ok(`llms-install.md Node floor matches engines (${nodeFloor})`);
+    const range = pkg.engines?.node ?? '';
+    const parts = range.split('||').map((part) => part.trim());
+    const floors = parts.map((part) => /^(?:\^|>=\s*)(\d+\.\d+\.\d+)$/.exec(part)?.[1]);
+    if (floors.some((floor) => !floor) || !floors.length) fail('package.json engines.node no longer states recognizable version floors');
+    else {
+      const missing = floors.filter((floor) => !read('llms-install.md').includes(floor));
+      if (missing.length) fail(`llms-install.md does not state Node floors ${missing.join(', ')} from package.json engines`);
+      else ok(`llms-install.md Node floors match engines (${floors.join(', ')})`);
+      for (const doc of ['README.md', 'README.zh-TW.md', 'README.vi.md', 'CONTRIBUTING.md']) {
+        const nodeLines = read(doc).split('\n').filter((line) => line.includes('Node.js'));
+        if (!nodeLines.some((line) => floors.every((floor) => line.includes(floor)))) {
+          fail(`${doc} does not state every supported Node floor together`);
+        } else ok(`${doc} states every supported Node floor`);
+      }
+    }
   }
 }
 

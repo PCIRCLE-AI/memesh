@@ -20,6 +20,8 @@ export interface MeMeshConfig {
   autoUpdate?: 'off' | 'patch' | 'minor' | 'major';
   /** false = "never ask again": no first-use update notice, no refresh spawn. Default true. */
   updateCheck?: boolean;
+  /** false = a prompt is not searched for memories to show beside it (the UserPromptSubmit recall). Default true. */
+  promptRecall?: boolean;
   setupCompleted?: boolean;
   /**
    * #360 — how much of the injected briefing to assemble: 'minimal' |
@@ -41,7 +43,7 @@ export interface MeMeshConfig {
   briefing?: unknown;
 }
 
-const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'setupCompleted', 'briefing'] as const;
+const CONFIG_KEYS = ['autoCapture', 'sessionLimit', 'autoUpdate', 'updateCheck', 'promptRecall', 'setupCompleted', 'briefing'] as const;
 export const RETIRED_CONFIG_KEYS = [
   'llm',
   'llmFallbacks',
@@ -121,6 +123,7 @@ function selectConfig(raw: RawConfig): MeMeshConfig {
     config.autoUpdate = raw.autoUpdate;
   }
   if (typeof raw.updateCheck === 'boolean') config.updateCheck = raw.updateCheck;
+  if (typeof raw.promptRecall === 'boolean') config.promptRecall = raw.promptRecall;
   if (typeof raw.setupCompleted === 'boolean') config.setupCompleted = raw.setupCompleted;
   // Passed through UNVALIDATED and UNFILTERED on purpose, whatever its JSON
   // type — see the field comment on MeMeshConfig.briefing. `!== undefined`
@@ -214,6 +217,20 @@ export function updateConfig(partial: Partial<MeMeshConfig>): MeMeshConfig {
   }
   writeRawConfig(raw);
   return selectConfig(raw);
+}
+
+/**
+ * `updateConfig` for another data directory than this process's own. The config writer takes its directory from
+ * MEMESH_DIR; this points it elsewhere for the duration of one synchronous write and puts it back.
+ */
+export function updateConfigInDir(dir: string, partial: Partial<MeMeshConfig>): MeMeshConfig {
+  const saved = process.env.MEMESH_DIR;
+  process.env.MEMESH_DIR = dir;
+  try {
+    return updateConfig(partial);
+  } finally {
+    if (saved === undefined) delete process.env.MEMESH_DIR; else process.env.MEMESH_DIR = saved;
+  }
 }
 
 export function getConfigDir(): string {

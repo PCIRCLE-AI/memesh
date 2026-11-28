@@ -1,9 +1,13 @@
-import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync, readSync, readdirSync, realpathSync, renameSync, unlinkSync, writeFileSync, writeSync } from 'fs';
+import { appendFileSync, closeSync, constants as fsConstants, existsSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, mkdtempSync, openSync, readFileSync, readdirSync, realpathSync, renameSync, rmdirSync, unlinkSync, writeFileSync, writeSync } from 'fs';
 import { createHash, randomBytes } from 'crypto';
-import { spawn } from 'child_process';
-import { MemeshDatabase } from './_generated/sqlite.js';
-import { guardDatabaseFiles, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
-import { dirname, join } from 'path';
+import { performance } from 'node:perf_hooks';
+import { MemeshDatabase, nodeSupportProblem } from './_generated/sqlite.js';
+import { databaseFiles, guardDatabaseFiles, hasPagesWaiting, immutableAddress, isWritable, ownerWriteCommand, removeGroupAndOtherAccess } from './_generated/file-mode.js';
+import { basename, dirname, join, resolve } from 'path';
+import { makeWindowsPathsPrivate, verifyWindowsPathsPrivate } from './_generated/windows-permissions.js';
+import { hostname } from 'os';
+import { AGENT_TEXT_OMITTED, omitAgentMessageText } from './_generated/session-handoff.js';
+import { renderConversationMessage } from './_generated/conversation-messages.js';
 import { fileURLToPath, pathToFileURL } from 'url';
 
 // =============================================================================
@@ -31,6 +35,7 @@ import {
   memeshDir,
   getDbPath,
   getMemeshDirFromDbPath,
+  getProjectIds,
   getProjectName,
   redactSecretList,
   redactSecrets,
@@ -40,7 +45,6 @@ import {
   gitRepoRoot,
 } from './_generated/core-paths.js';
 import { autoCaptureDecision } from './_generated/capture-flag.js';
-import { SESSION_HANDOFF_TYPE } from './_generated/session-handoff.js';
 export { assembleTopologyBlock, buildReferenceContext, extractCitedMemoryIds, hasBriefingContent, jsonStringLiteral, projectLabel, DEFAULT_TOPOLOGY_BUDGET, GLOBAL_TOPOLOGY_LIMIT, SNIPPET_FETCH_CHARS, TOPOLOGY_CANDIDATE_CAP } from './_generated/work-topology.js';
 export { readRepoState, repoStateLines } from './_generated/repo-state.js';
 export { matchingGuards, guardFromMetadata } from './_generated/guards.js';
@@ -70,9 +74,6 @@ export {
 export {
   resolveUpdateNotice,
   shouldRefreshUpdateCache,
-  readSnooze,
-  writeSnooze,
-  clearSnooze,
   readJustUpgradedMarker,
   writeJustUpgradedMarker,
   clearJustUpgradedMarker,
@@ -181,7 +182,7 @@ export function recordGuardFires(dbPath, lessonIds) {
   }
 }
 import { isAutoInjectable, jsonStringLiteral } from './_generated/work-topology.js';
-export { parseTaskState, taskStateLines, taskStateName, briefingTaskStateLines, STALE_TASK_STATE_HOURS } from './_generated/task-state.js';
+export { parseTaskState, taskStateLines, taskStateName } from './_generated/task-state.js';
 // #360 — the one briefing-level policy, shared with the `briefing` tool via
 // src/core/briefing-level.ts (this is the generated mirror; see that file).
 export {
@@ -191,22 +192,14 @@ export {
   sessionStartAppendsWorkPackageNotice,
 } from './_generated/briefing-level.js';
 import { resolveBriefingLevel as resolveBriefingLevelValue } from './_generated/briefing-level.js';
-import { unreadInboxLinesFor, unreadMessageRefsFor } from './_generated/agent-message-inbox.js';
-import { agentScopeIdRejection, HOST_CONFIG_MAX_BYTES } from './_generated/agent-scope-id.js';
-// The Codex-session principal decision, shared with codex-session.ts (#474).
-import { automaticCodexSessionPrincipal, isValidCodexThreadId, resolveCodexSessionPrincipal } from './_generated/codex-session-principal.js';
-// Re-exported so session-start.js can recognise its OWN automatic Codex
-// identity without recomputing the decision by hand — see its use there for
-// why (suppressing the "never been seen" hint for a fresh, machine-generated
-// thread id that could never have been typed, let alone typo'd).
-export { automaticCodexSessionPrincipal };
 
-/** SessionStart's one line naming this session's exact project id — single
- *  owner, shared with the tests that compare the hook's memory block. */
+/** SessionStart's line naming this session's exact project id and the saving
+ *  default — single owner, shared with the tests that compare the hook's memory block. */
 export function sessionProjectLine(projectName) {
   const id = jsonStringLiteral(projectName);
   return `MeMesh project for this session: ${id}. Pass project: ${id} to remember, learn and recall `
-    + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson).';
+    + 'for this project\'s memories, or project: false for a memory that belongs to no project (a preference, a general lesson). '
+    + 'Saving is on by default.';
 }
 
 // The hook-only work-package notice's literal text — ONE declaration,
@@ -224,7 +217,7 @@ import {
 } from './_generated/fts-index.js';
 import { addTags, appendObservations, insertOrGetEntity, reindexEntityFts, runEntityWrite } from './_generated/entity-write.js';
 
-export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
+export { homeDir, memeshDir, getDbPath, getMemeshDirFromDbPath, getProjectIds, getProjectName, redactSecrets, canonicalRemoteLocator, gitRepoRoot };
 
 /**
  * Resolve the package root from a hook file's `import.meta.url`.
@@ -335,7 +328,7 @@ export function readHookConfigResult(_env = process.env) {
 
 /**
  * The plain, backward-compatible reader every existing caller in this file
- * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`, `resolveAutoUpdatePolicy`,
+ * uses (`isAutoCaptureEnabled`, `resolveSessionLimit`,
  * `resolveBriefingLevel`, `isUpdateCheckEnabled`) — returns an empty object
  * on missing/unreadable/malformed file; callers
  * must always be defensive about which fields are set. `readHookConfigResult()`
@@ -445,9 +438,7 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
 /**
  * Auto-captured SESSION-SNAPSHOT types — the transient rollups `pre-compact.js`
  * and `session-summary.js` restate on every PreCompact / Stop, purely as
- * session bookkeeping ("N tool calls", "compaction reason: auto"), and the
- * session handoff `_stop-handoff.js` restates on every Stop (the agent's last
- * message, which names files in passing). Not the
+ * session bookkeeping ("N tool calls", "compaction reason: auto"). Not the
  * same set as `AUTO_CAPTURE_TAG`: that tag also marks `commit` entities,
  * which can genuinely be about the file being edited, so it is too broad for
  * this exclusion.
@@ -463,40 +454,7 @@ export const AUTO_CAPTURE_TAG = 'source:auto-capture';
  * include `commit` (and some include `session_keypoint`, `workflow_checkpoint`
  * etc.), which this exclusion must NOT touch.
  */
-export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary', SESSION_HANDOFF_TYPE]);
-
-const VALID_AUTO_UPDATE_POLICIES = new Set(['off', 'patch', 'minor', 'major']);
-
-/**
- * Resolve the auto-update policy.
- * Precedence: env > config > default('off').
- *
- * The session-start hook uses this to decide whether to kick off a
- * background `npm install -g @pcircle/memesh@<latest>` when an update
- * is available. Default is 'off' so a fresh install never silently
- * upgrades the user's global binary; opting in is a deliberate
- * config write or env export.
- *
- * @param {NodeJS.ProcessEnv} [env=process.env]
- * @returns {'off' | 'patch' | 'minor' | 'major'}
- */
-export function resolveAutoUpdatePolicy(env = process.env) {
-  const envVal = env.MEMESH_AUTO_UPDATE;
-  if (envVal !== undefined) {
-    if (typeof envVal !== 'string') return 'off';
-    const lowered = envVal.toLowerCase();
-    if (VALID_AUTO_UPDATE_POLICIES.has(lowered)) return lowered;
-    // An explicit but malformed higher-priority value must not uncover a
-    // permissive config value and authorise an unattended global mutation.
-    return 'off';
-  }
-  const cfg = readHookConfig(env);
-  if (typeof cfg.autoUpdate === 'string') {
-    const lowered = cfg.autoUpdate.toLowerCase();
-    if (VALID_AUTO_UPDATE_POLICIES.has(lowered)) return lowered;
-  }
-  return 'off';
-}
+export const SESSION_SNAPSHOT_TYPES = new Set(['session-insight', 'session-summary']);
 
 // The schema and its migration toolkit come from src/storage/schema.ts via
 // the generated copy — the SAME bytes core's openDatabase executes. The
@@ -510,12 +468,13 @@ export {
   FTS_SEGMENTATION_VERSION,
 } from './_generated/schema.js';
 import {
-  SCHEMA_SQL,
+  createSchema,
   FTS_SQL,
   migrateEntitiesSchema,
   ensureTagsUniqueIndex,
   ensureHookRunsSince,
   ensureFtsSegmentation,
+  retryWhileLocked,
 } from './_generated/schema.js';
 
 
@@ -551,284 +510,6 @@ import {
  *  `readOnly`) must apply the same cap themselves. */
 export const HOOK_BUSY_TIMEOUT_MS = 2000;
 
-/**
- * Who this session says it is, for the durable message inbox: the exact
- * recipient id in `MEMESH_RECIPIENT`, an owner-private Claude channel config
- * fallback (`resolveClaudeHostFallbackRecipient`, below) when that env var is
- * unset, or `undefined` when neither names one. Without either, an ordinary
- * Claude Code session has no identity a sender could address, and is never
- * told a message is waiting.
- * The id is compared exactly (after Unicode NFC, trimmed, 1-200 characters),
- * the same rule the `message` tool applies to a recipient, so any id a sender
- * can address can be declared here. It is shown JSON-quoted, which is what
- * makes odd characters safe to print. An empty value counts as declared-but-
- * blank and resolves to no recipient WITHOUT trying the fallback — only a
- * truly unset (`undefined`) `MEMESH_RECIPIENT` does, so `MEMESH_RECIPIENT=`
- * remains a way to force "no recipient" even when the fallback would
- * otherwise have named one.
- *
- * Two shapes are rejected rather than accepted for an explicit
- * `MEMESH_RECIPIENT`: one over 200 characters, and one shaped like a
- * filesystem path (`agentScopeIdRejection`, mirrored from
- * src/core/agent-scope-id.ts — the same rule the `message` tool applies).
- * Both write one line to stderr; `onRejected(label, detail)` (`label` is
- * `'too long'` or `'filesystem path'`, `detail` is the same text written to
- * stderr) additionally lets the caller record the rejection in its own
- * outcome ledger, or show it somewhere a human or model will actually see it
- * — a hook that exits 0 has its stderr hidden from both. `onRejected`
- * throwing does not affect resolution.
- *
- * With `MEMESH_RECIPIENT` unset, the fallback names the session's own
- * registered principal: `hosts/claude.json`'s `principal_id` under Claude
- * Code (default `claude-code` when absent), or the Codex companion's
- * principal under Codex (#474).
- * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext] - the calling
- *   hook's own `session_id`/`cwd`, consulted only for a Codex run.
- */
-export function resolveMessageRecipient(env = process.env, onRejected, hostContext) {
-  const raw = env.MEMESH_RECIPIENT;
-  if (raw === undefined) return resolveHostFallbackRecipient(env, hostContext);
-  const id = String(raw).normalize('NFC').trim();
-  if (id === '') return undefined;
-  const reject = (label, detail) => {
-    try { process.stderr.write(`[memesh] MEMESH_RECIPIENT ignored: ${detail}\n`); } catch { /* stderr gone */ }
-    try { onRejected?.(label, detail); } catch { /* a caller's recorder must not break resolution */ }
-    return undefined;
-  };
-  if (id.length > 200) {
-    return reject('too long', 'a recipient id is at most 200 characters');
-  }
-  const pathRejection = agentScopeIdRejection('recipient', id);
-  if (pathRejection) {
-    return reject('filesystem path', pathRejection);
-  }
-  return id;
-}
-
-/**
- * Dispatch to whichever host fallback applies. `isClaudeCodeHost` and
- * `isCodexHost` can never both be true for the same run (`detectHookHost`
- * returns exactly one host), so at most one of these ever resolves — the `??`
- * is for the third, always-possible outcome: neither host, or the matching
- * one found nothing usable.
- */
-function resolveHostFallbackRecipient(env, hostContext) {
-  return resolveClaudeHostFallbackRecipient(env) ?? resolveCodexHostFallbackRecipient(env, hostContext);
-}
-
-/**
- * Read a small JSON object from an owner-private file, or `undefined` on ANY
- * problem — missing, a symlink, group/world-accessible, owned by someone
- * else, oversized, or not valid JSON. Never throws, and never surfaces the
- * file's own bytes anywhere (not on stderr, not to a caller): a JSON parse
- * error on some engines quotes the text it choked on, and this file can hold
- * a router auth token in a sibling field, so even a malformed-file error path
- * must stay silent rather than echo anything read from disk.
- *
- * Mirrors the O_NOFOLLOW + owner-private checks `readOwnerPrivateFile` in
- * `src/host-runtime/config.ts` applies before trusting a host config file —
- * duplicated by hand rather than imported, since that module is not a
- * runtime-leaf a hook may reach for (the F5 boundary): this uses only the
- * O_NOFOLLOW primitive `_shared.js` already relies on elsewhere in this file.
- */
-function readOwnerPrivateJsonQuiet(filePath, maxBytes) {
-  if (typeof fsConstants.O_NOFOLLOW !== 'number') return undefined;
-  let fd;
-  try {
-    fd = openSync(filePath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
-  } catch {
-    return undefined;
-  }
-  try {
-    const stat = fstatSync(fd);
-    if (!stat.isFile()) return undefined;
-    if ((stat.mode & 0o077) !== 0) return undefined;
-    if (typeof process.getuid === 'function' && stat.uid !== process.getuid()) return undefined;
-    if (stat.size > maxBytes) return undefined;
-    const buf = Buffer.allocUnsafe(maxBytes + 1);
-    let read = 0;
-    while (read < buf.length) {
-      const n = readSync(fd, buf, read, buf.length - read, null);
-      if (n === 0) break;
-      read += n;
-    }
-    if (read > maxBytes) return undefined;
-    const parsed = JSON.parse(buf.subarray(0, read).toString('utf8'));
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : undefined;
-  } catch {
-    return undefined;
-  } finally {
-    try { closeSync(fd); } catch { /* already closed */ }
-  }
-}
-
-/**
- * Fall back to the owner-private Claude channel config when no
- * `MEMESH_RECIPIENT` is declared (#468).
- *
- * `memesh agent setup claude` writes `<data dir>/hosts/claude.json` with
- * `principal_id` (plus a router token this never reads, and possibly a
- * legacy `project` field this never reads either — see below). SessionStart
- * and the prompt hook get the same reminder a declared `MEMESH_RECIPIENT`
- * would give them, without the owner repeating an id the config file already
- * names — closing the exact gap that let a live channel misconfiguration (a
- * mistyped launch flag) go unnoticed.
- *
- * The file's `project` is not compared (#474): hosts now derive their
- * project from their working directory, and a typed label never matched
- * the derived id. `principal_id` is one identity for every Claude Code
- * session on the machine, in every project.
- *
- * With no config file, basic reminders use the local `claude-code`
- * principal without configuring or starting a Channel. Existing unreadable
- * files and invalid identities still fail CLOSED to "no recipient":
- *   - Claude Code only. The Codex plugin loads the same hooks; a Codex
- *     session must never adopt Claude's principal.
- *   - `principal_id` is refused by the same length and filesystem-path rules
- *     `resolveMessageRecipient` applies to an explicit `MEMESH_RECIPIENT`
- *     (#402) — quietly here, since a malformed config is not something the
- *     env-var rejection path's "MEMESH_RECIPIENT ignored" wording describes.
- */
-export const DEFAULT_CLAUDE_RECIPIENT = 'claude-code';
-
-function resolveClaudeHostFallbackRecipient(env) {
-  if (!isClaudeCodeHost(env)) return undefined;
-  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'claude.json');
-  // Basic inbox reminders need no Channel setup. Only absence selects the
-  // default; an existing invalid/insecure config must still fail closed.
-  try {
-    lstatSync(configPath);
-  } catch (err) {
-    return err.code === 'ENOENT' ? DEFAULT_CLAUDE_RECIPIENT : undefined;
-  }
-  const parsed = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
-  if (!parsed) return undefined;
-  const principal = typeof parsed.principal_id === 'string' ? parsed.principal_id.normalize('NFC').trim() : '';
-  if (principal === '') return undefined;
-  if (principal.length > 200) return undefined;
-  if (agentScopeIdRejection('recipient', principal)) return undefined;
-  return principal;
-}
-
-/**
- * Fall back to the SAME principal a Codex session's own companion process
- * (`src/host-runtime/codex-session.ts`) registers with the router under, when
- * no `MEMESH_RECIPIENT` is declared and this run is the Codex host (#474
- * follow-up — cross-host discovery). That registration is a separate
- * process this hook has no connection to, so it recomputes the identical
- * decision from `hosts/codex-session.json` and the hook payload's own
- * `sessionId`/`cwd` (`hostContext`), through the shared leaf
- * `resolveCodexSessionPrincipal` (`src/core/codex-session-principal.ts`,
- * copied to `_generated/codex-session-principal.js` — see that file for why
- * the decision lives there instead of a second, drifting copy here).
- *
- * Fails CLOSED to "no recipient" on every problem, the same discipline
- * {@link resolveClaudeHostFallbackRecipient} above uses:
- *   - Codex only (`isCodexHost`) — a Claude Code session must never adopt a
- *     Codex principal, and vice versa (the two are mutually exclusive; see
- *     `resolveHostFallbackRecipient`).
- *   - `hostContext.sessionId` must be shaped like a Codex thread id
- *     (`isValidCodexThreadId`) — the same shape the router registration
- *     itself requires. An id of any other shape could never have been
- *     registered as `codex-thread-<id>` either.
- *   - `hostContext.cwd` must resolve, via `realpathSync`, to a real path — a
- *     `cwd` that cannot be resolved cannot be compared against a configured
- *     `workspace`, and the real registration would fail identically.
- *   - A malformed `hosts/codex-session.json` (a `workspace` of the wrong
- *     type, or one that resolves but is not a directory) makes
- *     `resolveCodexSessionPrincipal` THROW — matching `codex-session.ts`'s
- *     own behaviour, where that same malformed field fails the WHOLE
- *     companion registration rather than falling back to the automatic
- *     identity. This function must never crash on that, but it also must
- *     not assert an identity nothing actually registered, so it reports no
- *     recipient rather than guessing "automatic".
- *   - A configured `principal_id` that is not a usable id (the same length
- *     and filesystem-path rules `resolveMessageRecipient` applies) is the
- *     one other case `codex-session.ts` fails the WHOLE registration on
- *     (`requiredString` throws there) — reported here as no recipient too,
- *     for the same reason.
- *   - No config file at all, or one that cannot even be read, is NOT an
- *     error: it is `codex-session.ts`'s own `config === undefined` branch,
- *     and `resolveCodexSessionPrincipal` returns the automatic
- *     `codex-thread-<id>` identity for it without throwing — the common
- *     case, an ordinary Codex session with no `codex-session` setup at all.
- *
- * @param {{ sessionId?: unknown, cwd?: unknown }} [hostContext]
- */
-function resolveCodexHostFallbackRecipient(env, hostContext) {
-  if (!isCodexHost(env)) return undefined;
-  // `src/host-runtime/codex-session.ts` registers NOTHING with the router on
-  // Windows — `assertSecureLocalHostRuntimeSupported()` throws unconditionally,
-  // on both the automatic path (directly) and the configured path (through
-  // `readTokenFile`/`readOwnerPrivateFile`), with or without a config file.
-  // Unlike the Claude fallback above (which degrades to "no recipient" on its
-  // own, since `readOwnerPrivateJsonQuiet` already returns `undefined` when
-  // `O_NOFOLLOW` is unavailable), the automatic Codex identity is pure string
-  // formatting with no file read to fail — so it needs this explicit guard,
-  // or it would assert an identity the router can never actually hold there.
-  if (process.platform === 'win32') return undefined;
-  const sessionId = hostContext?.sessionId;
-  if (!isValidCodexThreadId(sessionId)) return undefined;
-  const cwd = hostContext?.cwd;
-  if (typeof cwd !== 'string' || cwd === '') return undefined;
-  let workspace;
-  try {
-    workspace = realpathSync(cwd);
-  } catch {
-    return undefined;
-  }
-  const configPath = join(getMemeshDirFromDbPath(), 'hosts', 'codex-session.json');
-  // Existence and readability are two DIFFERENT facts, and only one of them
-  // means "no config" — `codex-session.ts`'s own `readCodexSessionConfigIfPresent`
-  // draws the same line, with the same primitive (`lstatSync`, not `existsSync`,
-  // so a dangling symlink at this path counts as "exists" here exactly like it
-  // does there): ENOENT is `config === undefined` (the ordinary, unconfigured
-  // case — the automatic identity applies). Anything else at that path that
-  // cannot be read as owner-private JSON (bad permissions, a symlink, a
-  // corrupt document) is a file that DOES exist and, over there, makes
-  // `readHostConfigFile` throw and the WHOLE companion registration fail —
-  // this function's own no-false-identity rule (see its doc comment) means
-  // that must resolve to no recipient, never a silent promotion to automatic.
-  let configFileExists;
-  try {
-    lstatSync(configPath);
-    configFileExists = true;
-  } catch (err) {
-    if (err?.code === 'ENOENT') configFileExists = false;
-    else return undefined;
-  }
-  let config;
-  if (configFileExists) {
-    config = readOwnerPrivateJsonQuiet(configPath, HOST_CONFIG_MAX_BYTES);
-    if (config === undefined) return undefined;
-  }
-  let resolution;
-  try {
-    resolution = resolveCodexSessionPrincipal(config, { threadId: sessionId, workspace }, realpathSync);
-  } catch {
-    return undefined;
-  }
-  if (resolution.source === 'automatic') return resolution.principalId;
-  const principal = typeof resolution.principalId === 'string' ? resolution.principalId.normalize('NFC').trim() : '';
-  if (principal === '') return undefined;
-  if (principal.length > 200) return undefined;
-  if (agentScopeIdRejection('recipient', principal)) return undefined;
-  return principal;
-}
-
-/**
- * A failed inbox read is said twice: the full text on stderr, and one `error`
- * outcome in the ledger through the calling hook's own recorder. Without the
- * second, the ledger reads as a clean run and nothing afterwards can tell
- * "no message was waiting" from "the inbox could not be read". The recorder
- * gets the exception; it should persist a label, never the message (the
- * ledger is permanent and exportable, see `hookErrorReason`).
- */
-function inboxReadFailed(err, recordFailure) {
-  try { process.stderr.write(`[memesh] could not check for waiting messages: ${err?.message || err}\n`); } catch { /* stderr gone */ }
-  recordFailure?.(err);
-  return [];
-}
 
 /** The outcome reason a hook records when {@link hookMessageSessionId} reports a mismatch. */
 export const SESSION_ID_MISMATCH_REASON =
@@ -851,78 +532,28 @@ export function hookMessageSessionId(payloadSessionId, env = process.env) {
   return { sessionId: payload || undefined, mismatch: false };
 }
 
+/** The outcome reason every hook records when this Node cannot run MeMesh (same label `hookErrorReason` makes from the error). */
+export const NODE_TOO_OLD_REASON = 'uncaught NODE_TOO_OLD';
+
 /**
- * The reminder lines for `recipient` from an open database. Never throws
- * itself: a reminder must not be the reason a prompt or a session start fails,
- * and a failure that is not "nothing waiting" is said on stderr and handed to
- * `recordFailure`, not swallowed. `recordFailure` must not throw either; both
- * hooks pass one built on `recordHookOutcome`, which cannot.
+ * Is this Node below what MeMesh needs? Call it BEFORE any "no database yet"
+ * shortcut: on such a Node the database can never be created, so skipping
+ * quietly (or saying memories will be created) would be false.
  *
- * `sessionId` comes from {@link hookMessageSessionId} (#497): a message meant
- * for another session of the same principal is left out, and with no
- * `sessionId` only messages meant for no session in particular are counted —
- * except a `target_kind: "session"` delivery, which then counts for any live
- * session of the principal (#490; with a `sessionId`, only its own, #566).
- * `excludeHostAccepted` (pass it under Codex) leaves out a delivery the
- * router already pushed into the thread.
+ * The caller records the outcome itself, with NODE_TOO_OLD_REASON, before it
+ * exits (hook-outcome-gate requires a visible record before every exit).
+ *
+ * @param {string} hook - the hook's name, for the stderr line
+ * @returns {string | null} the one-sentence problem, or null when this Node is fine
  */
-export function waitingMessageLines(db, recipient, sessionId, recordFailure, excludeHostAccepted = false) {
-  if (!recipient) return [];
-  try {
-    return unreadInboxLinesFor(db, recipient, sessionId, excludeHostAccepted);
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
+export function hookNodeProblem(hook) {
+  const problem = nodeSupportProblem();
+  if (!problem) {
+    replayPendingConversations();
+    return null;
   }
-}
-
-/**
- * The waiting message REFS behind those same lines — see
- * {@link unreadMessageRefsFor}'s own doc for what "waiting" means and why it
- * is not project-capped. Same never-throws contract as
- * {@link waitingMessageLines}, and the same `sessionId`, `recordFailure` and
- * `excludeHostAccepted`.
- */
-export function waitingMessageRefs(db, recipient, sessionId, recordFailure, excludeHostAccepted = false, excludeMessageIds = []) {
-  if (!recipient) return [];
-  try {
-    return unreadMessageRefsFor(db, recipient, sessionId, undefined, excludeHostAccepted, excludeMessageIds);
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
-  }
-}
-
-/**
- * The reminder lines for messages waiting for this session's declared
- * recipient. No `MEMESH_RECIPIENT` (and no owner-private Claude or Codex
- * fallback, see `resolveMessageRecipient`) or no database: no lines, and the
- * database is not opened. Read-only, and it never throws (given a
- * `recordFailure` that does not, see `waitingMessageLines`).
- * `onRecipientRejected`, if given, is `resolveMessageRecipient`'s own
- * rejection callback — see there. `hostContext` is passed straight through
- * to `resolveMessageRecipient`'s Codex fallback — see its own doc — and its
- * `sessionId` also narrows the count to this session (#497), through
- * {@link hookMessageSessionId}; `onSessionMismatch` is called when that
- * reports a mismatch, so the caller can record it. Under Codex a delivery
- * the router already pushed into the thread is not reminded again.
- */
-export function unreadMessageLines(env = process.env, recordFailure, onRecipientRejected, hostContext, onSessionMismatch) {
-  const recipient = resolveMessageRecipient(env, onRecipientRejected, hostContext);
-  if (!recipient) return [];
-  const dbPath = env.MEMESH_DB_PATH ?? getDbPath();
-  if (!existsSync(dbPath)) return [];
-  let db;
-  try {
-    // `readOnly`, not `readonly`: node:sqlite ignores the lowercase spelling.
-    db = openMemeshDb(dbPath, { readOnly: true });
-    db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-    const session = hookMessageSessionId(hostContext?.sessionId, env);
-    if (session.mismatch) onSessionMismatch?.();
-    return waitingMessageLines(db, recipient, session.sessionId, recordFailure, isCodexHost(env));
-  } catch (err) {
-    return inboxReadFailed(err, recordFailure);
-  } finally {
-    try { db?.close(); } catch { /* already closed */ }
-  }
+  try { process.stderr.write(`[memesh ${hook}] ${problem}\n`); } catch { /* stderr gone */ }
+  return problem;
 }
 
 /**
@@ -938,10 +569,77 @@ export function unreadMessageLines(env = process.env, recordFailure, onRecipient
 export function openMemeshDb(dbPath, options) {
   try { process.umask(0o077); } catch { /* non-POSIX */ }
   guardDatabaseFiles(dbPath);
-  return new MemeshDatabase(dbPath, options);
+  return new MemeshDatabase(readTarget(dbPath, options), options);
+}
+
+/**
+ * What to hand SQLite for a read-only open. A plain read-only open of a WAL
+ * database needs a -shm, and a folder the process cannot write to cannot give
+ * it one: the open fails with "attempt to write a readonly database" and the
+ * session loads no memories. With no -wal file, or one with nothing in it,
+ * and no rollback journal holding a half-done transaction, there is nothing
+ * uncommitted or uncheckpointed a reader could get wrong, so such a database
+ * is read as `immutable=1`: no locks, no sidecars, exactly the file's
+ * contents. Pages in a -wal, or a -journal with bytes in it, would be skipped
+ * or misread by that, so the plain open (and its honest failure) is kept. So
+ * is a database whose -wal AND -shm both exist (a process has it open: a plain
+ * read-only open reads through the -shm, an immutable one would never see what
+ * that process writes next), and a writable folder is never read as immutable.
+ * The same rule as `openDatabase` in src/db.ts.
+ */
+export function readTarget(dbPath, options) {
+  if (!options?.readOnly) return dbPath;
+  try {
+    const [real, wal, shm] = databaseFiles(dbPath);
+    // Pages waiting in a -wal or a hot journal: keep the plain open and its honest failure.
+    if (hasPagesWaiting(dbPath)) return dbPath;
+    // Both sidecars present: some process has the database open right now. A plain read-only open works (it
+    // reads the -wal through the -shm); an immutable one would never see what that process writes next.
+    if (existsSync(wal) && existsSync(shm)) return dbPath;
+    if (isWritable(dirname(real))) return dbPath;
+    return immutableAddress(real);
+  } catch {
+    return dbPath;
+  }
+}
+
+/**
+ * Brings a freshly opened hook handle current. Mirrors initialiseDatabase() in
+ * src/db.ts — keep the two in lockstep. Safe to run again.
+ */
+function bringHookDbCurrent(db, opts) {
+  // VACUUM backups use DELETE mode, and switching a read-only backup to WAL
+  // must not prevent reading it.
+  try {
+    db.pragma('journal_mode = WAL');
+  } catch (err) {
+    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
+  }
+  db.pragma('foreign_keys = ON');
+  // Bringing the schema current is a WRITE, and "cannot migrate" must not
+  // mean "cannot open": a database file that is read-only but behind on
+  // schema (a pre-upgrade backup, a permissions accident) dies on the
+  // CREATE TABLE any release adds. If the FILE refuses writes, open it for
+  // what it can still do — reads; capture writes fail individually at
+  // their own guarded call sites. Any other error still throws.
+  try {
+    migrateHookDbToCurrent(db, opts);
+  } catch (err) {
+    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
+    try {
+      process.stderr.write(
+        'MeMesh: the database file is read-only, so schema migration was skipped — ' +
+          'opened for reads only. Capture and migrations resume when the file is writable.\n',
+      );
+    } catch { /* stderr gone */ }
+  }
 }
 
 export function openHookDb(env = process.env, opts = {}) {
+
+  if (!opts.pendingReplay) replayPendingConversations(env);
+  const waitMs = !opts.conversation || conversationDeadline === null ? HOOK_BUSY_TIMEOUT_MS : Math.min(HOOK_BUSY_TIMEOUT_MS, conversationDeadline - Date.now());
+  if (waitMs <= 0) throw Object.assign(new Error('conversation database lock budget exhausted'), { code: 'MEMESH_DB_LOCKED' });
 
   // Path helpers read process.env directly (no-arg). The `env` parameter
   // is kept on this signature for backward compatibility with callers
@@ -954,14 +652,6 @@ export function openHookDb(env = process.env, opts = {}) {
 
   removeGroupAndOtherAccess(dbDir);
   const db = openMemeshDb(dbPath);
-  // Mirrors initialiseDatabase(): VACUUM backups use DELETE mode, and
-  // switching a read-only backup to WAL must not prevent reading it.
-  try {
-    db.pragma('journal_mode = WAL');
-  } catch (err) {
-    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
-  }
-  db.pragma('foreign_keys = ON');
   // A hook waits for a held write lock for less time than Claude Code will
   // wait for the hook.
   //
@@ -975,28 +665,24 @@ export function openHookDb(env = process.env, opts = {}) {
   // memesh something to switch off.
   //
   // 2s fits inside every budget with room for the hook's own work. On
-  // contention the capture is skipped quietly, this run's `hook_runs` stamp
-  // is not written, and `memesh doctor` reports the gap honestly.
-  db.pragma(`busy_timeout = ${HOOK_BUSY_TIMEOUT_MS}`);
-  // Bringing the schema current is a WRITE, and "cannot migrate" must not
-  // mean "cannot open": a database file that is read-only but behind on
-  // schema (a pre-upgrade backup, a permissions accident) dies on the
-  // CREATE TABLE any release adds. If the FILE refuses writes, open it for
-  // what it can still do — reads; capture writes fail individually at
-  // their own guarded call sites. Any other error still throws. Mirrors
-  // initialiseDatabase() in src/db.ts — keep the two in lockstep.
+  // contention that outlasts it the open throws (code MEMESH_DB_LOCKED), the
+  // hook records an `error` outcome with that reason, this run's `hook_runs`
+  // stamp is not written, and `memesh doctor` reports the gap honestly.
+  //
+  // It is set BEFORE the WAL switch below, not after: the switch used to run
+  // under the constructor's 30s wait and could outlast the hook's own limit.
+  db.pragma(`busy_timeout = ${waitMs}`);
+  // Several hooks fire in the same second on a data folder that does not exist
+  // yet and collide on the WAL switch (see retryWhileLocked). The bring-current
+  // step is idempotent, so it is repeated inside this hook's own 2s budget; past
+  // it the error carries code MEMESH_DB_LOCKED and the hook records it as its
+  // outcome (hookErrorReason), never a silent skip.
   try {
-    migrateHookDbToCurrent(db, opts);
+    retryWhileLocked(() => bringHookDbCurrent(db, opts), waitMs, `${dbPath} (data folder ${dbDir})`);
   } catch (err) {
-    if (!/readonly database|SQLITE_READONLY/i.test(err?.message || '')) throw err;
-    try {
-      process.stderr.write(
-        'MeMesh: the database file is read-only, so schema migration was skipped — ' +
-          'opened for reads only. Capture and migrations resume when the file is writable.\n',
-      );
-    } catch { /* stderr gone */ }
+    try { db.close(); } catch { /* already closing down */ }
+    throw err;
   }
-
 
   // No heartbeat here. This helper used to stamp `hook_runs` as soon as the
   // handle was usable, and that stamped-then-crashed hooks into looking
@@ -1018,6 +704,229 @@ export function openHookDb(env = process.env, opts = {}) {
   return { db, dbPath };
 }
 
+// Each pending event has its own owner-private file. Concurrent hooks can
+// replay the same event safely: captureEntity's unique name makes the write
+// idempotent, and removing one file cannot remove another hook's new event.
+let replayingConversations = false;
+let replayAttempted = false;
+let conversationDeadline = null;
+const PENDING_CONVERSATION_LEAF = 'pending-conversations';
+const PENDING_CONVERSATION_NAME = /^[a-f0-9]{32}\.json$/;
+function pendingConversationDir(env) {
+  return join(dirname(env.MEMESH_DB_PATH ?? getDbPath()), PENDING_CONVERSATION_LEAF);
+}
+
+// Internal event marker survives a source-read failure in the existing pending file.
+// Never open the writeful message-store constructor for a capture-time lookup.
+function checkedConversationQuotes(event, env) {
+  if (!event.quoteSource) return event;
+  const { quoteSource, ...clean } = event;
+  let fd, source;
+  try {
+    const assistantReply = event.tags.includes('role:assistant');
+    const userPrompt = event.tags.includes('role:user');
+    if (quoteSource.machine !== hostname().toLowerCase()
+      || typeof quoteSource.session !== 'string' || !quoteSource.session
+      || !event.tags.includes(`session:${quoteSource.session}`)
+      || (assistantReply === userPrompt) || !Number.isSafeInteger(event.capturedAt)
+      || (userPrompt && (typeof quoteSource.id !== 'string' || !quoteSource.id))) {
+      throw new Error('invalid quote source identity');
+    }
+    const directory = resolve(dirname(env.MEMESH_DB_PATH ?? getDbPath()));
+    const file = join(directory, 'messages.db');
+    const readEntry = target => lstatSync(target, { bigint: true });
+    let stat;
+    try { stat = readEntry(file); } catch (error) { if (error.code === 'ENOENT') return clean; throw error; }
+    const windows = process.platform === 'win32';
+    const owner = typeof process.getuid === 'function' ? BigInt(process.getuid()) : null;
+    const privateFile = value => value.isFile() && !value.isSymbolicLink()
+      && (windows || (value.mode & 0o077n) === 0n) && (owner === null || value.uid === owner);
+    const privateDirectory = value => value.isDirectory() && !value.isSymbolicLink()
+      && (windows || (value.mode & 0o077n) === 0n) && (owner === null || value.uid === owner);
+    const dir = readEntry(directory);
+    if (!privateDirectory(dir) || !privateFile(stat)) {
+      throw new Error('unsafe quote source');
+    }
+    const sidecars = [];
+    for (const suffix of ['-wal', '-shm', '-journal']) {
+      try {
+        const sidecar = readEntry(file + suffix);
+        if (!privateFile(sidecar) || (!windows && (sidecar.mode & 0o700n) !== (stat.mode & 0o700n))) {
+          throw new Error('unsafe quote sidecar');
+        }
+        sidecars.push(file + suffix);
+      }
+      catch (error) { if (error.code !== 'ENOENT') throw error; }
+    }
+    // Read-only SQLite may create a missing SHM for a WAL. Refuse rather than write it.
+    if (existsSync(file + '-wal') && lstatSync(file + '-wal').size > 0 && !existsSync(file + '-shm')) {
+      throw new Error('quote WAL requires an existing shared-memory file');
+    }
+    fd = openSync(file, fsConstants.O_RDONLY | (fsConstants.O_NOFOLLOW ?? 0) | (fsConstants.O_NONBLOCK ?? 0));
+    const opened = fstatSync(fd, { bigint: true });
+    if (!privateFile(opened) || opened.dev !== stat.dev || opened.ino !== stat.ino) throw new Error('quote source changed');
+    const remaining = conversationDeadline - Date.now();
+    if (remaining <= 0) throw new Error('quote source budget exhausted');
+    if (windows) verifyWindowsPathsPrivate([directory, file, ...sidecars], remaining);
+    const recheck = () => {
+      const current = readEntry(file);
+      const parent = readEntry(directory);
+      if (!privateFile(current) || current.dev !== opened.dev || current.ino !== opened.ino
+        || !privateDirectory(parent) || parent.dev !== dir.dev || parent.ino !== dir.ino) {
+        throw new Error('quote source changed');
+      }
+    };
+    recheck();
+    source = new MemeshDatabase(file, { readOnly: true });
+    // SQLite's native busy sleeps can exceed the hook's wall-clock budget.
+    // Retry this read against the same deadline; migration/write waits stay unchanged.
+    source.pragma('busy_timeout = 0');
+    const result = retryWhileLocked(() => {
+      if (Date.now() >= conversationDeadline) throw new Error('quote source budget exhausted');
+      recheck();
+      if (userPrompt) {
+        const message = source.prepare(`SELECT id,sender,sender_host,sender_machine,recipient,recipient_host,recipient_machine,kind,body,body_bytes,reply_to,sent_at
+          FROM messages WHERE id = ? AND recipient = ? AND recipient_machine = ? AND body IS NOT NULL
+          AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=messages.id AND e.event='rejected')`)
+          .get(quoteSource.id, quoteSource.session, quoteSource.machine);
+        if (!message) return clean;
+        const rendered = renderConversationMessage(message);
+        const texts = [rendered, redactSecrets(rendered)];
+        return clean.observations.every(text => texts.includes(text)) ? null : clean;
+      }
+      const bodies = source.prepare(`SELECT m.body FROM messages m
+        WHERE m.recipient = ? AND m.recipient_machine = ? AND m.body IS NOT NULL
+        AND NOT EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='rejected')
+        AND EXISTS (SELECT 1 FROM events e WHERE e.message_id=m.id AND e.event='delivered'
+          AND json_extract(e.detail, '$.actor') = ? AND julianday(e.at) <= julianday(?))`)
+        .all(quoteSource.session, quoteSource.machine, quoteSource.session, new Date(event.capturedAt).toISOString())
+        .map(row => row.body);
+      const texts = [...bodies, ...bodies.map(body => redactSecrets(body))];
+      const observations = clean.observations.map(text => omitAgentMessageText(text, texts).text);
+      if (observations.every(text => !text.split(AGENT_TEXT_OMITTED).join('').trim())) return null;
+      return { ...clean, observations,
+        title: omitAgentMessageText(clean.title ?? '', texts).text };
+    }, Math.max(0, conversationDeadline - Date.now()), file);
+    recheck();
+    return result;
+  } catch (cause) {
+    throw Object.assign(new Error('conversation quote source unavailable'), { code: 'MEMESH_CONVERSATION_QUOTE_SOURCE', cause });
+  } finally {
+    try { source?.close(); } finally { if (fd !== undefined) closeSync(fd); }
+  }
+}
+
+function writeConversation(db, event) {
+  return db.transaction(() => writeConversationLocked(db, event)).immediate();
+}
+
+function writeConversationLocked(db, event) {
+  const previous = db.prepare('SELECT metadata FROM entities WHERE name = ?').get(event.name);
+  const priorTime = parseEntityMetadata(previous?.metadata)?.conversationCapturedAt;
+  if (typeof priorTime === 'number' && typeof event.capturedAt === 'number' && priorTime > event.capturedAt) {
+    return { skipped: true, reason: 'a newer version of this conversation event is already stored' };
+  }
+  const result = captureEntity(db, event);
+  if (!result) throw new Error('conversation entity could not be resolved');
+  if (result.archived) return { ...result, skipped: true, reason: 'conversation event is archived' };
+  if (!result.archived && typeof event.capturedAt === 'number') {
+    const row = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(result.id);
+    const metadata = { ...parseEntityMetadata(row?.metadata), conversationCapturedAt: event.capturedAt };
+    db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(metadata), result.id);
+  }
+  return result;
+}
+
+export function replayPendingConversations(env = process.env) {
+  if (replayingConversations || replayAttempted || !isAutoCaptureEnabled(env)) return;
+  replayAttempted = true;
+  const dir = pendingConversationDir(env);
+  if (!existsSync(dir)) return;
+  conversationDeadline ??= Date.now() + HOOK_BUSY_TIMEOUT_MS;
+  replayingConversations = true;
+  let db;
+  try {
+    const deadline = conversationDeadline;
+    const windows = process.platform === 'win32';
+    const files = windows ? verifiedWindowsPendingConversations(dir, deadline) : null;
+    ({ db } = openHookDb(env, { fts: true, pendingReplay: true, conversation: true }));
+    for (const entry of files ?? readdirSync(dir)) {
+      if (Date.now() >= deadline) break;
+      if (!windows && !PENDING_CONVERSATION_NAME.test(entry)) continue;
+      const path = windows ? entry.filePath : join(dir, entry);
+      let event;
+      try {
+        if (windows && !windowsHookStateStat(path, false)) continue;
+        const fd = windows ? openWindowsHookState(entry, 'r') : undefined;
+        try { event = JSON.parse(readFileSync(fd ?? path, 'utf8')); }
+        finally { if (fd !== undefined) closeSync(fd); }
+      } catch (err) {
+        if (err.code === 'ENOENT') continue;
+        throw err;
+      }
+      const checked = checkedConversationQuotes(event, env);
+      db.pragma(`busy_timeout = ${Math.max(1, deadline - Date.now())}`);
+      if (checked) writeConversation(db, checked);
+      try {
+        if (windows) {
+          assertWindowsHookStateDirectory(entry);
+          const current = windowsHookStateStat(path, false);
+          if (!current) continue;
+          if (!sameHookStateFile(entry.file, current)) throw windowsHookStateError();
+        }
+        unlinkSync(path);
+      } catch (err) { if (err.code !== 'ENOENT') throw err; }
+    }
+  } catch (err) {
+    try { process.stderr.write(`[memesh pending-conversations] ${hookErrorReason(err)}\n`); } catch {}
+  } finally {
+    if (db) try { db.close(); } catch {}
+    replayingConversations = false;
+  }
+}
+
+/** Capture an attributed event; retain write I/O failures alongside lock contention. */
+export function captureConversation(event, env = process.env) {
+  const safe = redactTextValues({ ...event, capturedAt: Date.now() });
+  // Windows pending publication must verify its ACL before the same hook ends.
+  // Leave it half the remaining budget instead of spending all of it on a lock.
+  const waitMs = process.platform === 'win32'
+    ? Math.max(0, Math.min(HOOK_BUSY_TIMEOUT_MS, Math.floor((windowsHookStateDeadline(3000) - performance.now()) / 2)))
+    : HOOK_BUSY_TIMEOUT_MS;
+  conversationDeadline = Math.min(conversationDeadline ?? Infinity, Date.now() + waitMs);
+  let db;
+  let writing = false;
+  try {
+    const checked = checkedConversationQuotes(safe, env);
+    if (!checked) return { skipped: true, reason: safe.tags.includes('role:user')
+      ? 'received agent message is not user speech' : 'assistant reply contains only quoted agent text' };
+    ({ db } = openHookDb(env, { fts: true, conversation: true }));
+    writing = true;
+    return writeConversation(db, checked);
+  } catch (err) {
+    const locked = /locked|busy/i.test(String(err.code) + ' ' + String(err.message));
+    const writeIoFailed = writing && (err.code === 'EIO' || err.code === 'SQLITE_IOERR'
+      || (Number.isSafeInteger(err.errcode) && err.errcode >= 0 && (err.errcode & 255) === 10));
+    const quoteReadFailed = err.code === 'MEMESH_CONVERSATION_QUOTE_SOURCE';
+    if (!locked && !writeIoFailed && !quoteReadFailed) throw err;
+    const dir = pendingConversationDir(env);
+    // Immutable version files: a drainer that read OLD must never unlink NEW.
+    const key = createHash('sha256').update(JSON.stringify(safe)).digest('hex').slice(0, 32);
+    const filePath = join(dir, `${key}.json`);
+    if (process.platform === 'win32') writeWindowsPendingConversation(filePath, safe);
+    else {
+      ensurePrivateDir(dir);
+      writePrivateJsonAtomic(filePath, safe);
+    }
+    return { queued: true, reason: quoteReadFailed
+      ? 'conversation quote source unavailable; redacted conversation pending replay' : locked
+      ? 'database locked; redacted conversation pending replay'
+      : 'database write I/O failed; redacted conversation pending replay' };
+  } finally {
+    if (db) try { db.close(); } catch {}
+  }
+}
+
 /**
  * Everything that makes a hook-opened handle CURRENT: schema, FTS,
  * one-time migrations and the segmentation rebuild. Split from
@@ -1030,7 +939,7 @@ export function openHookDb(env = process.env, opts = {}) {
  * @param {{fts?: boolean}} opts
  */
 function migrateHookDbToCurrent(db, opts) {
-  db.exec(SCHEMA_SQL);
+  createSchema(db);
   ensureTagsUniqueIndex(db);
   ensureHookRunsSince(db);
   if (opts.fts) db.exec(FTS_SQL);
@@ -1149,28 +1058,16 @@ export function pluginRootIsHookRoot(env) {
 /**
  * Is this hook run Claude Code, and only Claude Code?
  *
- * The Codex plugin loads the same `hooks/hooks.json` (README: "Codex is
- * allowed to run the plugin's hooks"), so every hook in this directory can
- * execute under either host on one machine. Two features gated on this —
- * the `hosts/claude.json` recipient fallback and the Stop message gate — read
- * an owner-private file that names a Claude-channel principal; without this
- * guard, a Codex session in the SAME project would silently adopt that
- * principal's identity and could record `intake` receipts on messages meant
- * for Claude. Uses the same host classifier `recordHookOutcome` does
- * (env-only: no payload is available at either call site before the
- * decision to even open a file), so this can never disagree with what
- * `memesh doctor` already reports the run as.
+ * Shared hooks use the same env-only classifier as outcome reporting.
+ * SessionStart and the Claude Stop message gate retain this host boundary.
  */
 export function isClaudeCodeHost(env = process.env) {
   return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'claude-code';
 }
 
 /**
- * Is this hook run Codex, and only Codex? The mirror of
- * {@link isClaudeCodeHost} above, for the same reason: `resolveMessageRecipient`'s
- * Codex fallback (`resolveCodexHostFallbackRecipient`) must never fire for a
- * Claude Code session, and vice versa. Same host classifier, so this can
- * never disagree with `isClaudeCodeHost` or with what `memesh doctor` reports.
+ * Is this hook run Codex, and only Codex? Plan capture and the busy message
+ * notice use the same classifier as {@link isClaudeCodeHost} and outcomes.
  */
 export function isCodexHost(env = process.env) {
   return detectHookHost(null, env, { pluginRootIsHookRoot: pluginRootIsHookRoot(env) }) === 'codex';
@@ -1226,10 +1123,13 @@ const HOOK_RUN_ID = randomBytes(8).toString('hex');
  * hooks recorded those as `wrote`, each with its own comment saying it was not
  * a memory, and the answer to that question was inflated by all six.
  *
- * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, payload?: object}} info
+ * @param {{hook: string, outcome: 'wrote'|'notified'|'skipped'|'error', reason?: string, entity?: string, count?: unknown, payload?: object}} info
  */
-export function recordHookOutcome(env, { hook, outcome, reason, entity, payload }) {
+export function recordHookOutcome(env, { hook, outcome, reason, entity, count, payload }) {
+  // Also covers early-exit hooks which do not open a database at all.
+  // Ordinary read/capture paths replay before their work via the helpers above.
   try {
+    if (!nodeSupportProblem()) replayPendingConversations(env);
     // getMemeshDirFromDbPath(), not memeshDir(): the record must sit beside
     // the database it describes. A test (or a user) that points
     // MEMESH_DB_PATH somewhere else would otherwise split the evidence — a
@@ -1252,6 +1152,7 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     // JSONL file is a permanent, exportable copy.
     if (reason) record.reason = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(reason)), 200);
     if (entity) record.entity = sliceUtf16UnitsSurrogateSafe(redactSecrets(String(entity)), 200);
+    if (Number.isSafeInteger(count) && count >= 0) record.count = count;
     // One O_APPEND write of one line. `mode` applies only when the file is
     // being created, which is the only moment the permission can be set
     // without a second syscall on the hot path. O_NOFOLLOW: the directory
@@ -1270,10 +1171,13 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
     removeGroupAndOtherAccess(filePath);
     rotateHookOutcomes(filePath);
   } catch (err) {
+    // "Capture itself is unaffected" is true only on a Node that can run MeMesh; on one that cannot, nothing is captured.
+    let nodeCannotRun;
+    try { nodeCannotRun = nodeSupportProblem() !== null; } catch { nodeCannotRun = true; /* the check itself could not finish: say nothing more than the record failure */ }
     try {
       process.stderr.write(
-        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}). ` +
-          `Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`,
+        `MeMesh: could not record the ${hook} hook outcome (${err?.message ?? err}).` +
+          (nodeCannotRun ? '\n' : ` Capture itself is unaffected, but 'memesh doctor' will under-report capture liveness.\n`),
       );
     } catch { /* stderr gone */ }
   }
@@ -1294,9 +1198,25 @@ export function recordHookOutcome(env, { hook, outcome, reason, entity, payload 
  * @returns {string}
  */
 export function hookErrorReason(err) {
+  return `uncaught ${hookCaughtReason(err)}`;
+}
+
+/**
+ * The reason string for an error the hook CAUGHT and handled: the bare code or name (`EACCES`, `SyntaxError`),
+ * never the message, which can carry a local path. `hookErrorReason` prefixes "uncaught", which is true only
+ * for the last-resort catch at the end of a hook; a handled failure must not be recorded as one.
+ */
+export function hookCaughtReason(err) {
   const label = (value) => (typeof value === 'string' && /^[A-Za-z][\w-]{0,39}$/.test(value) ? value : null);
   const e = err && typeof err === 'object' ? err : null;
-  return `uncaught ${label(e?.code) ?? label(e?.name) ?? 'error'}`;
+  // Node SQLite reports a generic code with the SQLite result in errcode.
+  // Extended result codes retain the primary code in their low eight bits.
+  if (e?.code === 'ERR_SQLITE_ERROR' && Number.isInteger(e.errcode) && e.errcode > 0 && e.errcode <= 0x7fffffff
+      && [5, 6].includes(e.errcode & 0xff)) return 'MEMESH_DB_LOCKED';
+  if (typeof e?.code === 'string' && /^SQLITE_(?:BUSY(?:_RECOVERY|_SNAPSHOT|_TIMEOUT)?|LOCKED(?:_SHAREDCACHE|_VTAB)?)$/.test(e.code)) {
+    return 'MEMESH_DB_LOCKED';
+  }
+  return label(e?.code) ?? label(e?.name) ?? 'error';
 }
 
 /**
@@ -1784,46 +1704,21 @@ function pathMentionMatches(text, matchStart, matchEnd, editedPath) {
 // generated copy — the same code core's remember validation and the db
 // backfill run, so the three writers cannot drift on the contract.
 export { truncateTitle } from './_generated/title.js';
+import { truncateTitle as truncateTitleLocal, isBoilerplateObservation } from './_generated/title.js';
 
 /**
- * `localHandoff` (the Stop hook's session handoff only): the replacement just
- * restated every word the entity holds with text this machine's agent wrote,
- * so marks that described OLDER text no longer apply. An `import` stamps
- * `trust: 'untrusted'` and `provenance.source: 'import'`, and without this the
- * handoff stays hidden from every later session although each Stop rewrites
- * it. Only those two marks change; every other key (forgotten_observation_hashes
- * among them) is kept. The import provenance becomes this run's `sourceHost`,
- * or no host at all when the host is unknown — never a guessed one. Runs
- * inside captureEntity's transaction, so a failure rolls the replacement back
- * with it. A replacement that stored nothing —
- * every new line filtered as forgotten — throws, which also rolls back: the
- * old text stays, and it keeps its marks.
+ * A title for a capture that supplied none: the first line of the first
+ * observation that says something (mechanical capture metadata is skipped),
+ * else the entity's name. Every auto-captured memory has one, so no line of an
+ * injected block or an index ever falls back to a machine key.
  */
-function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
-  if (type !== SESSION_HANDOFF_TYPE || !replace) throw new Error('localHandoff applies only to replacing a session handoff');
-  if (written === 0) throw new Error('the handoff replacement stored no text');
-  const raw = db.prepare('SELECT metadata FROM entities WHERE id = ?').get(id)?.metadata;
-  const parsed = parseEntityMetadata(raw);
-  const corrupt = !parsed && raw != null;
-  if (corrupt) {
-    // Same healing, and the same trace, as the title path above: unparseable
-    // metadata holds nothing that can be kept, and left alone it would hide
-    // the handoff from every session.
-    try { process.stderr.write(`MeMesh: healed corrupted metadata for entity ${id}. Original value was unparseable; replaced with {}.\n`); } catch { /* stderr gone */ }
+export function deriveCaptureTitle(name, observations) {
+  for (const obs of observations) {
+    if (typeof obs !== 'string') continue;
+    const line = obs.split('\n').map((l) => l.trim()).find((l) => l !== '');
+    if (line && !isBoilerplateObservation(line)) return truncateTitleLocal(line);
   }
-  const meta = parsed ?? {};
-  let changed = corrupt;
-  if (meta.trust === 'untrusted') { delete meta.trust; changed = true; }
-  if (meta.provenance?.source === 'import') { meta.provenance = sourceHost ? { source_host: sourceHost } : {}; changed = true; }
-  else if (sourceHost && meta.provenance?.source_host !== sourceHost) {
-    meta.provenance = { ...meta.provenance, source_host: sourceHost };
-    changed = true;
-  }
-  else if (!sourceHost && meta.provenance?.source_host !== undefined) {
-    delete meta.provenance.source_host;
-    changed = true;
-  }
-  if (changed) db.prepare('UPDATE entities SET metadata = ? WHERE id = ?').run(JSON.stringify(meta), id);
+  return truncateTitleLocal(String(name));
 }
 
 /**
@@ -1862,7 +1757,7 @@ function refreshLocalHandoffTrust(db, id, type, replace, written, sourceHost) {
  *   could not be resolved; `archived: true` if the target was archived —
  *   nothing was written, by design
  */
-export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, localHandoff = false, sourceHost = null }) {
+export function captureEntity(db, { name, type, observations = [], tags = [], title, metadata, replace = false, sourceHost = null }) {
   // One transaction, because this function performs six writes that only
   // mean anything together: the entity row, its observations, its tags, and
   // the contentless-FTS delete + insert that make them findable.
@@ -1881,10 +1776,10 @@ export function captureEntity(db, { name, type, observations = [], tags = [], ti
   // could not be resolved. `observationsWritten` may be lower than
   // `observations.length`: an observation whose exact content is already on
   // the entity is not stored again (see the dedupe in captureEntityInner).
-  return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, localHandoff, sourceHost }));
+  return runEntityWrite(db, () => captureEntityInner(db, { name, type, observations, tags, title, metadata, replace, sourceHost }));
 }
 
-function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, localHandoff, sourceHost }) {
+function captureEntityInner(db, { name, type, observations: rawObservations, tags, title: rawTitle, metadata, replace, sourceHost }) {
   // #523: every hook write is redacted here, once, before anything below
   // reads or compares the text — the post-commit hook stored a commit
   // subject like `set token=… for staging` verbatim as title and first
@@ -1894,8 +1789,15 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   // Title and observations are one set: a key split between them is masked as a whole.
   const head = typeof rawTitle === 'string' ? [rawTitle] : [];
   const texts = redactSecretList([...head, ...rawObservations.filter((o) => typeof o === 'string')]);
-  const title = head.length > 0 ? texts.shift() : rawTitle;
+  const requestedTitle = head.length > 0 ? texts.shift() : rawTitle;
   const observations = rawObservations.map((o) => (typeof o === 'string' ? texts.shift() : o));
+  // Auto-capture always supplies a title. A caller that passed none (or a
+  // blank one) gets one derived from the already-redacted text, so a new
+  // memory is born with it and an existing one that has none is given it. A
+  // title the caller did pass is never replaced by a derived one.
+  const noTitle = typeof requestedTitle !== 'string' || requestedTitle.trim() === '';
+  const derivedTitle = noTitle ? deriveCaptureTitle(name, observations) : null;
+  const title = noTitle ? undefined : requestedTitle;
   // source_host provenance: the host this hook run is under, as the caller
   // detected it. Claude Code and Codex both run these hooks, so it cannot be
   // assumed. Stamped only on the INSERT — an OR IGNORE re-capture of an
@@ -1915,9 +1817,9 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     ...redactTextValues(metadata),
     provenance: sourceHost ? { source_host: sourceHost } : {},
   };
-  if (title != null) insertMetadata.title_source = 'heuristic';
+  insertMetadata.title_source = 'heuristic';
   // No namespace: a hook-written entity takes the column default.
-  const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? null });
+  const row = insertOrGetEntity(db, { name, type, metadataJson: JSON.stringify(insertMetadata), title: title ?? derivedTitle });
   if (!row) return null;
   const isNew = row.isNew;
   const id = row.id;
@@ -1931,23 +1833,18 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     return { id, isNew: false, archived: true };
   }
 
-  // The handoff's name is `session-handoff:<project>`, and nothing stops a user
-  // from storing a different kind of memory under it. The Stop hook must not
-  // overwrite that memory (nor clear its trust marks): refuse BEFORE anything
-  // is changed. The throw rolls back the transaction, the hook records an
-  // error, and the row stays exactly as it was.
-  if (localHandoff && !isNew && row.type !== type) {
-    throw new Error(`"${name}" is stored as type ${row.type}, not ${type}; the Stop hook leaves it alone`);
-  }
-
   // Title update on an EXISTING entity — INSERT OR IGNORE never touches
   // `title` when the row already exists, so mirror knowledge-graph.ts's
   // createEntity(): only an explicit, actually-different value writes
   // anything. Captured BEFORE the write so the FTS delete below matches
   // what was indexed.
   const previousTitle = row.title;
-  if (!isNew && title !== undefined && title !== previousTitle) {
-    db.prepare('UPDATE entities SET title = ? WHERE id = ?').run(title, id);
+  // An existing memory that has no title yet is given the derived one; one that
+  // has a title keeps it when the caller passed none.
+  // A restated entity (`replace`) gets a title that matches its new text, not the old derived one.
+  const titleToWrite = title !== undefined ? title : (replace || previousTitle == null || previousTitle === '' ? derivedTitle ?? undefined : undefined);
+  if (!isNew && titleToWrite !== undefined && titleToWrite !== previousTitle) {
+    db.prepare('UPDATE entities SET title = ? WHERE id = ?').run(titleToWrite, id);
     // Keep the heuristic mark in step with the write. Heal corrupted metadata
     // (replace with {}) instead of leaving it — a corrupted metadata row would
     // otherwise never get title_source stamped and remain permanently broken.
@@ -1971,7 +1868,7 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     }
     // Stamp title_source on every title write (not just initial). This keeps
     // the source field synchronized with the current title, per Fix C3.
-    if (title != null) {
+    if (titleToWrite != null) {
       const updatedMeta = { ...(meta ?? {}), title_source: 'heuristic' };
       db.prepare('UPDATE entities SET metadata = ? WHERE id = ?')
         .run(JSON.stringify(updatedMeta), id);
@@ -2073,8 +1970,8 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
   const allObsText = joinIndexedObservations(obsParts);
   // Current title is fully determined by the branches above — no re-read.
   const currentTitle = isNew
-    ? (title ?? null)
-    : ((title !== undefined && title !== previousTitle) ? title : previousTitle);
+    ? (title ?? derivedTitle)
+    : ((titleToWrite !== undefined && titleToWrite !== previousTitle) ? titleToWrite : previousTitle);
   reindexEntityFts(
     db,
     id,
@@ -2083,7 +1980,6 @@ function captureEntityInner(db, { name, type, observations: rawObservations, tag
     { observationsText: allObsText, title: currentTitle },
   );
 
-  if (localHandoff) refreshLocalHandoffTrust(db, id, type, replace, freshObservations.length, sourceHost);
 
   // `observationsWritten` is what actually landed, which is no longer the same
   // as `observations.length` once the dedupe above can drop rows. A caller
@@ -2115,6 +2011,348 @@ export function writePrivateFile(filePath, content) {
 
 export function writePrivateJson(filePath, value) {
   writePrivateFile(filePath, JSON.stringify(value));
+}
+
+const WINDOWS_HOOK_STATE_NAMES = new Map([
+  ['decision-nudge-flags', /^[A-Za-z0-9_-]+-(ExitPlanMode|AskUserQuestion)\.flag$/],
+  [PENDING_CONVERSATION_LEAF, PENDING_CONVERSATION_NAME],
+  ['pre-edit-recall', /^[a-f0-9]{32}\.json$/],
+  ['sessions', /^[a-f0-9]{64}\.json$/],
+]);
+
+export function windowsHookStateDeadline(hookTimeoutMs) {
+  // A child must finish in time for the hook to record its outcome.
+  return hookTimeoutMs - 500;
+}
+
+function windowsHookStateTimeout(deadline) {
+  const remaining = Math.floor(deadline - performance.now());
+  if (remaining <= 0) throw windowsHookStateError('Windows hook state permissions check timed out');
+  return remaining;
+}
+
+function windowsHookStateError(message = 'Unsafe Windows hook state path') {
+  return Object.assign(new Error(message), { code: 'MEMESH_PRIVATE_PATH' });
+}
+
+function windowsHookStateStat(target, directory) {
+  const stat = lstatSync(target, { throwIfNoEntry: false, bigint: true });
+  if (stat && (stat.isSymbolicLink()
+    || (directory ? !stat.isDirectory() : !stat.isFile() || stat.nlink !== 1n)
+    || realpathSync.native(target).toLowerCase() !== target.toLowerCase())) {
+    throw windowsHookStateError();
+  }
+  return stat;
+}
+
+function windowsHookStateAncestor(target) {
+  const parent = dirname(target);
+  if (parent !== target && !windowsHookStateAncestor(parent)) return undefined;
+  return windowsHookStateStat(target, true);
+}
+
+function sameHookStateFile(expected, actual) {
+  return expected && actual && expected.dev === actual.dev && expected.ino === actual.ino;
+}
+
+export function assertWindowsHookStateDirectory(state) {
+  if (!sameHookStateFile(state.directory, windowsHookStateAncestor(state.dirPath))) {
+    throw windowsHookStateError('Windows hook state directory changed');
+  }
+}
+
+function assertWindowsHookStateFile(state) {
+  assertWindowsHookStateDirectory(state);
+  const actual = windowsHookStateStat(state.filePath, false);
+  if ((state.file || actual) && !sameHookStateFile(state.file, actual)) {
+    throw windowsHookStateError('Windows hook state file changed');
+  }
+}
+
+/** Guard the fixed product-owned Windows state leaves. */
+export function prepareWindowsHookState(filePath, deadline, create = false) {
+  filePath = resolve(filePath);
+  const dirPath = dirname(filePath);
+  const root = resolve(getMemeshDirFromDbPath());
+  if (dirname(dirPath).toLowerCase() !== root.toLowerCase()
+    || !WINDOWS_HOOK_STATE_NAMES.get(basename(dirPath))?.test(basename(filePath))) {
+    throw windowsHookStateError();
+  }
+
+  if (!windowsHookStateAncestor(root)) {
+    if (!create) return { dirPath, filePath, deadline };
+    windowsHookStateTimeout(deadline);
+    mkdirSync(root, { recursive: true, mode: PRIVATE_DIR_MODE });
+    if (!windowsHookStateAncestor(root)) throw windowsHookStateError();
+  }
+
+  let created = false;
+  if (create && !windowsHookStateStat(dirPath, true)) {
+    windowsHookStateTimeout(deadline);
+    try {
+      mkdirSync(dirPath, { mode: PRIVATE_DIR_MODE });
+      created = true;
+    } catch (err) {
+      if (err?.code !== 'EEXIST') throw err;
+    }
+  }
+  const directory = windowsHookStateStat(dirPath, true);
+  try {
+    const file = directory && windowsHookStateStat(filePath, false);
+    const state = { dirPath, directory, filePath, file, deadline };
+    if (!directory) {
+      if (create) throw windowsHookStateError();
+      return state;
+    }
+    if (created) {
+      if (readdirSync(dirPath).length !== 0) throw windowsHookStateError('New Windows hook state directory is not empty');
+      makeWindowsPathsPrivate([dirPath], undefined, windowsHookStateTimeout(deadline));
+    } else {
+      verifyWindowsPathsPrivate(file ? [dirPath, filePath] : [dirPath], windowsHookStateTimeout(deadline));
+    }
+    assertWindowsHookStateFile(state);
+    return state;
+  } catch (err) {
+    if (created && directory) {
+      // A failed first-time ACL check must leave an empty leaf retryable.
+      try {
+        if (sameHookStateFile(directory, windowsHookStateAncestor(dirPath))) rmdirSync(dirPath);
+      } catch { /* preserve the original error and any nonempty leaf */ }
+    }
+    throw err;
+  }
+}
+
+export function openWindowsHookState(state, flags) {
+  if (flags !== 'r' && flags !== 'r+') throw windowsHookStateError();
+  assertWindowsHookStateFile(state);
+  const fd = flags === 'r' ? openSync(state.filePath, 'r') : openSync(state.filePath, 'r+');
+  try {
+    const actual = fstatSync(fd, { bigint: true });
+    if (!sameHookStateFile(state.file, actual) || !actual.isFile() || actual.nlink !== 1n) throw windowsHookStateError();
+    assertWindowsHookStateFile(state);
+    return fd;
+  } catch (err) {
+    closeSync(fd);
+    throw err;
+  }
+}
+
+function createEmptyWindowsHookStateFile(state, filePath) {
+  assertWindowsHookStateDirectory(state);
+  windowsHookStateTimeout(state.deadline);
+  const fd = openSync(filePath, 'wx', PRIVATE_FILE_MODE);
+  let owned;
+  try {
+    owned = fstatSync(fd, { bigint: true });
+    if (!owned.isFile() || owned.nlink !== 1n || !sameHookStateFile(owned, windowsHookStateStat(filePath, false))) {
+      throw windowsHookStateError();
+    }
+    return { fd, owned };
+  } catch (err) {
+    try { closeSync(fd); } catch { /* preserve the permissions error */ }
+    if (owned) removeNewWindowsHookState(state, filePath, owned);
+    throw err;
+  }
+}
+
+function createPrivateWindowsHookStateFile(state, filePath) {
+  const temporary = createEmptyWindowsHookStateFile(state, filePath);
+  try {
+    makeWindowsPathsPrivate([filePath], undefined, windowsHookStateTimeout(state.deadline));
+    assertWindowsHookStateFile({ ...state, filePath, file: temporary.owned });
+    return temporary;
+  } catch (err) {
+    try { closeSync(temporary.fd); } catch { /* preserve the permissions error */ }
+    removeNewWindowsHookState(state, filePath, temporary.owned);
+    throw err;
+  }
+}
+
+function writeNewWindowsHookState(state, content) {
+  const { fd, owned } = createPrivateWindowsHookStateFile(state, state.filePath);
+  let written = false;
+  try {
+    windowsHookStateTimeout(state.deadline);
+    writeFileSync(fd, content, 'utf8');
+    written = true;
+  } finally {
+    try { closeSync(fd); } finally {
+      if (!written) removeNewWindowsHookState(state, state.filePath, owned);
+    }
+  }
+}
+
+function removeNewWindowsHookState(state, filePath, owned) {
+  try {
+    assertWindowsHookStateDirectory(state);
+    if (sameHookStateFile(owned, windowsHookStateStat(filePath, false))) unlinkSync(filePath);
+  } catch { /* preserve the write error */ }
+}
+
+function verifiedWindowsPendingConversations(dir, dbDeadline) {
+  const dirPath = resolve(dir);
+  const directory = windowsHookStateAncestor(dirPath);
+  if (!directory) return [];
+  const deadline = Math.min(windowsHookStateDeadline(3000), performance.now() + dbDeadline - Date.now());
+  const state = { dirPath, directory, deadline };
+  const files = [];
+  for (const name of readdirSync(dirPath)) {
+    if (!PENDING_CONVERSATION_NAME.test(name)) continue;
+    windowsHookStateTimeout(deadline);
+    const filePath = join(dirPath, name);
+    const file = windowsHookStateStat(filePath, false);
+    if (file) files.push({ ...state, filePath, file });
+  }
+  if (files.length) {
+    verifyWindowsPathsPrivate([dirPath, ...files.map(file => file.filePath)], windowsHookStateTimeout(deadline));
+    assertWindowsHookStateDirectory(state);
+  }
+  return files;
+}
+
+function publishWindowsPendingFile(state, content, newDirectory) {
+  const tmpPath = `${state.filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  const { fd, owned } = createEmptyWindowsHookStateFile(state, tmpPath);
+  try {
+    try {
+      if (newDirectory) {
+        makeWindowsPathsPrivate([state.dirPath, tmpPath], undefined, windowsHookStateTimeout(state.deadline));
+      } else {
+        const paths = [state.dirPath, tmpPath];
+        if (state.file) paths.push(state.filePath);
+        verifyWindowsPathsPrivate(paths, windowsHookStateTimeout(state.deadline));
+      }
+      windowsHookStateTimeout(state.deadline);
+      assertWindowsHookStateFile(state);
+      assertWindowsHookStateFile({ ...state, filePath: tmpPath, file: owned });
+      if (state.file) {
+        const current = openWindowsHookState(state, 'r');
+        try {
+          if (readFileSync(current, 'utf8') !== content) throw windowsHookStateError();
+        } finally { closeSync(current); }
+        return state.file;
+      }
+      writeFileSync(fd, content, 'utf8');
+    } finally { closeSync(fd); }
+    assertWindowsHookStateFile(state);
+    assertWindowsHookStateFile({ ...state, filePath: tmpPath, file: owned });
+    renameSync(tmpPath, state.filePath);
+    return owned;
+  } finally { removeNewWindowsHookState(state, tmpPath, owned); }
+}
+
+function writeWindowsPendingConversation(path, value) {
+  const filePath = resolve(path);
+  const dirPath = dirname(filePath);
+  const root = dirname(dirPath);
+  if (basename(dirPath) !== PENDING_CONVERSATION_LEAF || !PENDING_CONVERSATION_NAME.test(basename(filePath))) {
+    throw windowsHookStateError();
+  }
+  // UserPromptSubmit has the shortest host budget of the capture/replay callers.
+  const deadline = windowsHookStateDeadline(3000);
+  windowsHookStateTimeout(deadline);
+  if (!windowsHookStateAncestor(root)) mkdirSync(root, { recursive: true, mode: PRIVATE_DIR_MODE });
+  const content = JSON.stringify(value);
+  let directory = windowsHookStateAncestor(dirPath);
+  if (!directory) {
+    if (!windowsHookStateAncestor(root)) throw windowsHookStateError();
+    // Publish the leaf only after its ACL is private, so concurrent hooks
+    // never mistake an unfinished leaf for an existing public directory.
+    const stagedPath = mkdtempSync(join(root, `.${PENDING_CONVERSATION_LEAF}-`));
+    const staged = {
+      dirPath: stagedPath, directory: windowsHookStateAncestor(stagedPath),
+      filePath: join(stagedPath, basename(filePath)), deadline,
+    };
+    let owned;
+    try {
+      owned = publishWindowsPendingFile(staged, content, true);
+      assertWindowsHookStateFile({ ...staged, file: owned });
+      directory = windowsHookStateAncestor(dirPath);
+      if (!directory) {
+        try {
+          renameSync(stagedPath, dirPath);
+          return;
+        } catch (err) {
+          directory = windowsHookStateAncestor(dirPath);
+          if (!directory) throw err;
+        }
+      }
+    } finally {
+      if (owned) removeNewWindowsHookState(staged, staged.filePath, owned);
+      try {
+        assertWindowsHookStateDirectory(staged);
+        rmdirSync(stagedPath);
+      } catch { /* preserve the original error and any nonempty stage */ }
+    }
+  }
+  const file = windowsHookStateStat(filePath, false);
+  publishWindowsPendingFile({ dirPath, directory, filePath, file, deadline }, content, false);
+}
+
+export function claimWindowsHookState(state, content) {
+  if (state.file) return false;
+  try {
+    writeNewWindowsHookState(state, content);
+    return true;
+  } catch (err) {
+    if (err?.code !== 'EEXIST') throw err;
+    // Another caller can claim this slot between verification and the open.
+    assertWindowsHookStateDirectory(state);
+    if (!windowsHookStateStat(state.filePath, false)) throw err;
+    return false;
+  }
+}
+
+export function writeWindowsHookStateInPlace(state, value) {
+  const content = JSON.stringify(value);
+  if (!state.file) {
+    writeNewWindowsHookState(state, content);
+    return;
+  }
+  windowsHookStateTimeout(state.deadline);
+  const fd = openWindowsHookState(state, 'r+');
+  try {
+    ftruncateSync(fd);
+    writeFileSync(fd, content, 'utf8');
+  } finally {
+    closeSync(fd);
+  }
+}
+
+// Stop prepares this before opening the SQLite write transaction. The returned
+// operation can publish the JSON computed by that transaction without a child.
+export function prepareWindowsSessionStateWrite(state) {
+  if (state.file) closeSync(openWindowsHookState(state, 'r+'));
+  const tmpPath = `${state.filePath}.${randomBytes(8).toString('hex')}.tmp`;
+  const temporary = createPrivateWindowsHookStateFile(state, tmpPath);
+  let fd = temporary.fd;
+  const close = () => {
+    if (fd === undefined) return;
+    const openFd = fd;
+    fd = undefined;
+    closeSync(openFd);
+  };
+  return {
+    publish(value) {
+      windowsHookStateTimeout(state.deadline);
+      assertWindowsHookStateFile(state);
+      if (!sameHookStateFile(temporary.owned, windowsHookStateStat(tmpPath, false))) throw windowsHookStateError();
+      writeFileSync(fd, JSON.stringify(value), 'utf8');
+      close();
+      assertWindowsHookStateFile(state);
+      if (!sameHookStateFile(temporary.owned, windowsHookStateStat(tmpPath, false))) throw windowsHookStateError();
+      renameSync(tmpPath, state.filePath);
+    },
+    discard() {
+      try { close(); } finally { removeNewWindowsHookState(state, tmpPath, temporary.owned); }
+    },
+  };
+}
+
+export function writeWindowsSessionState(state, value) {
+  const write = prepareWindowsSessionStateWrite(state);
+  try { write.publish(value); } finally { write.discard(); }
 }
 
 // Session identities are host data, never filesystem paths. Include the
@@ -2172,59 +2410,51 @@ export function isTrustedForAutoContext(rawMetadata) {
 // ─── Auto-update shared helpers ─────────────────────────────────────────────
 // Shared between SessionStart and Stop hooks for auto-update coordination.
 
-export function readUpdateCheckCache(installedVersion) {
+/**
+ * Read the update-check cache and say WHAT was found, not only whether
+ * something was:
+ *  - `{ status: 'missing' }`    no cache file (nothing has been checked here)
+ *  - `{ status: 'unreadable' }` the file is there but could not be read or is
+ *                               not a JSON object; `reason` says why
+ *  - `{ status: 'ok', cache }`  a cache object
+ * A damaged cache and an absent one used to both answer `null`, so a banner
+ * could not tell "never checked" from "checked, and the record is broken".
+ */
+export function readUpdateCheckCacheState(installedVersion) {
+  let cachePath;
   if (process.env.MEMESH_UPDATE_CHECK_PATH) {
-    try {
-      const overridePath = process.env.MEMESH_UPDATE_CHECK_PATH;
-      if (!existsSync(overridePath)) return null;
-      const parsed = JSON.parse(readFileSync(overridePath, 'utf8'));
-      if (!parsed || typeof parsed !== 'object') return null;
-      return parsed;
-    } catch {
-      return null;
-    }
+    cachePath = process.env.MEMESH_UPDATE_CHECK_PATH;
+  } else {
+    const versionTag = typeof installedVersion === 'string'
+      && /^[0-9A-Za-z.+-]+$/.test(installedVersion)
+      ? installedVersion
+      : 'unknown';
+    cachePath = join(memeshDir(), `update-check.${versionTag}.json`);
   }
-  const versionTag = typeof installedVersion === 'string'
-    && /^[0-9A-Za-z.+-]+$/.test(installedVersion)
-    ? installedVersion
-    : 'unknown';
-  const cachePath = join(memeshDir(), `update-check.${versionTag}.json`);
+  // Read directly, no existsSync first: a file replaced between the two calls answered "unreadable: ENOENT"
+  // for a cache that was simply not there at that instant. Absent is absent whenever it is noticed.
+  let raw;
   try {
-    if (!existsSync(cachePath)) return null;
-    const parsed = JSON.parse(readFileSync(cachePath, 'utf8'));
-    if (!parsed || typeof parsed !== 'object') return null;
-    return parsed;
-  } catch {
-    return null;
+    raw = readFileSync(cachePath, 'utf8');
+  } catch (err) {
+    if (err?.code === 'ENOENT' || err?.code === 'ENOTDIR') return { status: 'missing', cache: null };
+    // The code only, not the message: the message carries the full local path of the file.
+    return { status: 'unreadable', cache: null, reason: hookCaughtReason(err) };
   }
+  let parsed;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
+    return { status: 'unreadable', cache: null, reason: 'it is not valid JSON' };
+  }
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    return { status: 'unreadable', cache: null, reason: 'it does not hold a JSON object' };
+  }
+  return { status: 'ok', cache: parsed };
 }
 
-const SEMVER_RE = /^(\d+)\.(\d+)\.(\d+)(?:[-+].+)?$/;
-
-export function classifyBumpHook(from, to) {
-  const a = SEMVER_RE.exec((from || '').trim());
-  const b = SEMVER_RE.exec((to || '').trim());
-  if (!a || !b) return null;
-  const ai = a.slice(1, 4).map(Number);
-  const bi = b.slice(1, 4).map(Number);
-  if (bi[0] > ai[0]) return 'major';
-  if (bi[0] < ai[0]) return null;
-  if (bi[1] > ai[1]) return 'minor';
-  if (bi[1] < ai[1]) return null;
-  if (bi[2] > ai[2]) return 'patch';
-  return null;
-}
-
-const POLICY_RANK = { off: 0, patch: 1, minor: 2, major: 3 };
-const BUMP_RANK = { patch: 1, minor: 2, major: 3 };
-const AUTO_UPDATE_CACHE_FRESHNESS_MS = 24 * 60 * 60 * 1000;
-
-function autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel = 'unknown') {
-  if (typeof sessionId !== 'string' || sessionId.length === 0 || sessionId === 'unknown') return null;
-  const key = createHash('sha256')
-    .update(`${sessionId}\0${currentVersion}\0${latestVersion}\0${channel}`)
-    .digest('hex');
-  return join(memeshDir(), 'update-consent', `${key}.json`);
+export function readUpdateCheckCache(installedVersion) {
+  return readUpdateCheckCacheState(installedVersion).cache;
 }
 
 function updatePromptClaimPath(sessionId, currentVersion, latestVersion) {
@@ -2294,23 +2524,6 @@ export function finalizeUpdatePromptClaim(sessionId, currentVersion, latestVersi
   }
 }
 
-/**
- * The owner answered this session's notice. After this, further words in the
- * same session ("no" to an unrelated question, a stray "never") are not
- * decisions about updates. Returns false when there was no claim to mark.
- */
-export function markUpdatePromptAnswered(sessionId, currentVersion, latestVersion, decision) {
-  const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
-  if (!path || !existsSync(path)) return false;
-  try {
-    const value = JSON.parse(readFileSync(path, 'utf8'));
-    writePrivateJson(path, { ...value, decision: 'answered', answer: decision, answeredAt: new Date().toISOString() });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
 export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) {
   const path = updatePromptClaimPath(sessionId, currentVersion, latestVersion);
   if (!path || !existsSync(path)) return null;
@@ -2322,129 +2535,14 @@ export function readUpdatePromptClaim(sessionId, currentVersion, latestVersion) 
   }
 }
 
-export function readAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = 'unknown') {
-  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
-  if (!path || !existsSync(path)) return null;
-  try {
-    const value = JSON.parse(readFileSync(path, 'utf8'));
-    return value && typeof value === 'object' ? value : null;
-  } catch {
-    return null;
-  }
-}
-
-/**
- * @param {string} sessionId
- * @param {string} currentVersion
- * @param {string} latestVersion
- * @param {string|null} [channel=null]
- */
-export function findAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel = null) {
-  if (typeof sessionId !== 'string' || !sessionId || sessionId === 'unknown') return null;
-  try {
-    const dir = join(memeshDir(), 'update-consent');
-    for (const file of readdirSync(dir)) {
-      if (!file.endsWith('.json')) continue;
-      try {
-        const value = JSON.parse(readFileSync(join(dir, file), 'utf8'));
-        if (value?.sessionId === sessionId
-          && value?.currentVersion === currentVersion
-          && value?.latestVersion === latestVersion
-          && (channel === null || value?.channel === channel)) return value;
-      } catch { /* ignore one corrupt marker */ }
-    }
-  } catch { /* missing/unreadable consent dir */ }
-  return null;
-}
-
-export function writeAutoUpdateConsent(sessionId, currentVersion, latestVersion, channel, decision) {
-  const path = autoUpdateConsentPath(sessionId, currentVersion, latestVersion, channel);
-  if (!path || !['pending', 'approved', 'declined'].includes(decision)) return false;
-  try {
-    ensurePrivateDir(join(memeshDir(), 'update-consent'));
-    writePrivateJson(path, {
-      sessionId,
-      currentVersion,
-      latestVersion,
-      channel,
-      decision,
-      recordedAt: new Date().toISOString(),
-    });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-/**
- * Owner's answer to the first-use update notice.
- *   'approved' — install (npm-global only; other channels have no in-session installer)
- *   'declined' — "Not now": snooze this target (24h, then 48h, then 7d)
- *   'never'    — "Never ask again": config.updateCheck = false
- */
-export function parseAutoUpdateConsent(prompt) {
-  if (typeof prompt !== 'string') return null;
-  const value = prompt.trim().toLowerCase().replace(/[.!?。！？]+$/u, '');
-  // "never" alone is NOT enough: it is an ordinary English word, and this
-  // hook sees every prompt in a session that was shown the notice. The
-  // phrases below are the ones the Settings hint tells users to type, in
-  // each of the 11 dashboard locales.
-  if (/^(?:never ask(?: me)?(?: again)?|don'?t ask(?: me)?(?: again)?|stop asking|不要再問|別再問|不再提醒|不要再问|今後は確認しない|다시 묻지 않기|não voltar a perguntar|ne plus demander|nicht mehr fragen|không hỏi lại|no volver a preguntar|ไม่ต้องถามอีก)$/.test(value)) return 'never';
-  if (/^(?:yes|y|upgrade|update|install(?: it)?|go ahead|是|好|升級|更新|安裝)$/.test(value)) return 'approved';
-  if (/^(?:no|n|not now|later|不要|不用|稍後|暫時不要|稍后|後で|나중에|agora não|pas maintenant|jetzt nicht|để sau|ahora no|ไว้ก่อน)$/.test(value)) return 'declined';
-  return null;
-}
-
 /** `config.updateCheck` — false means the owner said never ask again. */
 export function isUpdateCheckEnabled(env = process.env) {
   return readHookConfig(env).updateCheck !== false;
 }
 
-export function decideAutoUpdateHook(currentVersion, cache, policy) {
-  if (!cache || cache.currentVersion !== currentVersion) return { run: false };
-  const latest = cache.latestVersion;
-  if (typeof latest !== 'string' || !latest) return { run: false };
-  const bump = classifyBumpHook(currentVersion, latest);
-  if (!bump) return { run: false };
-
-  const lastSuccessAt = cache.lastSuccessfulCheckAt;
-  const lastSuccessMs = typeof lastSuccessAt === 'string' ? Date.parse(lastSuccessAt) : NaN;
-  const cacheAgeMs = Number.isFinite(lastSuccessMs) ? Date.now() - lastSuccessMs : Infinity;
-  if (cacheAgeMs > AUTO_UPDATE_CACHE_FRESHNESS_MS) {
-    return { run: false, reason: 'stale-cache' };
-  }
-
-  const policyAllows = (POLICY_RANK[policy] ?? 0) >= BUMP_RANK[bump];
-  if (policyAllows) return { run: true, latest, bump, deprecationOverride: false };
-
-  // The deprecation override does NOT apply when the policy is `off`.
-  //
-  // Look at what the override could ever do: it fires only for a `patch`
-  // bump, and any policy above `off` already permits a patch. So its ONLY
-  // effect was to defeat `off` — the one setting whose whole meaning is
-  // "never install anything without me asking".
-  //
-  // And its trigger is `currentVersionDeprecation`, a string the PUBLISHER
-  // writes into the npm registry. Anyone able to publish the package could
-  // therefore make every user who had turned auto-update OFF run a detached
-  // `npm install -g`, unattended, from a Stop hook. That is not a security
-  // override; it is a remote switch on a user's explicit refusal.
-  //
-  // A deprecated version still gets said out loud: `memesh doctor` escalates
-  // the update-status row to FAIL for it (there is a test named for that),
-  // and the session banner reports it. The user decides.
-  const deprecated = typeof cache.currentVersionDeprecation === 'string'
-    && cache.currentVersionDeprecation.length > 0;
-  if (deprecated && bump === 'patch' && policy !== 'off') {
-    return { run: true, latest, bump, deprecationOverride: true };
-  }
-
-  return { run: false };
-}
-
 export function logAutoUpdate(line) {
   try {
-    const dir = memeshDir();
+    const dir = getMemeshDirFromDbPath();
     ensurePrivateDir(dir);
     const path = join(dir, 'auto-update.log');
     appendFileSync(path, `[${new Date().toISOString()}] ${line}\n`);
@@ -2456,93 +2554,26 @@ export function logAutoUpdate(line) {
 }
 
 /**
- * Dispatch the detached updater runner after proving that this is an
- * npm-global install and that its durable outcome log is writable. The runner
- * owns the single-flight lock and emits the only terminal SUCCESS/FAILED line.
+ * Start the detached updater runner (the work is dispatchAutoUpdate in
+ * dist/core/auto-update.js, which `memesh serve` uses too). The hook decides
+ * nothing: policy, channel, source check, backup and the wait are all in the
+ * runner's entry.
  *
- * @param {string} version - Target version to install
- * @param {object|null} installChannelMod - Preloaded dist/core/install-channel.js module
- * @returns {Promise<{ state: 'dispatched'|'channel'|'failed' }>}
+ * @param {object|null} autoUpdateMod - preloaded dist/core/auto-update.js
+ * @returns {Promise<{ state: 'dispatched'|'throttled'|'failed' }>}
  */
-export async function spawnAutoUpdate(version, installChannelMod) {
-  let fd = -1;
+export async function dispatchAutoUpdate(autoUpdateMod) {
+  if (!autoUpdateMod) {
+    const line = 'auto-update FAILED: dist/core/auto-update.js is missing, so no update was attempted';
+    if (!logAutoUpdate(line)) {
+      try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
+    }
+    return { state: 'failed' };
+  }
   try {
-    const pluginRoot = resolvePluginRoot(import.meta.url);
-    let channel = 'unknown';
-    if (installChannelMod) {
-      try {
-        channel = installChannelMod.getCurrentInstallChannel({ packageRoot: pluginRoot });
-      } catch { /* best-effort */ }
-    }
-    if (channel !== 'npm-global') {
-      const line = `auto-update SKIPPED: install channel '${channel}' does not support self-update via npm install -g`;
-      if (!logAutoUpdate(line)) {
-        try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-      }
-      return { state: 'channel' };
-    }
-
-    const dir = memeshDir();
-    ensurePrivateDir(dir);
-    const logPath = join(dir, 'auto-update.log');
-    const lockPath = join(dir, 'auto-update.lock');
-    const runnerPath = join(pluginRoot, 'scripts', 'hooks', 'auto-update-runner.mjs');
-    if (!existsSync(runnerPath)) {
-      const line = `auto-update FAILED: runner missing at ${runnerPath}`;
-      if (!logAutoUpdate(line)) {
-        try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-      }
-      return { state: 'failed' };
-    }
-
-    try {
-      fd = openSync(logPath, 'a', 0o600);
-      removeGroupAndOtherAccess(logPath);
-    } catch (err) {
-      try {
-        process.stderr.write(
-          `[memesh] auto-update FAILED: durable log unavailable at ${logPath} (${err?.message ?? err})\n`,
-        );
-      } catch { /* stderr unavailable */ }
-      return { state: 'failed' };
-    }
-
-    const child = spawn(
-      process.execPath,
-      [runnerPath, version, lockPath],
-      { detached: true, stdio: ['ignore', fd, fd], env: process.env, windowsHide: true },
-    );
-
-    return await new Promise((resolve) => {
-      let settled = false;
-      const finish = (state, line) => {
-        if (settled) return;
-        settled = true;
-        if (fd >= 0) {
-          try { closeSync(fd); } catch { /* already closed */ }
-          fd = -1;
-        }
-        if (!logAutoUpdate(line)) {
-          try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
-        }
-        resolve({ state });
-      };
-      child.once('spawn', () => {
-        child.unref();
-        finish(
-          'dispatched',
-          `auto-update DISPATCHED: target=${version} worker_pid=${child.pid ?? 'unknown'} lock=${lockPath}`,
-        );
-      });
-      child.once('error', (err) => {
-        finish('failed', `auto-update FAILED: target=${version} stage=dispatch error=${err?.message ?? err}`);
-      });
-    });
+    return await autoUpdateMod.dispatchAutoUpdate(resolvePluginRoot(import.meta.url));
   } catch (err) {
-    if (fd >= 0) {
-      try { closeSync(fd); } catch { /* already closed */ }
-    }
-    const line = `auto-update FAILED: target=${version} stage=dispatch error=${err?.message ?? err}`;
+    const line = `auto-update FAILED: stage=dispatch error=${err?.message ?? err}`;
     if (!logAutoUpdate(line)) {
       try { process.stderr.write(`[memesh] ${line}\n`); } catch { /* stderr unavailable */ }
     }

@@ -26,7 +26,7 @@ async function bundleCliFromSource(): Promise<void> {
     bundle: true,
     platform: 'node',
     format: 'esm',
-    target: 'node22.13',
+    target: 'node22.16',
     packages: 'bundle',
     external: ['node:*'],
     legalComments: 'none',
@@ -112,7 +112,8 @@ describe('memesh kg backfill-relations', () => {
     const text = runCli('kg', 'backfill-relations', '--apply', '--reset-idempotency');
     expect(text.exitCode, text.stderr).toBe(0);
     expect(text.stdout).toContain('Backup: ');
-    expect(text.stdout).toContain('.restore');
+    expect(text.stdout).toContain('memesh repair --database');
+    expect(text.stdout).toContain('--from-backup');
   }, 60_000);
 
   it('refuses --apply together with --dry-run in one line, before opening anything', () => {

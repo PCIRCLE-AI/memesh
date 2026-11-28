@@ -91,7 +91,7 @@ body:
     attributes:
       label: Node.js Version
       description: Run `node --version`
-      placeholder: "v22.13.0"
+      placeholder: "v22.16.0"
     validations:
       required: true
 

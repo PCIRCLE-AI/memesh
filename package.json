@@ -1,18 +1,14 @@
 {
   "name": "@pcircle/memesh",
   "version": "4.13.0",
-  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. One SQLite file; no cloud required.",
+  "description": "MeMesh — local collaboration for AI coding agents. Share memory across sessions, exchange task messages, and preserve work context. Local SQLite storage; no cloud required.",
   "main": "dist/index.js",
   "type": "module",
   "bin": {
     "memesh": "dist/transports/cli/cli.js",
     "memesh-mcp": "dist/mcp/server.js",
     "memesh-http": "dist/transports/http/server.js",
-    "memesh-router": "dist/host-runtime/router.js",
-    "memesh-host-claude": "dist/host-runtime/claude.js",
-    "memesh-host-codex": "dist/host-runtime/codex.js",
-    "memesh-host-codex-session": "dist/host-runtime/codex-session.js",
-    "memesh-host-acp": "dist/host-runtime/acp.js"
+    "memesh-host-claude": "dist/host-runtime/claude.js"
   },
   "files": [
     "dist/",
@@ -21,6 +17,9 @@
     "scripts/hooks/",
     "scripts/upgrade-plugin.sh",
     "skills/",
+    "extensions/hermes-memesh/",
+    "!extensions/hermes-memesh/**/__pycache__",
+  "!extensions/hermes-memesh/**/*.pyc",
     "docs/platforms/agent-messaging.md",
     ".claude-plugin/",
     ".codex-plugin/",
@@ -29,7 +28,8 @@
     "llms-install.md",
     "scripts/check-plugin-hook-artifact.mjs",
     "scripts/lib/npm-bin.mjs",
-    "AGENTS.md"
+    "AGENTS.md",
+    "memesh-lock.json"
   ],
   "scripts": {
     "build": "node scripts/check-schema-drift.mjs && tsc && node scripts/build-mcp-bundle.mjs && node scripts/build-cli-bundle.mjs && node scripts/generate-hook-core.mjs && node scripts/set-executable-bits.mjs && node scripts/generate-skills-manifest.mjs && node scripts/smoke-test.mjs",
@@ -50,6 +50,8 @@
     "release:finish": "node scripts/finish-release.mjs",
     "verify:artifact": "npm run verify:release && npm run test:isolated && npm run test:packaged && npm run test:packaged:upgrade",
     "prepublishOnly": "npm run build && npm run verify:artifact",
+    "prepack": "node scripts/shrinkwrap.mjs write",
+    "postpack": "node scripts/shrinkwrap.mjs remove",
     "typecheck": "tsc -p tsconfig.check.json",
     "lint": "node scripts/lint-tracked.mjs --max-warnings 0",
     "lint:fix": "node scripts/lint-tracked.mjs --fix",
@@ -88,7 +90,7 @@
     "url": "git+https://github.com/PCIRCLE-AI/memesh.git"
   },
   "dependencies": {
-    "@modelcontextprotocol/sdk": "^1.30.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
     "commander": "^14.0.3",
     "express": "^5.2.1",
     "express-rate-limit": "8.5.1",
@@ -96,33 +98,37 @@
     "zod": "4.6.6"
   },
   "overrides": {
-    "@hono/node-server": "^2.0.12",
+    "@hono/node-server": "^2.1.8",
     "@protobufjs/utf8": "^1.1.2",
     "adm-zip": "^0.6.0",
-    "body-parser": "^2.3.0",
-    "brace-expansion": "^5.0.9",
-    "fast-uri": "^3.1.4",
-    "hono": "^4.12.32",
+    "body-parser": "^2.4.0",
+    "brace-expansion": "^5.0.13",
+    "fast-uri": "^3.1.9",
+    "hono": "^4.13.18",
+    "ip-address": "^10.7.6",
+    "minimatch": "^11.0.8",
     "postcss": "^8.5.25",
     "protobufjs": "^7.6.5",
-    "qs": "^6.15.3",
+    "proxy-addr": "^2.0.8",
+    "qs": "^6.17.1",
     "sharp": "^0.35.3",
+    "source-map-js": "^1.2.2",
     "ws": "$ws",
-    "vite": "7.3.6"
+    "vite": "7.3.8"
   },
   "devDependencies": {
     "@eslint/js": "^10.0.1",
     "@types/express": "^5.0.6",
     "@types/node": "25.6.2",
     "@types/ws": "^8.18.1",
-    "@vitest/coverage-v8": "4.1.5",
+    "@vitest/coverage-v8": "4.1.12",
     "esbuild": "0.28.1",
     "eslint": "^10.3.0",
     "typescript": "^5.9.3",
     "typescript-eslint": "^8.59.2",
-    "vitest": "4.1.5"
+    "vitest": "4.1.12"
   },
   "engines": {
-    "node": ">=22.13.0"
+    "node": "^22.23.5 || ^24.22.3 || ^26.13.1"
   }
 }

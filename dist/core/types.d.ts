@@ -19,6 +19,7 @@ export interface Entity {
     observations: string[];
     tags: string[];
     relations?: Relation[];
+    archived_relations_omitted?: number;
     archived?: boolean;
     match?: {
         source: 'keyword';
@@ -44,9 +45,12 @@ export interface CreateEntityInput {
     metadata?: Record<string, unknown>;
     namespace?: string;
 }
+import type { ProjectScope } from './project-scope.js';
+export type { ProjectScope };
 export interface SearchOptions {
     tag?: string;
-    projectScope?: string | null;
+    projectScope?: ProjectScope;
+    scopeRelations?: boolean;
     limit?: number;
     includeArchived?: boolean;
     namespace?: string;
@@ -71,7 +75,9 @@ export interface RememberInput {
     provenanceOverride?: Record<string, unknown>;
     sourceHost?: string;
     project?: string | null;
+    projectIsDefault?: boolean;
     currentProject?: string;
+    projectIds?: readonly string[];
 }
 export interface RecallInput {
     ids?: number[];
@@ -81,11 +87,13 @@ export interface RecallInput {
     include_archived?: boolean;
     namespace?: string;
     cross_project?: boolean;
-    projectScope?: string | null;
+    projectScope?: ProjectScope;
 }
 export interface ForgetInput {
     name: string;
     observation?: string;
+    project?: string | null;
+    projectIds?: readonly string[];
 }
 export interface RememberResult {
     stored: boolean;
@@ -162,6 +170,8 @@ export interface ImportResult {
     skipped: number;
     appended: number;
     kept_archived: number;
+    restored: number;
+    trusted: number;
     errors: string[];
     skipped_relations: string[];
 }

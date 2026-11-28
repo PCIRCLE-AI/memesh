@@ -22,6 +22,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { isMain, treeHash, readJson, writeJson, git } from '../lib/verify-core.mjs';
 import { readApprovedReleaseReuse } from '../lib/release-preconditions.mjs';
+import { LIVE_JOURNEY_SCHEMA_VERSION } from '../lib/live-journey-contract.mjs';
 
 /** The steps, in order. Each `id` must be an npm script in package.json. */
 export const STEPS = [
@@ -117,7 +118,7 @@ export function currentTreeHash(repoRoot) {
  */
 export const NOT_CHECKED = [
   'Real-host qa:live-journey checks need a caller-prepared authenticated --codex-home for Codex and an interactive Claude Code session for Claude. ' +
-    'Both hosts need memesh-live-journey/v4 receipts or explicitly approved, candidate-bound evidence reuse (see release-preconditions.mjs).',
+    `Both hosts need ${LIVE_JOURNEY_SCHEMA_VERSION} receipts or explicitly approved, candidate-bound evidence reuse (see release-preconditions.mjs).`,
   'npm run qa:post-release — only meaningful after the release is published; run it next.',
 ];
 
@@ -191,6 +192,7 @@ function main() {
       // upgrade evidence are reused; the newly packed candidate is still smoked.
       let failed = false;
       for (const id of ['verify:release', 'test:packaged']) {
+        console.log(`--- ${id}`);
         const child = spawnSync('npm', ['run', id], { cwd: repoRoot, stdio: 'inherit', shell: process.platform === 'win32' });
         if (child.status !== 0) {
           results.push({ id, status: child.status, signal: child.signal });

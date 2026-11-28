@@ -129,9 +129,9 @@ if (!documentedWorkPackageSymbol) {
 }
 
 const messagingAnchors = [
-  'src/core/agent-messaging.ts',
-  'src/core/agent-router.ts',
-  'src/transports/agent-messaging.ts',
+  'src/core/conversation-messages.ts',
+  'src/host-adapters/conversation-wake.ts',
+  'src/transports/conversation-messaging.ts',
   'src/host-adapters/',
   'src/host-runtime/',
   'docs/platforms/agent-messaging.md',

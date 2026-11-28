@@ -68,19 +68,12 @@ describe('CLI error envelopes: caller mistakes are one line, not a crash', () =>
     ['message', 'discover', '--project', 'owned-errors', '--limit', '101'],
     ['message', 'watch', '--project', 'owned-errors', '--recipient', 'owned-reader', '--wait-ms', '99999'],
     ['message', 'watch', '--project', 'owned-errors', '--recipient', 'owned-reader', '--limit', '101'],
-    ['message', 'storage', 'report', '--cutoff', 'notadate'],
-    ['message', 'storage', 'prune', '--cutoff', 'notadate'],
-    ['message', 'storage', 'prune', '--cutoff', '2100-01-01T00:00:00Z', '--batch-size', '1001'],
-    ['agent', 'setup', 'codex-session', '--principal', 'owned-reader', '--workspace', '/no/such/owned-workspace'],
   ])('reports the caller error without a crash or schema dump: %j', (...args) => {
     const r = runCli(args);
     expect(r.exitCode).toBe(1);
     expect(r.stderr.trim()).not.toBe('');
     expectNoStackTrace(r.stderr, args.join(' '));
     expect(r.stderr).not.toMatch(/file:\/\/|node:internal|"origin"|"code"|\\"origin\\"|\\"code\\"/);
-    if (args.includes('--workspace')) {
-      expect(r.stderr).toContain(process.platform === 'win32' ? 'not supported on Windows' : '--workspace');
-    }
   });
 
   it('dream accept <nonexistent id> exits 1 with the message and a next step', () => {

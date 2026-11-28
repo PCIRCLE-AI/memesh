@@ -1,37 +1,30 @@
-/**
- * #324 pieces C (hook path) and D, against the REAL spawned Stop hook
- * (scripts/hooks/session-summary.js → scripts/hooks/_stop-notes.js).
- *
- * D: the nudge fires on a turn with a decision-shaped move and nothing
- *    written; stays silent when a `remember` happened, when a note file
- *    changed, and on a trivial turn; judges each Stop only on what happened
- *    since the previous one; never exits non-zero; prints a valid envelope.
- * C: the Claude Code memory directory next to the transcript is ingested,
- *    and an unchanged directory costs no second ingestion.
- */
+// Exercise note ingestion through the real Stop hook.
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { spawnSync } from 'child_process';
+import { createHash } from 'crypto';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { MemeshDatabase } from '../../src/storage/sqlite.js';
+import { noteDirId } from '../../src/core/note-dirs.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
-import { expectValidHookOutput } from '../helpers/hook-output-contract.js';
 import { canDenyReads } from '../helpers/permissions.js';
+import { readFileSnapshot } from '../helpers/fs-snapshot.js';
 
 const HOOK = path.resolve('scripts/hooks/session-summary.js');
 
-describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
+describe('Stop note ingestion', () => {
   let home: string;
   let projectDir: string;
   let transcript: string;
   let memoryDir: string;
-  const sessionId = 'nudge-session-1';
+  const sessionId = 'stop-notes-session-1';
 
   beforeEach(() => {
     home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-stop-notes-'));
     fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
-    projectDir = path.join(home, '.claude', 'projects', '-tmp-proj');
+    // Claude Code's folder for a session started in `home` (the payload's cwd below).
+    projectDir = path.join(home, '.claude', 'projects', home.replace(/[^a-zA-Z0-9]/g, '-'));
     fs.mkdirSync(projectDir, { recursive: true });
     transcript = path.join(projectDir, `${sessionId}.jsonl`);
     memoryDir = path.join(projectDir, 'memory');
@@ -49,7 +42,9 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
       encoding: 'utf8',
       timeout,
     });
-    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status, signal: r.signal };
+    let terminal = false;
+    try { process.kill(r.pid, 0); } catch (error) { terminal = (error as NodeJS.ErrnoException).code === 'ESRCH'; }
+    return { stdout: r.stdout ?? '', stderr: r.stderr ?? '', status: r.status, signal: r.signal, pid: r.pid, terminal };
   }
 
   const at = (msAgo: number) => new Date(Date.now() - msAgo).toISOString();
@@ -65,6 +60,48 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   const write = (entries: object[]) => fs.writeFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
   const append = (entries: object[]) => fs.appendFileSync(transcript, entries.map((e) => JSON.stringify(e)).join('\n') + '\n');
 
+  it('B-F14 preserves same-run writes, each refusal count, and deferred files through real Stop', () => {
+    fs.mkdirSync(memoryDir);
+    const note = (name: string, body = 'body') => `---\nname: ${name}\n---\n\n${body}\n`;
+    fs.writeFileSync(path.join(memoryDir, '00-large.md'), note('rejected_large', 'x'.repeat(300 * 1024)));
+    fs.writeFileSync(path.join(memoryDir, '01-noheader.md'), 'no header');
+    fs.writeFileSync(path.join(memoryDir, '02-observations.md'), note('rejected_many', Array.from({ length: 101 }, (_, i) => `paragraph ${i}`).join('\n\n')));
+    fs.writeFileSync(path.join(memoryDir, '03-noname.md'), '---\ndescription: name absent\n---\nbody');
+    fs.writeFileSync(path.join(memoryDir, '04-empty.md'), note('rejected_empty', ''));
+    const outside = path.join(home, 'outside.md'); fs.writeFileSync(outside, note('rejected_link'));
+    fs.symlinkSync(outside, path.join(memoryDir, '05-link.md'));
+    // 123 regular files: five refusals + 118 valid; link does not spend a read slot.
+    for (let i = 0; i < 118; i++) fs.writeFileSync(path.join(memoryDir, `n${String(i).padStart(3, '0')}.md`), note(`bf14_good_${i}`));
+    write(reads(1));
+    expect(run().status).toBe(0);
+    const ledger = () => JSON.parse('[' + fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8').trim().split('\n').join(',') + ']') as Array<{hook:string;run:string;outcome:string;reason?:string;count?:number}>;
+    const first = ledger().filter((r) => r.hook === 'note-ingest');
+    expect(new Set(first.map((r) => r.run)).size).toBe(1);
+    expect(first.filter((r) => r.outcome === 'wrote')).toHaveLength(1);
+    for (const [reason, count] of [
+      ['a note file was larger than the size limit and was not imported', 1],
+      ['a note file had no header block and was not imported', 1],
+      ['a note file had more observations than the limit and was not imported', 1],
+      ['a note file was a symbolic link and was not imported', 1],
+      ['a note file was not imported for another recorded reason', 2],
+      ['more note files changed than one run reads, so the rest are read at the next Stop', 23],
+    ] as const) expect(first.filter((r) => r.reason === reason)).toEqual([expect.objectContaining({ outcome: 'skipped', reason, count })]);
+    expect(JSON.stringify(first.filter((r) => r.outcome === 'skipped'))).not.toMatch(/\.md|rejected_/);
+    const countSaved = () => {
+      const db = new MemeshDatabase(path.join(home, '.memesh/knowledge-graph.db'), { readOnly: true });
+      try {
+        expect(db.prepare("SELECT count(*) AS n FROM entities WHERE name LIKE 'rejected_%'").get()).toEqual({ n: 0 });
+        return db.prepare("SELECT count(*) AS n FROM entities WHERE name LIKE 'bf14_good_%'").get();
+      } finally { db.close(); }
+    };
+    expect(countSaved()).toEqual({ n: 95 });
+    append(reads(1)); expect(run().status).toBe(0);
+    expect(countSaved()).toEqual({ n: 118 });
+    const second = ledger().filter((r) => r.hook === 'note-ingest' && r.run !== first[0].run);
+    expect(second.some((r) => r.reason === 'a note file was larger than the size limit and was not imported' && r.count === 1)).toBe(true);
+    expect(second.some((r) => r.reason === 'more note files changed than one run reads, so the rest are read at the next Stop')).toBe(false);
+  }, 60_000);
+
   /** The recorded outcomes for one hook name. Pinned non-empty: every Stop
    *  must leave a record, so an empty list is itself a failure, never a
    *  vacuous pass for the `.at(-1)` assertions that follow. */
@@ -77,77 +114,195 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     return records;
   }
 
-  it('nudges once on a turn with a plan approved and nothing written', () => {
-    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
-    const r = run();
-    expect(r.status).toBe(0);
-    const v = expectValidHookOutput(r.stdout, 'session-summary.js nudge');
-    expect(v.kind).toBe('json');
-    expect(Object.keys(v.parsed!)).toEqual(['systemMessage']);
-    expect(v.parsed!.systemMessage).toMatch(/1 decision-shaped move\(s\) \(a plan was approved\) and stored no memory/);
-    // `notified`, not `wrote` — the nudge stores nothing, and is precisely
-    // what memesh says when nothing has been stored.
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({ outcome: 'notified' });
-
-    // The next Stop sees only what was appended since: a trivial turn → silent.
-    append(reads(1));
-    const again = run();
-    expect(again.status).toBe(0);
-    expect(again.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/trivial turn/);
-  }, 60_000);
-
-  it('counts a commit and a test that went red then green', () => {
-    write([
-      ...reads(2),
-      ...toolCall('Bash', { command: 'npm test' }, { error: true }),
-      ...toolCall('Bash', { command: 'npm test' }),
-      ...toolCall('Bash', { command: 'git commit -m "fix"' }),
-    ]);
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).systemMessage).toMatch(/2 decision-shaped move\(s\) \(a test went red then green, a commit\)/);
-  }, 60_000);
-
-  it('is silent when a remember call happened in the turn', () => {
-    write([...reads(4), ...toolCall('ExitPlanMode', {}), ...toolCall('mcp__plugin_memesh_memesh__remember', { note: 'x' })]);
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/memory was written/);
-  }, 60_000);
-
-  it('is silent when a note file changed during the turn', () => {
-    write([...reads(4), ...toolCall('AskUserQuestion', {})]);
+  it('B-F14 reclassifies unchanged legacy skip caches on the next Stop', () => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'x.md'), 'just a scratch note\n');
-    const r = run();
-    expect(r.status).toBe(0);
-    expect(r.stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/note file changed/);
+    const large = path.join(memoryDir, 'large.md'); const plain = path.join(memoryDir, 'plain.md');
+    fs.writeFileSync(large, 'x'.repeat(300 * 1024)); fs.writeFileSync(plain, 'no header');
+    write(reads(1)); expect(run().status).toBe(0);
+    const memesh = path.join(home, '.memesh');
+    const db = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    try {
+      const key = `note_ingest_skips:${noteDirId(fs.realpathSync(memoryDir))}`;
+      const row = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(key) as {value:string};
+      const cache = JSON.parse(row.value);
+      for (const value of Object.values(cache) as Array<{code?:string}>) delete value.code;
+      db.prepare('UPDATE memesh_metadata SET value = ? WHERE key = ?').run(JSON.stringify(cache), key);
+    } finally { db.close(); }
+    const stateFile = path.join(memesh, 'note-ingest-state-2.json');
+    const state = JSON.parse(fs.readFileSync(stateFile, 'utf8'));
+    for (const value of Object.values(state) as Array<{outcomeCodes?:boolean}>) delete value.outcomeCodes;
+    fs.writeFileSync(stateFile, JSON.stringify(state));
+    const before = outcomes('note-ingest').length;
+    append(reads(1)); expect(run().status).toBe(0);
+    const latest = outcomes('note-ingest').slice(before);
+    expect(latest).toEqual(expect.arrayContaining([
+      expect.objectContaining({ reason: 'a note file was larger than the size limit and was not imported', count: 1 }),
+      expect.objectContaining({ reason: 'a note file had no header block and was not imported', count: 1 }),
+    ]));
+    expect(latest.some((r) => r.reason === 'a note file was not imported for another recorded reason')).toBe(false);
   }, 60_000);
 
-  it('is silent on a trivial turn, and on a busy turn with no decision-shaped move', () => {
-    write([...toolCall('ExitPlanMode', {})]);
-    expect(run().stdout.trim()).toBe('');
-    append(reads(6));
-    expect(run().stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/no decision-shaped move/);
-  }, 60_000);
-
-  it('still nudges with auto-capture off, but does not ingest', () => {
+  it('QA6 new notes progress past 100 unchanged refusals and released owners are retried', () => {
     fs.mkdirSync(memoryDir);
-    fs.utimesSync(memoryDir, new Date(0), new Date(0));
-    write([...reads(4), ...toolCall('ExitPlanMode', {})]);
-    const r = run({ MEMESH_AUTO_CAPTURE: 'false' });
-    expect(r.status).toBe(0);
-    expect(JSON.parse(r.stdout).systemMessage).toMatch(/stored no memory/);
+    fs.writeFileSync(path.join(memoryDir, 'seed.md'), '---\nname: qa6_seed\n---\nseed');
+    write(reads(1)); expect(run().status).toBe(0); // initialize the private schema
+    const dbPath = path.join(home, '.memesh/knowledge-graph.db');
+    const withDb = <T,>(fn: (db: MemeshDatabase) => T): T => {
+      const db = new MemeshDatabase(dbPath); try { return fn(db); } finally { db.close(); }
+    };
+    withDb((db) => {
+      for (let i = 0; i < 100; i++) {
+        const name = `qa6_owner_${String(i).padStart(3, '0')}`;
+        const id = db.prepare('INSERT INTO entities (name,type) VALUES (?,?)').run(name, 'fact').lastInsertRowid;
+        db.prepare('INSERT INTO observations (entity_id,content) VALUES (?,?)').run(id, `original ${i}`);
+        db.prepare('INSERT INTO tags (entity_id,tag) VALUES (?,?)').run(id, 'qa6-original');
+        fs.writeFileSync(path.join(memoryDir, `a${String(i).padStart(3, '0')}.md`), `---\nname: ${name}\n---\nreplacement ${i}`);
+      }
+    });
+    fs.writeFileSync(path.join(memoryDir, 'zzz.md'), '---\nname: qa6_valid\n---\nvalid');
+    const snapshot = () => withDb((db) => ({
+      entities: db.prepare("SELECT * FROM entities WHERE name LIKE 'qa6_owner_%' ORDER BY id").all(),
+      observations: db.prepare("SELECT o.* FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name LIKE 'qa6_owner_%' ORDER BY o.id").all(),
+      tags: db.prepare("SELECT t.* FROM tags t JOIN entities e ON e.id=t.entity_id WHERE e.name LIKE 'qa6_owner_%' ORDER BY t.id").all(),
+    }));
+    const original = snapshot();
+    const ledger = () => JSON.parse('[' + fs.readFileSync(path.join(home, '.memesh/hook-outcomes.jsonl'), 'utf8').trim().split('\n').join(',') + ']') as Array<{hook:string;run:string;reason?:string;count?:number;outcome:string}>;
+    const prior = ledger().filter((r) => r.hook === 'note-ingest').length;
+    const other = 'a note file was not imported for another recorded reason';
+    const deferred = 'more note files changed than one run reads, so the rest are read at the next Stop';
+    append(reads(1)); expect(run().status).toBe(0);
+    const first = ledger().filter((r) => r.hook === 'note-ingest').slice(prior);
+    expect(first).toEqual(expect.arrayContaining([expect.objectContaining({ reason: other, count: 100 }), expect.objectContaining({ reason: deferred, count: 1 })]));
+    expect(snapshot()).toEqual(original);
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='qa6_valid'").get())).toBeUndefined();
+    append(reads(1)); expect(run().status).toBe(0);
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='qa6_valid'").get())).toBeDefined();
+    expect(snapshot()).toEqual(original);
+    const second = ledger().filter((r) => r.hook === 'note-ingest').slice(prior + first.length);
+    expect(second).toEqual(expect.arrayContaining([expect.objectContaining({ reason: other, count: 99 }), expect.objectContaining({ reason: deferred, count: 1 }), expect.objectContaining({ outcome: 'wrote' })]));
+    expect(new Set(second.map((r) => r.run)).size).toBe(1);
+    expect(ledger()).toEqual(expect.arrayContaining(first)); // first run's 100 remain in history
+    const last = path.join(memoryDir, 'a099.md');
+    const before = readFileSnapshot(last);
+    withDb((db) => db.prepare("DELETE FROM entities WHERE name='qa6_owner_099'").run());
+    append(reads(1)); expect(run().status).toBe(0); // more=1 naturally retries; no touch/throttle override
+    const after = readFileSnapshot(last);
+    expect(after.bytes).toEqual(before.bytes); expect(after.stat.mtimeMs).toBe(before.stat.mtimeMs);
+    const restored = withDb((db) => db.prepare("SELECT o.content FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name='qa6_owner_099'").all());
+    expect(restored).toEqual([{ content: 'replacement 99' }]);
+    const third = ledger().filter((r) => r.hook === 'note-ingest').slice(prior + first.length + second.length);
+    expect(third.some((r) => r.outcome === 'wrote')).toBe(true);
+    expect(third.some((r) => r.reason === deferred)).toBe(false);
+    console.info('QA6 actual Stop receipt', JSON.stringify({ first, second, third, restored,
+      originalOwners: original.entities.length, originalOwnerSnapshotSha: createHash('sha256').update(JSON.stringify(original)).digest('hex') }));
+  }, 60_000);
+
+  it.skipIf(!canDenyReads)('note I/O retry: unchanged unreadable note is imported after mode recovery on the next real Stop', () => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'seed.md'), '---\nname: io_seed\n---\nseed');
+    write(reads(1)); expect(run().status).toBe(0);
+    const stateFile = path.join(home, '.memesh/note-ingest-state-2.json');
+    const beforeState = fs.readFileSync(stateFile, 'utf8');
+    const good = path.join(memoryDir, 'a-good.md'); const bad = path.join(memoryDir, 'b-unreadable.md');
+    fs.writeFileSync(good, '---\nname: io_good\n---\ngood body');
+    fs.writeFileSync(bad, '---\nname: io_recovered\n---\nrecovered body');
+    const bytes = fs.readFileSync(bad); const mtime = fs.statSync(bad).mtimeMs;
+    const withDb = <T,>(fn: (db: MemeshDatabase) => T): T => {
+      const db = new MemeshDatabase(path.join(home, '.memesh/knowledge-graph.db'), { readOnly: true });
+      try { return fn(db); } finally { db.close(); }
+    };
+    const goodSnapshot = () => withDb((db) => ({
+      entity: db.prepare("SELECT * FROM entities WHERE name='io_good'").get(),
+      observations: db.prepare("SELECT o.* FROM observations o JOIN entities e ON e.id=o.entity_id WHERE e.name='io_good' ORDER BY o.id").all(),
+      tags: db.prepare("SELECT t.* FROM tags t JOIN entities e ON e.id=t.entity_id WHERE e.name='io_good' ORDER BY t.id").all(),
+    }));
+    fs.chmodSync(bad, 0);
+    let first;
+    try {
+      let denied: unknown; try { readFileSnapshot(bad); } catch (error) { denied = error; }
+      expect(denied).toHaveProperty('code', 'EACCES');
+      append(reads(1)); first = run(); expect(first.status).toBe(0); expect(first.terminal).toBe(true);
+      expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_good'").get())).toBeDefined();
+      expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_recovered'").get())).toBeUndefined();
+    } finally { fs.chmodSync(bad, 0o600); }
+    const failedState = fs.readFileSync(stateFile, 'utf8');
+    const storedGood = goodSnapshot();
+    const after = readFileSnapshot(bad);
+    expect(after.bytes).toEqual(bytes); expect(after.stat.mtimeMs).toBe(mtime);
+    append(reads(1)); const second = run(); expect(second.status).toBe(0); expect(second.terminal).toBe(true);
+    // Baseline reaches this actual loss assertion: its second Stop is incorrectly throttled.
+    expect(withDb((db) => db.prepare("SELECT id FROM entities WHERE name='io_recovered'").get())).toBeDefined();
+    expect(failedState).toBe(beforeState);
+    expect(goodSnapshot()).toEqual(storedGood);
+    expect(withDb((db) => db.prepare("SELECT count(*) AS n FROM entities WHERE name='io_good'").get())).toEqual({ n: 1 });
+    const invalid = path.join(memoryDir, 'invalid.md'); fs.writeFileSync(invalid, 'no header');
+    append(reads(1)); const validation = run(); expect(validation.status).toBe(0);
+    const validState = fs.readFileSync(stateFile, 'utf8');
+    append(reads(1)); const quiet = run(); expect(quiet.status).toBe(0);
+    expect(outcomes('note-ingest').at(-1)?.reason).toBe('no note file changed since the last ingestion');
+    expect(fs.readFileSync(stateFile, 'utf8')).toBe(validState);
+    console.info('note I/O retry receipt', JSON.stringify({ first, second, validation, quiet,
+      realReadError: 'EACCES', failedStateUnchanged: failedState === beforeState, recovered: true, goodRowsUnchanged: true, noteBytesMtimeUnchanged: true }));
+  }, 60_000);
+
+  it.each(['claude-code', 'codex'])('a heavy %s Stop saves the raw reply and notes without a snapshot or reminder', (host) => {
+    fs.mkdirSync(memoryDir);
+    const note = path.join(memoryDir, 'a.md');
+    fs.writeFileSync(note,
+      '---\nname: retained_note\nmetadata:\n  type: fact\n---\n\nThe note stays searchable.\n');
+    const beforeTurn = new Date(Date.now() - 120_000);
+    fs.utimesSync(note, beforeTurn, beforeTurn);
+    const reply = 'The final assistant reply.\nIt keeps every paragraph.';
+    if (host === 'codex') {
+      const commands = Array.from({ length: 22 }, (_, index) => ({
+        type: 'response_item',
+        payload: { type: 'function_call', name: 'exec_command', call_id: 'tool-' + index, arguments: '{"cmd":"git status"}' },
+      }));
+      write([
+        ...commands,
+        { type: 'event_msg', payload: { type: 'item_completed', item: {
+          type: 'CommandExecution', id: 'committed', command: ['/bin/zsh', '-lc', 'git commit -m fixture'],
+          exit_code: 0, status: 'completed',
+        } } },
+        { type: 'response_item', payload: { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: reply }] } },
+      ]);
+    } else {
+      write([
+        ...reads(22),
+        ...toolCall('ExitPlanMode', { plan: 'do X' }),
+        ...toolCall('Edit', { file_path: '/repo/retired-summary.ts' }),
+        { type: 'assistant', message: { role: 'assistant', content: [{ type: 'text', text: reply }] } },
+      ]);
+    }
+    const result = run({ MEMESH_HOOK_HOST: host });
+    expect(result.status, result.stderr).toBe(0);
+    expect.soft(result.stdout).toBe('');
+    expect.soft(fs.readFileSync(path.join(home, '.memesh', 'hook-outcomes.jsonl'), 'utf8')).not.toContain('remember-nudge');
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote' });
+    const db = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'), { readOnly: true });
+    try {
+      expect(db.prepare("SELECT name FROM entities WHERE type IN ('session-summary', 'session-insight')").all()).toEqual([]);
+      expect(db.prepare("SELECT e.type, o.content FROM entities e JOIN observations o ON o.entity_id = e.id WHERE e.type = 'conversation'").all()).toEqual([
+        { type: 'conversation', content: reply },
+      ]);
+      expect(db.prepare("SELECT name FROM entities WHERE name = 'retained_note'").get()).toBeDefined();
+    } finally { db.close(); }
+  });
+
+  it('capture opt-out skips both raw reply and note ingestion', () => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'note.md'), '---\nname: optout_note\n---\n\nbody\n');
+    write(reads(1));
+    const result = run({ MEMESH_AUTO_CAPTURE: 'false' }, { last_assistant_message: 'Opted out' });
+    expect(result.status, result.stderr).toBe(0);
+    expect(result.stdout).toBe('');
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'auto-capture is turned off' });
-  }, 60_000);
+    expect(fs.existsSync(path.join(home, '.memesh', 'knowledge-graph.db'))).toBe(false);
+  });
 
   it('ingests the memory directory next to the transcript, then skips it while unchanged', () => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: decision\n---\n\nalpha body\n');
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: project\n---\n\nalpha body\n');
     fs.writeFileSync(path.join(memoryDir, 'MEMORY.md'), '- index only\n');
     write(reads(1));
     expect(run().status).toBe(0);
@@ -165,6 +320,12 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     db.close();
     expect(row?.title).toBe('Hook alpha');
 
+    // The person's own memory folder is trusted: sessions may be shown it.
+    const trustDb = new MemeshDatabase(path.join(home, '.memesh', 'knowledge-graph.db'));
+    const meta = trustDb.prepare("SELECT metadata FROM entities WHERE name = 'hook_note_a'").get() as { metadata: string };
+    trustDb.close();
+    expect(JSON.parse(meta.metadata)).toMatchObject({ trust: 'trusted', provenance: { source: 'note-file' } });
+
     append(reads(1));
     expect(run().status).toBe(0);
     expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'no note file changed since the last ingestion' });
@@ -176,7 +337,7 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
   // hook's own wait, record an error, and ingest the note on the next Stop.
   it('#506 a held write lock does not hold the Stop past its 10 s limit, and the note is ingested next time', () => {
     fs.mkdirSync(memoryDir);
-    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: decision\n---\n\nalpha body\n');
+    fs.writeFileSync(path.join(memoryDir, 'a.md'), '---\nname: hook_note_a\ndescription: Hook alpha\nmetadata:\n  type: project\n---\n\nalpha body\n');
     write(reads(1));
     expect(run().status).toBe(0);
     fs.writeFileSync(path.join(memoryDir, 'b.md'), '---\nname: hook_note_b\ndescription: Hook beta\nmetadata:\n  type: decision\n---\n\nbeta body\n');
@@ -267,31 +428,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
   }, 60_000);
 
-  it('a plan approved across a Stop boundary is still a decision-shaped move', () => {
-    // The pending tool_use → kind map was rebuilt from scratch each Stop, so a
-    // call in one window and its result in the next were never paired. The
-    // nudge then reported "no decision-shaped move since the last Stop" — a
-    // miss whose stated reason is entirely plausible, which is what makes it
-    // expensive: nothing about the output says a pairing was dropped.
-    const id = 'tu_split_1';
-    write([
-      ...reads(5),
-      { type: 'assistant', timestamp: at(60_000), message: { role: 'assistant', content: [{ type: 'tool_use', id, name: 'ExitPlanMode', input: { plan: 'do X' } }] } },
-    ]);
-    // First Stop: the plan is open, no result yet, so nothing to nudge about.
-    expect(run().stdout.trim()).toBe('');
-
-    // Second Stop: only the result arrives — five more reads keep the window
-    // above the trivial-turn floor.
-    append([
-      { type: 'user', timestamp: at(30_000), message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, is_error: false, content: 'ok' }] } },
-      ...reads(5),
-    ]);
-    const second = run();
-    expect(second.status).toBe(0);
-    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
-  }, 60_000);
-
   it('a run that refused every file does not report that nothing needed storing', () => {
     // `changed` counts only stored things, so a Stop whose only event was a
     // refusal recorded `note files were read and nothing new needed storing`
@@ -306,49 +442,23 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(run().status).toBe(0);
     const last = outcomes('note-ingest').at(-1)!;
     expect(last.outcome).toBe('skipped');
-    expect(last.reason).toBe('note files were refused and nothing was stored');
+    expect(last.reason).toBe('a note file was a symbolic link and was not imported');
   }, 60_000);
 
-  it('a nudge nobody could be told is not recorded as delivered, and its window is kept', () => {
-    // The outcome used to be recorded inside runStopNotes, before the line
-    // had been written. Piping this hook's stdout into a process that exits
-    // immediately gave exit 0, empty stderr and `{"outcome":"wrote"}` while
-    // the user saw nothing — and the transcript offset advanced too, so the
-    // window was never reconsidered and the moves it described were never
-    // mentioned again.
-    write([...reads(4), ...toolCall('ExitPlanMode', { plan: 'do X' })]);
-
-    const childEnv: Record<string, string | undefined> = {
-      ...process.env, HOME: home, USERPROFILE: home,
-      // The hook path reaches `sh` as an environment value, read back as
-      // "$STOP_HOOK". Interpolating it into the command string instead —
-      // even through JSON.stringify, which is not shell quoting — puts a
-      // path this process does not control into a shell word, and breaks
-      // outright on a checkout whose directory name carries a metacharacter.
-      STOP_HOOK: HOOK,
-    };
-    delete childEnv.MEMESH_DB_PATH;
-    delete childEnv.MEMESH_DIR;
-    // `true` exits before the hook reaches its write, so writeSync(1) gets
-    // EPIPE — a host that stopped listening, reproduced exactly.
-    const r = spawnSync('sh', ['-c', 'node "$STOP_HOOK" | true'], {
-      input: JSON.stringify({ session_id: sessionId, transcript_path: transcript, cwd: home, hook_event_name: 'Stop' }),
-      env: childEnv,
-      encoding: 'utf8',
-      timeout: 20_000,
-    });
-    expect(r.status).toBe(0);
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
-      outcome: 'error',
-      reason: 'the host closed stdout before the nudge could be written',
-    });
-
-    // The window was kept: a second Stop with nothing appended still finds
-    // the same approved plan and says so.
-    const second = run();
-    expect(second.status).toBe(0);
-    expect(JSON.parse(second.stdout).systemMessage).toMatch(/a plan was approved/);
-  }, 60_000);
+  // A Stop whose transcript has no memory folder beside it, or whose payload names no
+  // transcript, or no cwd either: the hook exits 0 and records a known skip, never an error.
+  const NO_FOLDER = 'no Claude Code memory directory for this project';
+  it.each([
+    ['no memory folder beside the transcript', {}, NO_FOLDER],
+    ['no transcript_path', { transcript_path: undefined }, NO_FOLDER],
+    ['no transcript_path and no cwd', { transcript_path: undefined, cwd: undefined }, 'cwd absent in payload — cannot resolve project'],
+  ])('a Stop with %s records a skip, not an error', (_label, payload, reason) => {
+    fs.writeFileSync(transcript, '');
+    const r = run({}, payload);
+    expect(r.status, r.stderr).toBe(0);
+    expect(r.stderr).not.toContain('ERR_INVALID_ARG_TYPE');
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason });
+  });
 
   it('a payload with no cwd does not file notes under no project at all', () => {
     // Ingestion used to run BEFORE the cwd guard, with
@@ -358,8 +468,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     // project — and a note filed under NO project is not recoverable later
     // either: note-ingest fast-paths an unchanged file, so the tag backfill
     // is never reached unless the user edits the note again.
-    //
-    // The nudge half must still run: it writes nothing and needs no project.
     fs.mkdirSync(memoryDir);
     fs.writeFileSync(path.join(memoryDir, 'a.md'),
       '---\nname: nocwd_note\ndescription: No cwd\nmetadata:\n  type: decision\n---\n\nbody\n');
@@ -388,15 +496,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     }
     expect(stored, 'a note was stored with no project tag it can never gain').toBeUndefined();
 
-    // The nudge half still ran and reached its own verdict — it is silenced
-    // here by the note file this test just wrote, which is its normal rule,
-    // not by the missing cwd. What matters is that skipping ingestion did not
-    // take the nudge down with it.
-    expect(outcomes('remember-nudge').at(-1)).toMatchObject({
-      outcome: 'skipped',
-      reason: 'a note file changed since the last Stop',
-    });
-
     // And with cwd present the same directory ingests normally.
     fs.utimesSync(path.join(memoryDir, 'a.md'), new Date(), new Date());
     append(reads(1));
@@ -409,6 +508,55 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     db2.close();
     expect(tags.length).toBeGreaterThan(0);
   }, 60_000);
+
+  // An unreleased 4.13.0 build held some notes back: it left a skip entry marked `held` for each, and
+  // a folder stamp in note-ingest-state.json that says nothing changed. Such a note is imported by the
+  // next Stop, whatever the stamp says and although the file itself is unchanged.
+  it.each([false, true])('imports a note an unreleased build held back, at the next Stop, with the old folder stamp\'s `more` %s', (more) => {
+    fs.mkdirSync(memoryDir);
+    fs.writeFileSync(path.join(memoryDir, 'first.md'), '---\nname: hook_note_first\ndescription: First\nmetadata:\n  type: fact\n---\n\nfirst body\n');
+    write(reads(1));
+    expect(run().status).toBe(0); // creates the database and the folder's skip cache
+    const held = path.join(memoryDir, 'held.md');
+    fs.writeFileSync(held, '---\nname: hook_note_held\ndescription: Held back\nmetadata:\n  type: fact\n---\n\nheld body\n');
+    const past = new Date(Date.now() - 3_600_000);
+    for (const p of [held, path.join(memoryDir, 'first.md'), memoryDir]) fs.utimesSync(p, past, past);
+    const st = fs.statSync(held);
+    const memesh = path.join(home, '.memesh');
+    const db = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(
+      `note_ingest_skips:${noteDirId(fs.realpathSync(memoryDir))}`,
+      JSON.stringify({ 'held.md': { mtime: st.mtimeMs, size: st.size, reason: 'held out by a private session — not imported', held: 'a'.repeat(64) } }),
+    );
+    db.close();
+    // The state as that build left it: only the old file, its stamp newer than every note.
+    const key = createHash('sha256').update(memoryDir).digest('hex').slice(0, 16);
+    fs.rmSync(path.join(memesh, 'note-ingest-state-2.json'), { force: true });
+    fs.writeFileSync(path.join(memesh, 'note-ingest-state.json'), JSON.stringify({ [key]: { at: Date.now(), more, trusted: true } }));
+
+    append(reads(1));
+    expect(run().status).toBe(0);
+    const check = new MemeshDatabase(path.join(memesh, 'knowledge-graph.db'));
+    const row = check.prepare("SELECT name FROM entities WHERE name = 'hook_note_held'").get();
+    check.close();
+    expect(row, 'the held note was not imported').toBeDefined();
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'wrote', entity: 'hook_note_held' });
+  }, 60_000);
+
+  it('a run that read its cap and changed nothing says the rest waits for the next Stop, not that nothing was new', () => {
+    fs.mkdirSync(memoryDir);
+    const files = Array.from({ length: 101 }, (_, i) => path.join(memoryDir, `bulk-${String(i).padStart(3, '0')}.md`));
+    files.forEach((f, i) => fs.writeFileSync(f, `---\nname: cap_note_${i}\ndescription: Cap note ${i}\nmetadata:\n  type: fact\n---\n\nbody ${i}\n`));
+    write(reads(1));
+    expect(run().status).toBe(0); // 100 of them
+    append(reads(1));
+    expect(run().status).toBe(0); // the last one
+    const now = new Date();
+    for (const f of files) fs.utimesSync(f, now, now); // newer than the last run's stamp, the same bytes
+    append(reads(1));
+    expect(run().status).toBe(0); // 100 read and unchanged, the rest past the cap
+    expect(outcomes('note-ingest').at(-1)).toMatchObject({ outcome: 'skipped', reason: 'more note files changed than one run reads, so the rest are read at the next Stop' });
+  }, 120_000);
 
   it('the Stop after an over-cap run resumes it, without any file being touched', () => {
     // The resume flag had no guard: mutating `more: result.more > 0` to
@@ -446,63 +594,6 @@ describe('Stop hook: note ingestion and the remember nudge (#324)', () => {
     expect(outcomes('note-ingest').at(-1)?.reason).toMatch(/50 created/);
     expect(stored()).toBe(150);
   }, 120_000);
-
-  it('F8: a rejected plan is not an approved one — with or without is_error', () => {
-    const declined = "The user doesn't want to proceed with this tool use. The tool use was rejected.";
-    write([...reads(4), ...toolCall('ExitPlanMode', {}, { error: true, content: declined })]);
-    expect(run().stdout.trim()).toBe('');
-    append([...reads(4), ...toolCall('ExitPlanMode', {}, { content: declined })]);
-    expect(run().stdout.trim()).toBe('');
-    expect(outcomes('remember-nudge').at(-1)?.reason).toMatch(/no decision-shaped move/);
-  }, 60_000);
-
-  it('a commit is `git commit` in command position, not a search for the words', () => {
-    write([...reads(4), ...toolCall('Bash', { command: 'grep -rn "git commit" docs' }), ...toolCall('Bash', { command: 'git commit-tree abc' })]);
-    expect(run().stdout.trim()).toBe('');
-    append([...reads(4), ...toolCall('Bash', { command: 'cd repo && git -C . commit -m "x"' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-  }, 60_000);
-
-  it('F7: offset files of sessions idle for 30 days are pruned; recent ones kept', () => {
-    const dir = path.join(home, '.memesh', 'remember-nudge');
-    fs.mkdirSync(dir, { recursive: true });
-    const old = path.join(dir, 'old-session.json');
-    const recent = path.join(dir, 'recent-session.json');
-    fs.writeFileSync(old, '{"offset":0}');
-    fs.writeFileSync(recent, '{"offset":0}');
-    const longAgo = new Date(Date.now() - 31 * 24 * 60 * 60 * 1000);
-    fs.utimesSync(old, longAgo, longAgo);
-    write(reads(1));
-    expect(run().status).toBe(0);
-    expect(fs.existsSync(old)).toBe(false);
-    expect(fs.existsSync(recent)).toBe(true);
-    expect(fs.existsSync(path.join(dir, `${sessionId}.json`))).toBe(true);
-  }, 60_000);
-
-  it('P2-b: "rejected"/"declined" in ordinary output does not cancel a real move', () => {
-    write([
-      ...reads(4),
-      ...toolCall('Bash', { command: 'git commit -m "fix: handle rejected payments"' }, { content: '[main abc1234] fix: handle rejected payments' }),
-    ]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([
-      ...reads(3),
-      ...toolCall('Bash', { command: 'npx vitest run' }, { error: true, content: 'AssertionError: expected promise to be rejected' }),
-      ...toolCall('Bash', { command: 'npx vitest run' }, { content: 'Tests 3 passed; expected promise to be rejected ✓' }),
-    ]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a test went red then green/);
-    append([...reads(4), ...toolCall('ExitPlanMode', { plan: 'x' }, { content: 'User has approved your plan. Handle declined cards first.' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a plan was approved/);
-  }, 60_000);
-
-  it('P3-b: commit detection covers quoted -C paths, env prefixes and sudo', () => {
-    write([...reads(4), ...toolCall('Bash', { command: 'git -C "/a b/c" commit -m x' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([...reads(4), ...toolCall('Bash', { command: 'GIT_EDITOR=true git commit --amend' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-    append([...reads(4), ...toolCall('Bash', { command: 'sudo git commit -m y' })]);
-    expect(JSON.parse(run().stdout).systemMessage).toMatch(/a commit/);
-  }, 60_000);
 
   it('a move and a returning file are writes, not "nothing new" (#324)', () => {
     fs.mkdirSync(memoryDir);

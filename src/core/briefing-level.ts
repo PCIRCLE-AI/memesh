@@ -28,14 +28,14 @@ export const BRIEFING_LEVELS: readonly BriefingLevel[] = ['minimal', 'standard',
 
 /**
  * `minimal` is the default: a new session gets what belongs to the project it
- * is in — decisions, lessons, known facts, recent activity — and the fresh task
- * state and the durable-memory index only when asked for (`memesh config set
- * briefing standard`, or `MEMESH_BRIEFING=standard`). `full` — everything — was
+ * is in — decisions, lessons, known facts, recent activity, stated task state
+ * and recent session tails. The recent title index appears at every level;
+ * the standalone durable catalog remains separately available. `full` was
  * every session's only behaviour before levels existed, and the owner's own
  * usage did not justify it: `memesh doctor` reported 3 of 137 sessions ever
  * citing an injected memory. `full` keeps that behaviour's section selection
- * and its work-package notice; a stale or unknown-age task state replaces its
- * block with a one-line flag at every level, `full` and the default included.
+ * and its work-package notice. Task fields remain attributed to their stated
+ * dates at every level, including old or unknown dates.
  */
 export const DEFAULT_BRIEFING_LEVEL: BriefingLevel = 'minimal';
 
@@ -232,10 +232,13 @@ export function resolveBriefingLevel(envValue: string | undefined, configValue: 
  *   - `minimal` (default): only this project — its decisions, lessons, known
  *     facts and recent activity, with the live repository state in front of
  *     them whenever anything else is injected (the repository state alone is
- *     never injected). No task state, no durable index, nothing from outside
- *     the project.
- *   - `standard`: `minimal` + the task state when fresh + the capped index of
- *     this project's durable memories.
+ *     never injected), then the recent index (the titles of the 30 memories
+ *     most recently written in this project or with no project; never another
+ *     project's, global or not). No task state, nothing else from
+ *     outside the project's own detail; a few preferences of other projects
+ *     (at most three, labelled with their project, after the project's own and
+ *     taking only the room left) follow the project's own.
+ *   - `standard`: `minimal` + the task state when fresh.
  *   - `full`: `standard` + memories from your other projects + global
  *     memory. At `full` this MEMORY block is byte-for-byte identical across
  *     every surface (hook, `briefing` MCP tool, CLI) and to the output from
@@ -275,12 +278,6 @@ export interface BriefingLevelPolicy {
   global: boolean;
   /** The "From your other projects" cross-project recent pool. */
   foreign: boolean;
-  /** The FRESH task-state block. A STALE task state always renders its
-   *  one-line flag regardless of this flag — see task-state.ts's
-   *  `briefingTaskStateLines` and `STALE_TASK_STATE_HOURS`. */
-  taskState: boolean;
-  /** The durable-memory index (#323). */
-  index: boolean;
   /**
    * SessionStart-HOOK-ONLY — identical boilerplate every session, appended
    * AFTER the memory block, never part of `assembleBriefing()`'s result (so
@@ -301,9 +298,9 @@ export interface BriefingLevelPolicy {
 }
 
 const POLICIES: Readonly<Record<BriefingLevel, BriefingLevelPolicy>> = {
-  minimal: { global: false, foreign: false, taskState: false, index: false, workPackageNotice: false },
-  standard: { global: false, foreign: false, taskState: true, index: true, workPackageNotice: false },
-  full: { global: true, foreign: true, taskState: true, index: true, workPackageNotice: true },
+  minimal: { global: false, foreign: false, workPackageNotice: false },
+  standard: { global: false, foreign: false, workPackageNotice: false },
+  full: { global: true, foreign: true, workPackageNotice: true },
 };
 
 export function briefingLevelPolicy(level: BriefingLevel): BriefingLevelPolicy {

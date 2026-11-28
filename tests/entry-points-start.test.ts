@@ -5,6 +5,7 @@ import path from 'node:path';
 import { afterEach, describe, expect, it } from 'vitest';
 import { binTargets, hookCommands } from '../scripts/lib/executable-targets.mjs';
 import { computeSkipList, findUnresolvedPlaceholders } from '../scripts/check-entry-points-start.mjs';
+import { buildIsolatedSuiteEnv } from '../scripts/lib/isolated-env.mjs';
 
 const script = path.resolve('scripts/check-entry-points-start.mjs');
 const dirs: string[] = [];
@@ -28,6 +29,29 @@ function fixtureRoot(): string {
 function run(root: string) {
   return spawnSync(process.execPath, [script, '--root', root], { encoding: 'utf8', timeout: 30_000 });
 }
+
+it('keeps hook writes out of the invoking owners HOME, not just their database', () => {
+  const root = fixtureRoot();
+  const owner = fixtureRoot();
+  const marker = path.join(owner, 'entry-gate-sentinel.txt');
+  fs.writeFileSync(marker, 'owner sentinel');
+  write(root, 'package.json', JSON.stringify({ type: 'module', bin: { memesh: 'dist/transports/cli/cli.js' } }));
+  write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+  write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { SessionStart: [{ hooks: [{
+    type: 'command', command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/session-start.js',
+  }] }] } }));
+  write(root, 'scripts/hooks/session-start.js', `
+    import fs from 'node:fs';
+    import path from 'node:path';
+    fs.writeFileSync(path.join(process.env.HOME, 'entry-gate-sentinel.txt'), 'hook wrote here');
+  `);
+  const result = spawnSync(process.execPath, [script, '--root', root], {
+    env: buildIsolatedSuiteEnv(process.env, { runtimeHome: owner }), encoding: 'utf8', timeout: 30_000,
+  });
+  expect(result.status, result.stderr).toBe(0);
+  expect(result.stdout).toContain('2/2 entry point(s) started');
+  expect(fs.readFileSync(marker, 'utf8')).toBe('owner sentinel');
+});
 
 describe('executable-targets derivation picks up new manifest entries', () => {
   // Requirement: "the list is derived, never hand-written... a new entry
@@ -63,6 +87,56 @@ describe('executable-targets derivation picks up new manifest entries', () => {
 });
 
 describe('gate fails when a declared entry point does not start', () => {
+  it.each(['codex-busy-message-notice.js', 'codex-plan-activity.js'])('starts the Codex-only %s PostToolUse entry and rejects a crash', (name) => {
+    const root = fixtureRoot();
+    write(root, 'package.json', JSON.stringify({ bin: { memesh: 'dist/transports/cli/cli.js' } }));
+    write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+    write(root, 'hooks/hooks.json', JSON.stringify({ hooks: {} }));
+    write(root, '.codex-plugin/plugin.json', JSON.stringify({ hooks: { hooks: {
+      PostToolUse: [{ hooks: [{ command: `\${CLAUDE_PLUGIN_ROOT}/scripts/hooks/${name}` }] }],
+    } } }));
+    write(root, `scripts/hooks/${name}`, `
+      const fs = require('node:fs');
+      const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (payload.hook_event_name !== 'PostToolUse') process.exit(7);
+    `);
+    const pass = run(root);
+    expect(pass.status, pass.stderr).toBe(0);
+    expect(pass.stdout).toContain(`ok    hook (scripts/hooks/${name})`);
+    write(root, `scripts/hooks/${name}`, 'process.exit(7);');
+    const fail = run(root);
+    expect(fail.status).toBe(1);
+    expect(fail.stderr).toContain(`hook (scripts/hooks/${name})`);
+    expect(fail.stderr).toContain('exited 7');
+  });
+
+  it('starts the messages hook with its SessionStart payload in the isolated environment and rejects a crash', () => {
+    const root = fixtureRoot();
+    write(root, 'package.json', JSON.stringify({ bin: { memesh: 'dist/transports/cli/cli.js' } }));
+    write(root, 'dist/transports/cli/cli.js', "console.log('0.0.0-test');");
+    write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { SessionStart: [{ hooks: [{
+      command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/messages.js',
+    }] }] } }));
+    const hook = `const fs = require('node:fs');
+      const path = require('node:path');
+      const payload = JSON.parse(fs.readFileSync(0, 'utf8'));
+      if (payload.hook_event_name !== 'SessionStart' || payload.source !== 'startup'
+        || payload.session_id !== 'entry-point-gate'
+        || process.env.USERPROFILE !== process.env.HOME
+        || process.env.MEMESH_DIR !== path.join(process.env.HOME, '.memesh')
+        || process.env.MEMESH_DB_PATH !== path.join(process.env.MEMESH_DIR, 'kg.db')) process.exit(7);
+    `;
+    write(root, 'scripts/hooks/messages.js', hook);
+    const pass = run(root);
+    expect(pass.status, pass.stderr).toBe(0);
+    expect(pass.stdout).toContain('ok    hook (scripts/hooks/messages.js)');
+    write(root, 'scripts/hooks/messages.js', 'process.exit(7);');
+    const fail = run(root);
+    expect(fail.status).toBe(1);
+    expect(fail.stderr).toContain('hook (scripts/hooks/messages.js)');
+    expect(fail.stderr).toContain('exited 7');
+  });
+
   // A minimal-but-complete fixture: one bin whose real file is broken, and
   // one hook whose real file is a trivial no-op — both keyed at the SAME
   // relative paths the real repo uses, so the gate's actual PROFILES table
@@ -151,6 +225,19 @@ describe('unresolved ${...} placeholders fail the gate', () => {
   });
 });
 
+it('rejects a Claude entry that fails for a retired config instead of missing host identity', () => {
+  const root = fixtureRoot();
+  write(root, 'package.json', JSON.stringify({ bin: { 'memesh-host-claude': 'dist/host-runtime/claude.js' } }));
+  write(root, 'hooks/hooks.json', JSON.stringify({ hooks: { PreToolUse: [{ hooks: [{
+    command: '${CLAUDE_PLUGIN_ROOT}/scripts/hooks/pre-edit-recall.js',
+  }] }] } }));
+  write(root, 'scripts/hooks/pre-edit-recall.js', 'process.exit(0);');
+  write(root, 'dist/host-runtime/claude.js', "console.error('memesh-host-claude: A host config file is required'); process.exit(1);");
+  const result = run(root);
+  expect(result.status).toBe(1);
+  expect(result.stderr).toContain('actual host session');
+});
+
 describe('Windows skip list does not grow silently', () => {
   // Requirement: "If any binary genuinely cannot be started in CI, do not
   // skip it silently... add a test that the skip list is not silently
@@ -161,14 +248,8 @@ describe('Windows skip list does not grow silently', () => {
     expect(computeSkipList('linux')).toEqual([]);
   });
 
-  it('is pinned to exactly memesh-router on win32', () => {
-    const relativePaths = computeSkipList('win32').map((entry) => entry.relativePath);
-    expect(relativePaths).toEqual(['dist/host-runtime/router.js']);
+  it('has no retired-router exception on Windows', () => {
+    expect(computeSkipList('win32')).toEqual([]);
   });
 
-  it('every skipped entry names a non-empty reason', () => {
-    for (const entry of computeSkipList('win32')) {
-      expect(entry.reason.length).toBeGreaterThan(0);
-    }
-  });
 });

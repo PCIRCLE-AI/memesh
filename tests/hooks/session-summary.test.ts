@@ -4,20 +4,16 @@ import fs from 'fs';
 import path from 'path';
 import os from 'os';
 import { MemeshDatabase as Database } from '../../src/storage/sqlite.js';
-import { KnowledgeGraph } from '../../src/knowledge-graph.js';
 import { createRequire } from 'module';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { withoutHostIdentity } from '../helpers/host-env.js';
-import { HOOK_OUTCOMES_FILENAME, parseHookOutcomes, SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { makeWindowsPathsPrivate } from '../../src/core/windows-permissions.js';
+import { expectPrivateFile } from '../helpers/permissions.js';
 
 const require = createRequire(import.meta.url);
 // Non-git identity = basename + real-path hash (tests/core/project-identity.test.ts).
 const { getProjectName: mirrorProjectName, recallSessionPath } = require('../../scripts/hooks/_shared.js');
-// Contentless FTS5 needs the special delete form to mirror what `forget`
-// (archiveEntity) actually does to an entity before the next Stop sees it.
-const { removeFromFts } = require('../../scripts/hooks/_generated/fts-index.js');
-
-describe('Feature: Session Summary (Stop Hook)', () => {
+describe('Stop conversation capture', () => {
   let testDir: string;
   let dbPath: string;
   let transcriptPath: string;
@@ -94,48 +90,6 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     ]);
   }
 
-  it.each(['failed', 'missing'] as const)('Stop success claims: three %s Edit results do not create completed-work memories', (result) => {
-    const ids = ['toolu_01EFFrshKEk5B9Rbr1bTvQRu', 'toolu_01P2NnH3J6E6yPjE2qahpiUk', 'toolu_01H7nZs2TxiDTeMv6zTWKZHp'];
-    const entries = ids.flatMap((id) => [
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id, name: 'Edit', input: { file_path: '/repo/a.txt' } }] } },
-      ...(result === 'failed' ? [{ type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: id, is_error: true, content: 'Permission denied; file unchanged' }] } }] : []),
-    ]);
-    writeTranscript(entries);
-    const run = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-summary.js')], {
-      input: JSON.stringify({ session_id: 'failed-edit-proof', transcript_path: transcriptPath, cwd: testDir }),
-      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'true' }, encoding: 'utf8', timeout: 20_000,
-    });
-    expect(run.status, run.stderr).toBe(0);
-    const db = new Database(dbPath, { readOnly: true });
-    try {
-      expect(db.prepare("SELECT name FROM entities WHERE name IN ('session-failed-edit-proof-files', 'session-failed-edit-proof-fixes')").all()).toEqual([]);
-    } finally { db.close(); }
-  });
-
-  it('Stop success claims: matched successful edits are observations, not proof of error resolution', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'error-read', name: 'Read', input: { file_path: '/repo/missing.txt' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'error-read', is_error: true, content: 'Missing file' }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'successful-edit', name: 'Edit', input: { file_path: '/repo/a.txt' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'successful-edit', is_error: false, content: 'File updated' }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', id: 'other-read', name: 'Read', input: { file_path: '/repo/a.txt' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', tool_use_id: 'other-read', content: 'file content' }] } },
-    ]);
-    const run = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-summary.js')], {
-      input: JSON.stringify({ session_id: 'successful-edit-proof', transcript_path: transcriptPath, cwd: testDir }),
-      env: { ...withoutHostIdentity(process.env), MEMESH_DB_PATH: dbPath, MEMESH_AUTO_CAPTURE: 'true' }, encoding: 'utf8', timeout: 20_000,
-    });
-    expect(run.status, run.stderr).toBe(0);
-    const db = new Database(dbPath, { readOnly: true });
-    try {
-      expect(db.prepare("SELECT name FROM entities WHERE name = 'session-successful-edit-proof-files'").get()).toBeTruthy();
-      const observations = db.prepare('SELECT content FROM observations').all() as Array<{ content: string }>;
-      expect(observations.some((row) => row.content.includes('a.txt'))).toBe(true);
-      expect(observations.some((row) => /\bFixed\b|\berrors? resolved\b/i.test(row.content))).toBe(false);
-      expect(db.prepare("SELECT tag FROM tags WHERE tag = 'type:bugfix'").all()).toEqual([]);
-    } finally { db.close(); }
-  });
-
   it('Scenario: citation accounting end to end — cited earns a hit, silence earns NOTHING', () => {
     // The whole loop against a real spawned hook: an injected-set record, a
     // transcript whose hook echoes carry `[mem:id]` handles (as every real
@@ -167,14 +121,16 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     // ignores arguments), which runHook sets to dbPath; mirror that here.
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'cite-session', projectName), JSON.stringify({
+    const record = recallSessionPath(sessionsDir, 'cite-session', projectName);
+    fs.writeFileSync(record, JSON.stringify({
       sessionId: 'cite-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
       entityIds: [citedId, silentId],
       entityNames: ['cited-decision', 'silent-decision'],
       injectedContext: 'unused-by-the-accounting',
-    }));
+    }), { mode: 0o600 });
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessionsDir, record]);
 
     // A transcript that (a) clears the low-signal guard, (b) carries the
     // silent entity's handle INSIDE a hook echo only, (c) cites the other.
@@ -195,6 +151,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     ]);
 
     runHook({ session_id: 'cite-session', transcript_path: transcriptPath, cwd });
+    expectPrivateFile(record);
+    expect(JSON.parse(fs.readFileSync(record, 'utf8'))).toMatchObject({ creditedIds: [citedId], sessionCounted: true });
 
     const check = new Database(dbPath, { readOnly: true });
     try {
@@ -240,7 +198,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     const sessionsDir = path.join(path.dirname(dbPath), 'sessions');
     fs.mkdirSync(sessionsDir, { recursive: true });
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session', projectName), JSON.stringify({
+    const record = recallSessionPath(sessionsDir, 'era-session', projectName);
+    fs.writeFileSync(record, JSON.stringify({
       sessionId: 'era-session',
       injectedAt: new Date().toISOString(),
       project: projectName,
@@ -248,6 +207,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       entityNames: ['era-decision'],
       injectedContext: 'unused-by-the-accounting',
     }));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([sessionsDir, record]);
     writeTranscript([
       { type: 'user', message: { role: 'user', content: 'fix the parser' } },
       ...['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts'].map((f) => ({
@@ -278,7 +238,8 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     // Idempotent: a second session in the SAME era keeps counting. It needs
     // its own SID-bound injected-set record; Stop retains the first session.
-    fs.writeFileSync(recallSessionPath(sessionsDir, 'era-session-2', projectName), JSON.stringify({
+    const secondRecord = recallSessionPath(sessionsDir, 'era-session-2', projectName);
+    fs.writeFileSync(secondRecord, JSON.stringify({
       sessionId: 'era-session-2',
       injectedAt: new Date().toISOString(),
       project: projectName,
@@ -286,6 +247,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
       entityNames: ['era-decision'],
       injectedContext: 'unused-by-the-accounting',
     }));
+    if (process.platform === 'win32') makeWindowsPathsPrivate([secondRecord]);
     // These are this second synthetic session's events, after its injection.
     writeTranscript(fs.readFileSync(transcriptPath, 'utf8').trim().split('\n').map(line => {
       const entry = JSON.parse(line);
@@ -347,7 +309,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
   it('Scenario: a payload WITH cwd still captures (the guard is not a blanket refusal)', () => {
     writeQualifyingTranscript();
-    runHook({ session_id: 'with-cwd-session', transcript_path: transcriptPath, cwd: '/tmp/realproject' });
+    runHook({ last_assistant_message: 'Raw assistant reply', session_id: 'with-cwd-session', transcript_path: transcriptPath, cwd: '/tmp/realproject' });
     expect(fs.existsSync(dbPath)).toBe(true);
     const db = new Database(dbPath, { readOnly: true });
     try {
@@ -398,273 +360,6 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     return new Database(dbPath, { readOnly: true });
   }
 
-  it('Scenario: Agentic session with file edits creates session-insight entity', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All tests passed' }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-sess-001',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const entity = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%'").get() as any;
-    expect(entity).toBeTruthy();
-    expect(entity.type).toBe('session-insight');
-
-    const obs = db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(entity.id) as any[];
-    const filesObs = obs.find((o: any) => o.content.includes('auth.ts'));
-    expect(filesObs).toBeTruthy();
-
-    // UX-1 title: date + project + what happened, marked heuristic — the
-    // dashboard shows this instead of the session-<id> machine key.
-    expect(entity.title).toMatch(/^\d{4}-\d{2}-\d{2} .+: successful edit tool results for 2 file\(s\)$/);
-    expect(JSON.parse(entity.metadata).title_source).toBe('heuristic');
-    db.close();
-  });
-
-  it('Scenario: a session-insight captured by a Codex hook run names codex as its source host', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All tests passed' }] } },
-    ]);
-    const codexHome = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-codex-home-'));
-    try {
-      runHook({
-        session_id: 'codex-sess-001',
-        transcript_path: transcriptPath,
-        cwd: '/tmp/myproject',
-        stop_reason: 'end_turn',
-        was_in_agentic_loop: true,
-      }, { CODEX_HOME: codexHome });
-    } finally {
-      fs.rmSync(codexHome, { recursive: true, force: true });
-    }
-    const db = openDb();
-    const entity = db.prepare("SELECT metadata FROM entities WHERE name LIKE 'session-codex-se%'").get() as { metadata: string } | undefined;
-    db.close();
-    expect(entity, 'the Codex run must still capture').toBeTruthy();
-    expect(JSON.parse(entity!.metadata).provenance).toEqual({ source_host: 'codex' });
-  });
-
-  it('Regression: session-insight memory is FTS-recallable (was written but never indexed)', () => {
-    // Root-cause guard for the fake-working bug: storeMemory used to insert
-    // entity + observations + tags but skip entities_fts, so every session
-    // memory was invisible to `recall` and pre-edit-recall (both FTS paths).
-    // There is no FTS trigger and no rebuild-on-open, so the omission was total.
-    // captureEntity() now owns the write dance and keeps FTS in sync.
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/authentication.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All tests passed' }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-fts-recall',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-fts-recall-files'").get() as any;
-    expect(entity).toBeTruthy();
-
-    // The observation text contains the edited filename token — it must be
-    // reachable through the FTS5 index, not just the entities table.
-    const ftsRowids = (db.prepare(
-      "SELECT rowid FROM entities_fts WHERE entities_fts MATCH 'authentication'",
-    ).all() as any[]).map((r) => r.rowid);
-    expect(ftsRowids).toContain(entity.id);
-    db.close();
-  });
-
-  it('Scenario: producer writes file: tags that pre-edit-recall Strategy 1 queries', () => {
-    // The capture is the PRODUCER for pre-edit-recall's `file:<name>` lookup.
-    // Before this, nothing wrote those tags, so Strategy 1 returned zero rows
-    // on every real DB. Assert both forms are still emitted — full basename
-    // and the extension-less stem — even though pre-edit-recall's Strategy 1
-    // now reads ONLY the full-basename form (`file:auth.ts`, never the bare
-    // `file:auth` stem, #358 round 2: the stem is not unique to one file, so
-    // matching it let an unrelated `auth.py` memory fire on `auth.ts`
-    // edits). The stem tag is not dead: `memesh why`'s `explainCommits`
-    // (src/core/why.ts) still reads both forms.
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'done' }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-filetags',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-    });
-
-    const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-filetags-files'").get() as any;
-    expect(entity).toBeTruthy();
-    const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
-    expect(tags).toContain('file:auth.ts');
-    expect(tags).toContain('file:auth');
-    expect(tags).toContain('file:config.ts');
-    expect(tags).toContain('file:config');
-    db.close();
-  });
-
-  it('#495: a Bash capture that is not path-shaped does not become a file: tag', () => {
-    // `tee -a $F` captures the shell variable `$F` in the exact slot a real
-    // file target would occupy. Mixed with one real edit and enough calls to
-    // clear MIN_TOOL_CALLS: the real edit's tags must land, the junk token
-    // must not appear as a tag in any form (full or extension-less stem).
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: "cat > notes.md <<'EOF'\nhi\nEOF" } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'tee -a $F' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-junktags',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-junktags-files'").get() as any;
-    expect(entity, 'the real edit still produces a -files entity').toBeTruthy();
-    const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
-    expect(tags).toContain('file:notes.md');
-    expect(tags).toContain('file:notes');
-    expect(tags).not.toContain('file:$F');
-    expect(tags.some((t) => t.startsWith('file:$'))).toBe(false);
-    db.close();
-  });
-
-  it('#495: Edit/Write paths go through the same name rule — a template name is kept, an editor scratch name is not', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/{{cookiecutter.slug}}/{{cookiecutter.slug}}.py' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Write', input: { file_path: '/repo/#scratch#' } }] } },
-      // A Windows-style path basenames the same way in both branches, on any OS.
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: 'C:\\repo\\src\\winfile.ts' } }] } },
-      // A route file keeps its full name; its stem `$postId` is not stored.
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/repo/routes/$postId.tsx' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-edittags',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-edittags-files'").get() as any;
-    expect(entity, 'the template edit still produces a -files entity').toBeTruthy();
-    const tags = (db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(entity.id) as any[]).map((r) => r.tag);
-    expect(tags).toContain('file:{{cookiecutter.slug}}.py');
-    expect(tags).toContain('file:winfile.ts');
-    expect(tags).toContain('file:$postId.tsx');
-    expect(tags).not.toContain('file:$postId');
-    expect(tags.some((t) => t.includes('#') || t.includes('\\'))).toBe(false);
-    db.close();
-  });
-
-  it('Scenario: Session with errors stores neutral observations without a bugfix claim', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      // Real Claude Code marks failed tool calls with `is_error: true`.
-      // The parser now trusts this flag instead of substring-matching
-      // the result text (which produced 315 false errors against ~28
-      // real ones on a 47MB production transcript).
-      { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'Error: Cannot find module ./config' }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-sess-002',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const fixEntity = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%-fixes'").get() as any;
-    expect(fixEntity).toBeTruthy();
-
-    const tags = db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(fixEntity.id) as any[];
-    const hasBugfixTag = tags.some((t: any) => t.tag === 'type:bugfix');
-    expect(hasBugfixTag).toBe(false);
-    const observations = db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(fixEntity.id) as Array<{ content: string }>;
-    expect(observations[0].content).toMatch(/^Observed .*error\(s\) and successful edit tool results/);
-    expect(observations.some((row) => /\bFixed\b/i.test(row.content))).toBe(false);
-    db.close();
-  });
-
-  it('Regression #240: a second Stop for the same session appends NO duplicate observation', () => {
-    // 20+ tool calls with NO Write/Edit: every edit went through Bash. Before
-    // the fix, filesEdited stayed empty, no -files row was created, the guard
-    // that keys on -files never tripped, and -summary was re-appended on every
-    // Stop (measured: 56 observations, 16 unique).
-    const bashOnly = Array.from({ length: 22 }, (_, i) => ({
-      type: 'assistant',
-      message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `git log --oneline -${i + 1}` } }] },
-    }));
-    writeTranscript(bashOnly);
-    const input = { session_id: 'test-sess-240', transcript_path: transcriptPath, cwd: '/tmp/myproject', stop_reason: 'end_turn', was_in_agentic_loop: true };
-    runHook(input);
-    runHook(input);
-
-    const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name = 'session-test-sess-240-summary'").get() as any;
-    expect(entity, 'the heavy-session entity was written').toBeTruthy();
-    const obs = db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(entity.id) as any[];
-    const contents = obs.map((o) => o.content);
-    expect(new Set(contents).size, `duplicated observations: ${JSON.stringify(contents)}`).toBe(contents.length);
-    db.close();
-  });
-
-  it('Regression #240: edits made through Bash are counted, not reported as 0 files edited', () => {
-    const entries = [
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: "cat > src/core/paths.ts <<'EOF'\nexport const x = 1;\nEOF" } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: "sed -i '' 's/a/b/' dashboard/src/lib/i18n.ts" } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: "python3 - <<'PY'\nimport pathlib\npathlib.Path('scripts/audit/baseline.json').write_text('{}')\nPY" } }] } },
-      ...Array.from({ length: 20 }, (_, i) => ({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `npm run typecheck # ${i}` } }] } })),
-    ];
-    writeTranscript(entries);
-    runHook({ session_id: 'test-sess-240b', transcript_path: transcriptPath, cwd: '/tmp/myproject', stop_reason: 'end_turn', was_in_agentic_loop: true });
-
-    const db = openDb();
-    const files = db.prepare("SELECT id FROM entities WHERE name = 'session-test-sess-240b-files'").get() as any;
-    expect(files, 'a -files entity for Bash-driven edits').toBeTruthy();
-    const summary = db.prepare("SELECT id FROM entities WHERE name = 'session-test-sess-240b-summary'").get() as any;
-    const obs = db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(summary.id) as any[];
-    const headObs = obs.find((o) => o.content.startsWith('Significant session'));
-    expect(headObs, 'the summary observation exists').toBeTruthy();
-    const head = headObs!.content;
-    expect(head).toMatch(/successful edit tool results for 3 file\(s\)/);
-    expect(head).not.toMatch(/successful edit tool results for 0 file\(s\)/);
-    db.close();
-  });
-
   it('Scenario: Non-agentic session is skipped (explicit was_in_agentic_loop: false)', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
@@ -711,14 +406,10 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(run!.run_count).toBe(1);
   });
 
-  it('Scenario: an UNREADABLE transcript leaves no heartbeat — capture was lost, not skipped', () => {
-    // Permission/I-O failure while reading: parseTranscript returns zeros,
-    // which are indistinguishable from a quiet session — except for the
-    // readFailed flag. Stamping here would keep doctor green through
-    // repeated read failures while every session's capture is lost.
+  it.skipIf(process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0))('Scenario: an UNREADABLE transcript leaves no heartbeat — capture was lost, not skipped', () => {
+    // An I/O failure reading the only source of assistant text leaves no heartbeat.
     // Root reads through chmod 000; Windows maps it differently — same
     // skip guard as tests/hooks/session-start-unwritable.test.ts.
-    if (process.platform === 'win32' || (typeof process.getuid === 'function' && process.getuid() === 0)) return;
     writeQualifyingTranscript();
     fs.chmodSync(transcriptPath, 0o000);
     try {
@@ -735,296 +426,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     }
   });
 
-  // Regression: production Stop payloads were silently omitting
-  // `was_in_agentic_loop` for an unknown number of Claude Code releases,
-  // and the hook's default-deny gate (treat absent as false) caused zero
-  // session-insight entities to ever be written. Default-allow now: only
-  // an EXPLICIT `false` skips. This pins the new contract.
-  it('Scenario: Missing was_in_agentic_loop field still captures (default-allow)', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/tmp/proj/README.md' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'pass' }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-sess-noflag',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      // no was_in_agentic_loop — simulates current Claude Code Stop payload
-    });
-
-    expect(fs.existsSync(dbPath)).toBe(true);
-    const db = openDb();
-    const insights = db.prepare("SELECT COUNT(*) as c FROM entities WHERE type = 'session-insight'").get() as any;
-    expect(insights.c).toBeGreaterThan(0);
-    db.close();
-  });
-
-  describe('Codex rollouts', () => {
-    // Real shapes. A tool request is a `custom_tool_call` named exec whose
-    // input is JS calling tools.apply_patch / tools.exec_command; its result
-    // rows start with "Script completed|failed". Codex also records each
-    // command and file change as an event_msg item_completed row, and those
-    // structured rows decide what was edited and what failed.
-    let n = 0;
-    const turn = (code: string, texts: string[] = [], ok = true) => {
-      const call_id = `call_${n++}`;
-      const head = `${ok ? 'Script completed' : 'Script failed'}\nWall time 0.1 seconds\nOutput:\n`;
-      return [
-        { type: 'response_item', payload: { type: 'custom_tool_call', status: 'completed', call_id, name: 'exec', input: code } },
-        { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id, output: [head, ...texts].map(text => ({ type: 'input_text', text })) } },
-      ];
-    };
-    const done = (item: object) => ({ type: 'event_msg', payload: { type: 'item_completed', thread_id: 't1', turn_id: 'u1', item } });
-    const command = (cmd: string, exit_code = 0, aggregated_output = '') => done({
-      type: 'CommandExecution', id: `ce${n++}`, command: ['/bin/zsh', '-lc', cmd], cwd: '/repo', source: 'unified_exec_startup',
-      status: exit_code === 0 ? 'completed' : 'failed', aggregated_output, exit_code,
-    });
-    const fileChange = (changes: Record<string, { type: string }>, status = 'completed', stderr = '') => done({
-      type: 'FileChange', id: `fc${n++}`, changes, status, stdout: '', stderr,
-    });
-    const patchCode = (...lines: string[]) =>
-      `const patch = \`*** Begin Patch\n${lines.join('\n')}\n*** End Patch\`;\ntext(await tools.apply_patch(patch));`;
-    const execCode = (cmd: string, key = 'cmd') => `const r = await tools.exec_command({ ${key}: ${JSON.stringify(cmd)}, yield_time_ms: 1000 });\ntext(r.output);`;
-    // The object exec_command returns (real shape), as a script prints it.
-    const jsonResult = (exit_code: number, output: string) =>
-      JSON.stringify({ chunk_id: 'a1b2c3', wall_time_seconds: 0.1, exit_code, original_token_count: 4, output });
-    const noop = () => turn(execCode('echo invented-noop-line'), ['invented-noop-line']);
-
-    const runCodex = (id: string, rows: object[]) => {
-      writeTranscript(rows);
-      runHook({ session_id: id, transcript_path: transcriptPath, cwd: '/repo' });
-      if (!fs.existsSync(dbPath)) return { names: [] as string[], text: '' };
-      const db = openDb();
-      const ents = db.prepare('SELECT id, name FROM entities WHERE name LIKE ?').all(`session-${id}-%`) as Array<{ id: number; name: string }>;
-      const text = ents.flatMap(e => (db.prepare('SELECT content FROM observations WHERE entity_id = ?').all(e.id) as Array<{ content: string }>).map(o => o.content)).join('\n');
-      db.close();
-      return { names: ents.map(e => e.name), text };
-    };
-
-    describe('structured records', () => {
-      it('a completed FileChange add/update is an edited file; a delete is not', () => {
-        const r = runCodex('cx-fc', [
-          ...turn(patchCode('*** Update File: src/invented-auth.ts')), ...noop(), ...noop(),
-          fileChange({ '/repo/src/invented-auth.ts': { type: 'update' }, '/repo/src/invented-new.ts': { type: 'add' }, '/repo/src/invented-gone.ts': { type: 'delete' } }),
-        ]);
-        expect(r.text).toContain('invented-auth.ts');
-        expect(r.text).toContain('invented-new.ts');
-        expect(r.text).not.toContain('invented-gone.ts');
-      });
-
-      it('a failed FileChange is not an edit and is recorded as an error', () => {
-        const r = runCodex('cx-fc-fail', [
-          ...turn(patchCode('*** Update File: src/invented-never.ts')), ...noop(), ...noop(),
-          fileChange({ '/repo/src/invented-never.ts': { type: 'update' } }, 'failed', 'invented patch rejected'),
-          fileChange({ '/repo/src/invented-landed.ts': { type: 'update' } }),
-        ]);
-        expect(r.text).not.toContain('invented-never.ts');
-        expect(r.text).toContain('invented-landed.ts');
-        expect(r.text).toContain('invented patch rejected');
-      });
-
-      it('a patch that was applied still counts when the script then failed', () => {
-        const r = runCodex('cx-fc-then-throw', [
-          ...turn(patchCode('*** Update File: src/invented-applied.ts'), ['Script error:\nError: invented later step threw'], false),
-          fileChange({ '/repo/src/invented-applied.ts': { type: 'update' } }),
-          ...noop(), ...noop(),
-        ]);
-        expect(r.text).toContain('invented-applied.ts');
-        expect(r.text).toContain('invented later step threw');
-      });
-
-      it('a shell edit counts only for a completed command with exit 0', () => {
-        const r = runCodex('cx-sh', [
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-ok.ts")), command("sed -i '' 's/a/b/' src/invented-ok.ts"),
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-bad.ts")), command("sed -i '' 's/a/b/' src/invented-bad.ts", 1, 'sed: invented failure'),
-          ...noop(),
-        ]);
-        expect(r.text).toContain('invented-ok.ts');
-        expect(r.text).not.toContain('invented-bad.ts');
-        expect(r.text).toContain('sed: invented failure');
-      });
-
-      it('a scratch file under the macOS temp directories is not an edit', () => {
-        const r = runCodex('cx-scratch', [
-          ...noop(), ...noop(), ...noop(),
-          command("cat > /private/tmp/invented-scratch.txt <<'EOF'\nx\nEOF"),
-          command('tee /var/folders/ab/cd/T/invented-temp.log'),
-          command("cat > src/invented-real.ts <<'EOF'\nx\nEOF"),
-        ]);
-        expect(r.text).toContain('invented-real.ts');
-        expect(r.text).not.toContain('invented-scratch.txt');
-        expect(r.text).not.toContain('invented-temp.log');
-      });
-
-      it('output that merely mentions an error or exit_code is not a failure', () => {
-        const r = runCodex('cx-word', [
-          ...noop(), ...noop(), ...noop(),
-          fileChange({ '/repo/src/invented-edit.ts': { type: 'update' } }),
-          command('cat invented-notes.md', 0, 'this note mentions an error and "exit_code": 1'),
-        ]);
-        expect(r.text).toContain('invented-edit.ts');
-        expect(r.names).not.toContain('session-cx-word-fixes');
-        expect(r.text).not.toContain('Observed');
-      });
-    });
-
-    describe('older rollouts without structured records (fallback)', () => {
-      it('an apply_patch that did not throw is an edit; one that threw is not', () => {
-        const r = runCodex('cx-fb-patch', [
-          ...turn(patchCode('*** Update File: src/invented-fb-ok.ts'), ['ok']),
-          ...turn(patchCode('*** Update File: src/invented-fb-bad.ts'), ['Script error:\nError: invented rejected'], false),
-          ...noop(),
-        ]);
-        expect(r.text).toContain('invented-fb-ok.ts');
-        expect(r.text).not.toContain('invented-fb-bad.ts');
-        expect(r.text).toContain('invented rejected');
-      });
-
-      it('a shell edit counts only when a result reports exit 0; unknown and failed do not', () => {
-        const r = runCodex('cx-fb-sh', [
-          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-known.ts", '"cmd"'), [jsonResult(0, '')]),
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-unknown.ts"), ['printed output without a result record']),
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-failed.ts"), [jsonResult(1, 'sed: invented failure')]),
-        ]);
-        expect(r.text).toContain('invented-known.ts');
-        expect(r.text).not.toContain('invented-unknown.ts');
-        expect(r.text).not.toContain('invented-failed.ts');
-        expect(r.text).toContain('sed: invented failure');
-      });
-
-      it('an aborted or still-running script is not an edit', () => {
-        const aborted = (code: string) => {
-          const call_id = `call_${n++}`;
-          return [
-            { type: 'response_item', payload: { type: 'custom_tool_call', status: 'completed', call_id, name: 'exec', input: code } },
-            { type: 'response_item', payload: { type: 'custom_tool_call_output', call_id, output: 'aborted before dispatch' } },
-          ];
-        };
-        const r = runCodex('cx-fb-unknown', [
-          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
-          ...aborted(patchCode('*** Update File: src/invented-aborted.ts')),
-          ...turn(execCode("sed -i '' 's/a/b/' src/invented-running.ts"), ['Script running with cell ID invented-cell-1']),
-        ]);
-        expect(r.text).toContain('invented-anchor.ts');
-        expect(r.text).not.toContain('invented-aborted.ts');
-        expect(r.text).not.toContain('invented-running.ts');
-      });
-
-      it('exit_code text inside a printed file is not a failure', () => {
-        const r = runCodex('cx-fb-content', [
-          ...turn(patchCode('*** Update File: src/invented-anchor.ts'), ['ok']),
-          ...turn(execCode('cat invented-source.ts'), ['const sample = {"exit_code": 1, "output": "invented-looks-like-failure"};']),
-          ...noop(),
-        ]);
-        expect(r.names).not.toContain('session-cx-fb-content-fixes');
-        expect(r.text).not.toContain('exited with code');
-      });
-
-      it('a failure that left no structured record is still reported once', () => {
-        const [missingCall, missingOut] = turn(execCode('invented-missing-tool --version'), [jsonResult(127, 'zsh: command not found: invented-missing-tool')]);
-        const [checkCall, checkOut] = turn(execCode('npm run invented-check'), [jsonResult(1, 'invented-check: boom')]);
-        const r = runCodex('cx-fb-127', [
-          ...turn(patchCode('*** Update File: src/invented-anchor.ts')),
-          fileChange({ '/repo/src/invented-anchor.ts': { type: 'update' } }),
-          missingCall!, missingOut!,
-          checkCall!, command('npm run invented-check', 1, 'invented-check: boom'), checkOut!,
-        ]);
-        expect(r.text).toContain('Observed 2 error(s)');
-        expect(r.text).toContain('command not found: invented-missing-tool');
-      });
-    });
-
-    it('a secret in a failed command\'s output is redacted on the way to the stored error', () => {
-      const token = 'gh' + 'p_' + 'b'.repeat(36);
-      const r = runCodex('cx-secret-out', [
-        ...noop(), ...noop(), ...noop(),
-        fileChange({ '/repo/src/invented-edit.ts': { type: 'update' } }),
-        // The token starts near character 80, so the 100-character cut of the stored
-        // error would fall inside it if it were not redacted first.
-        command('curl invented.example', 22, `${'x'.repeat(78)} ${token}`),
-      ]);
-      expect(r.text).toContain('x'.repeat(50));
-      expect(r.text).not.toContain('gh' + 'p_');
-      expect(r.text).not.toContain('b'.repeat(8));
-    });
-
-    it('a secret in a recorded command is redacted in the stored Command line', () => {
-      const token = 'gh' + 'p_' + 'c'.repeat(36);
-      const r = runCodex('cx-secret-cmd', [
-        command(`${'y'.repeat(78)} ${token}`),
-        ...Array.from({ length: 20 }, () => noop()).flat(),
-      ]);
-      expect(r.text).toContain('Command: ' + 'y'.repeat(50));
-      expect(r.text).not.toContain('gh' + 'p_');
-      expect(r.text).not.toContain('c'.repeat(8));
-    });
-
-    it('agent-tool function_call rows count toward the activity guard', () => {
-      const fcall = (i: number) => ({ type: 'response_item', payload: { type: 'function_call', status: 'completed', call_id: `fn${i}`, name: 'wait_agent', arguments: '{}' } });
-      const few = runCodex('cx-few', [fcall(0), fcall(1)]);
-      expect(few.names).toEqual([]);
-      const runs = parseHookOutcomes(fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8')).hooks['session-summary'] ?? [];
-      expect(runs[runs.length - 1]!.reason).toBe(SKIP_REASONS.tooLittleActivity);
-      const many = runCodex('cx-many', Array.from({ length: 21 }, (_, i) => fcall(i)));
-      expect(many.text).toContain('Significant session: 21 tool calls');
-    });
-
-    it('the fixes observation lists a few files too, and exactly 30 are all listed', () => {
-      const files = (n: number) => Object.fromEntries(Array.from({ length: n }, (_, i) => [`/repo/src/invented-${String(i).padStart(2, '0')}.ts`, { type: 'update' }]));
-      const many = runCodex('cx-fixes-35', [...noop(), ...noop(), ...noop(), command('npm run invented-check', 1, 'invented-check: boom'), fileChange(files(35))]);
-      expect(many.text).toMatch(/Observed 1 error\(s\) and successful edit tool results for invented-00\.ts.*invented-29\.ts and 5 more/);
-      const exact = runCodex('cx-fixes-30', [...noop(), ...noop(), ...noop(), command('npm run invented-check', 1, 'invented-check: boom'), fileChange(files(30))]);
-      expect(exact.text).toContain('invented-29.ts');
-      expect(exact.text).not.toContain(' more');
-    });
-
-    it('a session that touched many files lists a few and counts the rest', () => {
-      const changes = Object.fromEntries(Array.from({ length: 35 }, (_, i) => [`/repo/src/invented-${String(i).padStart(2, '0')}.ts`, { type: 'update' }]));
-      const r = runCodex('cx-many-files', [...noop(), ...noop(), ...noop(), fileChange(changes)]);
-      expect(r.text).toContain('for 35 file(s): invented-00.ts');
-      expect(r.text).toContain('invented-29.ts and 5 more');
-      expect(r.text).not.toContain('invented-30.ts');
-    });
-  });
-
-  it('Scenario: low-signal session (< 3 tool calls) is skipped', () => {
-    // This previously claimed to test a `stop_reason === 'user_interrupt'`
-    // guard, feeding a stop_reason the Stop payload never carries — so the
-    // guard was dead and the session was actually skipped by the toolCallCount
-    // filter below (2 tool calls < 3). The guard has been removed; this now
-    // honestly tests the real low-signal filter, which is what does the work.
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All passed' }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-sess-004',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      was_in_agentic_loop: true,
-    });
-
-    if (fs.existsSync(dbPath)) {
-      const db = openDb();
-      const count = db.prepare('SELECT COUNT(*) as c FROM entities').get() as any;
-      expect(count.c).toBe(0);
-      db.close();
-    }
-  });
-
-  it('Scenario: a low-signal bail still stamps the heartbeat — a quiet day is not a dead hook', () => {
-    // The <3-tool-call bail is a correct decision on a well-formed payload,
-    // so it stamps hook_runs. Without the stamp, a stretch of light sessions
-    // reads to doctor exactly like "session-summary died". The schema-flip
-    // bails (no cwd, malformed JSON) sit ABOVE the stamp on purpose — the
-    // no-cwd test asserts the DB is never even created there.
+  it('a well-formed Stop without assistant text still stamps the heartbeat', () => {
     writeTranscript([
       { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
       { type: 'user', message: { content: [{ type: 'tool_result', content: 'ok' }] } },
@@ -1042,7 +444,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     const run = db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get() as
       { run_count: number } | undefined;
     db.close();
-    expect(count.c, 'a light session must not be captured').toBe(0);
+    expect(count.c, 'the transcript contains no assistant reply').toBe(0);
     expect(run, 'a correct nothing-to-do decision must stamp the heartbeat').toBeDefined();
     expect(run!.run_count).toBe(1);
   });
@@ -1067,6 +469,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     writeQualifyingTranscript();
     runHook({
       session_id: 'poisoned-session',
+      last_assistant_message: 'This write must fail',
       transcript_path: transcriptPath,
       cwd: '/tmp/myproject',
       stop_reason: 'end_turn',
@@ -1081,14 +484,13 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     expect(runs, 'a crashed capture run must not look alive').toHaveLength(0);
   });
 
-  it('Scenario: a write that fails WITHOUT throwing leaves no new heartbeat', () => {
-    // captureEntity's silent failure mode: a RAISE(IGNORE) trigger swallows
-    // the INSERT, captureEntity returns null, nothing throws. The poisoned
-    // crash test above cannot reach this path, so the writeFailed gate on the
-    // end-of-run stamp is what this pins.
+  it('a silently refused INSERT leaves no new heartbeat', () => {
+    // A RAISE(IGNORE) trigger swallows the INSERT, so the conversation writer
+    // must detect the missing row before recording a heartbeat.
     writeQualifyingTranscript();
     runHook({
       session_id: 'first-session',
+      last_assistant_message: 'This write should succeed',
       transcript_path: transcriptPath,
       cwd: '/tmp/myproject',
       was_in_agentic_loop: true,
@@ -1100,13 +502,14 @@ describe('Feature: Session Summary (Stop Hook)', () => {
 
     runHook({
       session_id: 'swallowed-session',
+      last_assistant_message: 'This write should fail',
       transcript_path: transcriptPath,
       cwd: '/tmp/myproject',
       was_in_agentic_loop: true,
     });
 
     const db = openDb();
-    const entity = db.prepare("SELECT id FROM entities WHERE name LIKE 'session-swallowe%'").get();
+    const entity = db.prepare("SELECT id FROM observations WHERE content = ?").get('This write should fail');
     const run = db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get() as
       { run_count: number } | undefined;
     db.close();
@@ -1124,6 +527,7 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     runHook(
       {
         session_id: 'test-sess-005',
+        last_assistant_message: 'This reply must stay out of the graph',
         transcript_path: transcriptPath,
         cwd: '/tmp/myproject',
         stop_reason: 'end_turn',
@@ -1140,265 +544,4 @@ describe('Feature: Session Summary (Stop Hook)', () => {
     }
   });
 
-  it('Scenario: Heavy session (20+ tool calls) creates summary entity', () => {
-    const entries: object[] = [];
-    for (let i = 0; i < 22; i++) {
-      entries.push({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: `echo "step ${i} of build"` } }] } });
-    }
-    entries.push({ type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/main.ts' } }] } });
-
-    writeTranscript(entries);
-
-    runHook({
-      session_id: 'test-sess-006',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    const summaryEntity = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%-summary'").get() as any;
-    expect(summaryEntity).toBeTruthy();
-
-    const tags = db.prepare('SELECT tag FROM tags WHERE entity_id = ?').all(summaryEntity.id) as any[];
-    const hasHeavyTag = tags.some((t: any) => t.tag === 'type:heavy-session');
-    expect(hasHeavyTag).toBe(true);
-    db.close();
-  });
-
-  it('Scenario: a second Stop restates the same session\'s entity instead of creating a second one', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Read', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'All passed' }] } },
-    ]);
-
-    const hookInput = {
-      session_id: 'test-sess-007',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    };
-
-    // Run hook twice with same session ID
-    runHook(hookInput);
-    runHook(hookInput);
-
-    const db = openDb();
-    const entities = db.prepare("SELECT * FROM entities WHERE name LIKE 'session-test-ses%'").all();
-    // Should have exactly 1 entity: the second Stop replaced it, not appended
-    // a second one under the same name.
-    expect(entities.length).toBe(1);
-
-    // Both runs stamp the heartbeat. A re-capture is a SUCCESSFUL run just
-    // like the first — it went through the same capture path, not a bail —
-    // so nothing here should read as "capture stopped" in doctor.
-    const run = db.prepare("SELECT run_count FROM hook_runs WHERE hook = 'session-summary'").get() as
-      { run_count: number } | undefined;
-    expect(run, 'session-summary must stamp its heartbeat').toBeDefined();
-    expect(run!.run_count, 'a re-capture stamps too — it is a successful run').toBe(2);
-    db.close();
-  });
-
-  it('Scenario: rule-based capture does not invent lesson_learned entries', () => {
-    writeTranscript([
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/auth.ts' } }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Bash', input: { command: 'npm test -- --run' } }] } },
-      { type: 'user', message: { content: [{ type: 'tool_result', content: 'Error: Cannot find module ./config' }] } },
-      { type: 'assistant', message: { content: [{ type: 'tool_use', name: 'Edit', input: { file_path: '/tmp/proj/src/config.ts' } }] } },
-    ]);
-
-    runHook({
-      session_id: 'test-sess-008',
-      transcript_path: transcriptPath,
-      cwd: '/tmp/myproject',
-      stop_reason: 'end_turn',
-      was_in_agentic_loop: true,
-    });
-
-    const db = openDb();
-    // Session-insight entities are captured, but no lesson is synthesized automatically.
-    const lessons = db.prepare("SELECT * FROM entities WHERE type = 'lesson_learned'").all();
-    expect(lessons.length).toBe(0);
-
-    // Rule-based extraction should still work
-    const insights = db.prepare("SELECT * FROM entities WHERE type = 'session-insight'").all();
-    expect(insights.length).toBeGreaterThan(0);
-    db.close();
-  });
-
-  it('Scenario: a later Stop in the same session updates the insights instead of freezing them (#322)', () => {
-    // Stop fires at the END OF EVERY TURN, not once per session. The
-    // capture-once guard therefore froze a session's memory at its first
-    // turn: a two-day session remembered its first few minutes. The guard
-    // was not gratuitous — without it `remember`'s append semantics stored
-    // the same lines over and over (measured: 56 observations, 16 unique).
-    // `replace` is the primitive that makes a third answer possible.
-    const sessionId = 'stop-updates-322';
-    writeQualifyingTranscript();
-    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
-
-    // The same session keeps working: four more files in the same transcript.
-    writeTranscript([
-      { type: 'user', message: { role: 'user', content: 'fix the parser' } },
-      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
-      { type: 'user', message: { role: 'user', content: 'now the router' } },
-      ...edits(['router.ts', 'server.ts', 'cache.ts', 'queue.ts']),
-    ]);
-    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
-
-    const db = openDb();
-    const row = db.prepare(
-      "SELECT e.id FROM entities e WHERE e.name = ?",
-    ).get(`session-${sessionId}-files`) as { id: number } | undefined;
-    expect(row).toBeDefined();
-    const observations = db.prepare(
-      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
-    ).all(row!.id) as Array<{ content: string }>;
-    db.close();
-
-    const text = observations.map((o) => o.content).join('\n');
-    // The second turn's work is visible...
-    expect(text).toContain('router.ts');
-    expect(text).toContain('8 file(s)');
-    // ...and the first turn's snapshot was REPLACED, not appended to, so the
-    // stale count is gone rather than sitting beside the new one.
-    expect(text).not.toContain('4 file(s)');
-  });
-
-  it('Scenario: a pure-Bash session that edited nothing records "skipped", not a false "wrote"', () => {
-    // Between the two guards — toolCallCount < 3 (skipped) and >= 20 (Rule
-    // 3) — a session that ran real Bash commands but touched no file and
-    // stayed under 20 calls matches NONE of the three capture rules.
-    // storeMemory is never called, writeFailed stays false, and the code
-    // used to fall through to record('wrote') anyway: an outcome claiming a
-    // write that never happened, on every real read-only or analysis-only
-    // session.
-    writeTranscript([
-      { type: 'user', message: { role: 'user', content: 'why is prod slow' } },
-      ...['ps aux', 'top -l 1', 'df -h', 'du -sh /var/log', 'netstat -an'].map((cmd) => ({
-        type: 'assistant',
-        message: { role: 'assistant', content: [{ type: 'tool_use', name: 'Bash', input: { command: cmd } }] },
-      })),
-    ]);
-    const sessionId = 'bash-only-no-edits';
-    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
-
-    const db = openDb();
-    const entities = db
-      .prepare("SELECT name FROM entities WHERE name LIKE ?")
-      .all(`session-${sessionId}-%`) as Array<{ name: string }>;
-    db.close();
-    expect(entities, 'no rule matched, so no entity should exist').toHaveLength(0);
-
-    // The real, on-disk outcome record — spawned through the actual hook
-    // file, not a unit-level stub — is what `memesh doctor` reads.
-    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
-    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
-    const last = runs[runs.length - 1];
-    expect(last, 'session-summary must still record something').toBeDefined();
-    expect(last!.outcome, 'zero entities written is not "wrote"').toBe('skipped');
-    expect(last!.reason).toBe(SKIP_REASONS.noRuleMatched);
-  });
-
-  it.each(['files', 'fixes', 'summary'])('Scenario: observation forget survives Stop for the %s snapshot while later updates remain possible', (suffix) => {
-    const entries = [
-      ...edits(['parser.ts', 'lexer.ts', 'ast.ts', 'tokens.ts']),
-      ...Array.from({ length: 20 }, (_, i) => ({ type: 'assistant', message: { content: [
-        { type: 'tool_use', name: 'Bash', input: { command: `printf controlled-${i}` } },
-      ] } })),
-      { type: 'user', message: { content: [{ type: 'tool_result', is_error: true, content: 'controlled missing-module error' }] } },
-    ];
-    writeTranscript(entries);
-    const sessionId = `forget-${suffix}`;
-    const payload = { session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' };
-    runHook(payload);
-    const name = `session-${sessionId}-${suffix}`;
-    const db = new Database(dbPath);
-    try {
-      const kg = new KnowledgeGraph(db);
-      const entity = kg.getEntity(name)!;
-      expect(entity).toBeDefined();
-      const removed = entity.observations[0];
-      expect(kg.removeObservation(name, removed).removed).toBe(true);
-      expect(kg.getEntity(name)!.observations).not.toContain(removed);
-      for (let stop = 0; stop < 2; stop++) runHook(payload);
-      expect(kg.getEntity(name)!.observations).not.toContain(removed);
-      const phrase = `"${removed.replaceAll('"', '""')}"`;
-      expect(db.prepare('SELECT rowid FROM entities_fts WHERE rowid = ? AND entities_fts MATCH ?')
-        .all(entity.id, phrase)).toHaveLength(0);
-      const hashes = kg.getEntity(name)!.metadata?.forgotten_observation_hashes;
-      expect(hashes).toHaveLength(1);
-      expect((hashes as string[])[0]).toMatch(/^[a-f0-9]{64}$/);
-
-      writeTranscript([...entries, ...edits(['new-after-forget.ts'])]);
-      runHook(payload);
-      const updated = kg.getEntity(name)!;
-      expect(updated.observations).not.toContain(removed);
-      expect(updated.observations.some(o => o.includes('new-after-forget.ts') || o.includes('25 tool calls'))).toBe(true);
-
-      // Explicit user re-remember is allowed; only automatic restoration is forbidden.
-      kg.createEntity(name, 'session-insight', { observations: [removed] });
-      expect(kg.getEntity(name)!.metadata?.forgotten_observation_hashes).toEqual([]);
-      writeTranscript(entries);
-      runHook(payload);
-      expect(kg.getEntity(name)!.observations).toContain(removed);
-    } finally { db.close(); }
-  });
-
-  it('Scenario: a Stop whose only matching rule targets a forget-archived entity records "skipped", not a false "wrote"', () => {
-    // A deeper version of the test above: this time a rule DOES match (a
-    // file was edited), but the ONE entity it would write to has been
-    // `forget`-archived since the last Stop. `storeMemory`'s archived branch
-    // returns before setting `writeFailed` OR the new `anyWrote` flag —
-    // without that second flag, the hook fell through to the final `else`
-    // and claimed 'wrote' with zero entities actually touched, the same
-    // false-write shape `noRuleMatched` was added to close, one level
-    // deeper (a rule that matched but produced no write).
-    const sessionId = 'stop-archived-322';
-    writeQualifyingTranscript();
-    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
-
-    const entityName = `session-${sessionId}-files`;
-    const db = openDb();
-    const row = db.prepare('SELECT id FROM entities WHERE name = ?').get(entityName) as { id: number } | undefined;
-    expect(row, 'Rule 1 must have created the entity on the first Stop').toBeDefined();
-    const before = db.prepare(
-      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
-    ).all(row!.id) as Array<{ content: string }>;
-    db.close();
-
-    // Mirror what `forget` (src/knowledge-graph.ts archiveEntity) actually
-    // does: flip status, and remove the row from the contentless FTS index
-    // with the exact indexed text — not a bare DELETE, which FTS5 rejects.
-    // openDb() is read-only (it mirrors what `memesh doctor` reads); a
-    // writable handle is needed here to mutate the row directly.
-    const dbForArchive = new Database(dbPath);
-    dbForArchive.prepare("UPDATE entities SET status = 'archived' WHERE id = ?").run(row!.id);
-    removeFromFts(dbForArchive, row!.id, entityName, before.map((o) => o.content).join(' '), null);
-    dbForArchive.close();
-
-    // Same session, same edited files — Rule 1 matches again, but its only
-    // target is now archived.
-    runHook({ session_id: sessionId, transcript_path: transcriptPath, cwd: '/repo' });
-
-    const dbAfter = openDb();
-    const status = dbAfter.prepare('SELECT status FROM entities WHERE id = ?').get(row!.id) as { status: string };
-    const after = dbAfter.prepare(
-      'SELECT content FROM observations WHERE entity_id = ? ORDER BY id',
-    ).all(row!.id) as Array<{ content: string }>;
-    dbAfter.close();
-    expect(status.status, 'archived status must survive the second Stop').toBe('archived');
-    expect(after, 'the archived observations must not be overwritten').toEqual(before);
-
-    const raw = fs.readFileSync(path.join(testDir, HOOK_OUTCOMES_FILENAME), 'utf8');
-    const runs = parseHookOutcomes(raw).hooks['session-summary'] ?? [];
-    const last = runs[runs.length - 1];
-    expect(last, 'session-summary must still record something').toBeDefined();
-    expect(last!.outcome, 'a matched rule with zero landed writes is not "wrote"').toBe('skipped');
-    expect(last!.reason).toBe(SKIP_REASONS.allMatchedEntitiesArchived);
-  });
 });

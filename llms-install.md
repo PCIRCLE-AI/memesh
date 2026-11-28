@@ -33,13 +33,20 @@ Claude Code wires the MCP server, the auto-capture hooks, and the `/memesh`
 skill automatically.
 
 **Verify**: restart Claude Code. A status line beginning `◉ MeMesh` appears at
-the top of the next session.
+the top of the next session. MeMesh supports Node 26.13.1 or later within 26.x (recommended),
+24.22.3 or later within 24.x, or 22.23.5 or later within 22.x on the `PATH`
+Claude Code uses (`node --version`); on a Node it cannot use, the top of the
+session shows `MeMesh: This Node (v…) …` instead, with the one repair that
+applies, and none of MeMesh's tools work until it is done (see the table).
 
 | Failure | Remedy |
 |---|---|
 | `/plugin marketplace add` fails | The marketplace is fetched as a git clone. Check `git --version` succeeds and github.com is reachable. |
 | `/plugin install` says plugin not found | The argument is exactly `memesh@pcircle-memesh` — plugin name `memesh`, marketplace name `pcircle-memesh`. Re-run the marketplace add first. |
-| No `◉ MeMesh` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
+| `MeMesh: This Node (v…) lacks the full-text search MeMesh needs; upgrade to Node 22.16 or newer …` | The Node on `PATH` lacks the required SQLite capability (`node --version`). Upgrade to one of the supported security releases above, then restart Claude Code. |
+| `MeMesh: This Node (v…) is new enough, but its built-in SQLite (node:sqlite) is switched off …` | Node was started with `--no-experimental-sqlite`, on its command line, in the `NODE_OPTIONS` environment variable or in a Node config file. Remove it (or install the official Node build from nodejs.org), then restart Claude Code. Upgrading Node does not help. |
+| `MeMesh: This Node build (v…) lacks the full-text search (FTS5) MeMesh needs …` | This Node build has no FTS5. Install an official supported security release above from nodejs.org, then restart Claude Code. |
+| No `◉ MeMesh` line and no `MeMesh: …` line after restart | Run `/plugin` inside Claude Code and confirm the `memesh` plugin is installed and enabled, then restart again. |
 
 The plugin does **not** put a `memesh` command on the shell PATH. For terminal
 use — and as a prerequisite for section 4 and for section 3's manual
@@ -48,16 +55,18 @@ the database.
 
 ## 2. Terminal / CLI (npm global)
 
-Check Node **first** — the floor is 22.13.0 (`node:sqlite` is part of Node
-itself; npm only warns on an engine mismatch, so an install onto an old Node
+Check Node **first** — supported security floors are 22.23.5, 24.22.3,
+or 26.13.1 within their respective major lines (`node:sqlite` is part of Node
+itself, and its full-text search first ships in 22.16; npm only warns on an engine mismatch, so an install onto an old Node
 "succeeds" and fails later at runtime):
 
 ```
 node --version
 ```
 
-Expected: `v22.13.0` or later. If lower, stop and upgrade Node before
-continuing.
+Expected: `v26.13.1` or later within 26.x (recommended), `v24.22.3` or
+later within 24.x, or `v22.23.5` or later within 22.x. Otherwise stop and
+upgrade Node before continuing.
 
 ```
 npm install -g @pcircle/memesh
@@ -74,171 +83,25 @@ MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 memesh doctor
 ```
 
 This probe does not exercise a real host session and never wakes a stopped
-session. The ordinary Codex path below is the documented bounded native queue
-path; `poll`/`watch` and cursor recovery remain available for compatibility and
-diagnosis.
+session. The current MCP/CLI conversation contract is separate from legacy
+HTTP messaging: `discover`, `send`, `read`, and `status` are its only actions.
+Use `send --recipient <id> --kind <task|question|review_request|result>
+--payload-stdin`; body text is stdin-only and host identity supplies the
+sender. The full rendered envelope is limited to 8,000 UTF-8 bytes. Unknown
+recipients and oversized sends are rejected and audited; known offline
+recipients are queued. `queued` is not delivery or a reply.
 
-Message storage remains owner-controlled. There is no default quota or
-automatic pruning. To inspect it after installation:
+Messages and audit events remain for 14 days, with one undelivered notice after
+a day. `read --message-id <id>` records delivery/read and `status --json` shows
+the CLI audit view. These facts do not prove host-native or model-visible
+delivery; verify runtime integration separately. The old HTTP message endpoint
+is retired; use the conversation interface below.
 
-```bash
-memesh message storage report --cutoff 2026-08-01T00:00:00Z
-memesh message storage prune --cutoff 2026-08-01T00:00:00Z --batch-size 100
-```
+### Conversation messages
 
-The prune command is a dry-run unless `--apply` is supplied. Only old terminal
-payload content is tombstoned; unresolved/offline-pending messages and all
-lifecycle audit facts are preserved. Set an explicit hard quota for all send
-transports with `MEMESH_AGENT_MESSAGE_STORAGE_QUOTA_BYTES=<bytes>`; an
-over-quota send is rejected atomically.
+The current conversation MCP/CLI interface needs no router setup command: use `discover`, `send`, `read`, and `status`. Send body text only with `--payload-stdin`; host identity supplies the sender and the rendered envelope is capped at 8,000 UTF-8 bytes. Known offline recipients are queued, not delivered.
 
-### Optional: one-time local host setup
-
-Claude Code's installed hooks already provide basic inbox reminders, using
-recipient `claude-code` when no identity is configured. SessionStart states
-the project's messaging address. Reminders run at startup, the next prompt
-and turn end; `intake` for that message ends them. No Channel registration
-or launch flag is needed for this path. The setup below is optional for
-Claude Code live push, which still requires explicit Channel admission.
-
-This is separate from MCP setup. It is for the owner of an active local Codex
-session, a MeMesh-managed Codex app-server, or a Claude channel. Keep all
-files private to that Unix account; do not commit the token or config files.
-This secure host-native runtime currently supports macOS and Linux. Windows
-can still use core MeMesh, durable messages, and MCP tools, but not this
-host-native wakeup path.
-
-Each configured host connection starts the packaged router and retries its
-connection when the owner-private socket is absent or refused. Start the router
-yourself only when you want to inspect the socket directly:
-
-```bash
-umask 077
-memesh-router
-```
-
-If you start it yourself, it creates the current protocol endpoint
-`agent-router-v2.sock` and the shared `agent-router.token` beside the active
-MeMesh database (normally `~/.memesh/`) with owner-private permissions. After
-an upgrade, an older router may remain on its legacy socket until its old
-sessions exit or the machine restarts. Current clients do not attach to it,
-and MeMesh does not kill or unlink a live process without durable ownership
-proof.
-
-A router that started before an upgrade is caught when a host connects: each
-host reports its MeMesh version, and a router that finds the installed version
-newer steps aside so the installed one starts. A router from 4.10.11 or
-earlier cannot step aside; a host refuses it with `router_outdated` and the
-command to stop it (`pkill -f dist/host-runtime/router.js`), and the next
-MeMesh session starts the installed router. The exact rules are in the
-[agent messaging guide](docs/platforms/agent-messaging.md#one-time-owner-private-local-host-setup).
-
-Check the installed adapter imports and the live socket as distinct facts:
-
-```bash
-MEMESH_DOCTOR_PROBE_MESSAGE_CAPABILITY=1 memesh doctor
-MEMESH_DOCTOR_PROBE_MESSAGE_ROUTER=1 memesh doctor
-```
-
-The router probe does not register a host, send content, or wake a stopped
-session. Generate reusable `0600` configs; session identities are not copied
-from an active ordinary session.
-
-For an ordinary active local Codex session, install and enable the MeMesh
-Codex plugin (section 3), which supplies the packaged SessionStart hook. On the
-next startup or resume, that thread registers automatically under the current
-project with a thread-scoped principal. First read the exact automatic project
-value, then copy its `project` field into the discover command:
-
-```bash
-memesh briefing --json
-memesh message discover --project '<project from briefing>'
-```
-
-No manual host setup is required. If one exact workspace needs a stable named
-principal across different Codex threads, create this optional override and
-restart Codex in that workspace:
-
-```bash
-memesh agent setup codex-session --principal codex-recipient --workspace "$PWD"
-```
-
-This stores the configured workspace realpath and principal in
-`~/.memesh/hosts/codex-session.json`. On `SessionStart` (`startup` or
-`resume`), a short hook validates the Codex thread ID and cwd, then launches an
-owner-private detached companion. SessionEnd leaves a bounded 45-second idle
-queue window; resume replaces the prior generation, and expiry removes it. A
-matching valid override supplies its principal; the project is always the
-automatic one for that workspace, same as an ordinary thread there would get.
-Another workspace keeps automatic thread-scoped registration. A malformed or
-insecure override fails closed. The authenticated router sends the exact
-registered thread a short notice through native `codex queue`, never the
-message body; the agent fetches the body from the durable inbox and records
-intake, and stops if it already has. A notice accepted during the idle window
-becomes model-visible when the same thread resumes; a stopped UI is not
-awakened.
-
-`host_accept` records only that the local Codex queue accepted that message. It
-does not prove an agent read the payload, acknowledged it, or accepted the
-work. The notice's routing identifiers, not the body, appear in the `codex queue`
-process arguments; still do not send secrets through the native path. If the session is stopped, missing,
-or disconnected, MeMesh neither starts nor replaces it; the durable inbox remains
-available to scoped fetch, cursor recovery, `poll`, and `memesh message watch`
-for audit and diagnosis. Failed exact-session native delivery is not replayed
-automatically after a later registration; the sender must retry deliberately.
-
-The following are separate managed-host paths:
-
-No `--project` flag is needed, or read, for routing (#474). Each host derives
-its own routing project the same way the automatic Codex project above does:
-`codex` from its `--workspace`, `claude` from its own process's working
-directory (the directory Claude Code was started in). Pairing Claude Channel
-with an automatically registered Codex session in the same repository is
-therefore automatic too — start both from the same directory and they land in
-the same project with no value to copy between them.
-
-```bash
-memesh agent setup codex --principal codex-recipient --workspace "$PWD"
-memesh-host-codex --config "$HOME/.memesh/hosts/codex.json"
-
-memesh agent setup claude --principal claude-recipient
-# Run the printed `registration_command` (`claude mcp add ... memesh-host-claude ...`) once.
-# Start each participating session with the printed research-preview launch command:
-claude --dangerously-load-development-channels server:memesh-channel
-```
-
-The managed Codex runner owns its app-server and thread; Claude owns its
-Channel MCP child. Neither is the ordinary Codex-session path, and neither
-attaches to, resumes, or replaces an ordinary stopped host. When no active
-registration exists, the message remains durable with no false dispatch or
-host acceptance. The package also contains the experimental
-`memesh-host-acp` binary for protocol development, but no ACP provider is a
-documented native-wakeup integration here.
-
-**Verify**:
-
-```
-memesh doctor
-```
-
-Expected: a report starting `MeMesh doctor v…` with `Overall: PASS`
-or `PASS_WITH_CONCERNS`, exit code 0. This checks installation and local
-integration health; it does not prove that a host or model received context.
-
-| Failure | Remedy |
-|---|---|
-| `command not found: memesh` | npm's global bin dir is not on PATH. Run `npm prefix -g`, append `/bin` to its output, and add that directory to PATH. |
-| `No such built-in module: node:sqlite` | The running Node is older than 22.13.0. Upgrade Node, then re-run `memesh doctor`. |
-| `EACCES` during `npm install -g` | The global prefix is not user-writable. Use a user-level Node (nvm/fnm), or `npm config set prefix ~/.npm-global` and add `~/.npm-global/bin` to PATH, then re-install. |
-| `Overall: FAIL` (exit code 1) | The report names the failing check and prints the fix next to it. Apply that fix and re-run `memesh doctor`. |
-
-Only if Claude Code is used **without** the section-1 plugin (the plugin wires
-hooks itself — skip this if section 1 is done):
-
-```
-memesh install-hooks
-memesh doctor
-```
+Messages and audit events are retained for 14 days. The retired HTTP message endpoint returns `410 Gone`; the old router and companion commands are no longer shipped. Claude Channel use requires explicit host admission.
 
 ## 3. Codex CLI
 
@@ -273,23 +136,65 @@ codex mcp add memesh -- memesh-mcp
 
 This writes `[mcp_servers.memesh]` into `~/.codex/config.toml`.
 
-### Refresh a stale plugin cache
+### Refresh a damaged plugin cache
 
-If the configured marketplace snapshot is stale, refresh it and re-stage the
-plugin. `codex plugin add` replaces the installed cache atomically, so do not
-remove the working plugin first:
+To move to a newer release, do nothing (MeMesh updates itself, see "Updates"
+below) or run `memesh update`. To **repair** a damaged or unverifiable plugin
+cache, run:
 
 ```
-codex plugin marketplace upgrade pcircle-memesh
-codex plugin add memesh@pcircle-memesh
+memesh update --reinstall
 ```
+
+It puts this very version back through the same checks an update takes (the
+release's source is verified, your database is backed up, the commit is pinned and
+read back), for Claude Code and Codex alike. Do not use `codex plugin marketplace
+upgrade` or `memesh upgrade-plugin` for this: they install the marketplace's
+current branch, which is ahead of the last release and has not been checked.
+`memesh doctor --fix` starts the same reinstall in the background. No `memesh`
+command on your PATH (a plugin-only install)? Run the CLI the plugin ships:
+`node <plugin directory>/dist/transports/cli/cli.js update --reinstall`; `npx`
+cannot do it, because it runs a throwaway copy that is not your install.
 
 | Failure | Remedy |
 |---|---|
 | `command not found: codex` | Codex CLI itself is not installed — out of scope here; install it first, then re-run the add. |
-| Plugin-installed `memesh` is absent | Refresh and reinstall the plugin using the commands above, then restart Codex. |
+| Plugin-installed `memesh` is absent | Run `memesh update --reinstall` (above), then restart Codex. |
 | Manually registered `memesh` is absent | Re-run `codex mcp add memesh -- memesh-mcp` and re-check. |
 | Manual registration is listed, but tool calls fail | Run `command -v memesh-mcp`. Empty output means section 2 is incomplete or PATH is wrong — fix per section 2's table. |
+
+## Updates
+
+MeMesh updates itself by default, to every new version (patch, minor and major).
+This default applies when HOME is the system account's home, including containers
+and systems with no account-home entry, regardless of the data directory.
+CI and a different test/sandbox HOME default to off; explicitly setting
+`autoUpdate` in that environment can enable it. An account-level off still wins.
+It installs only a release whose npm provenance it has checked, backs up your
+database first, waits until your running sessions have ended (at most 3 days),
+and then replaces the files; the new version starts with your next session.
+npm-global installs, the Claude Code plugin and the Codex plugin are all covered.
+
+- **What it checks**: the release's npm provenance (built by this project's
+  release workflow at that version's tag), that its commit is part of `main` in
+  the official repository (asked of the host's compare service; no answer means no
+  install), and that it pins every dependency with a hash. It then installs
+  without running any install script, and applies the pinned dependency versions,
+  in the way each install method allows: an npm-global install rehearses the
+  pinned install first, then installs the verified package and runs `npm ci` from
+  its verified `memesh-lock.json` copied to `package-lock.json`, and restores the previous version if that fails; the
+  Claude Code plugin installs the dependencies with `npm ci` from the lockfile of
+  the release commit; the Codex plugin is installed from a self-contained bundle.
+- **Manual npm installs** resolve dependency ranges; only the verified updater applies the release's `memesh-lock.json` pins.
+- **Windows and npm-global 4.12.0**: Once 4.13.0 is available on npm, get the user's approval and run `npm install -g @pcircle/memesh@4.13.0` once. Use `memesh update` for later releases.
+- **See what it did**: `memesh doctor` (row "Automatic updates").
+- **Update right now**: `memesh update` (same checks, no waiting).
+- **Turn it off**: `memesh config set autoUpdate off`, or set the environment
+  variable `MEMESH_AUTO_UPDATE=off`. An explicit `off` is never overridden by an
+  automatic update. It does not stop you from running `memesh update` yourself:
+  that is an update you asked for, and it says the setting is still off.
+- **Limit it**: `memesh config set autoUpdate patch` (or `minor`) installs only
+  that size of change.
 
 ## 4. Cursor
 

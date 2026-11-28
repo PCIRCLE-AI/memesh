@@ -49,6 +49,8 @@ export interface HookOutcomeRecord {
   outcome: HookOutcome;
   reason?: string;
   entity?: string;
+  /** Number of affected items when recorded; absence is unknown, not zero. */
+  count?: number;
   /** #555: one hook process's id, so a run that records an error and then its outcome counts once. */
   run?: string;
 }
@@ -244,32 +246,16 @@ function utf8Length(text: string): number {
  */
 export const SILENT_HOOK_MIN_RUNS = 5;
 
-/**
- * Every hook that records an outcome. Doctor reports a row for each, and a
- * record naming any other hook is rejected on read (see parseHookOutcomeLine).
- */
+/** Active outcome writers. The parser also recognizes retired hook history. */
 export const CAPTURE_HOOKS = [
+  'messages',
   'post-commit',
   'session-summary',
-  'pre-compact',
   'pre-edit-recall',
   'user-prompt-intent',
-  'decision-nudge',
   'guard-check',
   'session-start',
-  // #324: the two halves of Stop-side note work, recorded by the Stop hook
-  // (scripts/hooks/_stop-notes.js) under their own names so their skips do
-  // not dilute session-summary's window. Neither is SILENT_ELIGIBLE: most
-  // Stops correctly ingest nothing (no note changed) and nudge nothing (the
-  // turn made no decision), so "ran and did not write" is their normal state.
   'note-ingest',
-  'remember-nudge',
-  // The agent's own last message, kept as the project's handoff
-  // (scripts/hooks/_stop-handoff.js). SILENT_ELIGIBLE: a turn that ends on an
-  // acknowledgement is a not-triggered skip, so what is left — errors, no
-  // message or transcript to read, a handoff `forget` archived — is a
-  // handoff that should have been kept and was not.
-  'handoff-capture',
   // Claude Code's Stop gate (#468): blocks the stop once per waiting message
   // id not yet blocked for in this session, so a session that never polls
   // still learns a message is waiting. Fires on every Stop and correctly does
@@ -278,14 +264,29 @@ export const CAPTURE_HOOKS = [
   // and writes no memory, so it is UNCLASSIFIED_SKIP_HOOKS, not
   // SILENT_ELIGIBLE_HOOKS.
   'stop-message-gate',
+  // Codex's current plan step, kept for the work summary other agents see
+  // (scripts/hooks/codex-plan-activity.js). Fires on every plan update and
+  // writes no memory, so UNCLASSIFIED_SKIP_HOOKS; listed so that an error (a
+  // file it could not write) shows in doctor instead of being thrown away on read.
+  'codex-plan-activity',
+  // Codex's reminder of newly waiting inbox messages (scripts/hooks/codex-busy-message-notice.js):
+  // fires on every tool call and writes no memory, so UNCLASSIFIED_SKIP_HOOKS; listed so that
+  // its errors reach doctor instead of being dropped on read.
+  'codex-busy-message-notice',
+  // UserPromptSubmit: the memories a prompt is strongly about, injected beside
+  // it (scripts/hooks/prompt-recall.js). Fires on every prompt and correctly
+  // injects on few of them, and writes no memory.
+  'prompt-recall',
 ] as const;
+
+const RETIRED_HOOKS = new Set(['pre-compact', 'decision-nudge', 'remember-nudge']);
 
 /**
  * The FAIL-eligible subset, and why it is ONE hook.
  *
  * A FAIL has to mean "this should have happened and did not". Only
  * session-summary's trigger is guaranteed: every session ends. post-commit
- * fires on a commit and pre-compact on a compaction, and a user who makes no
+ * fires on a commit, and a user who makes no
  * commits through the agent for a fortnight is not broken — reading their
  * silence as death would put a permanent unfixable red on an install that
  * works. Their silence caps at the PASS_WITH_CONCERNS the run counts
@@ -294,21 +295,19 @@ export const CAPTURE_HOOKS = [
 export const FAIL_ELIGIBLE_HOOKS = ['session-summary'] as const;
 
 /**
- * The hooks whose silence can mean anything, and why it is these four.
+ * The hooks whose silence can mean anything.
  *
  * "Ran N times and wrote nothing" is only a signal when running implies a
- * write is due. That holds for post-commit (a commit happened), pre-compact
- * (a compaction happened), session-summary (a session ended) and
- * handoff-capture (a Stop that ended on a real message — the acknowledgement
- * turns are classified as not-triggered before they can count). It does NOT
+ * write is due. That holds for post-commit (a commit happened) and the Stop
+ * hook (assistant reply supplied or recoverable). It does NOT
  * hold for guard-check and post-commit's PreToolUse/PostToolUse siblings,
  * which fire on every Bash call and skip almost every one of them BY DESIGN,
- * or for user-prompt-intent, which fires on every prompt and writes only
- * when a prompt carries a remember intent. Counting those made a default
+ * or for user-prompt-intent, which fires on every prompt and only reminds
+ * when a message is waiting. Counting those made a default
  * install PASS_WITH_CONCERNS with a daily banner about a hook doing exactly
  * its job.
  */
-export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-compact', 'handoff-capture'] as const;
+export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary'] as const;
 
 /**
  * Skip reasons shared between the hooks that record them and the verdict
@@ -318,6 +317,8 @@ export const SILENT_ELIGIBLE_HOOKS = ['post-commit', 'session-summary', 'pre-com
  * nothing going red.
  */
 export const SKIP_REASONS = {
+  messageIdentityUnavailable: 'conversation-identity-unavailable',
+  messageNoPending: 'no-pending-messages',
   /** post-commit: the Bash call was not a git commit at all. */
   notBash: 'not a Bash tool call',
   notGitCommit: 'not a git commit command',
@@ -329,6 +330,7 @@ export const SKIP_REASONS = {
   commitHeadUnchanged: 'a commit-like command completed but repository HEAD did not change',
   /** post-commit #321: repository state could not identify a commit safely. */
   commitHeadUnresolvable: 'a commit-like command ran but repository HEAD could not be resolved',
+  commitsAlreadyProcessed: 'all commits in this range were already processed',
   /** LEGACY (#322), no longer written — see NOT_TRIGGERED_SKIP_REASONS below. */
   alreadyCaptured: 'this session was already captured',
   // Every other skip reason a hook records. They live HERE, not as literals
@@ -347,11 +349,44 @@ export const SKIP_REASONS = {
   noDatabaseForGuards: 'no database yet — nothing to guard against',
   noGuardMatched: 'no active guard matched this command',
   autoCaptureOff: 'auto-capture is turned off',
+  /** note-ingest: more note files changed than one run reads (the per-run cap); the rest are read at the next Stop. */
+  notesLeftForNextRun: 'more note files changed than one run reads, so the rest are read at the next Stop',
+  commitsLeftForNextRun: 'more commits arrived than one run records; the rest are left for the next run',
+  commitsNotStoredWriteFailed: 'a commit was not stored after repeated write failures',
+  forgottenMessageNotStoredAgain: 'a message that had already been forgotten was not stored again',
+  messagesNotStoredWriteFailed: 'messages were not stored because the write kept failing',
+  noteTooLarge: 'a note file was larger than the size limit and was not imported',
+  noteNoFrontmatter: 'a note file had no header block and was not imported',
+  noteTooManyObservations: 'a note file had more observations than the limit and was not imported',
+  noteIsSymlink: 'a note file was a symbolic link and was not imported',
+  noteOtherNotImported: 'a note file was not imported for another recorded reason',
+  /** pre-compact, as an error: the transcript was not read to its end within the hook's time, so its tool calls are not recorded. */
+  transcriptReadTimeout: 'the transcript could not be read within the hook\'s time, so its tool calls are not recorded',
+  /** codex-busy-message-notice: the hook only runs for Codex. */
+  busyNoticeNotCodex: 'not Codex',
+  /** codex-busy-message-notice: the payload has no session id usable as a file name. */
+  busyNoticeNoSessionId: 'no usable session_id',
+  /** codex-busy-message-notice: the payload's session id is not the one this thread runs as. */
+  busyNoticeSessionMismatch: 'session_id_mismatch',
+  /** codex-busy-message-notice: no recipient could be resolved, or there is no database yet. */
+  busyNoticeNoRecipient: 'no recipient or database',
+  /** codex-busy-message-notice: another tool call of the same thread is already reminding. */
+  busyNoticeLockHeld: 'session reminder lock held',
+  /** codex-busy-message-notice: nothing new is waiting. */
+  busyNoticeNothingWaiting: 'no waiting messages',
+  /** codex-plan-activity: the payload is not the Codex update_plan event this hook records. */
+  notCodexPlanEvent: 'not a valid Codex plan event',
+  /** codex-plan-activity: the plan step was written for the work summary; nothing is announced. */
+  planActivityRecorded: 'activity state recorded; no notification',
+  /** codex-plan-activity: the plan was invalid or failed, so the stored step was cleared. */
+  planActivityCleared: 'invalid or failed plan cleared',
   commitCwdAbsent: 'data.cwd absent — cannot resolve project or repo',
   hashNotACommit: 'the hash is not a commit in this repository',
   noSessionOrTranscript: 'neither session_id nor transcript_path in the payload',
   emptyStdin: 'empty stdin',
   cwdAbsent: 'cwd absent in payload — cannot resolve project',
+  /** note-ingest: the session moved to another project than the one its memory folder belongs to. */
+  memoryDirOtherProject: 'the memory folder belongs to the project the session started in, not the one of its cwd',
   /** session-start: no absolute, existing directory as the session cwd, so no project line was shown. */
   projectLineNoCwd: 'no usable session cwd — the project line was not shown',
   notAgenticLoop: 'not an agentic loop',
@@ -396,15 +431,22 @@ export const SKIP_REASONS = {
    * says the honest, narrower thing: the search was cut off, not exhausted.
    */
   candidateWindowTruncated: 'more candidates may exist than the search window examined',
-  noPromptIntent: 'the prompt carried no remember intent and no update decision',
+  noMessageWaiting: 'no message was waiting for this session',
+  promptTooLarge: 'the prompt is larger than the hook accepts',
+  // prompt-recall
+  promptEmpty: 'the prompt held no text',
+  promptRecallOff: 'prompt recall is turned off (promptRecall is false)',
+  promptNoTerms: 'the prompt held no word distinctive enough to search for',
+  promptNoMatch: 'no stored memory matched the prompt strongly enough',
+  promptStale: 'the memories that matched look out of date (a newer decision on the same topic, or a waiting status)',
+  promptAlreadyShown: 'the memories that matched were already shown in this session',
   // note-ingest (#324)
   noMemoryDir: 'no Claude Code memory directory for this project',
   noNoteChanged: 'no note file changed since the last ingestion',
   noteIngesterNotBuilt: 'the note ingester is not built (dist/core/note-ingest.js is missing)',
   noteNothingNew: 'note files were read and nothing new needed storing',
-  // A run that stored nothing but REFUSED files is not the same event, and
-  // `noteNothingNew` said it was. Uses NoteIngestResult.refusedNow, never
-  // `skipped.length` — the latter sticks forever once a file is bad.
+  // Legacy ledger reason. Current writers record each classified refusal
+  // separately, including still-unimported files observed from the cache.
   noteFilesRefused: 'note files were refused and nothing was stored',
   // remember-nudge (#324)
   noTranscript: 'no transcript to read',
@@ -412,10 +454,8 @@ export const SKIP_REASONS = {
   noDecisionMove: 'no decision-shaped move since the last Stop',
   memoryWritten: 'a memory was written since the last Stop',
   noteFileChanged: 'a note file changed since the last Stop',
-  // handoff-capture
+  // assistant conversation capture
   noAssistantText: 'the Stop payload and the transcript held no assistant message',
-  handoffTooShort: 'the last assistant message was too short to be a handoff — the previous one is kept',
-  handoffArchived: 'the handoff memory was archived by forget — left alone',
   // stop-message-gate
   notClaudeCodeHost: 'this Stop is not running under Claude Code',
   noRecipientForGate: 'no recipient could be resolved for this session',
@@ -575,7 +615,7 @@ function valueEnd(s: string, i: number): number {
  */
 export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string[]>> = {
   'post-commit': [SKIP_REASONS.notBash, SKIP_REASONS.notGitCommit],
-  'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows],
+  'session-summary': [SKIP_REASONS.alreadyCaptured, SKIP_REASONS.noSessionId, SKIP_REASONS.noRecallSessionRecord, SKIP_REASONS.noEligibleRecallRows, SKIP_REASONS.noAssistantText],
   'session-start': [SKIP_REASONS.noSessionId],
   // #324: the Stop-side pair. Both fire on EVERY Stop, i.e. every turn, and
   // both correctly do nothing on most of them — a turn that edited no note
@@ -594,12 +634,6 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
   //     them. Same stance as session-summary's low-signal skips.
   'note-ingest': [SKIP_REASONS.noNoteChanged],
   'remember-nudge': [SKIP_REASONS.trivialTurn, SKIP_REASONS.noDecisionMove],
-  // Also per Stop: a turn that ends on "done" or "ok" is not a handoff, and
-  // keeping the previous one is the point; with auto-capture turned off
-  // there was never going to be one. noAssistantText, noTranscript and
-  // handoffArchived stay counted: with the hook in SILENT_ELIGIBLE_HOOKS, a
-  // Stop that never yields a handoff surfaces in doctor instead of hiding.
-  'handoff-capture': [SKIP_REASONS.handoffTooShort, SKIP_REASONS.autoCaptureOff],
 };
 
 /**
@@ -620,12 +654,14 @@ export const NOT_TRIGGERED_SKIP_REASONS: Readonly<Record<string, readonly string
  * matter.
  */
 export const UNCLASSIFIED_SKIP_HOOKS = [
-  'pre-compact',
+  'messages',
   'pre-edit-recall',
   'user-prompt-intent',
-  'decision-nudge',
   'guard-check',
   'stop-message-gate',
+  'codex-plan-activity',
+  'codex-busy-message-notice',
+  'prompt-recall',
 ] as const;
 
 /**
@@ -682,7 +718,7 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   // shared directory, so this file can be PLANTED; its text reaches the
   // doctor report, the SessionStart banner and a pasted issue. A record for
   // a hook that does not exist is foreign by definition.
-  if (typeof rec.hook !== 'string' || !(CAPTURE_HOOKS as readonly string[]).includes(rec.hook)) return null;
+  if (typeof rec.hook !== 'string' || (!(CAPTURE_HOOKS as readonly string[]).includes(rec.hook) && !RETIRED_HOOKS.has(rec.hook))) return null;
   if (typeof rec.at !== 'string') return null;
   // An outcome this version does not know discards the WHOLE record — which
   // is why `notified` has to be readable before any hook emits it. Records
@@ -702,6 +738,7 @@ export function parseHookOutcomeLine(line: string): HookOutcomeRecord | null {
   if (typeof rec.run === 'string' && /^[0-9a-f]{8,64}$/.test(rec.run)) record.run = rec.run;
   const entity = typeof rec.entity === 'string' ? sanitizeRecordText(rec.entity) : '';
   if (entity) record.entity = entity;
+  if (typeof rec.count === 'number' && Number.isSafeInteger(rec.count) && rec.count >= 0) record.count = rec.count;
   return record;
 }
 
@@ -752,6 +789,10 @@ export interface HookLivenessSummary {
   lastErrorReason: string | null;
   /** #555: `error` records among the hook's RECENT_ERROR_RUNS newest triggered runs — what "still failing" means. */
   recentErrors: number;
+  /** Fixed reasons only, within this hook's retained triggered-record window. Decimal strings keep sums exact. */
+  notStored: Array<{ reason: string; unit: string; records: number; count: string | null; unknownCount: number }>;
+  /** Distinct retained error runs carrying the exact DB-lock code, not a number of lost memories. */
+  lockedRuns: number;
   hosts: HookHost[];
   /**
    * A SILENT_ELIGIBLE_HOOKS hook whose trigger applied at least
@@ -777,6 +818,7 @@ const FIXED_ERROR_REASONS: ReadonlySet<string> = new Set([
   'malformed stdin JSON',
   'captureEntity did not land the write',
   'the transcript could not be read',
+  SKIP_REASONS.transcriptReadTimeout,
   'the host closed stdout before the nudge could be written',
   'the database stayed locked past the hook busy timeout',
   'stdout: host closed the pipe before the block reason was delivered',
@@ -800,6 +842,20 @@ export function renderableErrorReason(reason: string | undefined): string {
 /** #555: how many of a hook's newest records decide whether it is still failing. */
 export const RECENT_ERROR_RUNS = 5;
 
+const NOT_STORED_REASONS: ReadonlyMap<string, string> = new Map([
+  [SKIP_REASONS.commitsLeftForNextRun, 'commit(s)'],
+  [SKIP_REASONS.commitsNotStoredWriteFailed, 'commit(s)'],
+  [SKIP_REASONS.forgottenMessageNotStoredAgain, 'message(s)'],
+  [SKIP_REASONS.messagesNotStoredWriteFailed, 'message(s)'],
+  [SKIP_REASONS.noteTooLarge, 'note file(s)'],
+  [SKIP_REASONS.noteNoFrontmatter, 'note file(s)'],
+  [SKIP_REASONS.noteTooManyObservations, 'note file(s)'],
+  [SKIP_REASONS.noteIsSymlink, 'note file(s)'],
+  [SKIP_REASONS.noteOtherNotImported, 'note file(s)'],
+  [SKIP_REASONS.notesLeftForNextRun, 'note file(s)'],
+  [SKIP_REASONS.noteFilesRefused, 'note file(s)'],
+]);
+
 function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessSummary {
   let writes = 0;
   let skips = 0;
@@ -815,10 +871,22 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
   let lastErrorReason: string | null = null;
   const skipCounts = new Map<string, number>();
   const hosts = new Set<HookHost>();
-  for (const r of records) {
+  const notStored = new Map<string, { records: number; count: bigint | null; unknownCount: number }>();
+  const lockedRuns = new Set<string>();
+  for (const [i, r] of records.entries()) {
     hosts.add(r.host);
     if (lastRunAt === null || r.at >= lastRunAt) lastRunAt = r.at;
     const triggered = isTriggeredRecord(r);
+    if (triggered && r.outcome === 'skipped' && r.reason !== undefined && NOT_STORED_REASONS.has(r.reason)) {
+      const total = notStored.get(r.reason) ?? { records: 0, count: null, unknownCount: 0 };
+      total.records++;
+      if (r.count === undefined) total.unknownCount++;
+      else total.count = (total.count ?? 0n) + BigInt(r.count);
+      notStored.set(r.reason, total);
+    }
+    if (r.outcome === 'error' && /^(?:[a-z][a-z -]{0,30}: )?(?:uncaught )?MEMESH_DB_LOCKED$/.test(r.reason ?? '')) {
+      lockedRuns.add(r.run ?? `#${i}`);
+    }
     if (triggered) {
       if (firstTriggeredAt === null || r.at < firstTriggeredAt) firstTriggeredAt = r.at;
     }
@@ -904,6 +972,8 @@ function summarizeOne(hook: string, records: HookOutcomeRecord[]): HookLivenessS
     lastErrorAt,
     lastErrorReason,
     recentErrors,
+    notStored: [...notStored].map(([reason, total]) => ({ ...total, reason, unit: NOT_STORED_REASONS.get(reason)!, count: total.count?.toString() ?? null })),
+    lockedRuns: lockedRuns.size,
     hosts: [...hosts].sort(),
     // `writes === 0` is unchanged, and `notified` deliberately does not
     // rescue a hook from it — a hook that only printed lines HAS written
@@ -928,7 +998,7 @@ export function summarizeTypeTrends(
   rows: Array<{ type: string; last7: number; prev7: number }>,
 ): TypeTrend[] {
   return rows
-    .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 }))
+    .map((r) => ({ ...r, stopped: r.prev7 > 0 && r.last7 === 0 && r.type !== 'session-insight' && r.type !== 'session-summary' }))
     .sort((a, b) => a.type.localeCompare(b.type));
 }
 
@@ -980,7 +1050,7 @@ export function captureLivenessVerdict(input: CaptureLivenessInput): CaptureLive
   // #555: a recorded error is a failure the user may need to act on; it used
   // to be counted and never read, so a failing hook showed as healthy.
   // Only a hook still failing: one old error followed by clean runs is history.
-  const erroring = input.hooks.filter((h) => h.recentErrors > 0)
+  const erroring = input.hooks.filter((h) => h.recentErrors > 0 && !RETIRED_HOOKS.has(h.hook))
     .sort((a, b) => b.recentErrors - a.recentErrors || b.errors - a.errors);
 
   let status: CaptureLivenessStatus = 'PASS';

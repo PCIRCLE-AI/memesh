@@ -18,6 +18,8 @@ import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 import { taskStateName } from '../../src/core/task-state.js';
+import { _clearProjectNameCache, getProjectName } from '../../src/core/paths.js';
+import { remember } from '../../src/core/operations.js';
 
 let tmpDir: string;
 
@@ -34,6 +36,45 @@ afterEach(() => {
 const payload = (result: { content: Array<{ text: string }> }) => JSON.parse(result.content[0].text);
 
 describe('task-state store', () => {
+  it('does not read or update foreign metadata under a colliding deterministic name', () => {
+    const name = taskStateName('local');
+    remember({ name, type: 'task_state', observations: ['foreign'], project: 'foreign' });
+    const db = getDatabase();
+    db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(JSON.stringify({ task_state: { goal: 'foreign goal', blocked: 'foreign blocker' } }), name);
+    const before = db.prepare('SELECT * FROM entities WHERE name = ?').get(name);
+    expect(getTaskState('local').state).toEqual({});
+    const first = setTaskState({ project: 'local', patch: { goal: 'local goal' } });
+    expect(first.state.blocked).toBeUndefined();
+    expect(getTaskState('local').state).toEqual(first.state);
+    const next = setTaskState({ project: 'local', patch: { next: 'local next' } });
+    expect(next.state).toMatchObject({ goal: 'local goal', next: 'local next' });
+    expect(getTaskState('local').state).toEqual(next.state);
+    expect(db.prepare('SELECT * FROM entities WHERE name = ?').get(name)).toEqual(before);
+    expect(JSON.parse((db.prepare('SELECT metadata FROM entities WHERE name = ?').get(`${name}@local`) as { metadata: string }).metadata).task_state).toEqual(next.state);
+  });
+
+  it('still reads untagged legacy state and earlier checkout ids', () => {
+    setTaskState({ project: 'old', patch: { goal: 'legacy goal' } });
+    getDatabase().prepare('DELETE FROM tags WHERE entity_id = (SELECT id FROM entities WHERE name = ?)').run(taskStateName('old'));
+    expect(getTaskState('old').state.goal).toBe('legacy goal');
+    expect(getTaskState('new', ['new', 'old']).state.goal).toBe('legacy goal');
+    expect(setTaskState({ project: 'new', ids: ['new', 'old'], patch: { next: 'next' } }).state).toMatchObject({ goal: 'legacy goal', next: 'next' });
+  });
+
+  it('reads and updates a qualified task row owned under a checkout alias', () => {
+    const name = taskStateName('new');
+    remember({ name, type: 'task_state', observations: ['foreign'], project: 'foreign' });
+    const localName = `${name}@old`;
+    remember({ name: localName, type: 'task_state', observations: ['local'], project: 'old' });
+    const db = getDatabase();
+    db.prepare('UPDATE entities SET metadata = ? WHERE name = ?').run(JSON.stringify({ task_state: { goal: 'old goal' } }), localName);
+    const foreign = db.prepare('SELECT * FROM entities WHERE name = ?').get(name);
+    expect(getTaskState('new', ['new', 'old']).state.goal).toBe('old goal');
+    const updated = setTaskState({ project: 'new', ids: ['new', 'old'], patch: { next: 'next' } });
+    expect(getTaskState('new', ['new', 'old']).state).toEqual(updated.state);
+    expect(JSON.parse((db.prepare('SELECT metadata FROM entities WHERE name = ?').get(localName) as { metadata: string }).metadata).task_state.next).toBe('next');
+    expect(db.prepare('SELECT * FROM entities WHERE name = ?').get(name)).toEqual(foreign);
+  });
   it('#526 records the latest task-state writer without relabelling a no-op', () => {
     const stored = () => JSON.parse((getDatabase().prepare('SELECT metadata FROM entities WHERE name = ?')
       .get(taskStateName('alpha')) as { metadata: string }).metadata);
@@ -332,5 +373,29 @@ describe('task_state MCP tool', () => {
     // not quietly ignored while it believes the value was stored.
     const result = await handleTool('task_state', { project: 'alpha', priority: 'high' });
     expect(JSON.stringify(result)).toMatch(/priority|unrecognized|invalid/i);
+  });
+});
+
+// RC2_C T4: `memesh task` passes no ids, so the default must be this directory's ids.
+describe('task state of this directory\'s checkout, stored before its remote was added', () => {
+  it('is read with no ids given, under the id the checkout had before', () => {
+    const repo = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-taskstate-repo-')));
+    const previous = process.cwd();
+    try {
+      expect(spawnSync('git', ['-C', repo, 'init', '-q']).status).toBe(0);
+      process.chdir(repo);
+      _clearProjectNameCache();
+      setTaskState({ project: getProjectName(), patch: { goal: 'TASKGOALOLD' }, sourceHost: 'cli' });
+      expect(spawnSync('git', ['-C', repo, 'remote', 'add', 'origin', 'git@gitlab.com:acme/widgets.git']).status).toBe(0);
+      _clearProjectNameCache();
+      expect(getTaskState(getProjectName()).state.goal).toBe('TASKGOALOLD');
+      expect(getTaskState().state.goal).toBe('TASKGOALOLD');
+      // Another project named explicitly reads only its own id.
+      expect(getTaskState('gadgets~0123456789abcdef0123456789abcdef').state).toEqual({});
+    } finally {
+      process.chdir(previous);
+      _clearProjectNameCache();
+      fs.rmSync(repo, { recursive: true, force: true });
+    }
   });
 });

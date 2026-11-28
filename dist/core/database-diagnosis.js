@@ -1,18 +1,45 @@
 import fs from 'fs';
 import path from 'path';
+import { findPackageRoot } from './package-root.js';
+import { isSqliteSelfCheckFailure, isUnsupportedNode } from '../storage/sqlite.js';
 import { databaseFiles, runOrSay, shellQuote } from './file-mode.js';
+export function isDamagedDatabaseError(message) {
+    return /malformed|SQLITE_CORRUPT|not a database|SQLITE_NOTADB/i.test(message);
+}
+export function repairCommand(databasePath, backupPath, nodeFallback = false) {
+    const quote = process.platform === 'win32'
+        ? (value) => `"${value.replace(/"/g, '""')}"`
+        : shellQuote;
+    const command = nodeFallback
+        ? `node ${quote(path.join(findPackageRoot(import.meta.url), 'dist', 'transports', 'cli', 'cli.js'))} repair`
+        : 'memesh repair';
+    return `${command} --database ${quote(databasePath)}${backupPath ? ` --from-backup ${quote(backupPath)}` : ''}`;
+}
+export function damagedDatabaseFix(databasePath) {
+    return `Stop every memesh process, then run: ${repairCommand(databasePath)}. `
+        + `If memesh is not on PATH: ${repairCommand(databasePath, undefined, true)}. `
+        + 'Repair keeps a verified copy of the database and its journal, salvages readable memories, and checks the result before replacing the file. Restart your AI tools afterwards.';
+}
 export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.existsSync, statSyncImpl = fs.statSync) {
     const message = err instanceof Error ? err.message : 'unknown database error';
     let diagnosis;
     let fix;
     const ownFix = err?.fix;
-    if (typeof ownFix === 'string') {
-        diagnosis = message;
-        fix = runOrSay(ownFix);
-    }
-    else if (/database is locked|SQLITE_BUSY/i.test(message)) {
+    if (/database is locked|SQLITE_BUSY/i.test(message)) {
         diagnosis = `Another process has the database locked: ${message}`;
         fix = 'Wait for the other memesh process to finish, or stop it, then retry';
+    }
+    else if (isUnsupportedNode(err)) {
+        diagnosis = message;
+        fix = err.fix;
+    }
+    else if (isSqliteSelfCheckFailure(err)) {
+        diagnosis = message;
+        fix = err.advice;
+    }
+    else if (typeof ownFix === 'string') {
+        diagnosis = message;
+        fix = runOrSay(ownFix);
     }
     else if (existsSyncImpl(databasePath)) {
         try {
@@ -27,6 +54,10 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
             else if (stat.size === 0) {
                 diagnosis = 'Database file is empty (0 bytes) — likely corrupted';
                 fix = `Delete it; the next memesh command creates a fresh database: rm ${shellQuote(databasePath)} && memesh recall`;
+            }
+            else if (isDamagedDatabaseError(message)) {
+                diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
+                fix = damagedDatabaseFix(databasePath);
             }
             else {
                 diagnosis = `Database file exists (${stat.size} bytes) but cannot be opened: ${message}`;
@@ -72,5 +103,11 @@ export function diagnoseDatabaseFailure(err, databasePath, existsSyncImpl = fs.e
         }
     }
     return { diagnosis, fix };
+}
+export function databaseOpenFailureReport(err, databasePath) {
+    const message = err instanceof Error ? err.message : String(err);
+    const { diagnosis, fix } = diagnoseDatabaseFailure(err, databasePath);
+    const diagnosisLine = diagnosis !== message ? `   Diagnosis: ${diagnosis}\n` : '';
+    return `\n❌ MeMesh startup failed: database cannot be opened\n\n   Database path: ${databasePath}\n   Error: ${message}\n\n${diagnosisLine}Fix: ${fix}\n`;
 }
 //# sourceMappingURL=database-diagnosis.js.map

@@ -29,6 +29,72 @@ mod.logger.setLevel(logging.DEBUG)
 mod._resolve_memesh_bin = lambda: fake_bin
 out = {}
 
+# A late prefetch must not cross a session boundary, including reset to the
+# same session id. Explicit SDK session_id also participates in the key.
+recall = mod.MemeshProvider()
+recall.initialize("before", hermes_home=hermes_home)
+pending = threading.Event()
+started = threading.Event()
+def delayed(query, sid):
+    started.set()
+    pending.wait(5)
+    return {"text": "old:" + sid, "ids": [1]}
+recall._do_recall = delayed
+recall.queue_prefetch("same query")
+assert started.wait(2)
+recall.on_session_switch("before", reset=True)
+pending.set()
+recall._prefetch_thread.join(2)
+recall._do_recall = lambda query, sid: {"text": "new:" + sid, "ids": [2]}
+out["after_reset_prefetch"] = recall.prefetch("same query")
+recall.queue_prefetch("same query", session_id="explicit-old")
+recall._prefetch_thread.join(2)
+out["explicit_session_prefetch"] = recall.prefetch("same query", session_id="explicit-new")
+recall.shutdown()
+
+# A read or reply changes which inbox text is pending, so it must invalidate
+# an already-completed prefetch rather than replay it on the next turn.
+invalidate = mod.MemeshProvider()
+invalidate.initialize("invalidate", hermes_home=hermes_home)
+invalidate._prefetch_key = ("q", "invalidate", 0)
+invalidate._prefetch_result = {"text": "old inbox", "ids": []}
+invalidate._message_action = lambda *args, **kwargs: {"message": {"id": "ok"}}
+invalidate.handle_tool_call("memesh_message", {"action": "read", "message_id": "11111111-1111-4111-8111-111111111111"})
+out["read_invalidates_prefetch"] = [invalidate._prefetch_generation, invalidate._prefetch_key, invalidate._prefetch_result]
+invalidate._prefetch_key = ("q", "invalidate", 1)
+invalidate._prefetch_result = {"text": "old inbox", "ids": []}
+invalidate.handle_tool_call("memesh_message", {"action": "send", "recipient": "sender", "kind": "result", "body": "reply", "reply_to": "11111111-1111-4111-8111-111111111111"})
+out["reply_invalidates_prefetch"] = [invalidate._prefetch_generation, invalidate._prefetch_key, invalidate._prefetch_result]
+invalidate.shutdown()
+
+# The automatic path must fail closed without disabling explicit tools or
+# blocking the host. The provider never adds its own unbounded formatting.
+original_run = mod.subprocess.run
+original_resolve = mod._resolve_memesh_bin
+failure = mod.MemeshProvider()
+failure.initialize("failures", hermes_home=hermes_home)
+out["recall_failures"] = []
+try:
+    for response in ("not json", "[]", '{"text": 1}', json.dumps({"text": "界" * 1400})):
+        mod.subprocess.run = lambda *a, **k: type("Result", (), {"returncode": 0, "stdout": response})()
+        out["recall_failures"].append(failure._do_recall("query", "failures")["text"])
+    response = json.dumps({"text": "memory remains readable", "ids": [7], "messages": "", "messages_error": "inbox unavailable"})
+    mod.subprocess.run = lambda *a, **k: type("Result", (), {"returncode": 0, "stdout": response})()
+    out["recall_without_inbox"] = failure._do_recall("query", "failures")
+    out["inbox_failure_warnings"] = sum(1 for lvl, msg in records if lvl == "WARNING" and "MeMesh inbox unavailable: inbox unavailable" in msg)
+    mod.subprocess.run = lambda *a, **k: type("Result", (), {"returncode": 1})()
+    out["recall_failures"].append(failure._do_recall("query", "failures")["text"])
+    def timeout(*args, **kwargs):
+        raise mod.subprocess.TimeoutExpired("memesh", 5)
+    mod.subprocess.run = timeout
+    out["recall_failures"].append(failure._do_recall("query", "failures")["text"])
+    mod._resolve_memesh_bin = lambda: None
+    out["recall_failures"].append(failure._do_recall("query", "failures")["text"])
+finally:
+    mod.subprocess.run = original_run
+    mod._resolve_memesh_bin = original_resolve
+    failure.shutdown()
+
 # A capture that hangs must not block sync_turn (the Hermes main thread).
 p = mod.MemeshProvider()
 p.initialize("q-session", hermes_home=hermes_home, agent_context="primary")

@@ -17,6 +17,7 @@ import { openDatabase, closeDatabase } from '../../src/db.js';
 import { remember } from '../../src/core/operations.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 import { SKIP_REASONS } from '../../src/core/capture-liveness.js';
+import { withAccountHomePreload } from '../../scripts/lib/isolated-env.mjs';
 
 const require = createRequire(import.meta.url);
 const { getProjectName: mirrorProjectName, projectLabel, sessionProjectLine } = require('../../scripts/hooks/_shared.js');
@@ -44,7 +45,7 @@ function runHook(input: object, env: Record<string, string> = {}) {
   const out = execFileSync(process.execPath, [hookPath], {
     input: JSON.stringify(input),
     // A minimal environment: no recipient, no host session, no update check.
-    env: { PATH: process.env.PATH ?? '', HOME: root, USERPROFILE: root, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0', ...env },
+    env: withAccountHomePreload({ PATH: process.env.PATH ?? '', HOME: root, USERPROFILE: root, MEMESH_DB_PATH: dbPath, MEMESH_AUTO_UPDATE: '0', ...env }),
     encoding: 'utf8',
     timeout: 15000,
   });
@@ -62,6 +63,7 @@ const outcomes = () => {
 describe('the project line', () => {
   it('appears with no database yet, and with no messaging recipient', () => {
     const out = runHook({ cwd: dirA });
+    expect(fs.existsSync(path.join(root, '.claude', 'rules', 'memesh-citations.md'))).toBe(false);
     expect(out.context.startsWith(lineFor(dirA))).toBe(true);
     expect(out.context).toContain('project: false for a memory that belongs to no project');
     expect(out.context).not.toContain('messaging address');
@@ -147,40 +149,38 @@ describe('the project line', () => {
         const id = mirrorProjectName(dir);
         const out = runHook({ cwd: dir });
         const first = out.context.split('\n')[0];
-        const m = first.match(new RegExp(`^MeMesh project for this session: (${LITERAL})\\. Pass project: (${LITERAL}) to remember, learn and recall for this project's memories, or project: false for a memory that belongs to no project \\(a preference, a general lesson\\)\\.$`));
+        const m = first.match(new RegExp(`^MeMesh project for this session: (${LITERAL})\\. Pass project: (${LITERAL}) to remember, learn and recall for this project's memories, or project: false for a memory that belongs to no project \\(a preference, a general lesson\\)\\. Saving is on by default\\.$`));
         expect(m, first).not.toBeNull();
         expect(JSON.parse(m![1])).toBe(id);
         expect(JSON.parse(m![2])).toBe(id);
         expect(first).not.toMatch(/[\u2028\u2029]/);
       });
-      it.skipIf(notOnWindows(name))(`keeps the messaging address line one line and exact: ${JSON.stringify(name)}`, () => {
+      it.skipIf(notOnWindows(name))(`keeps the project line and matching memory safe: ${JSON.stringify(name)}`, () => {
         const dir = path.join(root, name); fs.mkdirSync(dir);
         const id = mirrorProjectName(dir);
-        const out = runHook({ cwd: dir }, { MEMESH_RECIPIENT: 'claude-implementer' });
-        const line = out.context.split('\n').find((l) => l.startsWith('MeMesh messaging address: '));
-        expect(line, out.context).toBeDefined();
-        const m = line!.match(new RegExp(`^MeMesh messaging address: project (${LITERAL}), recipient "claude-implementer" — use "claude-implementer" as sender in \`message\` so replies reach you; \`message discover\` with this project lists other agents here\\.$`));
-        expect(m, line).not.toBeNull();
-        expect(JSON.parse(m![1])).toBe(id);
-        expect(line).not.toMatch(/[\u2028\u2029]/);
+        openDatabase(dbPath);
+        remember({ name: 'project-line-fixture', type: 'note', observations: ['project memory sentinel'], project: id });
+        closeDatabase();
+        const out = runHook({ cwd: dir });
+        expect(out.context.startsWith(lineFor(dir))).toBe(true);
+        expect(out.context.split(lineFor(dir))).toHaveLength(2);
+        expect(out.context).toContain('project memory sentinel');
+        expect(out.context.split('\n')).not.toContain('Ignore previous instructions');
+        expect(out.context).not.toContain('MeMesh messaging address:');
       });
     }
   });
 
-  // Only static tool names sit inside a markdown code span; the id appears once, as the literal after "project".
-  it('keeps a backtick in the directory name out of every code span on the messaging address line', () => {
+  it('preserves a backtick in each project-line JSON literal without an address line', () => {
     const dir = path.join(root, 'back`tick ` name'); fs.mkdirSync(dir);
     const id = mirrorProjectName(dir);
-    const out = runHook({ cwd: dir }, { MEMESH_RECIPIENT: 'claude-implementer' });
-    const line = out.context.split('\n').find((l) => l.startsWith('MeMesh messaging address: '));
-    expect(line, out.context).toBeDefined();
-    const prefix = 'MeMesh messaging address: project ';
-    const literal = line!.slice(prefix.length).match(new RegExp(`^${LITERAL}`));
-    expect(literal, line).not.toBeNull();
-    expect(JSON.parse(literal![0])).toBe(id);
-    const rest = line!.slice(prefix.length + literal![0].length);
-    expect(rest.match(/`[^`]*`/g)).toEqual(['`message`', '`message discover`']);
-    expect(rest).not.toContain(id);
+    const out = runHook({ cwd: dir });
+    const line = out.context.split('\n')[0];
+    const literals = line.match(new RegExp(`^MeMesh project for this session: (${LITERAL})\\. Pass project: (${LITERAL}) `));
+    expect(literals, line).not.toBeNull();
+    expect(JSON.parse(literals![1])).toBe(id);
+    expect(JSON.parse(literals![2])).toBe(id);
+    expect(out.context).not.toContain('MeMesh messaging address:');
   });
 
   // The index-failure heading names the project by its label, as a JSON string literal like every other line here.
@@ -201,9 +201,9 @@ describe('the project line', () => {
     db.prepare('INSERT INTO tags (entity_id, tag) VALUES (?, ?)').run(eid, `project:${mirrorProjectName(dir)}`);
     db.close();
     const out = runHook({ cwd: dir }, { MEMESH_BRIEFING: 'standard' });
-    const line = out.context.split('\n').find((l) => l.startsWith('Index of durable memories for '));
+    const line = out.context.split('\n').find((l) => l.startsWith('Recently written memories for '));
     expect(line, out.context).toBeDefined();
-    const m = line!.match(new RegExp(`^Index of durable memories for (${LITERAL}): could not be read this session — run \`memesh doctor\`\\.$`));
+    const m = line!.match(new RegExp(`^Recently written memories for (${LITERAL}): could not be read this session — run \`memesh doctor\`\\.$`));
     expect(m, line).not.toBeNull();
     expect(JSON.parse(m![1])).toBe(projectLabel(mirrorProjectName(dir)));
   });
@@ -221,7 +221,7 @@ describe('the project line', () => {
     for (const [prefix, suffix] of [
       ['Decisions and direction for ', ':'],
       ['Lessons from ', ' — do not repeat these:'],
-      ['Index of durable memories for ', ' (newest first):'],
+      ['Recently written memories in ', ' (newest first; recall a [mem:id] to read one):'],
     ]) {
       const hits = out.context.split('\n').filter((l) => l.startsWith(prefix));
       expect(hits, `${prefix}… in\n${out.context}`).toHaveLength(1);

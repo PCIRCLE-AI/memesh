@@ -33,21 +33,42 @@
 // no-op, decided by the content hash.
 
 import fs from 'fs';
+import { projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import path from 'path';
 import { createHash } from 'crypto';
+import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
+import type { MemeshDatabase } from '../storage/sqlite.js';
 import { remember } from './operations.js';
+import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
+import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
 
 export const NOTE_FILE_TAG = 'source:note-file';
-export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
+export { NOTE_FILE_MISSING_TAG };
 export const NOTE_FILE_MAX_BYTES = 256 * 1024;
 export const NOTE_DIR_MAX_FILES = 500;
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
 
 export interface NoteIngestOptions {
   dir: string;
+  /**
+   * Whether the memories this run writes are trusted (injected into sessions
+   * unasked, like any memory an agent stores). Never defaulted: the Stop hook
+   * passes true for the person's own memory folder, and `memesh import --notes`
+   * passes true only with `--trust`.
+   * For this project's OWN memory folder (the one Claude Code keeps next to the
+   * session's transcripts, where the user and the agent both write notes), its
+   * notes are trusted, so the briefing may show them unasked. Notes from a
+   * directory someone pointed at (`--notes <dir>`) stay untrusted unless
+   * `--trust`. A note of the folder that an earlier run stored untrusted is made
+   * trusted the next time the folder is read, without a rewrite, after a
+   * verified copy of the database is taken (`backups/`) and with a record of what
+   * changed (`NoteIngestResult.retrusted`, and a `.json` file beside the copy that
+   * lists the ids).
+   */
+  trusted: boolean;
   /** Adds a `project:<name>` tag to every ingested memory when given. */
   project?: string;
   maxFiles?: number;
@@ -62,6 +83,8 @@ export interface NoteIngestOptions {
   maxBytes?: number;
 }
 
+export type NoteSkipCode = 'tooLarge' | 'noFrontmatter' | 'tooManyObservations' | 'symlink' | 'other';
+
 export interface NoteIngestResult {
   /** Digest of the directory's realpath — the provenance key, not the path. */
   dirId: string;
@@ -74,10 +97,18 @@ export interface NoteIngestResult {
   repathed: string[];
   /** Memories that were tagged missing and whose file came back. */
   restored: string[];
+  /** Notes of this project's own folder made trusted in place this run (names). */
+  retrusted: string[];
+  /** The copy of the database taken before they were, when any were. */
+  retrustBackup: string | null;
+  /** Why they were NOT made trusted when they should have been (no copy could be made); none of them was. */
+  retrustFailed: string | null;
   /** Memories newly tagged `source:note-file:missing` this run. */
   markedMissing: string[];
   /** Files looked at and not ingested, with the reason, by relative path. */
   skipped: Array<{ path: string; reason: string }>;
+  /** Still-unimported files observed this run, including cached refusals; never new-loss counts. */
+  skippedCounts: Record<NoteSkipCode, number>;
   /**
    * How many of `skipped` are NEW — refused for a reason this file did not
    * already carry on an earlier run.
@@ -91,6 +122,8 @@ export interface NoteIngestResult {
   refusedNow: number;
   /** Files beyond the per-run cap, not processed this run. */
   more: number;
+  /** A file syscall failed; do not advance the caller's successful-ingestion stamp. */
+  retryNeeded?: boolean;
 }
 
 export interface Frontmatter {
@@ -172,7 +205,7 @@ function discover(realDir: string): { files: string[]; symlinks: string[] } {
 
 const relPath = (realDir: string, abs: string) => path.relative(realDir, abs).split(path.sep).join('/');
 
-interface ExistingRow { id: number; metadata: string | null; status: string; is_note: number; is_missing: number }
+interface ExistingRow { id: number; metadata: string | null; status: string; type: string | null; trust: string | null; is_note: number; is_missing: number }
 
 function parseProvenance(raw: string | null): Record<string, unknown> {
   if (!raw) return {};
@@ -206,6 +239,7 @@ type SkipPrint = {
   mtime: number;
   size: number;
   reason: string;
+  code?: NoteSkipCode;
   name?: string;
   owner?: { rel: string; mtime: number; size: number };
   /**
@@ -245,7 +279,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   const maxBytes = opts.maxBytes ?? NOTE_FILE_MAX_BYTES;
   const realDir = fs.realpathSync(opts.dir);
   if (!fs.statSync(realDir).isDirectory()) throw new Error(`not a directory: ${opts.dir}`);
-  const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+  const dirId = noteDirId(realDir);
 
   const { files, symlinks } = discover(realDir);
   const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
@@ -255,17 +289,22 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     created: [],
     replaced: [],
     unchanged: 0,
+    retrusted: [],
+    retrustBackup: null,
+    retrustFailed: null,
     repathed: [],
     restored: [],
     markedMissing: [],
     skipped: [],
+    skippedCounts: { tooLarge: 0, noFrontmatter: 0, tooManyObservations: 0, symlink: 0, other: 0 },
     refusedNow: 0,
     more: 0,
   };
 
   const db = getDatabase();
   const existingStmt = db.prepare(
-    `SELECT e.id, e.metadata, e.status,
+    `SELECT e.id, e.metadata, e.status, e.type,
+            json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`,
@@ -299,11 +338,26 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   try {
     const parsedSkips = skipRow ? JSON.parse(skipRow.value) as unknown : {};
     if (parsedSkips && typeof parsedSkips === 'object') priorSkips = parsedSkips as typeof priorSkips;
+    // An unreleased 4.13.0 build kept the notes it held back here, marked `held`: such an entry is no
+    // cache, so the note is read and imported. It is not written back, so it is gone after one run.
+    for (const [rel, print] of Object.entries(priorSkips)) if ((print as { held?: unknown })?.held !== undefined) delete priorSkips[rel];
   } catch {
     // A corrupt cache only costs re-reading the skipped files once; it is
     // rewritten below.
     priorSkips = {};
   }
+  // Unchanged refusals still need their DB-dependent guards checked, but
+  // must not monopolize the read cap ahead of new or edited notes.
+  const unchangedRefusals = new Set(files.filter((file) => {
+    const previous = priorSkips[relPath(realDir, file)];
+    if (!previous) return false;
+    try {
+      const stat = fs.lstatSync(file);
+      return stat.isFile() && stat.mtimeMs === previous.mtime && stat.size === previous.size;
+    } catch { return false; } // original read loop reports the failure
+  }));
+  // Stable sort preserves the original dictionary order within each group.
+  files.sort((a, b) => Number(unchangedRefusals.has(a)) - Number(unchangedRefusals.has(b)));
   const nextSkips: Record<string, SkipPrint> = {};
   /**
    * Report a file as skipped, and count it as newly refused unless it was
@@ -312,8 +366,11 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
    * would make every process's first run a flood of old news.
    */
   const counted = new Set<string>();
-  const report = (rel: string, reason: string) => {
+  const report = (rel: string, reason: string, code: NoteSkipCode = 'other') => {
     result.skipped.push({ path: rel, reason });
+    // Old caches have no stable code. Do not infer a category from their prose.
+    const category = Object.hasOwn(result.skippedCounts, code) ? code : 'other';
+    result.skippedCounts[category]++;
     if (priorSkips[rel]?.reason === reason || counted.has(rel)) return;
     counted.add(rel);
     result.refusedNow++;
@@ -325,12 +382,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   for (const abs of symlinks) {
     const rel = relPath(realDir, abs);
     const reason = 'symlink refused';
-    report(rel, reason);
+    report(rel, reason, 'symlink');
     let st: fs.Stats | null;
     try { st = fs.lstatSync(abs); } catch { st = null; }
     nextSkips[rel] = st
-      ? { mtime: st.mtimeMs, size: st.size, reason }
-      : { mtime: 0, size: 0, reason };
+      ? { mtime: st.mtimeMs, size: st.size, reason, code: 'symlink' }
+      : { mtime: 0, size: 0, reason, code: 'symlink' };
   }
 
   /** Names whose memory is tagged missing: nobody owns them, so they are free. */
@@ -359,12 +416,12 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   let refunds = 0;
   for (const abs of files) {
     const rel = relPath(realDir, abs);
-    const skip = (reason: string) => { report(rel, reason); };
+    const skip = (reason: string, code: NoteSkipCode = 'other') => { report(rel, reason, code); };
     let raw: Buffer;
     let stat: fs.Stats;
-    const contentSkip = (reason: string) => {
-      skip(reason);
-      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+    const contentSkip = (reason: string, code: NoteSkipCode = 'other') => {
+      skip(reason, code);
+      nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, code };
       declaredNameAt.set(rel, '');
     };
     /**
@@ -406,12 +463,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // The file was listed by the directory walk and is gone or unreachable
       // now. It declares no name, which is what the missing sweep needs to
       // know: a memory recording this path no longer has it.
+      result.retryNeeded = true;
       skip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       declaredNameAt.set(rel, '');
       continue;
     }
     try {
-      if (stat.isSymbolicLink()) { skip('symlink refused'); continue; }
+      if (stat.isSymbolicLink()) { skip('symlink refused', 'symlink'); continue; }
       const prior = known.get(rel);
       // The inode is part of the fingerprint: two files of the same size
       // written in the same millisecond that swap NAMES are otherwise both
@@ -429,30 +487,37 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // per-run cap, or by a recorded file it could not see) stayed refused
       // while a file on disk declared that very name.
       const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-      if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+      // Legacy caches have prose only: re-read once under the existing cap
+      // to derive a producer code, rather than permanently guessing "other".
+      if (priorSkip && Object.hasOwn(result.skippedCounts, priorSkip.code ?? '') && !priorSkip.reportOnly && !nameIsFree
         && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
-        skip(priorSkip.reason);
+        skip(priorSkip.reason, priorSkip.code);
         nextSkips[rel] = priorSkip;
         continue;
       }
       if (read >= maxFiles) { result.more++; continue; }
       read++;
       readRels.add(rel);
-      if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`); continue; }
+      if (stat.size > maxBytes) { contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`, 'tooLarge'); continue; }
       const real = fs.realpathSync(abs);
       if (!real.startsWith(realDir + path.sep)) { unreachableSkip('resolves outside the directory'); continue; }
       raw = fs.readFileSync(real);
     } catch (err) {
+      result.retryNeeded = true;
       unreachableSkip(`unreadable: ${(err as NodeJS.ErrnoException).code ?? 'error'}`);
       continue;
     }
 
     const parsed = parseFrontmatter(raw.toString('utf8'));
-    if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name'); continue; }
+    if (!parsed) { contentSkip('no frontmatter — a note file needs a `---` block with a name', 'noFrontmatter'); continue; }
     // Same hygiene as every other field: the name is stored and shown too.
     const rawName = stringField(parsed.data, 'name');
-    const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
+    let name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
     if (!name) { contentSkip('frontmatter has no name'); continue; }
+    // An edited file keeps the qualified name this directory already owns,
+    // even when the caller's cwd now names another project.
+    const prior = known.get(rel);
+    if (prior && projectTagsOf(db, prior.id).some(tag => resolveProjectMemoryName(db, name, tag.slice(8)) === prior.name)) name = prior.name;
 
     const metaBlock = parsed.data.metadata;
     const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
@@ -472,7 +537,7 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       // "observations", not "paragraphs": this count is post-split, and one
       // paragraph can yield more than one observation. The cap is on what is
       // stored, which is what the reader needs to act on.
-      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+      contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`, 'tooManyObservations');
       continue;
     }
     claims.push({
@@ -495,9 +560,13 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     else byName.set(c.name, [c]);
   }
   const touchedIds = new Set<number>();
-  for (const c of claims) declaredNameAt.set(c.rel, c.name);
-
-  for (const [name, claimants] of byName) {
+  for (const [requestedName, claimants] of byName) {
+    const original = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, requestedName) as ExistingRow | undefined;
+    // A previously ingested directory keeps its original project when the
+    // caller's cwd changes. Only a different directory needs collision resolution.
+    const name = original && parseProvenance(original.metadata).note_dir_id === dirId
+      ? requestedName : resolveProjectMemoryName(db, requestedName, opts.project, [], true);
+    for (const c of claimants) declaredNameAt.set(c.rel, name);
     const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name) as ExistingRow | undefined;
     const prov = existing ? parseProvenance(existing.metadata) : {};
     const skipAll = (reason: string) => {
@@ -623,9 +692,20 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
       observations: owner.observations,
       ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
       replace: true,
-      // Same stance as the JSON importer: text from a file is not a trusted
-      // re-assertion and must not lift confidence.
-      trustOverride: 'untrusted',
+      // Trust is the caller's decision (`opts.trusted`): the person's own
+      // memory folder is trusted like an agent's `remember`; any other folder
+      // stays untrusted unless the person said `--trust`. A rewrite keeps a stored
+      // memory's trust: it never makes one trusted (only liftFolderTrust does, after
+      // the copy and the record), and an untrusted read of the same folder
+      // (`memesh import --notes`) does not lower one. A decision needs its reason
+      // (`Why: `) to be trusted, so one edited to drop it is not. Trusted or not, a
+      // file read again is not a new confirmation, so it never lifts confidence, and a
+      // decision note may lack a `why`: both keep the behaviour they had while every
+      // note was untrusted.
+      trustOverride: existing
+        ? (existing.trust === 'trusted' ? 'trusted' : 'untrusted')
+        : (opts.trusted ? 'trusted' : 'untrusted'),
+      reinforceConfidence: false,
       provenanceOverride: {
         source: 'note-file',
         note_path: owner.rel,
@@ -634,6 +714,8 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
         note_mtime_ms: owner.stat.mtimeMs,
         note_size: owner.stat.size,
         note_ino: owner.stat.ino,
+        // The text is the file's again, not the memory tool's (memory-tool.ts).
+        edited: undefined,
       },
       sourceHost: 'note-file',
     } as const;
@@ -664,6 +746,9 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
   }
 
   if (Object.keys(nextSkips).length > 0) {
+    // Name/ownership refusals are classified at this producer too. Without
+    // this default, a newly written cache would look legacy on every run.
+    for (const print of Object.values(nextSkips)) print.code ??= 'other';
     db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
   } else {
     db.prepare('DELETE FROM memesh_metadata WHERE key = ?').run(skipKey);
@@ -696,7 +781,74 @@ export function ingestNoteDirectory(opts: NoteIngestOptions): NoteIngestResult {
     result.markedMissing.push(row.name);
   }
 
+  if (opts.trusted) liftFolderTrust(db, dirId, result);
   return result;
+}
+
+/**
+ * The notes of this folder that an earlier run stored untrusted (every note was, before the
+ * project's own folder was trusted, and a rewrite keeps a stored memory's trust) are made
+ * trusted, in place: only `metadata.trust` changes. The same rule as for a new note: a decision needs its reason (`Why: `) to be trusted. A note
+ * whose file is gone is left as it is. Each memory is made trusted at most once: its id is
+ * kept under `note_trust_lifted:<dirId>` before the copy is taken, so an undo (the SQL in the
+ * record, or restoring the copy) lasts through the next runs. Before anything is changed a
+ * verified copy of the database is taken, and the ids that change are recorded in a `.json`
+ * file beside it, with how to undo it. If no copy can be made none of them is made trusted
+ * and the run says so (`retrustFailed`); the next run tries again.
+ */
+function liftFolderTrust(db: MemeshDatabase, dirId: string, result: NoteIngestResult): void {
+  const decisionTypes = [...DECISION_TYPES];
+  const liftedKey = `note_trust_lifted:${dirId}`;
+  // metadata has no validity constraint: one malformed row must not stop the read.
+  const meta = "CASE WHEN json_valid(e.metadata) THEN e.metadata END";
+  const rows = db.prepare(
+    `SELECT e.id, e.name FROM entities e
+      WHERE json_extract(${meta}, '$.provenance.source') = ?
+        AND json_extract(${meta}, '$.provenance.note_dir_id') = ?
+        AND json_extract(${meta}, '$.trust') = 'untrusted'
+        AND json_extract(${meta}, '$.provenance.edited') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+        AND (e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
+             OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, ?) = ?))
+        AND e.id NOT IN (SELECT value FROM json_each((SELECT value FROM memesh_metadata WHERE key = ? AND json_valid(value))))
+      ORDER BY e.id`,
+  ).all(NOTE_FILE_PROVENANCE, dirId, NOTE_FILE_MISSING_TAG, ...decisionTypes, WHY_PREFIX.length, WHY_PREFIX, liftedKey) as Array<{ id: number; name: string }>;
+  if (rows.length === 0) return;
+  const failed = (why: string) => `${rows.length} note(s) of this folder should become trusted, but ${why}; none of them was made trusted`;
+  const prior = (db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(liftedKey) as { value: string } | undefined)?.value;
+  let priorIds: unknown = [];
+  try { priorIds = JSON.parse(prior ?? '[]'); } catch { /* a malformed list is replaced */ }
+  const lifted = JSON.stringify([...(Array.isArray(priorIds) ? priorIds : []), ...rows.map((r) => r.id)]);
+  const setLifted = (schema: string) => db.prepare(`INSERT OR REPLACE INTO ${schema}.memesh_metadata (key, value) VALUES (?, ?)`).run(liftedKey, lifted);
+  // The list goes into the copy before the copy is put in place (restoring the copy keeps these
+  // untrusted), and into the database only with the change itself: a run killed anywhere
+  // before that leaves the database as it was, and the next run makes them trusted.
+  const copy = copyDatabaseBefore(db, 'knowledge-graph-before-note-trust', setLifted);
+  if (copy.kind === 'failed') {
+    result.retrustFailed = failed(copy.reason);
+    return;
+  }
+  try {
+    fs.writeFileSync(`${copy.path}.json`, JSON.stringify({
+      at: new Date().toISOString(),
+      change: 'note files of the project\'s own memory folder: metadata.trust untrusted -> trusted',
+      count: rows.length,
+      ids: rows.map((r) => r.id),
+      names: rows.map((r) => r.name),
+      backup: copy.path,
+      undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here (either way they stay untrusted: a memory is made trusted this way only once): UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
+    }, null, 2), { mode: 0o600 });
+  } catch (error) {
+    result.retrustFailed = failed(`the record of the change could not be written (${error instanceof Error ? error.message : String(error)})`);
+    return;
+  }
+  const lift = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+  db.transaction(() => {
+    setLifted('main');
+    for (const row of rows) lift.run(row.id);
+  })();
+  result.retrusted = rows.map((r) => r.name);
+  result.retrustBackup = copy.path;
 }
 
 /** One-line human summary, shared by the CLI and the hook's outcome record. */
@@ -707,6 +859,7 @@ export function summarizeNoteIngest(r: NoteIngestResult): string {
     `${r.unchanged} unchanged`,
     ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
     ...(r.restored.length ? [`${r.restored.length} restored`] : []),
+    ...(r.retrusted.length ? [`${r.retrusted.length} made trusted (copy of the database: ${path.basename(r.retrustBackup ?? '')})`] : []),
     `${r.skipped.length} skipped`,
     ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
   ];

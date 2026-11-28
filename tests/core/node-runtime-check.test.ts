@@ -37,6 +37,21 @@ import {
 } from '../../src/core/doctor.js';
 
 describe('satisfiesMinimumNodeRange', () => {
+  it('checks every supported major and patch floor in a caret union', () => {
+    const range = '^22.23.5 || ^24.22.3 || ^26.13.1';
+    for (const version of ['22.23.5', '22.24.0', '24.22.3', '26.13.1']) {
+      expect(satisfiesMinimumNodeRange(version, range)).toBe(true);
+    }
+    for (const version of ['22.23.4', '24.22.2', '26.13.0', '23.0.0', '25.0.0', '27.0.0']) {
+      expect(satisfiesMinimumNodeRange(version, range)).toBe(false);
+    }
+    expect(satisfiesMinimumNodeRange('24.22.3', '^22.23.5 || >=24.22.3')).toBeNull();
+    expect(satisfiesMinimumNodeRange('v26.13.1', range)).toBe(true);
+    expect(satisfiesMinimumNodeRange('26.13.1+build.1', range)).toBe(true);
+    expect(satisfiesMinimumNodeRange('26.13.1-rc.1', range)).toBeNull();
+    expect(satisfiesMinimumNodeRange('26.13.1junk', range)).toBeNull();
+    expect(satisfiesMinimumNodeRange('26.013.1', range)).toBeNull();
+  });
   it('compares numerically, not lexically', () => {
     // The trap a string compare falls into: '9' > '20' as text.
     expect(satisfiesMinimumNodeRange('v9.11.2', '>=20.0.0')).toBe(false);
@@ -152,12 +167,14 @@ describe('doctor: Node runtime row', () => {
     const check = inspectNodeRuntime(dir, fs.existsSync, fs.readFileSync, 'v20.20.2', '115', () => false);
 
     expect(check.summary).toContain('node:sqlite: not available');
-    // Absent built-in SQLite is not a failure — nothing requires it today.
-    expect(check.status).toBe('pass');
+    // MeMesh stores everything in the built-in SQLite, so a Node inside the declared range that
+    // has none is a failure with its own next step, not a pass.
+    expect(check.status).toBe('fail');
+    expect(check.fix ?? '').not.toBe('');
   });
 
   it('does not fail an install whose engines range it cannot parse', () => {
-    writePackage({ node: '^20.0.0 || ^22.0.0' });
+    writePackage({ node: '^20.0.0 || >=22.0.0' });
 
     const check = row('v18.0.0'); // below both, but the range is unparseable
 

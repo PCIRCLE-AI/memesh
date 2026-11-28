@@ -1,28 +1,10 @@
-/**
- * The SessionStart hook writes the citation contract into the scope memesh was
- * actually installed with.
- *
- * Found by an independent cross-model review, not by this suite: the first
- * version of the self-heal passed `'user'` as a literal. On a
- * `--scope project` install that writes `~/.claude/rules/memesh-citations.md`
- * on every session — leaking a project-only install into every OTHER project
- * on the machine, and leaving the global file behind after
- * `uninstall-hooks --scope project`, which only knows about the project path.
- *
- * The scope is not guessable from the hook's arguments. It comes from the
- * install marker `~/.memesh/install-hooks.json`, which `installHooks` writes
- * and which carries `scope`. No marker means a plugin install — user-level by
- * construction, and the majority case.
- *
- * These spawn the real hook. The bug was a literal argument, so a unit test of
- * `writeCitationRule` (which takes scope as a parameter and has always honoured
- * it) could not have caught it: the defect was entirely in the call site.
- */
+/** SessionStart must not create or rewrite Claude rule files. */
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { CITATION_RULE_BODY } from '../../src/core/citation-rule.js';
 import { removeTempDir } from '../helpers/temp-dir.js';
 
 const HOOK = path.join(__dirname, '..', '..', 'scripts', 'hooks', 'session-start.js');
@@ -32,8 +14,8 @@ let home: string;
 let project: string;
 
 beforeEach(() => {
-  home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-heal-home-'));
-  project = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-heal-proj-'));
+  home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-session-start-home-'));
+  project = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-session-start-project-'));
   fs.mkdirSync(path.join(home, '.memesh'), { recursive: true });
 });
 
@@ -41,20 +23,6 @@ afterEach(() => {
   removeTempDir(home, project);
 });
 
-function writeMarker(scope: 'user' | 'project'): void {
-  fs.writeFileSync(
-    path.join(home, '.memesh', 'install-hooks.json'),
-    JSON.stringify({
-      installed_at: '2026-08-24T00:00:00.000Z',
-      version: '4.6.2',
-      plugin_root: project,
-      scope,
-      settings_path: path.join(scope === 'user' ? home : project, '.claude', 'settings.json'),
-    }),
-  );
-}
-
-/** Run the hook the way Claude Code 2.1.241 runs it. */
 function runHook(envOverride: NodeJS.ProcessEnv = {}): number {
   const transcript = path.join(home, 't.jsonl');
   fs.writeFileSync(transcript, '{}\n');
@@ -77,83 +45,49 @@ function runHook(envOverride: NodeJS.ProcessEnv = {}): number {
   }
 }
 
-const userRule = () => path.join(home, '.claude', 'rules', RULE);
-const projectRule = () => path.join(project, '.claude', 'rules', RULE);
+function writeMarker(scope: 'user' | 'project' | 'corrupt'): void {
+  const marker = path.join(home, '.memesh', 'install-hooks.json');
+  if (scope === 'corrupt') {
+    fs.writeFileSync(marker, '{ not json');
+    return;
+  }
+  fs.writeFileSync(marker, JSON.stringify({ scope }));
+}
 
-describe('the self-heal honours the installed scope', () => {
-  it('writes into the PROJECT and never touches the home directory on a project install', () => {
-    // The leak. Both halves are asserted: writing the right file is not enough
-    // if the wrong one is written too.
-    writeMarker('project');
+const ruleAt = (root: string) => path.join(root, 'rules', RULE);
 
-    expect(runHook(), 'the hook failed outright').toBe(0);
+describe('SessionStart leaves Claude rules alone', () => {
+  it.each(['missing', 'user', 'project', 'corrupt'] as const)('does not create rules with a %s install marker', (marker) => {
+    const config = path.join(home, 'claude-config');
+    if (marker !== 'missing') writeMarker(marker);
 
-    expect(fs.existsSync(projectRule()), 'a project install did not get the contract').toBe(true);
-    expect(fs.existsSync(userRule()), 'a project install leaked the contract into ~/.claude/rules').toBe(false);
-
-    // Existence is not content: an empty file satisfies existsSync and
-    // teaches the agent nothing. Assert the contract actually says what the
-    // Stop hook parses.
-    const written = fs.readFileSync(projectRule(), 'utf8');
-    expect(written.length, 'the contract was written empty').toBeGreaterThan(200);
-    expect(written, 'the contract does not show the handle format the Stop hook parses').toMatch(/\[mem:\d+\]/);
+    expect(runHook({ CLAUDE_CONFIG_DIR: config })).toBe(0);
+    for (const rule of [ruleAt(config), ruleAt(path.join(home, '.claude')), ruleAt(path.join(project, '.claude'))]) {
+      expect(fs.existsSync(rule), rule).toBe(false);
+    }
   });
 
-  it('writes into the home directory on a user install', () => {
-    writeMarker('user');
+  it.each([
+    ['current', CITATION_RULE_BODY],
+    ['stale', '<!-- managed-by: memesh -->\n# stale\n'],
+  ])('leaves a %s MeMesh rule byte-for-byte unchanged', (_kind, existing) => {
+    const config = path.join(home, 'claude-config');
+    const rule = ruleAt(config);
+    fs.mkdirSync(path.dirname(rule), { recursive: true });
+    fs.writeFileSync(rule, existing);
 
-    expect(runHook()).toBe(0);
-
-    expect(fs.existsSync(userRule()), 'a user install did not get the contract').toBe(true);
-    expect(fs.existsSync(projectRule()), 'a user install wrote into the project tree').toBe(false);
+    expect(runHook({ CLAUDE_CONFIG_DIR: config })).toBe(0);
+    expect(fs.readFileSync(rule, 'utf8')).toBe(existing);
   });
 
-  it('writes into a relocated CLAUDE_CONFIG_DIR on a user install', () => {
-    const relocated = path.join(home, 'relocated-claude');
-    const relocatedRule = path.join(relocated, 'rules', RULE);
-    writeMarker('user');
+  it('leaves a foreign Claude rule byte-for-byte unchanged', () => {
+    const config = path.join(home, 'claude-config');
+    const rule = path.join(config, 'rules', RULE);
+    const theirs = '# my own rules\nnever run rm -rf\n';
+    fs.mkdirSync(path.dirname(rule), { recursive: true });
+    fs.writeFileSync(rule, theirs);
 
-    expect(runHook({ CLAUDE_CONFIG_DIR: relocated })).toBe(0);
-
-    expect(fs.existsSync(relocatedRule), 'the relocated Claude config got no citation rule').toBe(true);
-    expect(fs.existsSync(userRule()), 'the rule leaked into the default ~/.claude tree').toBe(false);
-    expect(fs.existsSync(projectRule()), 'a user rule leaked into the project tree').toBe(false);
-  });
-
-  it('treats a missing marker as a user install — that is what a plugin install looks like', () => {
-    // No marker written. Plugin installs never run `install-hooks`, so they
-    // never produce one, and they are the majority of installs.
-    expect(runHook()).toBe(0);
-
-    expect(fs.existsSync(userRule()), 'a plugin install got no contract at all').toBe(true);
-    expect(fs.existsSync(projectRule())).toBe(false);
-  });
-
-  it('falls back to user scope when the marker is corrupt, rather than failing the session', () => {
-    // An unreadable marker is not a reason to break session start. It is a
-    // reason to take the safe default.
-    fs.writeFileSync(path.join(home, '.memesh', 'install-hooks.json'), '{ not json');
-
-    expect(runHook(), 'a corrupt marker broke the SessionStart hook').toBe(0);
-    expect(fs.existsSync(userRule())).toBe(true);
-  });
-
-  it('is idempotent across sessions — the second run leaves the file alone', () => {
-    writeMarker('user');
-    expect(runHook()).toBe(0);
-    const first = fs.statSync(userRule()).mtimeMs;
-
-    expect(runHook()).toBe(0);
-    expect(fs.statSync(userRule()).mtimeMs, 'every session rewrote the rule file').toBe(first);
-  });
-
-  it('does not overwrite a file the user wrote at that path', () => {
-    writeMarker('user');
-    fs.mkdirSync(path.dirname(userRule()), { recursive: true });
-    const theirs = '# my own rules\n';
-    fs.writeFileSync(userRule(), theirs);
-
-    expect(runHook(), 'the hook failed on a foreign rules file').toBe(0);
-    expect(fs.readFileSync(userRule(), 'utf8'), 'the hook overwrote a user-written rules file').toBe(theirs);
+    expect(runHook({ CLAUDE_CONFIG_DIR: config })).toBe(0);
+    expect(fs.readFileSync(rule, 'utf8')).toBe(theirs);
   });
 });

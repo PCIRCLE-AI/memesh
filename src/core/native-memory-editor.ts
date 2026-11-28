@@ -1,7 +1,7 @@
 import { createHash } from 'node:crypto';
 import { getDatabase } from '../db.js';
 import { KnowledgeGraph } from '../knowledge-graph.js';
-import { projectOwnershipRefusal } from '../storage/memory-mutation.js';
+import { projectOwnershipRefusal, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import { remember, shownEntity } from './operations.js';
 import type { Entity } from './types.js';
 
@@ -23,11 +23,13 @@ export async function editMemoryInteractively(
   sourceHost: string | undefined,
   ask: (view: MemoryEditView, observations: readonly string[]) => Promise<MemoryEditFields | null | undefined>,
   expectedRevision?: string,
+  projectIds: readonly string[] = [],
 ) {
   const db = getDatabase();
   const kg = new KnowledgeGraph(db);
+  name = resolveProjectMemoryName(db, name, project, projectIds);
   const snapshot = () => {
-    const refusal = projectOwnershipRefusal(db, name, project);
+    const refusal = projectOwnershipRefusal(db, name, project, projectIds);
     if (refusal) throw new Error(refusal);
     const entity = kg.getEntity(name);
     if (!entity || entity.archived) throw new Error('memory_not_found: Choose an active memory from recall.');
@@ -74,7 +76,7 @@ export async function editMemoryInteractively(
       throw new Error('masked_content: Edit the individual observation with the existing memory tools; hidden text was left unchanged.');
     }
     remember({
-      name, replace: true, project, sourceHost, reinforceConfidence: false,
+      name, replace: true, project, projectIds, sourceHost, reinforceConfidence: false,
       ...(fields.title !== view.title ? { title: fields.title } : {}),
       observations: contentUnchanged ? before.entity.observations : fields.observations,
     });

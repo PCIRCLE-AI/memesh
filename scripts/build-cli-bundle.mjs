@@ -18,8 +18,9 @@ const executableEntryPoints = new Set(
 );
 const entryPoints = [
   ...executableEntryPoints,
-  path.join(distRoot, 'host-adapters/codex-app-server.js'),
   path.join(distRoot, 'host-adapters/claude-channel.js'),
+  // Spawned by the CLI as a child process, so it has to run from a tree with no node_modules too.
+  path.join(distRoot, 'network/bridge.js'),
 ];
 
 const result = await build({
@@ -30,7 +31,7 @@ const result = await build({
   bundle: true,
   platform: 'node',
   format: 'esm',
-  target: 'node22.13',
+  target: 'node22.16',
   packages: 'bundle',
   // Plugin caches have no optional native ws addons. Keep ws's JavaScript
   // masking and Node's built-in UTF-8 validation instead of external imports.
@@ -105,3 +106,10 @@ replaceAtomically(
   path.join(distRoot, 'transports/cli/THIRD_PARTY_NOTICES.txt'),
   `Third-party software bundled in the CLI, diagnostic client and checked host adapters\n\n${notices.join('\n\n')}\n`,
 );
+
+// The pinned install manifest for the on-demand network runtime. tsc copies only
+// imported JSON, and these are deliberately not imported: read from disk by the
+// CLI, the package name appears in no bundle.
+for (const asset of ['runtime-lock.json', 'runtime-package.json']) {
+  replaceAtomically(path.join(distRoot, 'network', asset), fs.readFileSync(path.join(projectRoot, 'src/network', asset)));
+}

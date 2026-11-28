@@ -10,22 +10,17 @@ const bins = {
   memesh: 'dist/transports/cli/cli.js',
   'memesh-mcp': 'dist/mcp/server.js',
   'memesh-http': 'dist/transports/http/server.js',
-  'memesh-router': 'dist/host-runtime/router.js',
   'memesh-host-claude': 'dist/host-runtime/claude.js',
-  'memesh-host-codex': 'dist/host-runtime/codex.js',
-  'memesh-host-codex-session': 'dist/host-runtime/codex-session.js',
-  'memesh-host-acp': 'dist/host-runtime/acp.js',
 };
 const hookFiles = [
   'scripts/hooks/pre-edit-recall.js',
   'scripts/hooks/guard-check.js',
   'scripts/hooks/session-start.js',
-  'dist/host-runtime/codex-session.js',
 ];
 const messaging = [
-  'src/core/agent-messaging.ts',
-  'src/core/agent-router.ts',
-  'src/transports/agent-messaging.ts',
+  'src/core/conversation-messages.ts',
+  'src/host-adapters/conversation-wake.ts',
+  'src/transports/conversation-messaging.ts',
   'src/host-adapters/',
   'src/host-runtime/',
   'docs/platforms/agent-messaging.md',
@@ -54,6 +49,8 @@ function fixture(): string {
     else write(root, file);
   }
   write(root, 'src/cli/view-live.ts');
+  write(root, 'src/core/conversation-message-migration.ts');
+  write(root, 'src/host-runtime/conversation-channel.ts');
   write(root, 'src/core/dreamer.ts', 'export function executeWorkPackage() {}\n');
   write(root, 'hooks/hooks.json', JSON.stringify({
     hooks: {
@@ -79,7 +76,8 @@ function fixture(): string {
   write(root, 'CODEMAP.md', [
     '# CODEMAP', '', '**Version**: 4.8.1', '',
     '## Start here (entry points)', '', '| You run… | Entry point |', '|---|---|', ...entryRows, '', '---', '',
-    '## Directory map', '', '```', 'src/', '└── cli/             # view-live.ts + assets/ (dashboard fallback, NOT a transport)', '```', '', '---', '',
+    '## Directory map', '', '```', 'src/', '└── cli/             # view-live.ts + assets/ (dashboard fallback, NOT a transport)', '```', '',
+    'Legacy import: `src/core/conversation-message-migration.ts`; Channel: `src/host-runtime/conversation-channel.ts`.', '', '---', '',
     '## Feature → file index', '', '### Agent-assisted work packages + human review',
     '- Calendar-cluster or visible-transcript package preparation and strict submission → `src/core/dreamer.ts` (`executeWorkPackage`)', '',
     '### Project identity + tags', '',
@@ -102,19 +100,19 @@ function run(root: string) {
 
 describe('CODEMAP pre-release parity gate', () => {
   it('accepts the package bins, hook manifest, messaging anchors, and version together', () => {
-    expect(Object.keys(bins)).toHaveLength(8);
+    expect(Object.keys(bins)).toHaveLength(4);
     const result = run(fixture());
     expect(result.status, result.stderr).toBe(0);
-    expect(result.stdout).toContain('PASS (8 bins, 4 hook commands, 1 src/cli TypeScript files, 6 messaging anchors)');
+    expect(result.stdout).toContain('PASS (4 bins, 3 hook commands, 1 src/cli TypeScript files, 6 messaging anchors)');
   });
 
   it.each([
     ['version', (text: string) => text.replace('**Version**: 4.8.1', '**Version**: 4.2.8'), 'package.json says 4.8.1'],
-    ['bin', (text: string) => text.replace(/^\| `memesh-router`.*\n/m, ''), 'omits package bin memesh-router'],
+    ['bin', (text: string) => text.replace(/^\| `memesh-host-claude`.*\n/m, ''), 'omits package bin memesh-host-claude'],
     ['hook', (text: string) => text.replace(/^\| `guard-check\.js`.*\n/m, ''), 'hook table omits guard-check.js'],
-    ['messaging', (text: string) => text.replace(/^- `src\/core\/agent-router\.ts`\n/m, ''), 'omits messaging architecture anchor'],
+    ['messaging', (text: string) => text.replace(/^- `src\/host-adapters\/conversation-wake\.ts`\n/m, ''), 'omits messaging architecture anchor'],
     ['extra hook', (text: string) => text.replace('| `guard-check.js` | event | purpose |', '| `guard-check.js` | event | purpose |\n| `obsolete.js` | event | purpose |'), 'extra=[obsolete.js]'],
-    ['extra messaging anchor', (text: string) => text.replace('- `src/core/agent-router.ts`', '- `src/core/agent-router.ts`\n- `CODEMAP.md`'), 'extra=[CODEMAP.md]'],
+    ['extra messaging anchor', (text: string) => text.replace('- `src/host-adapters/conversation-wake.ts`', '- `src/host-adapters/conversation-wake.ts`\n- `CODEMAP.md`'), 'extra=[CODEMAP.md]'],
     ['stale src/cli file', (text: string) => text.replace('view-live.ts + assets/', 'view.ts + view-live.ts + assets/'), 'extra=[view.ts]'],
     ['work-package symbol', (text: string) => text.replace('`executeWorkPackage`', '`workPackage`'), 'work-package symbol is not exported'],
   ])('rejects %s drift', (_label, mutate, expected) => {
@@ -127,12 +125,12 @@ describe('CODEMAP pre-release parity gate', () => {
   });
 
   it.each([
-    ['package bin', (text: string) => text.replace(/^\| `memesh-router`.*\n/m, ''), 'package entry points omit memesh-router'],
+    ['package bin', (text: string) => text.replace(/^\| `memesh-host-claude`.*\n/m, ''), 'package entry points omit memesh-host-claude'],
     ['hook', (text: string) => text.replace(/^\| guard-check\.js.*\n/m, ''), 'hook table omits guard-check.js'],
-    ['messaging', (text: string) => text.replace(/^- `src\/core\/agent-router\.ts`\n/m, ''), 'omits messaging architecture anchor src/core/agent-router.ts'],
+    ['messaging', (text: string) => text.replace(/^- `src\/host-adapters\/conversation-wake\.ts`\n/m, ''), 'omits messaging architecture anchor src/host-adapters/conversation-wake.ts'],
     ['extra package bin', (text: string) => text.replace('\n\n---', '\n| `obsolete` | `src/obsolete.ts` |\n\n---'), 'extra=[obsolete→src/obsolete.ts]'],
     ['extra hook', (text: string) => text.replace('| guard-check.js | event | purpose |', '| guard-check.js | event | purpose |\n| obsolete.js | event | purpose |'), 'extra=[obsolete.js]'],
-    ['extra messaging anchor', (text: string) => text.replace('- `src/core/agent-router.ts`', '- `src/core/agent-router.ts`\n- `CODEMAP.md`'), 'extra=[CODEMAP.md]'],
+    ['extra messaging anchor', (text: string) => text.replace('- `src/host-adapters/conversation-wake.ts`', '- `src/host-adapters/conversation-wake.ts`\n- `CODEMAP.md`'), 'extra=[CODEMAP.md]'],
   ])('rejects ARCHITECTURE %s drift', (_label, mutate, expected) => {
     const root = fixture();
     const file = path.join(root, 'docs/ARCHITECTURE.md');

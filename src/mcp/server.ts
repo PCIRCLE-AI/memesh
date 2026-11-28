@@ -2,6 +2,8 @@
 
 import fs from 'fs';
 import path from 'path';
+import { once } from 'node:events';
+import { Socket } from 'node:net';
 import { Server } from '@modelcontextprotocol/sdk/server/index.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import {
@@ -10,11 +12,15 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import { fileURLToPath } from 'url';
 import { openDatabase, closeDatabase } from '../db.js';
+import { databaseOpenFailureReport } from '../core/database-diagnosis.js';
 import { handleTool, TOOL_DEFINITIONS } from './tools.js';
 import { configureVersionSource, normalizeClientHost } from '../transports/mcp/handlers.js';
 import { resolveMcpProject } from '../transports/mcp/project-context.js';
-import { startClaudeInboxPresence } from '../host-runtime/claude-inbox.js';
-import type { RouterHostConnection } from '../host-runtime/router-client.js';
+import { updateControlDir, dispatchAutoUpdate, logAutoUpdateLine, registerLiveHost } from '../core/auto-update.js';
+import { findPackageRoot } from '../core/package-root.js';
+import { DEFAULT_CITATION_INSTRUCTION, DEFAULT_SAVE_INSTRUCTION } from '../core/citation-rule.js';
+import { getDbPath } from '../core/paths.js';
+import { mcpConversationSession } from '../core/conversation-host.js';
 
 // This file sits at the same depth (2 levels below the package root) both as
 // TS source (src/mcp/server.ts) and inside the bundled dist/mcp/server.js
@@ -32,25 +38,10 @@ configureVersionSource(packageVersion, packageJsonPath);
 
 const server = new Server(
   { name: 'memesh', version: packageVersion },
-  { capabilities: { tools: {} } }
+  { capabilities: { tools: {} }, instructions: `${DEFAULT_SAVE_INSTRUCTION}\n\n${DEFAULT_CITATION_INSTRUCTION}` }
 );
 
-let presence: RouterHostConnection | undefined;
 let closing = false;
-server.oninitialized = () => {
-  if (normalizeClientHost(server.getClientVersion()?.name) !== 'claude-code') return;
-  void (async () => {
-    const roots = server.getClientCapabilities()?.roots
-      ? (await server.listRoots(undefined, { timeout: 3000 })).roots.map(root => root.uri)
-      : [];
-    const connection = await startClaudeInboxPresence(roots);
-    if (closing) await connection?.close();
-    else presence = connection;
-  })().catch(error => {
-    // Registration is optional to core memory tools, but never silently green.
-    console.error('[memesh] Claude online registration:', error instanceof Error ? error.message : String(error));
-  });
-};
 
 // List tools
 server.setRequestHandler(ListToolsRequestSchema, async () => ({
@@ -74,13 +65,23 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   const needsProjectBinding = ((name === 'task_state' || name === 'briefing') && record?.project == null)
     // A write or recall that names its project (an id or false) needs no binding.
     || (name === 'learn' && record?.project == null)
+    // Optional for forget: resolve a local namesake when bound, while the
+    // handler preserves literal-name forgetting when no project is bound.
+    || name === 'forget'
     // `remember` is bound whenever `project` is not given, tags or not: a
     // `project:<plain name>` tag naming this session's own project is stored as
     // the project's id, and only the binding says which project that is. A
     // tagged write is never refused for lack of one (writeProject).
     || (name === 'remember' && record?.project == null)
     || (name === 'recall' && record?.project == null && (record?.tag == null || record.tag === '') && record?.cross_project !== true);
-  const needsWorkspaceRoots = needsProjectBinding || (name === 'work_package'
+  // A call that names a project by id is still bound when the binding resolves: naming the
+  // session's own project then reads (and may add to) every id its checkout was filed under,
+  // as leaving it out does. A binding that cannot be resolved is not a refusal here: the
+  // named id is used on its own.
+  const namesProject = typeof record?.project === 'string'
+    && ['recall', 'remember', 'learn', 'task_state', 'briefing'].includes(name);
+  const wantsBinding = needsProjectBinding || namesProject;
+  const needsWorkspaceRoots = wantsBinding || (name === 'work_package'
     && (record?.kind === 'transcript' || ref?.kind === 'transcript'));
   let workspaceRootUris: string[] = [];
   // Advertised roots that could not be read: work_package treats them as none,
@@ -105,7 +106,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   }
   // MEMESH_PROJECT_ROOT is set by whoever launched the host for one project;
   // it binds the call alongside the client's roots, never instead of a conflict.
-  const projectBinding = needsProjectBinding
+  const projectBinding = wantsBinding
     ? resolveMcpProject(process.env.MEMESH_PROJECT_ROOT, rootsUnreadable ? null : workspaceRootUris)
     : undefined;
   return handleTool(
@@ -115,6 +116,7 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     extra.signal,
     {
       workspaceRootUris, projectBinding,
+      hostSession: mcpConversationSession(normalizeClientHost(server.getClientVersion()?.name), request.params._meta),
       ...(server.getClientCapabilities()?.elicitation?.form ? {
         elicit: (params: import('@modelcontextprotocol/sdk/types.js').ElicitRequestFormParams) =>
           server.elicitInput(params, { signal: extra.signal, timeout: 120_000 }),
@@ -123,17 +125,68 @@ server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
   );
 });
 
-// Start
-async function main() {
-  openDatabase();
-  const transport = new StdioServerTransport();
-  await server.connect(transport);
+async function hasInitialPipeEof(): Promise<boolean> {
+  const input = process.stdin;
+  if (!(input instanceof Socket) || input.isTTY || input.readableLength > 0) return false;
+  if (input.readableEnded) return true;
+  // Give the pipe a short chance to report EOF while leaving any bytes for the SDK.
+  const deadline = new AbortController();
+  const timer = setTimeout(() => deadline.abort(), 100);
+  try {
+    await once(input, 'readable', { signal: deadline.signal });
+    if (input.readableLength > 0) return false;
+    input.read(0);
+    await new Promise<void>(resolve => process.nextTick(resolve));
+    return input.readableEnded;
+  } catch (error) {
+    if (!deadline.signal.aborted) throw error;
+    return false;
+  } finally { clearTimeout(timer); }
 }
 
-async function shutdown() {
+async function main() {
+  if (await hasInitialPipeEof()) return shutdown();
+  // The agent that started this server is a running host: the updater waits
+  // for it to exit before it replaces any file (this covers hosts with no hooks).
+  try {
+    // Every data directory under this HOME shares one host registry.
+    registerLiveHost(updateControlDir());
+  } catch (err) {
+    // Not fatal for the server, but the updater cannot see this host and may replace files under it: say so.
+    logAutoUpdateLine(updateControlDir(), `auto-update: could not register this MCP host (${err instanceof Error ? err.message : String(err)}); the updater may not wait for it`);
+  }
+  try {
+    openDatabase();
+  } catch (err) {
+    // stderr only: stdout is the MCP protocol channel.
+    console.error(databaseOpenFailureReport(err, getDbPath()));
+    throw err;
+  }
+  const transport = new StdioServerTransport();
+  process.stdin.once('end', onStdinEnd);
+  await server.connect(transport);
+  // A host that wires only this server runs no SessionStart hook, so nothing else would start the updater there. It is the same
+  // single entry the hooks and `memesh serve` use: its own throttle, lock and policy decide whether anything happens.
+  try {
+    void dispatchAutoUpdate(findPackageRoot(import.meta.url)).catch((err) => {
+      logAutoUpdateLine(updateControlDir(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+    });
+  } catch (err) {
+    logAutoUpdateLine(updateControlDir(), `auto-update: the MCP server could not start the updater (${err instanceof Error ? err.message : String(err)})`);
+  }
+}
+
+function onStdinEnd() {
+  // Release the ended input and give in-flight requests and stdout time to drain.
+  process.stdin.destroy();
+  process.once('beforeExit', shutdown);
+}
+
+function shutdown() {
   if (closing) return;
   closing = true;
-  await presence?.close();
+  process.stdin.off('end', onStdinEnd);
+  process.off('beforeExit', shutdown);
   try { closeDatabase(); } catch { /* best effort */ }
   process.exit(0);
 }

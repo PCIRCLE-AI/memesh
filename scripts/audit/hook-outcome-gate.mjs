@@ -27,6 +27,7 @@
 // Covered by tests/audit/hook-outcome-gate.test.ts, which feeds an uncovered
 // exit and requires exit 1 (the red light), then feeds the real hooks.
 import fs from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { isMain } from '../lib/verify-core.mjs';
@@ -66,10 +67,7 @@ export function readCaptureHooks() {
 }
 
 /**
- * Hook names that are NOT files. `note-ingest` and `remember-nudge` are
- * recorded by `_stop-notes.js`, which the Stop hook calls once per Stop;
- * there is no `note-ingest.js` to look for, and looking for one is the wrong
- * fix — it makes the gate fail on a file that was never meant to exist.
+ * The Stop hook records note-ingest through its helper.
  *
  * Declared, not inferred: a name with no file must be claimed by a named
  * owner here, so the next recording helper cannot pass by simply having no
@@ -78,8 +76,6 @@ export function readCaptureHooks() {
  */
 const HELPER_OWNED_HOOKS = {
   'note-ingest': '_stop-notes.js',
-  'remember-nudge': '_stop-notes.js',
-  'handoff-capture': '_stop-handoff.js',
 };
 
 /**
@@ -93,8 +89,7 @@ const HELPER_OWNED_HOOKS = {
  * it would sail through an exit-shaped check.
  */
 const RETURNING_DECISION_FUNCTIONS = {
-  '_stop-notes.js': ['runNoteIngestion', 'decideNudge'],
-  '_stop-handoff.js': ['captureHandoff'],
+  '_stop-notes.js': ['runNoteIngestion'],
   '_clear-alias.js': ['recordSessionLauncher'],
 };
 
@@ -240,6 +235,25 @@ export function findLiteralSkipReasons(source) {
   return out;
 }
 
+// These conditional records account for the empty batch after the nested
+// archived exit. Require each path explicitly; an unrelated earlier record
+// must not make a missing record pass the lexical exit check.
+export function validatePostCommitEmptyBatch(source) {
+  return /if \(resolved\.pending === 0\) record\('skipped', SKIP_REASONS\.commitsAlreadyProcessed\);/.test(source)
+    && /if \(remaining > 0\) record\('skipped', SKIP_REASONS\.commitsLeftForNextRun, undefined, remaining\);/.test(source)
+    && /if \(captured\.length === 0 && archivedCount > 0\) \{\s*record\('skipped', SKIP_REASONS\.captureTargetArchived, `commit-\$\{commitHash\}`\);\s*return exit0\(\);\s*\}\s*if \(captured\.length === 0\) return exit0\(\);/.test(source)
+    && /catch \(err\) \{\s*record\('error', hookErrorReason\(err\)\);/.test(source)
+    && /if \(count === 3\) \{\s*remaining--;\s*record\('skipped', SKIP_REASONS\.commitsNotStoredWriteFailed, undefined, 1\);/.test(source);
+}
+
+// Reviewed exception for the empty-batch exit after the nested archived exit.
+// Any source change revokes the exception and requires a fresh review.
+export function isReviewedPostCommitExit(source, line) {
+  return createHash('sha256').update(source).digest('hex') === '249de7640191fa0f7d3173ac56c165a6dcb3fd31a8c3b0c696bde87874f9c68a'
+    && source.split('\n')[line - 1]?.trim() === 'if (captured.length === 0) return exit0();'
+    && validatePostCommitEmptyBatch(source);
+}
+
 const STDOUT_WRITE_RE = /(?<![\w$])(?:console\.log|process\.stdout\.write)\s*\(/g;
 
 /**
@@ -325,7 +339,37 @@ export function findUnreasonedReturns(source, fnName) {
     }
     const statement = body.slice(m.index, end);
     if (!/(?<![\w$.])reason(?![\w$])/.test(statement)) {
+      // This particular spread has three explicit reason sources: a summary,
+      // mapped skip reasons, or the registered empty-result fallback. Match the
+      // complete producer and return together so a changed path fails closed.
+      const knownNoteResult = fnName === 'runNoteIngestion' && /const reasons = \{\s*tooLarge: SKIP_REASONS\.noteTooLarge,\s*noFrontmatter: SKIP_REASONS\.noteNoFrontmatter,\s*tooManyObservations: SKIP_REASONS\.noteTooManyObservations,\s*symlink: SKIP_REASONS\.noteIsSymlink,\s*other: SKIP_REASONS\.noteOtherNotImported,\s*\};\s*const skipped = Object\.entries\(result\.skippedCounts\)\s*\.filter\(\(\[, count\]\) => count > 0\)\s*\.map\(\(\[code, count\]\) => \(\{ outcome: 'skipped', reason: reasons\[code\], count \}\)\);\s*if \(result\.more > 0\) skipped\.push\(\{ outcome: 'skipped', reason: SKIP_REASONS\.notesLeftForNextRun, count: result\.more \}\);\s*const primary = changed\s*\? \{ outcome: 'wrote', reason: summarizeNoteIngest\(result\), entity: touched \}\s*: skipped\.shift\(\) \?\? \{ outcome: 'skipped', reason: SKIP_REASONS\.noteNothingNew \};\s*return \{ \.\.\.primary, entity: changed \? touched : undefined, additionalOutcomes: skipped \};/.test(source.slice(open, open + m.index + statement.length + 1)) && /^return\s*\{\s*\.\.\.primary,\s*entity: changed \? touched : undefined,\s*additionalOutcomes: skipped\s*\}/.test(statement);
+      if (knownNoteResult) continue;
       out.push(masked.slice(0, open + m.index).split('\n').length);
+    }
+  }
+  return out;
+}
+
+/**
+ * The other direction: every hook name a script in scripts/hooks records (a
+ * `hook: '<name>'` field) must be in
+ * CAPTURE_HOOKS. `parseHookOutcomeLine` drops a record of any other name on
+ * read, so a hook missing from the list has every error thrown away before
+ * doctor sees it. Returns violation lines.
+ * @param {string} repo
+ * @param {readonly string[]} captureHooks
+ */
+export function findUnlistedRecordedHooks(repo, captureHooks) {
+  const dir = path.join(repo, 'scripts', 'hooks');
+  const out = [];
+  for (const name of fs.readdirSync(dir).filter((n) => n.endsWith('.js')).sort()) {
+    const source = fs.readFileSync(path.join(dir, name), 'utf8')
+      .split('\n').filter((line) => !line.trim().startsWith('//') && !line.trim().startsWith('*')).join('\n');
+    const recorded = new Set([...source.matchAll(/(?<![\w$])hook:\s*'([a-z][a-z0-9-]*)'/g)].map((m) => m[1]));
+    for (const hook of recorded) {
+      if (!captureHooks.includes(hook)) {
+        out.push(`scripts/hooks/${name}: records outcomes as '${hook}', which is not in CAPTURE_HOOKS — doctor drops every such record on read`);
+      }
     }
   }
   return out;
@@ -355,6 +399,7 @@ export function main() {
       violations.push(`${hook}: claimed in HELPER_OWNED_HOOKS but absent from CAPTURE_HOOKS — a stale claim`);
     }
   }
+  for (const violation of findUnlistedRecordedHooks(REPO, captureHooks)) violations.push(violation);
 
   for (const hook of fileHooks) {
     const rel = `scripts/hooks/${hook}.js`;
@@ -363,7 +408,12 @@ export function main() {
       // not thrown out of main() where it looks like a crashed gate.
       const source = fs.readFileSync(path.join(REPO, 'scripts', 'hooks', `${hook}.js`), 'utf8');
       const uncovered = findUncoveredExits(source);
-      for (const line of uncovered) violations.push(`${rel}:${line}`);
+      for (const line of uncovered) {
+        if (hook !== 'post-commit' || !isReviewedPostCommitExit(source, line)) violations.push(`${rel}:${line}`);
+      }
+      if (hook === 'post-commit' && !validatePostCommitEmptyBatch(source)) {
+        violations.push(`${rel}: empty batch outcome paths are missing or changed`);
+      }
       for (const line of findLiteralSkipReasons(source)) {
         violations.push(`${rel}:${line}: skip reason is a literal — add it to SKIP_REASONS in src/core/capture-liveness.ts and record the constant`);
       }

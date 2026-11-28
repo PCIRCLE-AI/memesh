@@ -12,15 +12,15 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { closeDatabase, openDatabase } from '../../src/db.js';
+import { canDenyReads } from '../helpers/permissions.js';
 
 const require = createRequire(import.meta.url);
 // _shared.js is plain JS with no type declarations.
 const shared = require('../../scripts/hooks/_shared.js');
 
-const posixUser = process.platform !== 'win32' && process.getuid?.() !== 0;
 const mode = (p: string) => fs.statSync(p).mode & 0o777;
 
-describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
+describe.skipIf(!canDenyReads)('#520: hooks and the data folder', () => {
   let home: string;
   let dataDir: string;
 
@@ -53,6 +53,44 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
     expect(mode(dataDir)).toBe(0o500);
     expect(fs.existsSync(path.join(dataDir, 'hook-outcomes.jsonl'))).toBe(false);
     expect(r.stderr).toMatch(/could not record the session-start hook outcome/);
+  });
+
+  const names = (dir: string) => fs.readdirSync(dir).sort();
+
+  it('path A (no database yet, updates on): a read-only data folder stays dr-x------ and gets no new file', () => {
+    fs.chmodSync(dataDir, 0o500);
+    const before = names(dataDir);
+    const r = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: home }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    expect(r.status).toBe(0);
+    expect(mode(dataDir)).toBe(0o500);
+    expect(names(dataDir)).toEqual(before);
+  });
+
+  it('path B (a database exists, updates on, the folder is read-only): the hook answers, the folder stays dr-x------, no file is added or changed', () => {
+    openDatabase(path.join(dataDir, 'knowledge-graph.db'));
+    closeDatabase();
+    for (const f of fs.readdirSync(dataDir)) fs.chmodSync(path.join(dataDir, f), 0o400);
+    fs.chmodSync(dataDir, 0o500);
+    const before = names(dataDir);
+    const sizes = Object.fromEntries(before.map((f) => [f, fs.statSync(path.join(dataDir, f)).size]));
+    const r = spawnSync(process.execPath, [path.resolve('scripts/hooks/session-start.js')], {
+      input: JSON.stringify({ cwd: home }),
+      env: { ...process.env, HOME: home, USERPROFILE: home, MEMESH_DIR: dataDir, MEMESH_DB_PATH: path.join(dataDir, 'knowledge-graph.db'), MEMESH_AUTO_UPDATE: 'major' },
+      encoding: 'utf8', timeout: 15000,
+    });
+    try {
+      expect(r.status).toBe(0);
+      expect(r.stdout.length).toBeGreaterThan(0);
+      expect(mode(dataDir)).toBe(0o500);
+      expect(names(dataDir)).toEqual(before);
+      for (const f of before) expect(fs.statSync(path.join(dataDir, f)).size).toBe(sizes[f]);
+    } finally {
+      for (const f of fs.readdirSync(dataDir)) { try { fs.chmodSync(path.join(dataDir, f), 0o600); } catch { /* gone */ } }
+    }
   });
 
   it('a hook run makes a world-readable data folder owner-only', () => {
@@ -146,7 +184,7 @@ describe.skipIf(!posixUser)('#520: hooks and the data folder', () => {
 // resets an empty sidecar to the database's mode on ANY open — read-only
 // handles too — so every hook entry that opens the database must refuse
 // instead of letting SQLite add the owner-write bit.
-describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same guard', () => {
+describe.skipIf(!canDenyReads)('#520 RO3: every hook database open passes the same guard', () => {
   let home: string;
   let dataDir: string;
   let dbPath: string;
@@ -209,14 +247,6 @@ describe.skipIf(!posixUser)('#520 RO3: every hook database open passes the same 
     const stderr = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
     shared.recordGuardFires(dbPath, [1]);
     expect(stderr.mock.calls.map((c) => String(c[0])).join('')).toContain('fewer owner permissions');
-    expect(sidecarsWritable()).toEqual([false, false]);
-  });
-
-  it('unreadMessageLines (the inbox read) refuses too, and reports it', () => {
-    vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
-    let failure = '';
-    shared.unreadMessageLines(env, (err: unknown) => { failure = String((err as Error)?.message ?? err); });
-    expect(failure).toContain('fewer owner permissions');
     expect(sidecarsWritable()).toEqual([false, false]);
   });
 
@@ -292,9 +322,39 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
     // too. db.ts's open runs after guardDatabaseFiles in openDatabase;
     // project-tags.ts's runs after it in openReadOnlyForPreview; doctor's is an
     // in-memory probe; sqlite.ts's is a comment.
+    // Backup and conversation stores guard their file families before opening.
+    // Default legacy retirement additionally verifies the physical parent is
+    // owner-private and writable/searchable without chmod, then opens writable
+    // for its transaction lock. Destination/inode isolation remains checked;
+    // retirement tests cover rollback, competing writers and unsafe parents.
+    // Archive reads first pass private-path, alias and sidecar checks in legacyConversationArchiveFiles.
+    // Repair/salvage inputs use immutable reads without pending pages, otherwise
+    // readonly sidecar refusal; repair's original write lock uses strict refusal.
+    // Rebuild/salvage outputs are private new files created with wx/0600 by their callers.
+    // Public network reads check private owner/type/link constraints for parent and
+    // main/sidecars, require existing SHM for pending WAL, and refuse readonly
+    // sidecar mode changes; otherwise they use immutable reads.
+    // Network migration creates its UUID temporary with wx/0600 in the checked
+    // private directory, then checkpoints/closes/fsyncs before no-replace link
+    // publication. message-metadata.test.ts covers source preservation, unsafe
+    // permissions, directory links, identity verification and repeated migration.
     const known = [
-      "db.ts: const opening = new MemeshDatabase(resolvedPath);",
+      "core/auto-update.ts: const db = new MemeshDatabase(dbPath, { readOnly: true });",
+      "core/conversation-messages.ts: ownedSource = new MemeshDatabase(legacyFile);",
+      "core/conversation-messages.ts: const archive = new MemeshDatabase(archiveFile, { readOnly: true });",
+      "core/conversation-messages.ts: this.db = new MemeshDatabase(file);",
+      "core/database-repair.ts: return new MemeshDatabase(pending ? file : immutableAddress(file), { readOnly: true });",
+      "core/database-repair.ts: const db = new MemeshDatabase(file);",
+      "core/database-repair.ts: lock = new MemeshDatabase(source);",
+      "core/node-salvage.ts: const src = new MemeshDatabase(pending ? sourcePath : immutableAddress(sourcePath), { readOnly: true });",
+      "core/node-salvage.ts: dst = new MemeshDatabase(`${pathToFileURL(outputPath).href}?mode=rw`);",
+      "core/node-salvage.ts: dst = new MemeshDatabase(outputPath);",
+      "core/public-network-context.ts: const db = new MemeshDatabase(pending || consistentSnapshot ? file : immutableAddress(file), { readOnly: true });",
+      "db.ts: ? new MemeshDatabase(immutableAddress(mode.immutableFile), { readOnly: true })",
+      "db.ts: : new MemeshDatabase(resolvedPath, mode.readOnly ? { readOnly: true } : undefined);",
       "core/doctor.ts: const probe = new MemeshDatabase(':memory:');",
+      "network/store.ts: const db = new MemeshDatabase(dbPath);",
+      "network/metadata.ts: const destination = new MemeshDatabase(temporary);",
       "core/project-tags.ts: openHandle: (target: string) => MemeshDatabase = (target) => new MemeshDatabase(target, { readOnly: true }),",
       "storage/sqlite.ts: // so `new MemeshDatabase(p)` would throw if the parameter were passed",
     ];
@@ -302,8 +362,8 @@ describe('#520: src constructs MemeshDatabase only at known, guarded sites', () 
   });
 });
 
-// The rule above holds only if no hook can open the database another way.
-describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () => {
+// Hook openers must also remain in the explicit guarded inventory.
+describe('#520: hooks construct MemeshDatabase only at known, guarded sites', () => {
   it('finds no other `new MemeshDatabase(` in scripts/hooks', () => {
     const dir = path.resolve('scripts/hooks');
     const sites: string[] = [];
@@ -311,11 +371,15 @@ describe('#520: hooks construct MemeshDatabase only through openMemeshDb', () =>
       sites.push(...findConstructions(file, fs.readFileSync(path.join(dir, file), 'utf8')));
     }
     expect(sites.length).toBeGreaterThan(0); // the scan really read the hooks
+    // Quote lookup checks owner/private regular files, matching sidecar owner
+    // bits and no-follow inode identity without chmod or migration.
+    const quoteSite = '_shared.js: source = new MemeshDatabase(file, { readOnly: true });';
+    expect(sites.filter((s) => s === quoteSite)).toHaveLength(1);
     expect(sites.filter((s) => !(
-      s.startsWith('_shared.js:') && s.endsWith('return new MemeshDatabase(dbPath, options);')
+      s.startsWith('_shared.js:') && s.endsWith('return new MemeshDatabase(readTarget(dbPath, options), options);')
     ) && !(
       // post-commit's own lock file, never the memesh database.
       s.startsWith('post-commit.js:') && s.includes('.lock.sqlite')
-    ))).toEqual([]);
+    ) && s !== quoteSite)).toEqual([]);
   });
 });

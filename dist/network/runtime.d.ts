@@ -1,0 +1,12 @@
+import { type NetworkContext } from './types.js';
+export declare function isPlatformSupported(lockText: string, platform: string, arch: string, libc: string | null): boolean;
+export declare function explainInstallFailure(spawnError: NodeJS.ErrnoException | undefined, output: string): string;
+export declare function checkRuntime(ctx: NetworkContext, timeoutMs?: number): void;
+export { npmInvocation } from '../core/npm-launch.js';
+export interface InstallOptions {
+    force?: boolean;
+    checkTimeoutMs?: number;
+    onProgress?: (message: string) => void;
+}
+export declare function ensureRuntime(ctx: NetworkContext, options?: InstallOptions): void;
+//# sourceMappingURL=runtime.d.ts.map

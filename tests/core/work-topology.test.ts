@@ -20,6 +20,7 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { getProjectName } from '../../src/core/paths.js';
+import { taskStateLines } from '../../src/core/task-state.js';
 import {
   WORK_LAYER_TYPES,
   layerOf,
@@ -30,6 +31,7 @@ import {
   buildTopologyLines,
   assembleTopologyBlock,
   buildReferenceContext,
+  buildOpeningContext,
   stripControlChars,
   boundTaskStateLines,
   DEFAULT_TOPOLOGY_BUDGET,
@@ -49,6 +51,43 @@ const entity = (over: Partial<TopologyEntity> & { type: string }): TopologyEntit
 });
 
 describe('work-topology', () => {
+  it('reports empty and tail-only allocation accurately and charges repository/index lines', () => {
+    expect(buildOpeningContext([], [], [])).toEqual({ text: '', taskLines: [], tailLines: [], remainingLines: [] });
+    const tails = ['Last reply:', 'TAIL_ONLY'];
+    const result = buildOpeningContext([], tails, ['Repository facts:', 'Recently written memories:', '- index title']);
+    expect(result.taskLines).toEqual([]); expect(result.tailLines).toEqual(tails);
+    expect(result.remainingLines).toHaveLength(3);
+    expect(result.text.indexOf('TAIL_ONLY')).toBeLessThan(result.text.indexOf('Repository facts:'));
+    expect(Buffer.byteLength(result.text)).toBeLessThanOrEqual(8000);
+  });
+  it('allocates actual UTF-8 wrapper bytes to all task dates and tails before optional memories', () => {
+    const date = '2026-11-13T00:00:00.000Z';
+    const task = ['Stated task:', ...['Goal', 'Next', 'Blocked', 'Done'].map(field => `- ${field}: (stated ${date}; today) ${'界'.repeat(300)}`)];
+    const tails = [1, 2, 3].flatMap(i => [`Tail ${i}:`, '尾'.repeat(180) + `END-${i}`]);
+    const memories = Array.from({ length: 30 }, (_, i) => `MEMORY-${i} ${'文'.repeat(100)}`);
+    const result = buildOpeningContext(task, tails, memories, 120);
+    expect(result.taskLines).toEqual(task); expect(result.tailLines).toEqual(tails);
+    expect(result.remainingLines.length).toBeGreaterThan(0); expect(result.remainingLines.length).toBeLessThan(memories.length);
+    expect(Buffer.byteLength(result.text) + 120).toBeLessThanOrEqual(8000);
+    expect(buildOpeningContext([], [], memories, 120).remainingLines.length).toBeGreaterThan(result.remainingLines.length);
+  });
+
+  it('shortens oversized task values without dropping fields, dates, tails or Unicode integrity', () => {
+    const date = '2026-11-13T00:00:00.000Z';
+    const task = taskStateLines({ goal: '😀<```'.repeat(2000), next: '😀<```'.repeat(2000), blocked: '😀<```'.repeat(2000), done: '😀<```'.repeat(2000), stated_at: { goal: date, blocked: date } }, 'project', new Date(date));
+    const tails = ['TAIL-1', 'TAIL-2', 'TAIL-3'];
+    const result = buildOpeningContext(task, tails, ['optional memory'], 300);
+    expect(result.taskLines).toHaveLength(5); expect(result.taskLines[0]).toBe(task[0]);
+    for (const line of task.slice(1)) {
+      const prefix = line.slice(0, line.indexOf(')') + 1);
+      expect(prefix.length).toBeLessThan(256); expect(result.text).toContain(prefix);
+    }
+    expect(result.text).toContain('(unknown date)');
+    expect(result.tailLines).toEqual(tails); expect(result.text).not.toContain('<');
+    expect(result.text).not.toMatch(LONE_SURROGATE); expect(Buffer.byteLength(result.text) + 300).toBeLessThanOrEqual(8000);
+    expect(() => buildOpeningContext(task, tails, [], 8000)).toThrow('cannot fit');
+    expect(() => buildOpeningContext([], [], [], -1)).toThrow('Invalid');
+  });
   it('never puts the machine name in front of the model', () => {
     // `name` is a dedup key (`commit-a1b2c3d`, `session-<pid>-<ts>-files`).
     // The whole point of UX-1's title was that a human — or a model — should
@@ -85,6 +124,14 @@ describe('work-topology', () => {
     expect(full.startsWith(shown)).toBe(true);
     const next = full.charAt(shown.length);
     expect(next === '' || next === ' ').toBe(true);
+  });
+
+  it('keeps a clipped line within its budget, ellipsis included', () => {
+    // A single long token is cut mid-token, so the cut lands exactly at the budget.
+    const plain = topologyLine(entity({ type: 'fact', title: 'Z'.repeat(400) }), 160);
+    expect(plain.replace(/^- \[fact\] /, '')).toHaveLength(160);
+    const decision = topologyLine(entity({ type: 'decision', id: 9, title: 'A decision', why: `${'Z'.repeat(400)}` }), 160);
+    expect(decision.replace(/^- \[decision\] /, '').length).toBeLessThanOrEqual(160);
   });
 
   it('carries the citation handle when the entity has an id, and never otherwise', () => {
@@ -522,16 +569,16 @@ describe('projectLabel — the name a heading uses for a project', () => {
       expect(cutOnSurrogate, 'no offset put the cut on a high surrogate, so this proves nothing').toBeGreaterThan(0);
     });
 
-    it('everything in the block, state lines included, fits one budget with the reserve kept back', () => {
+    it('everything in the block, state lines included, fits one budget', () => {
       const state = ['Task state:', `- goal: ${'g'.repeat(300)}`];
       const many = (n: number, global = false) => Array.from({ length: n }, (_, i) =>
         entity({ type: global ? 'directive' : 'decision', name: `${global ? 'g' : 'd'}${i}`, id: (global ? 500 : 1) + i, title: `${'long title '.repeat(12)}${i}` }));
-      for (const [maxChars, reserve] of [[4000, 0], [4000, 700], [1200, 300], [400, 0]] as const) {
+      for (const maxChars of [4000, 1200, 400] as const) {
         const lines = assembleTopologyBlock(state, [
           { entities: many(30), foreign: false },
           { entities: many(3, true), foreign: false, global: true },
-        ], 'p', { maxChars, maxLineChars: 160 }, { reserve });
-        expect(lines.join('\n').length, `${maxChars}/${reserve}`).toBeLessThanOrEqual(maxChars - reserve);
+        ], 'p', { maxChars, maxLineChars: 160 });
+        expect(lines.join('\n').length, `${maxChars}`).toBeLessThanOrEqual(maxChars);
         expect(lines.slice(0, 2)).toEqual(state);
       }
     });
@@ -542,9 +589,9 @@ describe('projectLabel — the name a heading uses for a project', () => {
       const inbox = Array.from({ length: 5 }, (_, i) => `- ${'r'.repeat(200)} has 1 message waiting in project-${i} — fetch it as ${'r'.repeat(200)}`);
       const lines = assembleTopologyBlock([...handoff, ...task, ...inbox], [{
         entities: [entity({ type: 'decision', name: 'd', id: 9, title: 'STILL-HERE' })], foreign: false,
-      }], 'p', DEFAULT_TOPOLOGY_BUDGET, { reserve: 300 });
+      }], 'p', DEFAULT_TOPOLOGY_BUDGET);
       const text = lines.join('\n');
-      expect(text.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars - 300);
+      expect(text.length).toBeLessThanOrEqual(DEFAULT_TOPOLOGY_BUDGET.maxChars);
       expect(lines.slice(0, handoff.length + task.length)).toEqual([...handoff, ...task]);
       const cut = text.match(/- … \((\d+) more lines? of session state not shown here, to stay within the memory budget; unread messages among them stay pending until their intake is recorded\)/);
       expect(cut).not.toBeNull();

@@ -19,6 +19,7 @@
 // unit-testable with injected `ps` output, never a live process tree.
 
 import { execFileSync } from 'child_process';
+import { runRealPsStart } from './_generated/process-identity.js';
 
 export const CHANNEL_FLAG = '--dangerously-load-development-channels';
 /** The flag as it must appear: a preceding space, then the exact ASCII token. */
@@ -138,25 +139,10 @@ function runRealPs(pid) {
   });
 }
 
-/**
- * When `pid` started, as `ps -o lstart=` prints it (macOS and Linux both
- * support it). A pid alone can be reused by a later process; pid plus start
- * time names one process. `lstart` is printed in the local time zone and
- * locale, so both are pinned: otherwise a changed TZ or LANG makes the same
- * process read as a different one. `exec` is a test seam.
- *
- * @param {number} pid
- * @param {(file: string, args: string[], options: { env?: NodeJS.ProcessEnv } & Record<string, unknown>) => string} [exec]
- * @returns {string}
- */
-export function runRealPsStart(pid, exec = /** @type {any} */ (execFileSync)) {
-  return exec('ps', ['-o', 'lstart=', '-p', String(pid)], {
-    encoding: 'utf8',
-    timeout: 2000,
-    stdio: ['ignore', 'pipe', 'ignore'],
-    env: { ...process.env, TZ: 'UTC', LC_ALL: 'C' },
-  });
-}
+// When `pid` started, as `ps -o lstart=` prints it: ONE implementation (src/core/process-identity.ts, generated next to the hooks),
+// with the locale and the time zone pinned, because `lstart` follows both and a changed TZ or LANG would make the same process read
+// as a different one. `exec` is a test seam.
+export { runRealPsStart };
 
 /**
  * The `claude` process this hook runs under: `{ pid, start, command }`, or

@@ -1,12 +1,16 @@
 import fs from 'fs';
+import { projectTagsOf, resolveProjectMemoryName } from '../storage/memory-mutation.js';
 import path from 'path';
 import { createHash } from 'crypto';
+import { noteDirId } from './note-dirs.js';
 import { getDatabase } from '../db.js';
 import { remember } from './operations.js';
+import { DECISION_TYPES, NOTE_FILE_MISSING_TAG, NOTE_FILE_PROVENANCE, WHY_PREFIX } from './work-topology.js';
+import { copyDatabaseBefore } from './db-copy.js';
 import { sanitizeNoteText, splitObservations, NOTE_DEFAULT_TYPE, NOTE_MAX_OBSERVATIONS } from './note-derive.js';
 import { truncateTitle } from './title.js';
 export const NOTE_FILE_TAG = 'source:note-file';
-export const NOTE_FILE_MISSING_TAG = 'source:note-file:missing';
+export { NOTE_FILE_MISSING_TAG };
 export const NOTE_FILE_MAX_BYTES = 256 * 1024;
 export const NOTE_DIR_MAX_FILES = 500;
 const SKIPPED_DIRS = new Set(['.git', 'node_modules']);
@@ -104,7 +108,7 @@ export function ingestNoteDirectory(opts) {
     const realDir = fs.realpathSync(opts.dir);
     if (!fs.statSync(realDir).isDirectory())
         throw new Error(`not a directory: ${opts.dir}`);
-    const dirId = createHash('sha256').update(realDir).digest('hex').slice(0, 16);
+    const dirId = noteDirId(realDir);
     const { files, symlinks } = discover(realDir);
     const presentRels = new Set(files.map((abs) => relPath(realDir, abs)));
     const result = {
@@ -113,15 +117,20 @@ export function ingestNoteDirectory(opts) {
         created: [],
         replaced: [],
         unchanged: 0,
+        retrusted: [],
+        retrustBackup: null,
+        retrustFailed: null,
         repathed: [],
         restored: [],
         markedMissing: [],
         skipped: [],
+        skippedCounts: { tooLarge: 0, noFrontmatter: 0, tooManyObservations: 0, symlink: 0, other: 0 },
         refusedNow: 0,
         more: 0,
     };
     const db = getDatabase();
-    const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status,
+    const existingStmt = db.prepare(`SELECT e.id, e.metadata, e.status, e.type,
+            json_extract(CASE WHEN json_valid(e.metadata) THEN e.metadata END, '$.trust') AS trust,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_note,
             EXISTS(SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?) AS is_missing
        FROM entities e WHERE e.name = ?`);
@@ -143,14 +152,32 @@ export function ingestNoteDirectory(opts) {
         const parsedSkips = skipRow ? JSON.parse(skipRow.value) : {};
         if (parsedSkips && typeof parsedSkips === 'object')
             priorSkips = parsedSkips;
+        for (const [rel, print] of Object.entries(priorSkips))
+            if (print?.held !== undefined)
+                delete priorSkips[rel];
     }
     catch {
         priorSkips = {};
     }
+    const unchangedRefusals = new Set(files.filter((file) => {
+        const previous = priorSkips[relPath(realDir, file)];
+        if (!previous)
+            return false;
+        try {
+            const stat = fs.lstatSync(file);
+            return stat.isFile() && stat.mtimeMs === previous.mtime && stat.size === previous.size;
+        }
+        catch {
+            return false;
+        }
+    }));
+    files.sort((a, b) => Number(unchangedRefusals.has(a)) - Number(unchangedRefusals.has(b)));
     const nextSkips = {};
     const counted = new Set();
-    const report = (rel, reason) => {
+    const report = (rel, reason, code = 'other') => {
         result.skipped.push({ path: rel, reason });
+        const category = Object.hasOwn(result.skippedCounts, code) ? code : 'other';
+        result.skippedCounts[category]++;
         if (priorSkips[rel]?.reason === reason || counted.has(rel))
             return;
         counted.add(rel);
@@ -159,7 +186,7 @@ export function ingestNoteDirectory(opts) {
     for (const abs of symlinks) {
         const rel = relPath(realDir, abs);
         const reason = 'symlink refused';
-        report(rel, reason);
+        report(rel, reason, 'symlink');
         let st;
         try {
             st = fs.lstatSync(abs);
@@ -168,8 +195,8 @@ export function ingestNoteDirectory(opts) {
             st = null;
         }
         nextSkips[rel] = st
-            ? { mtime: st.mtimeMs, size: st.size, reason }
-            : { mtime: 0, size: 0, reason };
+            ? { mtime: st.mtimeMs, size: st.size, reason, code: 'symlink' }
+            : { mtime: 0, size: 0, reason, code: 'symlink' };
     }
     const missingNames = new Set(noteRows.filter((r) => r.is_missing).map((r) => r.name));
     const declaredNameAt = new Map();
@@ -193,12 +220,12 @@ export function ingestNoteDirectory(opts) {
     let refunds = 0;
     for (const abs of files) {
         const rel = relPath(realDir, abs);
-        const skip = (reason) => { report(rel, reason); };
+        const skip = (reason, code = 'other') => { report(rel, reason, code); };
         let raw;
         let stat;
-        const contentSkip = (reason) => {
-            skip(reason);
-            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason };
+        const contentSkip = (reason, code = 'other') => {
+            skip(reason, code);
+            nextSkips[rel] = { mtime: stat.mtimeMs, size: stat.size, reason, code };
             declaredNameAt.set(rel, '');
         };
         const unreachableSkip = (reason) => {
@@ -213,13 +240,14 @@ export function ingestNoteDirectory(opts) {
             stat = fs.lstatSync(abs);
         }
         catch (err) {
+            result.retryNeeded = true;
             skip(`unreadable: ${err.code ?? 'error'}`);
             declaredNameAt.set(rel, '');
             continue;
         }
         try {
             if (stat.isSymbolicLink()) {
-                skip('symlink refused');
+                skip('symlink refused', 'symlink');
                 continue;
             }
             const prior = known.get(rel);
@@ -229,9 +257,9 @@ export function ingestNoteDirectory(opts) {
             }
             const priorSkip = priorSkips[rel];
             const nameIsFree = !!priorSkip?.name && missingNames.has(priorSkip.name);
-            if (priorSkip && !priorSkip.reportOnly && !nameIsFree
+            if (priorSkip && Object.hasOwn(result.skippedCounts, priorSkip.code ?? '') && !priorSkip.reportOnly && !nameIsFree
                 && priorSkip.mtime === stat.mtimeMs && priorSkip.size === stat.size && ownerUnchanged(priorSkip)) {
-                skip(priorSkip.reason);
+                skip(priorSkip.reason, priorSkip.code);
                 nextSkips[rel] = priorSkip;
                 continue;
             }
@@ -242,7 +270,7 @@ export function ingestNoteDirectory(opts) {
             read++;
             readRels.add(rel);
             if (stat.size > maxBytes) {
-                contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`);
+                contentSkip(`larger than ${Math.round(maxBytes / 1024)} KB`, 'tooLarge');
                 continue;
             }
             const real = fs.realpathSync(abs);
@@ -253,20 +281,24 @@ export function ingestNoteDirectory(opts) {
             raw = fs.readFileSync(real);
         }
         catch (err) {
+            result.retryNeeded = true;
             unreachableSkip(`unreadable: ${err.code ?? 'error'}`);
             continue;
         }
         const parsed = parseFrontmatter(raw.toString('utf8'));
         if (!parsed) {
-            contentSkip('no frontmatter — a note file needs a `---` block with a name');
+            contentSkip('no frontmatter — a note file needs a `---` block with a name', 'noFrontmatter');
             continue;
         }
         const rawName = stringField(parsed.data, 'name');
-        const name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
+        let name = rawName ? sanitizeNoteText(rawName).replace(/[\r\n\t]+/g, ' ').trim().slice(0, 255) : '';
         if (!name) {
             contentSkip('frontmatter has no name');
             continue;
         }
+        const prior = known.get(rel);
+        if (prior && projectTagsOf(db, prior.id).some(tag => resolveProjectMemoryName(db, name, tag.slice(8)) === prior.name))
+            name = prior.name;
         const metaBlock = parsed.data.metadata;
         const rawType = (typeof metaBlock === 'object' ? metaBlock.type : undefined) ?? stringField(parsed.data, 'type');
         const type = (rawType ? sanitizeNoteText(rawType).slice(0, 100) : '') || NOTE_DEFAULT_TYPE;
@@ -280,7 +312,7 @@ export function ingestNoteDirectory(opts) {
             continue;
         }
         if (observations.length > NOTE_MAX_OBSERVATIONS) {
-            contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`);
+            contentSkip(`yields ${observations.length} observations; at most ${NOTE_MAX_OBSERVATIONS} are stored per memory`, 'tooManyObservations');
             continue;
         }
         claims.push({
@@ -303,9 +335,12 @@ export function ingestNoteDirectory(opts) {
             byName.set(c.name, [c]);
     }
     const touchedIds = new Set();
-    for (const c of claims)
-        declaredNameAt.set(c.rel, c.name);
-    for (const [name, claimants] of byName) {
+    for (const [requestedName, claimants] of byName) {
+        const original = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, requestedName);
+        const name = original && parseProvenance(original.metadata).note_dir_id === dirId
+            ? requestedName : resolveProjectMemoryName(db, requestedName, opts.project, [], true);
+        for (const c of claimants)
+            declaredNameAt.set(c.rel, name);
         const existing = existingStmt.get(NOTE_FILE_TAG, NOTE_FILE_MISSING_TAG, name);
         const prov = existing ? parseProvenance(existing.metadata) : {};
         const skipAll = (reason) => {
@@ -398,7 +433,10 @@ export function ingestNoteDirectory(opts) {
             observations: owner.observations,
             ...(existing ? { project } : { tags: [NOTE_FILE_TAG, ...(opts.project ? [`project:${opts.project}`] : [])] }),
             replace: true,
-            trustOverride: 'untrusted',
+            trustOverride: existing
+                ? (existing.trust === 'trusted' ? 'trusted' : 'untrusted')
+                : (opts.trusted ? 'trusted' : 'untrusted'),
+            reinforceConfidence: false,
             provenanceOverride: {
                 source: 'note-file',
                 note_path: owner.rel,
@@ -407,6 +445,7 @@ export function ingestNoteDirectory(opts) {
                 note_mtime_ms: owner.stat.mtimeMs,
                 note_size: owner.stat.size,
                 note_ino: owner.stat.ino,
+                edited: undefined,
             },
             sourceHost: 'note-file',
         };
@@ -433,6 +472,8 @@ export function ingestNoteDirectory(opts) {
         (existing ? result.replaced : result.created).push(name);
     }
     if (Object.keys(nextSkips).length > 0) {
+        for (const print of Object.values(nextSkips))
+            print.code ??= 'other';
         db.prepare('INSERT OR REPLACE INTO memesh_metadata (key, value) VALUES (?, ?)').run(skipKey, JSON.stringify(nextSkips));
     }
     else {
@@ -453,7 +494,63 @@ export function ingestNoteDirectory(opts) {
         tagMissing.run(row.id, NOTE_FILE_MISSING_TAG);
         result.markedMissing.push(row.name);
     }
+    if (opts.trusted)
+        liftFolderTrust(db, dirId, result);
     return result;
+}
+function liftFolderTrust(db, dirId, result) {
+    const decisionTypes = [...DECISION_TYPES];
+    const liftedKey = `note_trust_lifted:${dirId}`;
+    const meta = "CASE WHEN json_valid(e.metadata) THEN e.metadata END";
+    const rows = db.prepare(`SELECT e.id, e.name FROM entities e
+      WHERE json_extract(${meta}, '$.provenance.source') = ?
+        AND json_extract(${meta}, '$.provenance.note_dir_id') = ?
+        AND json_extract(${meta}, '$.trust') = 'untrusted'
+        AND json_extract(${meta}, '$.provenance.edited') IS NULL
+        AND NOT EXISTS (SELECT 1 FROM tags t WHERE t.entity_id = e.id AND t.tag = ?)
+        AND (e.type NOT IN (${decisionTypes.map(() => '?').join(',')})
+             OR EXISTS (SELECT 1 FROM observations o WHERE o.entity_id = e.id AND substr(o.content, 1, ?) = ?))
+        AND e.id NOT IN (SELECT value FROM json_each((SELECT value FROM memesh_metadata WHERE key = ? AND json_valid(value))))
+      ORDER BY e.id`).all(NOTE_FILE_PROVENANCE, dirId, NOTE_FILE_MISSING_TAG, ...decisionTypes, WHY_PREFIX.length, WHY_PREFIX, liftedKey);
+    if (rows.length === 0)
+        return;
+    const failed = (why) => `${rows.length} note(s) of this folder should become trusted, but ${why}; none of them was made trusted`;
+    const prior = db.prepare('SELECT value FROM memesh_metadata WHERE key = ?').get(liftedKey)?.value;
+    let priorIds = [];
+    try {
+        priorIds = JSON.parse(prior ?? '[]');
+    }
+    catch { }
+    const lifted = JSON.stringify([...(Array.isArray(priorIds) ? priorIds : []), ...rows.map((r) => r.id)]);
+    const setLifted = (schema) => db.prepare(`INSERT OR REPLACE INTO ${schema}.memesh_metadata (key, value) VALUES (?, ?)`).run(liftedKey, lifted);
+    const copy = copyDatabaseBefore(db, 'knowledge-graph-before-note-trust', setLifted);
+    if (copy.kind === 'failed') {
+        result.retrustFailed = failed(copy.reason);
+        return;
+    }
+    try {
+        fs.writeFileSync(`${copy.path}.json`, JSON.stringify({
+            at: new Date().toISOString(),
+            change: 'note files of the project\'s own memory folder: metadata.trust untrusted -> trusted',
+            count: rows.length,
+            ids: rows.map((r) => r.id),
+            names: rows.map((r) => r.name),
+            backup: copy.path,
+            undo: `Restore the database from the backup file, or set metadata.trust back to 'untrusted' on the ids listed here (either way they stay untrusted: a memory is made trusted this way only once): UPDATE entities SET metadata = json_set(metadata, '$.trust', 'untrusted') WHERE id IN (<ids>);`,
+        }, null, 2), { mode: 0o600 });
+    }
+    catch (error) {
+        result.retrustFailed = failed(`the record of the change could not be written (${error instanceof Error ? error.message : String(error)})`);
+        return;
+    }
+    const lift = db.prepare("UPDATE entities SET metadata = json_set(metadata, '$.trust', 'trusted') WHERE id = ?");
+    db.transaction(() => {
+        setLifted('main');
+        for (const row of rows)
+            lift.run(row.id);
+    })();
+    result.retrusted = rows.map((r) => r.name);
+    result.retrustBackup = copy.path;
 }
 export function summarizeNoteIngest(r) {
     const parts = [
@@ -462,6 +559,7 @@ export function summarizeNoteIngest(r) {
         `${r.unchanged} unchanged`,
         ...(r.repathed.length ? [`${r.repathed.length} moved`] : []),
         ...(r.restored.length ? [`${r.restored.length} restored`] : []),
+        ...(r.retrusted.length ? [`${r.retrusted.length} made trusted (copy of the database: ${path.basename(r.retrustBackup ?? '')})`] : []),
         `${r.skipped.length} skipped`,
         ...(r.refusedNow ? [`${r.refusedNow} newly refused`] : []),
     ];

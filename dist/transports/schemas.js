@@ -1,8 +1,8 @@
 import { z } from 'zod';
 import { NAMESPACES } from '../core/types.js';
+import { isReservedTag } from '../core/work-topology.js';
 import { TITLE_MAX_LENGTH } from '../core/title.js';
 import { deriveNote, NOTE_MAX_CHARS, NOTE_MAX_OBSERVATIONS } from '../core/note-derive.js';
-import { AGENT_MESSAGE_JSON_MAX_BYTES, AGENT_NATIVE_MESSAGE_MAX_BYTES } from '../core/agent-messaging.js';
 import { AGENT_SCOPE_ID_MAX_LENGTH, agentScopeIdRejection, canonicalAgentScopeId, projectScopeRejection, } from '../core/agent-scope-id.js';
 const projectRules = (base) => base.superRefine((value, ctx) => {
     const rejection = projectScopeRejection(value);
@@ -42,6 +42,7 @@ const workPackageIdentity = {
     ref: z.discriminatedUnion('kind', [digestWorkPackageRef, transcriptWorkPackageRef]),
 };
 const WORK_PACKAGE_RESULT_MAX_BYTES = 16 * 1024;
+const RESERVED_TAG_REASON = 'tags that start with `source:` are reserved for MeMesh, which uses them to record where it got a memory (a note file, its own capture). Choose another prefix, for example `origin:`.';
 export const WorkPackageSchema = z.discriminatedUnion('action', [
     z.object({ action: z.literal('prepare'), project: workPackageText, kind: z.enum(['digest', 'transcript']) }).strict(),
     z.object({
@@ -51,7 +52,8 @@ export const WorkPackageSchema = z.discriminatedUnion('action', [
             name: workPackageText,
             type: z.enum(['digest', 'decision', 'lesson_learned', 'fact']),
             observations: z.array(observationField).min(1).max(100),
-            tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')).min(1).max(50),
+            tags: z.array(workPackageText.refine(tag => !tag.startsWith('project:'), 'project tags are server-owned')
+                .refine(tag => !isReservedTag(tag), RESERVED_TAG_REASON)).min(1).max(50),
         }).strict().refine(result => Buffer.byteLength(JSON.stringify(result), 'utf8') <= WORK_PACKAGE_RESULT_MAX_BYTES, 'output_too_large'),
     }).strict().refine(input => (input.ref.kind === 'digest') === (input.result.type === 'digest'), 'result type must match work kind'),
     z.object({
@@ -77,6 +79,10 @@ const rememberShape = {
 };
 function refineRemember(data, ctx) {
     for (const [index, tag] of (data.tags ?? []).entries()) {
+        if (isReservedTag(tag)) {
+            ctx.addIssue({ code: 'custom', path: ['tags', index], message: `the tag ${JSON.stringify(tag)} is not allowed: ${RESERVED_TAG_REASON}` });
+            continue;
+        }
         if (!tag.startsWith('project:'))
             continue;
         const project = tag.slice('project:'.length);
@@ -89,8 +95,6 @@ function refineRemember(data, ctx) {
     if (data.note === undefined) {
         if (data.name === undefined)
             ctx.addIssue({ code: 'custom', path: ['name'], message: 'name is required (or pass `note` to have it derived)' });
-        if (data.type === undefined && !(data.replace && data.name !== undefined))
-            ctx.addIssue({ code: 'custom', path: ['type'], message: 'type is required (or pass `note`, which defaults it to "note", or `replace: true` with a `name` to keep the type that memory already has)' });
         if (data.replace && (data.observations === undefined || data.observations.length === 0))
             ctx.addIssue({ code: 'custom', path: ['observations'], message: 'replace rewrites the memory\'s observations, so it needs `observations` (or `note`) — a replace without them would empty the memory. To change only the title or tags, send the observations the memory already has together with the new title or tags' });
         return;
@@ -239,101 +243,6 @@ export const ImprovementSchema = z.discriminatedUnion('action', [
     z.object({
         action: z.literal('status'),
         proposal_id: z.number().int().positive(),
-    }).strict(),
-]);
-const messageProject = agentScopeId('project');
-const messageRecipient = agentScopeId('recipient');
-const messageSender = nonBlankBounded(AGENT_SCOPE_ID_MAX_LENGTH);
-const messageId = nonBlankBounded(255);
-const messageCursor = nonBlankBounded(160);
-const messageIdempotencyKey = nonBlankBounded(200);
-const messageReceiptBase = {
-    project: messageProject,
-    recipient: messageRecipient,
-    message_id: messageId,
-    idempotency_key: messageIdempotencyKey,
-};
-export const MessageSchema = z.discriminatedUnion('action', [
-    z.object({
-        action: z.literal('send'),
-        project: messageProject,
-        sender: messageSender,
-        recipient: messageRecipient.optional(),
-        recipient_handle: nonBlankBounded(220).optional(),
-        target_kind: z.enum(['principal', 'session']).optional(),
-        intended_session: agentScopeId('intended_session').optional(),
-        fallback_to_principal: z.boolean().optional(),
-        idempotency_key: messageIdempotencyKey,
-        payload: z.json().refine((value) => new TextEncoder().encode(JSON.stringify(value)).byteLength <= AGENT_MESSAGE_JSON_MAX_BYTES, { message: `payload must be at most ${AGENT_MESSAGE_JSON_MAX_BYTES} UTF-8 bytes when encoded as JSON` }).describe(`Untrusted JSON value. The encoded payload is limited to ${AGENT_MESSAGE_JSON_MAX_BYTES} bytes (64 KiB); native delivery additionally requires the complete envelope to fit ${AGENT_NATIVE_MESSAGE_MAX_BYTES} bytes (16 KiB).`),
-        content_type: z.enum(['text/plain', 'application/json']).default('text/plain'),
-        privacy: z.enum(['private', 'team']).default('private'),
-        correlation_id: nonBlankBounded(255).optional(),
-        reply_to: messageId.optional(),
-    }).strict().superRefine((send, ctx) => {
-        if ((send.recipient === undefined) === (send.recipient_handle === undefined)) {
-            ctx.addIssue({ code: 'custom', path: ['recipient'], message: 'Provide exactly one of recipient or recipient_handle.' });
-        }
-        if (send.recipient_handle === undefined && send.intended_session !== undefined && (send.target_kind ?? 'principal') !== 'principal') {
-            ctx.addIssue({
-                code: 'custom',
-                path: ['intended_session'],
-                message: 'intended_session is only valid with target_kind "principal".',
-            });
-        }
-        if (send.recipient_handle === undefined && send.fallback_to_principal !== undefined && (send.target_kind ?? 'principal') !== 'session') {
-            ctx.addIssue({
-                code: 'custom',
-                path: ['fallback_to_principal'],
-                message: 'fallback_to_principal is only valid with target_kind "session".',
-            });
-        }
-    }),
-    z.object({
-        action: z.literal('poll'),
-        project: messageProject,
-        recipient: messageRecipient,
-        cursor: messageCursor.optional(),
-        wait_ms: z.number().int().min(0).max(30_000).default(0),
-        limit: z.number().int().min(1).max(100).default(20),
-    }).strict(),
-    z.object({
-        action: z.literal('discover'),
-        project: messageProject,
-        limit: z.number().int().min(1).max(100).default(50),
-    }).strict(),
-    z.object({
-        action: z.literal('fetch'),
-        project: messageProject,
-        recipient: messageRecipient,
-        target_kind: z.enum(['principal', 'session']).default('principal'),
-        message_id: messageId,
-    }).strict(),
-    z.object({
-        action: z.literal('intake'),
-        ...messageReceiptBase,
-        intake_state: z.enum(['fetched', 'ingested']),
-    }).strict(),
-    z.object({
-        action: z.literal('ack'),
-        ...messageReceiptBase,
-    }).strict(),
-    z.object({
-        action: z.literal('disposition'),
-        ...messageReceiptBase,
-        disposition: z.enum(['accepted', 'rejected', 'completed', 'cancelled', 'deferred']),
-        detail: z.string().trim().max(1000).optional(),
-    }).strict(),
-    z.object({
-        action: z.literal('activation'),
-        ...messageReceiptBase,
-        activation: z.enum(['woken', 'manual_resume_required', 'unsupported', 'failed']),
-        detail: z.string().trim().max(1000).optional(),
-    }).strict(),
-    z.object({
-        action: z.literal('receipts'),
-        project: messageProject,
-        recipient: messageRecipient,
-        message_id: messageId,
     }).strict(),
 ]);
 //# sourceMappingURL=schemas.js.map

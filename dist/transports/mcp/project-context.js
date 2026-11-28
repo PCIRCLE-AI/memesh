@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { getProjectName } from '../../core/paths.js';
+import { getProjectIds } from '../../core/paths.js';
 function existingDirectory(candidate) {
     try {
         const real = fs.realpathSync(candidate);
@@ -22,6 +22,13 @@ function rootDirectory(uri) {
         return null;
     }
 }
+export function resolveMcpWorkspaceRoot(launchRoot, rootUris) {
+    const launch = launchRoot === undefined ? undefined : existingDirectory(launchRoot);
+    const scopes = new Set(rootUris.map(rootDirectory));
+    if (launch !== undefined)
+        scopes.add(launch);
+    return scopes.size === 1 ? [...scopes][0] : null;
+}
 export function resolveMcpProject(launchRoot, rootUris) {
     if (rootUris === null) {
         return {
@@ -29,7 +36,7 @@ export function resolveMcpProject(launchRoot, rootUris) {
             reason: 'The client advertises workspace roots but did not return them.',
         };
     }
-    const fromRoots = new Set();
+    const fromRoots = new Map();
     for (const uri of rootUris) {
         const directory = rootDirectory(uri);
         if (!directory) {
@@ -38,7 +45,8 @@ export function resolveMcpProject(launchRoot, rootUris) {
                 reason: `A workspace root from the client is not an existing local directory: ${JSON.stringify(uri)}.`,
             };
         }
-        fromRoots.add(getProjectName(directory));
+        const ids = getProjectIds(directory);
+        fromRoots.set(ids[0], [...new Set([...(fromRoots.get(ids[0]) ?? []), ...ids])]);
     }
     if (launchRoot !== undefined) {
         const directory = path.isAbsolute(launchRoot) ? existingDirectory(launchRoot) : null;
@@ -48,17 +56,20 @@ export function resolveMcpProject(launchRoot, rootUris) {
                 reason: `MEMESH_PROJECT_ROOT is not an existing absolute directory: ${JSON.stringify(launchRoot)}.`,
             };
         }
-        const project = getProjectName(directory);
-        if ([...fromRoots].some(other => other !== project)) {
+        const ids = getProjectIds(directory);
+        const project = ids[0];
+        if ([...fromRoots.keys()].some(other => other !== project)) {
             return {
                 error: 'workspace_ambiguous',
                 reason: 'MEMESH_PROJECT_ROOT and the client\'s workspace root name different projects.',
             };
         }
-        return { project };
+        return { project, ids };
     }
-    if (fromRoots.size === 1)
-        return { project: [...fromRoots][0] };
+    if (fromRoots.size === 1) {
+        const [[project, ids]] = [...fromRoots];
+        return { project, ids };
+    }
     if (fromRoots.size > 1) {
         return {
             error: 'workspace_ambiguous',

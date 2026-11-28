@@ -496,14 +496,14 @@ function proveConsumerInstall({ version, root, registry, results }) {
     });
 
   // The capture receipt (#327 acceptance 4): the shipped hooks, run against
-  // a throwaway graph, must capture one commit and one session insight.
+  // a throwaway graph, must capture one commit and one assistant reply.
   results.push(captureReceipt(install));
 }
 
 /**
  * The release receipt that capture is alive on the SHIPPED code: run the
  * published hooks against a throwaway git repo and data dir, then read back
- * that a commit and a session insight actually landed. Complements the
+ * that a commit and an assistant reply actually landed. Complements the
  * artifact-doctor row — the doctor sees the tree, this sees the capture loop.
  */
 /**
@@ -573,21 +573,10 @@ export function captureReceipt(install, spawnHook = spawnSync) {
   const commitFailure = hookFailure('post-commit', commitHook);
   if (commitFailure) return commitFailure;
 
-  // One Stop, with paired successful edit results so capture has completion evidence.
-  const transcript = path.join(repoDir, 'session.jsonl');
-  const toolUse = (id, name, input) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'tool_use', id, name, input }] } });
-  fs.writeFileSync(transcript, [
-    toolUse('edit-a', 'Edit', { file_path: path.join(repoDir, 'a.ts') }),
-    toolUse('edit-b', 'Edit', { file_path: path.join(repoDir, 'b.ts') }),
-    toolUse('test', 'Bash', { command: 'npm test' }),
-    toolUse('build', 'Bash', { command: 'npm run build' }),
-    JSON.stringify({ type: 'user', message: { content: [
-      { type: 'tool_result', tool_use_id: 'edit-a', is_error: false, content: 'File updated successfully' },
-      { type: 'tool_result', tool_use_id: 'edit-b', is_error: false, content: 'File updated successfully' },
-    ] } }),
-  ].join('\n'));
+  const sessionId = 'capture-1';
+  const reply = 'Saved the capture receipt.\nThe second line is part of the reply.';
   const sessionHook = runHook('session-summary', {
-    session_id: 'capture-1', cwd: repoDir, transcript_path: transcript, was_in_agentic_loop: true,
+    hook_event_name: 'Stop', session_id: sessionId, cwd: repoDir, last_assistant_message: reply,
   });
   const sessionFailure = hookFailure('session-summary', sessionHook);
   if (sessionFailure) return sessionFailure;
@@ -600,15 +589,24 @@ export function captureReceipt(install, spawnHook = spawnSync) {
   let sessionName;
   try {
     const db = new DatabaseSync(dbPath, { open: true, readOnly: true });
-    commitName = db.prepare('SELECT name FROM entities WHERE name = ?').get(`commit-${hash}`);
-    sessionName = db.prepare("SELECT name FROM entities WHERE name LIKE 'session-capture-1-%' LIMIT 1").get();
-    db.close();
+    try {
+      commitName = db.prepare('SELECT name FROM entities WHERE name = ?').get(`commit-${hash}`);
+      sessionName = db.prepare(`
+        SELECT e.name FROM entities e
+        JOIN observations o ON o.entity_id = e.id
+        JOIN tags session ON session.entity_id = e.id AND session.tag = ?
+        JOIN tags role ON role.entity_id = e.id AND role.tag = 'role:assistant'
+        WHERE e.type = 'conversation' AND o.content = ?
+      `).get(`session:${sessionId}`, reply);
+    } finally {
+      db.close();
+    }
   } catch (error) {
     return { id: 'capture', ok: false, detail: `could not read the capture graph: ${error instanceof Error ? error.message : String(error)}` };
   }
   if (!commitName) return { id: 'capture', ok: false, detail: `post-commit did not capture commit-${hash}` };
-  if (!sessionName) return { id: 'capture', ok: false, detail: 'session-summary did not capture a session-capture-1 insight' };
-  return { id: 'capture', ok: true, detail: `commit-${hash} and ${sessionName.name} captured on the shipped code` };
+  if (!sessionName) return { id: 'capture', ok: false, detail: `Stop did not capture the complete assistant reply for session ${sessionId}` };
+  return { id: 'capture', ok: true, detail: `commit-${hash} and ${sessionName.name} captured for session ${sessionId} on the shipped code` };
 }
 
 if (isMain(import.meta.url)) await main();
