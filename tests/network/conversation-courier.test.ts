@@ -34,8 +34,14 @@ it('CLI copy remains queued until recipient hook/read, then receipts and reply r
     const timer = setTimeout(() => { expired = true; child.kill('SIGTERM'); }, 30_000);
     child.stdout.on('data', b => { stdout += b; }); child.stderr.on('data', b => { stderr += b; });
     child.on('error', reject);
-    child.on('close', (code, signal) => { clearTimeout(timer); events.push({ args, pid: child.pid, code, signal, expired });
-      if (code !== 0 || expired) reject(new Error(`Child failed ${code}/${signal}: ${stderr}`)); else resolve(stdout); });
+    child.on('close', (code, signal) => {
+      clearTimeout(timer);
+      events.push({ args, pid: child.pid, code, signal, expired });
+      if (code !== 0 || expired) {
+        const operation = [path.basename(entry), ...args.slice(0, 2)].join(' ');
+        reject(new Error(`${operation} failed ${code}/${signal}${expired ? ' (timed out)' : ''}: ${stderr}`));
+      } else resolve(stdout);
+    });
     child.stdin.end(input);
   });
   const cli = async (ctx: NetworkContext, session: string, args: string[], input = '') => JSON.parse(await run(ctx, tree.cli, ['message', ...args], input, session));
