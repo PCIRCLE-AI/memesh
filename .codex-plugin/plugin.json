@@ -19,6 +19,7 @@
         {
           "matcher": "Bash",
           "hooks": [
+            { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-plan-activity.js", "timeout": 5 },
             {
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/guard-check.js",
@@ -57,6 +58,7 @@
         {
           "matcher": "Bash",
           "hooks": [
+            { "type": "command", "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-plan-activity.js", "timeout": 5 },
             {
               "type": "command",
               "command": "${CLAUDE_PLUGIN_ROOT}/scripts/hooks/codex-busy-message-notice.js",

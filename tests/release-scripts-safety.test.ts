@@ -497,7 +497,10 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
         mutate(file, audit, `this.db.exec("UPDATE messages SET sender_local=1 WHERE kind != 'legacy';");\n${audit}`, 'message/event mutation outside expiry');
         mutate(file, "columns.some(c => c.name === 'sender_local')", 'false', 'message/event mutation outside expiry');
       }
-      mutate('src/transports/mcp/handlers.ts', 'session: requestContext.hostSession', 'session: args.sender', 'MCP awaited session-bound handler');
+      mutate('src/transports/mcp/handlers.ts',
+        'executeConversationMessageAction(args, { session: requestContext.hostSession })',
+        'executeConversationMessageAction(args, { session: args.sender })',
+        'MCP awaited session-bound handler');
       mutate('docs/api/API_REFERENCE.md', '| `status` | optional `message_id`', '| `other` | optional `message_id`', 'message action rows');
     } finally {
       fs.rmSync(root, { recursive: true, force: true });

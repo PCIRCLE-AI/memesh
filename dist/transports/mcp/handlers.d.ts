@@ -1,6 +1,6 @@
 import { z } from 'zod';
 import type { ElicitRequestFormParams, ElicitResult } from '@modelcontextprotocol/sdk/types.js';
-import type { McpProjectResolution } from './project-context.js';
+import { type McpProjectResolution } from './project-context.js';
 export interface McpRequestContext {
     hostSession?: string;
     elicit?: (params: ElicitRequestFormParams) => Promise<ElicitResult>;
@@ -606,8 +606,8 @@ export declare const TOOL_DEFINITIONS: readonly [{
             action: z.ZodLiteral<"send">;
             recipient: z.ZodString;
             kind: z.ZodEnum<{
-                result: "result";
                 task: "task";
+                result: "result";
                 question: "question";
                 review_request: "review_request";
             }>;

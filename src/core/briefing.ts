@@ -27,6 +27,7 @@
 import { getDatabase } from '../db.js';
 import { getProjectIds, getProjectName } from './paths.js';
 import { readConfig } from './config.js';
+import { continuationLines, continuationTaskKey } from './continuation.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
@@ -114,7 +115,10 @@ export function readBriefingIndex(
  * when the caller knows them (default: this process's own checkout's when
  * `project` is its project).
  */
-export function assembleBriefing(project?: string, _recipient?: string, projectIds?: readonly string[]): BriefingResult {
+export function assembleBriefing(
+  project?: string, _recipient?: string, projectIds?: readonly string[],
+  continuationScope?: { workspace: string | null; session?: string },
+): BriefingResult {
   const projectName = project ?? getProjectName();
   const ids = projectIds ?? projectIdsFor(projectName);
   const db = getDatabase();
@@ -168,8 +172,11 @@ export function assembleBriefing(project?: string, _recipient?: string, projectI
   // it becomes one line that says the record is unreadable and how to
   // replace it, in the slot the stated lines would have taken.
   let taskLines: string[];
+  let taskKey: string | undefined;
   try {
-    taskLines = taskStateLines(getTaskState(projectName, ids).state, projectName);
+    const task = getTaskState(projectName, ids).state;
+    taskLines = taskStateLines(task, projectName);
+    taskKey = continuationTaskKey(task);
   } catch (err) {
     if (!(err instanceof TaskStateUnreadableError)) throw err;
     taskLines = [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${err.message}`];
@@ -245,7 +252,11 @@ export function assembleBriefing(project?: string, _recipient?: string, projectI
   // session-start.js's `memoryContext` construction), so the two cannot
   // drift on what "nothing to show" means, even though neither can call
   // the other's code (A1a).
-  const opening = buildOpeningContext(taskLines, handoff, block);
+  const continuationCwd = continuationScope ? continuationScope.workspace : process.cwd();
+  const session = continuationScope ? continuationScope.session : process.env.CODEX_THREAD_ID;
+  const continuation = continuationCwd && getProjectName(continuationCwd) === projectName
+    ? continuationLines(projectName, continuationCwd, session, taskKey) : [];
+  const opening = buildOpeningContext([...taskLines, ...continuation], handoff, block);
   const empty = opening.text === '';
   // Remaining lines preserve their original positions. Count only rendered
   // ranked rows, never a tail or task value that happens to resemble one.
@@ -257,7 +268,7 @@ export function assembleBriefing(project?: string, _recipient?: string, projectI
     // Counted from the ranked lines only — the index's lines carry the same
     // `- [type] … [mem:id]` shape and are reported under `index` instead.
     entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
-    hasTaskState: opening.taskLines.length > 0,
+    hasTaskState: taskLines.length > 0,
     hasHandoff: opening.tailLines.length > 0,
     index,
     level,

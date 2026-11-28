@@ -22,6 +22,13 @@ function rootDirectory(uri) {
         return null;
     }
 }
+export function resolveMcpWorkspaceRoot(launchRoot, rootUris) {
+    const launch = launchRoot === undefined ? undefined : existingDirectory(launchRoot);
+    const scopes = new Set(rootUris.map(rootDirectory));
+    if (launch !== undefined)
+        scopes.add(launch);
+    return scopes.size === 1 ? [...scopes][0] : null;
+}
 export function resolveMcpProject(launchRoot, rootUris) {
     if (rootUris === null) {
         return {

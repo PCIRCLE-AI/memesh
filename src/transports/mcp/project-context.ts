@@ -39,6 +39,14 @@ function rootDirectory(uri: string): string | null {
   }
 }
 
+/** Project identity may combine worktrees. Continuation requires exactly one actual workspace. */
+export function resolveMcpWorkspaceRoot(launchRoot: string | undefined, rootUris: readonly string[]): string | null {
+  const launch = launchRoot === undefined ? undefined : existingDirectory(launchRoot);
+  const scopes = new Set(rootUris.map(rootDirectory));
+  if (launch !== undefined) scopes.add(launch);
+  return scopes.size === 1 ? [...scopes][0] : null;
+}
+
 /**
  * `rootUris` is `[]` when the client has no workspace roots, and `null` when it
  * advertises roots but did not return them (the request failed or timed out).

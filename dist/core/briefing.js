@@ -1,6 +1,7 @@
 import { getDatabase } from '../db.js';
 import { getProjectIds, getProjectName } from './paths.js';
 import { readConfig } from './config.js';
+import { continuationLines, continuationTaskKey } from './continuation.js';
 import { resolveSessionLimit } from './session-limit.js';
 import { readRepoState, repoStateLines } from './repo-state.js';
 import { getTaskState, TaskStateUnreadableError } from './task-state-store.js';
@@ -18,7 +19,7 @@ export function readBriefingIndex(db, projectName, now = Date.now(), projectIds)
     const { candidates, truncated } = readIndexCandidates(db, projectName, projectIds ?? projectIdsFor(projectName));
     return buildBriefingIndex(candidates, projectName, now, { truncated });
 }
-export function assembleBriefing(project, _recipient, projectIds) {
+export function assembleBriefing(project, _recipient, projectIds, continuationScope) {
     const projectName = project ?? getProjectName();
     const ids = projectIds ?? projectIdsFor(projectName);
     const db = getDatabase();
@@ -37,8 +38,11 @@ export function assembleBriefing(project, _recipient, projectIds) {
         ? repoStateLines(readRepoState())
         : [];
     let taskLines;
+    let taskKey;
     try {
-        taskLines = taskStateLines(getTaskState(projectName, ids).state, projectName);
+        const task = getTaskState(projectName, ids).state;
+        taskLines = taskStateLines(task, projectName);
+        taskKey = continuationTaskKey(task);
     }
     catch (err) {
         if (!(err instanceof TaskStateUnreadableError))
@@ -72,14 +76,18 @@ export function assembleBriefing(project, _recipient, projectIds) {
     const block = withRepo.length > 0 && indexLines.length > 0
         ? [...withRepo, '', ...indexLines]
         : [...withRepo, ...indexLines];
-    const opening = buildOpeningContext(taskLines, handoff, block);
+    const continuationCwd = continuationScope ? continuationScope.workspace : process.cwd();
+    const session = continuationScope ? continuationScope.session : process.env.CODEX_THREAD_ID;
+    const continuation = continuationCwd && getProjectName(continuationCwd) === projectName
+        ? continuationLines(projectName, continuationCwd, session, taskKey) : [];
+    const opening = buildOpeningContext([...taskLines, ...continuation], handoff, block);
     const empty = opening.text === '';
     const renderedRankedEnd = Math.max(0, opening.remainingLines.length - (withRepo.length - lines.length));
     return {
         project: projectName,
         text: opening.text,
         entityCount: lines.slice(0, renderedRankedEnd).filter((l) => l.startsWith('- [')).length,
-        hasTaskState: opening.taskLines.length > 0,
+        hasTaskState: taskLines.length > 0,
         hasHandoff: opening.tailLines.length > 0,
         index,
         level,

@@ -18,8 +18,8 @@
     },
     {
       "path": ".codex-plugin/plugin.json",
-      "sha256": "c8695976a9c0da603a964341f6ede08391dfbad58f681fe833114e0d0124f8c2",
-      "bytes": 3212
+      "sha256": "1c87b5be8e548331b17ffbb164c01ba18bb764e4fb6ec2d49f85780dea122ccc",
+      "bytes": 3456
     },
     {
       "path": "hooks/hooks.json",
@@ -90,6 +90,11 @@
       "path": "scripts/hooks/_generated/codex-session-principal.js",
       "sha256": "f9ccb8233d4a5f36549b0889f8d4a871fe0a8318ecca29de5a62628255ac8c48",
       "bytes": 754
+    },
+    {
+      "path": "scripts/hooks/_generated/continuation.js",
+      "sha256": "1723da3b319848abba4d2f82f11e90566a719b5876edb6b9307cb96d8262d937",
+      "bytes": 8500
     },
     {
       "path": "scripts/hooks/_generated/conversation-message-migration.js",
@@ -268,8 +273,8 @@
     },
     {
       "path": "scripts/hooks/codex-plan-activity.js",
-      "sha256": "827915acc388a1588e071553f3a586ce2f72d8085fe5fac0788b82e2f2688b1e",
-      "bytes": 2570
+      "sha256": "19dbfe14cc42e737916b297746604f603010a0d952fc39dc24ea8f37a2f9fdc8",
+      "bytes": 4881
     },
     {
       "path": "scripts/hooks/guard-check.js",
@@ -298,8 +303,8 @@
     },
     {
       "path": "scripts/hooks/session-start.js",
-      "sha256": "13d77e06d43123f127390dfa23aa92264fcc02608fa290e39dd3eefbdcc03381",
-      "bytes": 99402
+      "sha256": "7305709958ae964a6414eaad4a6a87339351c645d5713dc5863c6237e4ec3d44",
+      "bytes": 99708
     },
     {
       "path": "scripts/hooks/session-summary.js",

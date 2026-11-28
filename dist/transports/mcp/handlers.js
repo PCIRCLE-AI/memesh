@@ -13,6 +13,7 @@ import { getProductImprovementStatus, stageProductImprovement, } from '../../cor
 import { executeConversationMessageAction, CONVERSATION_MESSAGE_DESCRIPTION, CONVERSATION_MESSAGE_INPUT_SCHEMA } from '../conversation-messaging.js';
 import { McpRememberSchema, McpRecallSchema, ForgetSchema, BriefingSchema, ExportSchema, ImportSchema, McpLearnSchema, TaskStateSchema, UserPatternsSchema, ImprovementSchema, WorkPackageSchema, NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema, } from '../schemas.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
+import { resolveMcpWorkspaceRoot } from './project-context.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
 const UNBOUND = { error: 'workspace_unavailable', reason: 'No project is bound to this MCP session.', unbound: true };
@@ -646,7 +647,10 @@ async function handleToolInner(name, args, sourceHost, signal, requestContext = 
             const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
             if ('result' in bound)
                 return bound.result;
-            return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
+            const ids = boundIdsFor(bound.project, requestContext);
+            const roots = requestContext.workspaceRootUris;
+            const workspace = ids && roots ? resolveMcpWorkspaceRoot(process.env.MEMESH_PROJECT_ROOT, roots) : null;
+            return ok(assembleBriefing(bound.project, r.data.recipient, ids, { workspace, session: requestContext.hostSession }));
         }
         if (name === 'user_patterns') {
             const r = parseOrFail(UserPatternsSchema, args);

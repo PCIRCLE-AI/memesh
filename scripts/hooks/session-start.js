@@ -82,6 +82,7 @@ import { buildOpeningContext, MAX_OPENING_CONTEXT_BYTES } from './_generated/wor
 import { readSnippets, selectBriefingPools, toTopologyEntity } from './_generated/briefing-pools.js';
 import { taskStateUnreadableMessage } from './_generated/task-state.js';
 import { resolveProjectMemoryName, projectTagsOf, filedUnder } from './_generated/memory-mutation.js';
+import { continuationLines, continuationTaskKey } from './_generated/continuation.js';
 
 const require = createRequire(import.meta.url);
 const SESSION_RECORD_TTL_MS = 24 * 60 * 60 * 1000;
@@ -1369,6 +1370,7 @@ process.stdin.on('end', async () => {
 
       const memoryLines = [];
       let taskContextLines = [];
+      let taskKey;
       let memoryAssemblyFailed = false;
       try {
         // One query for every snippet, for the rows that will render.
@@ -1407,10 +1409,12 @@ process.stdin.on('end', async () => {
           catch { taskCorrupted = true; }
         }
         if (taskCorrupted) record({ outcome: 'error', reason: 'task-state: stored record is not valid JSON' });
+        const taskState = parseTaskState(taskMetadata);
+        taskKey = continuationTaskKey(taskState);
         taskContextLines = taskCorrupted
           ? [`task state for ${jsonStringLiteral(projectLabel(projectName))}: ${taskStateUnreadableMessage(projectName)}`]
           : taskStateLines(
-            parseTaskState(taskMetadata),
+            taskState,
             projectName,
             new Date(),
           );
@@ -1550,8 +1554,9 @@ process.stdin.on('end', async () => {
       const openingReservedBytes =
         (sessionProjectContext ? Buffer.byteLength(sessionProjectContext, 'utf8') + 2 : 0)
         + (workPackageNotice ? Buffer.byteLength(workPackageNotice, 'utf8') + 2 : 0);
-      const memoryBlock = hasBriefingContent([...taskContextLines, ...handoffBlock, ...memoryLines])
-        ? buildOpeningContext(taskContextLines, handoffBlock, memoryLines, openingReservedBytes).text : undefined;
+      const openingTasks = [...taskContextLines, ...continuationLines(projectName, data.cwd, data.session_id, taskKey)];
+      const memoryBlock = hasBriefingContent([...openingTasks, ...handoffBlock, ...memoryLines])
+        ? buildOpeningContext(openingTasks, handoffBlock, memoryLines, openingReservedBytes).text : undefined;
       const memoryContext = memoryBlock && workPackageNotice
         ? memoryBlock + '\n\n' + workPackageNotice
         : memoryBlock ?? workPackageNotice;

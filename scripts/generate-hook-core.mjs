@@ -61,6 +61,7 @@ const SOURCES = [
   { from: 'dist/core/task-state.js', to: 'task-state.js', src: 'src/core/task-state.ts' },
   { from: 'dist/storage/memory-mutation.js', to: 'memory-mutation.js', src: 'src/storage/memory-mutation.ts' },
   { from: 'dist/core/repo-state.js', to: 'repo-state.js', src: 'src/core/repo-state.ts' },
+  { from: 'dist/core/continuation.js', to: 'continuation.js', src: 'src/core/continuation.ts' },
   { from: 'dist/core/guards.js', to: 'guards.js', src: 'src/core/guards.ts' },
   { from: 'dist/core/time-utils.js', to: 'time-utils.js', src: 'src/core/time-utils.ts' },
   // Bash-captured edited paths, and the filter that keeps a non-path-shaped

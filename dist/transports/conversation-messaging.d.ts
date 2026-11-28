@@ -6,8 +6,8 @@ export declare const ConversationMessageActionSchema: z.ZodDiscriminatedUnion<[z
     action: z.ZodLiteral<"send">;
     recipient: z.ZodString;
     kind: z.ZodEnum<{
-        result: "result";
         task: "task";
+        result: "result";
         question: "question";
         review_request: "review_request";
     }>;
@@ -27,8 +27,8 @@ export declare const CONVERSATION_MESSAGE_INPUT_SCHEMA: {
         action: z.ZodLiteral<"send">;
         recipient: z.ZodString;
         kind: z.ZodEnum<{
-            result: "result";
             task: "task";
+            result: "result";
             question: "question";
             review_request: "review_request";
         }>;

@@ -14,9 +14,11 @@ import { execFileSync, spawnSync } from 'child_process';
 import fs from 'fs';
 import os from 'os';
 import path from 'path';
+import { pathToFileURL } from 'node:url';
 import { openDatabase, closeDatabase, getDatabase } from '../../src/db.js';
 import { handleTool } from '../../src/mcp/tools.js';
 import { assembleBriefing, readBriefingIndex } from '../../src/core/briefing.js';
+import { continuationTaskKey, continuationWrite } from '../../src/core/continuation.js';
 import { INDEX_CANDIDATE_CAP } from '../../src/core/briefing-index.js';
 import { getTaskState, setTaskState } from '../../src/core/task-state-store.js';
 
@@ -90,6 +92,36 @@ afterEach(() => {
 // default; a test about the default clears the variable on purpose.
 const atStandard = () => vi.stubEnv('MEMESH_BRIEFING', 'standard');
 const withNoLevelSetting = () => vi.stubEnv('MEMESH_BRIEFING', undefined);
+
+it('shows one worktree checkpoint to a new MCP session and excludes the originating session', async () => {
+  const workspace = path.join(tmpDir, 'work');
+  const other = path.join(tmpDir, 'other');
+  fs.mkdirSync(workspace);
+  fs.mkdirSync(other);
+  vi.stubEnv('MEMESH_DB_PATH', dbPath);
+  vi.stubEnv('MEMESH_PROJECT_ROOT', undefined);
+  vi.stubEnv('CODEX_THREAD_ID', undefined);
+  const project = getProjectName(workspace);
+  const origin = randomUUID();
+  const state = setTaskState({ project, patch: { goal: 'Continue the scoped task' } }).state;
+  const pending = continuationWrite(project, workspace, origin, 'turn', 'call', false, continuationTaskKey(state));
+  expect(pending).not.toBeNull();
+  fs.mkdirSync(pending!.directory, { recursive: true, mode: 0o700 });
+  fs.writeFileSync(pending!.file, JSON.stringify(pending!.record), { mode: 0o600 });
+  const root = pathToFileURL(workspace).href;
+  const briefing = async (hostSession: string, workspaceRootUris: string[]) => {
+    const output = await handleTool('briefing', {}, 'codex', undefined, {
+      hostSession, workspaceRootUris, projectBinding: { project, ids: [project] },
+    });
+    return JSON.parse(output.content[0].text).text as string;
+  };
+  const fresh = await briefing(randomUUID(), [root]);
+  expect(fresh).toContain('Continue the scoped task');
+  expect(fresh).toContain('has no observed return');
+  expect(fresh).toContain('Candidate match is unknown');
+  expect(await briefing(origin, [root])).not.toContain('Previous Codex shell request');
+  expect(await briefing(randomUUID(), [root, pathToFileURL(other).href])).not.toContain('Previous Codex shell request');
+});
 
 it('excludes forgotten task state from briefing and the real startup hook at every level', () => {
   const cwd = path.join(tmpDir, 'archived-task-project');

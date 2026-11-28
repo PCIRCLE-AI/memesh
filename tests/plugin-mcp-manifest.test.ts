@@ -187,6 +187,9 @@ describe('Codex and Claude plugin MCP manifests', () => {
     // replace default discovery, while Claude keeps the Mod and all commands.
     expect(Object.keys(codexPlugin.hooks ?? {})).toEqual(['hooks']);
     const codexHooks = structuredClone(codexPlugin.hooks.hooks);
+    for (const entry of codexHooks.PreToolUse) {
+      entry.hooks = entry.hooks.filter((hook: { command: string }) => !hook.command.endsWith('/codex-plan-activity.js'));
+    }
     const onlyCodex = codexHooks.PostToolUse.filter((entry: { hooks: Array<{ command: string }> }) =>
       entry.hooks.some(hook => ['/codex-busy-message-notice.js', '/codex-plan-activity.js'].some(name => hook.command.endsWith(name))));
     expect(onlyCodex).toHaveLength(2);

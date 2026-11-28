@@ -12,6 +12,11 @@ let env: NodeJS.ProcessEnv;
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-hermes-context-'));
   env = buildIsolatedSuiteEnv(process.env, { runtimeHome: home });
+  // The CLI's setup writes use remember, which can start a registry check
+  // that still owns the fixture's npm cache when Windows removes it.
+  const config = path.join(home, '.memesh');
+  fs.mkdirSync(config, { mode: 0o700 });
+  fs.writeFileSync(path.join(config, 'config.json'), JSON.stringify({ updateCheck: false }), { mode: 0o600 });
 });
 afterEach(() => fs.rmSync(home, { recursive: true, force: true }));
 function run(args: string[], input = '', cwd?: string) {
@@ -27,6 +32,7 @@ it('returns empty without creating a database on first use', () => {
   const before = fs.readdirSync(home);
   expect(context()).toEqual({ text: '', ids: [] });
   expect(fs.readdirSync(home)).toEqual(before);
+  expect(fs.readdirSync(path.join(home, '.memesh'))).toEqual(['config.json']);
 });
 
 it.each(['environment', 'config'])('reads full content with automatic capture off via %s while respecting the recall switch', (source) => {

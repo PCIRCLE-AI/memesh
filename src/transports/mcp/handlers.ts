@@ -28,7 +28,7 @@ import {
   NativeMemoryEditorSchema, NativeMemoryEditFieldsSchema, PaneMemoryEditorSchema,
 } from '../schemas.js';
 import { getProjectName, memeshDir } from '../../core/paths.js';
-import type { McpProjectResolution } from './project-context.js';
+import { resolveMcpWorkspaceRoot, type McpProjectResolution } from './project-context.js';
 import { updateNoticeForEntryPoint, updateCheckEnabledIn } from '../../core/update-entrypoint.js';
 import { staleRunningProcessNotice } from '../../core/update-notice.js';
 
@@ -900,7 +900,10 @@ async function handleToolInner(
       const bound = projectFor(r.data.project, requestContext, 'Pass project explicitly.');
       if ('result' in bound) return bound.result;
       // A session bound to this project reads it under every id its checkout has.
-      return ok(assembleBriefing(bound.project, r.data.recipient, boundIdsFor(bound.project, requestContext)));
+      const ids = boundIdsFor(bound.project, requestContext);
+      const roots = requestContext.workspaceRootUris;
+      const workspace = ids && roots ? resolveMcpWorkspaceRoot(process.env.MEMESH_PROJECT_ROOT, roots) : null;
+      return ok(assembleBriefing(bound.project, r.data.recipient, ids, { workspace, session: requestContext.hostSession }));
     }
     if (name === 'user_patterns') {
       const r = parseOrFail(UserPatternsSchema, args);
