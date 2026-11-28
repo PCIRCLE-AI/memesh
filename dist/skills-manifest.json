@@ -98,8 +98,8 @@
     },
     {
       "path": "scripts/hooks/_generated/conversation-messages.js",
-      "sha256": "dec8b938f3943277b2983b2cc4da118c5793f8104885d1f581fce924ad55523e",
-      "bytes": 38481
+      "sha256": "f92b752c29c7aeef1db4a4709538318e96de50b5909d425b14ceb593a1854d72",
+      "bytes": 38593
     },
     {
       "path": "scripts/hooks/_generated/core-paths.js",
@@ -238,8 +238,8 @@
     },
     {
       "path": "scripts/hooks/_generated/windows-permissions.js",
-      "sha256": "ec7af8da0300a057b24efe6ef2853491a753dc588c067603d99c3e83de29a3af",
-      "bytes": 8688
+      "sha256": "bf7cc29182d02c9b5898cca562cb80c2b70899cb264423b26206604c9d0233d5",
+      "bytes": 10494
     },
     {
       "path": "scripts/hooks/_generated/work-topology.js",

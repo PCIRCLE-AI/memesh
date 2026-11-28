@@ -65,12 +65,7 @@ try {
     $denyKeys = (@($acl.GetAccessRules($true, $true, $sidType) | Where-Object { $_.AccessControlType -ne $allow } | ForEach-Object { Rule-Key $_ } | Sort-Object) -join ';')
     return (@($allowKeys, $denyKeys) | Where-Object { $_ -ne '' }) -join ';'
   }
-  foreach ($file in $request.paths) {
-    if ($request.readOnly) {
-      $verifyAcl = Read-Acl $file
-      Assert-Private $verifyAcl
-      continue
-    }
+  function Protect-Path($file) {
     $acl = Read-Acl $file
     Check-Acl $acl
     $owner = $acl.GetOwner($sidType).Value
@@ -108,6 +103,10 @@ try {
     $keys = Rule-Keys $actual $isContainer
     if ($keys -ne $expected) { throw 'rights changed' }
   }
+  foreach ($file in $request.paths) {
+    if ($request.readOnly) { Assert-Private (Read-Acl $file) }
+    else { Protect-Path $file }
+  }
   if ($request.writableDirectory) {
     $probe = [IO.Path]::Combine($request.writableDirectory, '.memesh-write-' + [Guid]::NewGuid().ToString('N'))
     $stream = $null
@@ -116,6 +115,30 @@ try {
         ([IO.FileShare]::ReadWrite -bor [IO.FileShare]::Delete), 4096, [IO.FileOptions]::DeleteOnClose)
       $stream.WriteByte(0)
     } finally { if ($null -ne $stream) { $stream.Dispose() } }
+  }
+  if ($null -ne $request.messageDatabaseName) {
+    # Discover the current files only after the directory has been protected.
+    $name = $request.messageDatabaseName
+    if ($name -eq '' -or $name -in @('.', '..') -or [IO.Path]::GetFileName($name) -cne $name) { throw 'invalid database name' }
+    $files = @()
+    foreach ($suffix in @('', '-wal', '-shm')) {
+      $file = [IO.Path]::Combine($request.writableDirectory, $name + $suffix)
+      try { $attributes = [IO.File]::GetAttributes($file) }
+      catch {
+        if ($_.Exception.GetBaseException() -is [IO.FileNotFoundException]) { continue }
+        throw
+      }
+      # Leave every file untouched until Node can resolve these links using
+      # the existing same-directory checks.
+      if (($attributes -band [IO.FileAttributes]::ReparsePoint) -ne 0) {
+        [Console]::Out.Write('{"ok":true,"requiresRealpath":true}')
+        return
+      }
+      $files += $file
+    }
+    foreach ($file in $files) { Protect-Path $file }
+    [Console]::Out.Write('{"ok":true,"requiresRealpath":false}')
+    return
   }
   [Console]::Out.Write('{"ok":true}')
 } catch {
@@ -129,17 +152,33 @@ export function makeWindowsPathsPrivate(targets: string[], writableDirectory?: s
   runWindowsPermissionCheck(targets, writableDirectory, false, timeout);
 }
 
+/** Protect one message store; false means its files still need native realpath checks. */
+export function makeWindowsMessageStorePrivate(file: string): boolean {
+  const dir = path.dirname(file);
+  if (!fs.statSync(dir).isDirectory()) throw new Error(`${dir} is not a directory, and messages must remain owner-private`);
+  const directory = fs.realpathSync(dir);
+  return !runWindowsPermissionScript({
+    paths: [directory], writableDirectory: directory, readOnly: false, messageDatabaseName: path.basename(file),
+  }).requiresRealpath;
+}
+
 /** Validate an existing Windows DACL without changing it or probing writes. */
 export function verifyWindowsPathsPrivate(targets: string[], timeout?: number): void {
   runWindowsPermissionCheck(targets, undefined, true, timeout);
 }
 
-function runWindowsPermissionCheck(targets: string[], writableDirectory: string | undefined, readOnly: boolean, timeout = 15_000): void {
+function runWindowsPermissionCheck(targets: string[], writableDirectory: string | undefined, readOnly: boolean, timeout?: number): void {
   const paths: string[] = [];
   for (const target of targets) {
     if (fs.statSync(target, { throwIfNoEntry: false }) !== undefined) paths.push(fs.realpathSync(target));
   }
   if (paths.length === 0 && writableDirectory === undefined) return;
+  runWindowsPermissionScript({ paths: [...new Set(paths)], writableDirectory, readOnly }, timeout);
+}
+
+function runWindowsPermissionScript(
+  request: { paths: string[]; writableDirectory?: string; readOnly: boolean; messageDatabaseName?: string }, timeout = 15_000,
+): { requiresRealpath?: boolean } {
   const systemRoot = process.env.SystemRoot ?? process.env.SYSTEMROOT;
   try {
     if (!Number.isSafeInteger(timeout) || timeout <= 0) throw new Error('Invalid Windows permissions check timeout');
@@ -148,12 +187,16 @@ function runWindowsPermissionCheck(targets: string[], writableDirectory: string 
       path.win32.join(systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe'),
       ['-NoLogo', '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(SCRIPT, 'utf16le').toString('base64')],
       {
-        input: Buffer.from(JSON.stringify({ paths: [...new Set(paths)], writableDirectory, readOnly })).toString('base64') + '\n',
+        input: Buffer.from(JSON.stringify(request)).toString('base64') + '\n',
         encoding: 'utf8', stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
         timeout, maxBuffer: 4096,
       },
     );
-    if (JSON.parse(output.trim()).ok !== true) throw new Error('ACL verification failed');
+    const reply = JSON.parse(output.trim());
+    if (reply?.ok !== true || (request.messageDatabaseName !== undefined && typeof reply.requiresRealpath !== 'boolean')) {
+      throw new Error('ACL verification failed');
+    }
+    return reply;
   } catch (cause) {
     throw Object.assign(new Error('Cannot verify private Windows permissions; use a writable folder owned by your Windows account.', { cause }), { code: 'MEMESH_PRIVATE_PATH' });
   }

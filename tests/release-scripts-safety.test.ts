@@ -487,6 +487,7 @@ describe('Feature: release scripts never edit the real ~/.memesh', () => {
       mutate('dist/core/conversation-messages.js', "reason ? 'rejected' : 'queued'", "'queued'", 'rejected');
       for (const file of ['src/core/conversation-messages.ts', 'dist/core/conversation-messages.js']) {
         mutate(file, "requirePrivateWritableDirectory(path.dirname(file), 'messages must remain owner-private');", '', 'owner-private directory guard call');
+        mutate(file, '!makeWindowsMessageStorePrivate(file)', 'false', 'owner-private Windows message-store guard call');
         mutate(file, 'const tooLarge = Buffer.byteLength', 'const tooLarge = false && Buffer.byteLength', 'rendered-byte limit and rejection branch');
         mutate(file, 'this.insert(message, {', 'this.removedInsert(message, {', 'send insert and rejected audit event');
         mutate(file, "this.event(message.id, reason ? 'rejected' : 'queued', { actor: from.id, ...(reason ? { reason } : {}) });", '', 'send insert and rejected audit event');

@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { afterEach, describe, expect, it } from 'vitest';
+import childProcess from 'node:child_process';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import { ConversationMessages, MESSAGE_MAX_BYTES, renderConversationMessage, type ConversationNetworkSnapshot } from '../../src/core/conversation-messages.js';
 import { DatabaseSync } from '../../src/storage/sqlite.js';
 
@@ -26,8 +27,80 @@ function fixture(network?: ConversationNetworkSnapshot) {
   return { root, store, open, advance: (days: number) => { now += days * DAY; } };
 }
 afterEach(() => {
+  vi.restoreAllMocks();
+  vi.unstubAllEnvs();
   for (const store of stores.splice(0)) store.close();
   for (const root of roots.splice(0)) fs.rmSync(root, { recursive: true, force: true });
+});
+
+describe('Windows message-store ACL subprocess contract', () => {
+  function windowsOpen(file: string): ConversationMessages {
+    const platform = Object.getOwnPropertyDescriptor(process, 'platform')!;
+    Object.defineProperty(process, 'platform', { value: 'win32' });
+    try { return new ConversationMessages({ file }); }
+    finally { Object.defineProperty(process, 'platform', platform); }
+  }
+
+  function storePath(): string {
+    const root = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), 'memesh-message-acl-')));
+    roots.push(root);
+    return path.join(root, 'messages.db');
+  }
+
+  it('checks the directory and database with one subprocess per ordinary open, including a reopen', () => {
+    const file = storePath();
+    const root = path.dirname(file);
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue('{"ok":true,"requiresRealpath":false}');
+    windowsOpen(file).close();
+    windowsOpen(file).close();
+    expect(exec).toHaveBeenCalledTimes(2);
+    expect(exec.mock.calls.map(([, , options]) =>
+      JSON.parse(Buffer.from(String((options as { input: string }).input).trim(), 'base64').toString('utf8'))))
+      .toEqual(Array.from({ length: 2 }, () => ({
+        paths: [root], writableDirectory: root, readOnly: false, messageDatabaseName: 'messages.db',
+      })));
+    const script = Buffer.from((exec.mock.calls[0][1] as string[])[4], 'base64').toString('utf16le');
+    const probe = script.indexOf('$stream.WriteByte(0)');
+    const findFiles = script.indexOf("foreach ($suffix in @('', '-wal', '-shm'))");
+    const protectFiles = script.indexOf('foreach ($file in $files) { Protect-Path $file }');
+    expect(probe).toBeGreaterThan(script.indexOf('foreach ($file in $request.paths) {'));
+    expect(findFiles).toBeGreaterThan(probe);
+    expect(protectFiles).toBeGreaterThan(findFiles);
+  });
+
+  it.each(['{"ok":false}', '{"ok":true}'])('fails before opening SQLite on an unverified Windows result %s', result => {
+    const file = storePath();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync').mockReturnValue(result);
+    expect(() => windowsOpen(file)).toThrow(/Cannot verify private Windows permissions/);
+    expect(fs.readdirSync(path.dirname(file))).toEqual([]);
+    expect(exec).toHaveBeenCalledTimes(1);
+  });
+
+  it.skipIf(process.platform === 'win32')('preserves same-directory realpath fallback and refuses an escaping database link before changing its ACL', () => {
+    const db = storePath();
+    const linked = path.join(path.dirname(db), 'linked.db');
+    const external = storePath();
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    const exec = vi.spyOn(childProcess, 'execFileSync')
+      .mockReturnValueOnce('{"ok":true,"requiresRealpath":false}')
+      .mockReturnValueOnce('{"ok":true,"requiresRealpath":true}')
+      .mockReturnValueOnce('{"ok":true}')
+      .mockReturnValueOnce('{"ok":true,"requiresRealpath":true}');
+    windowsOpen(db).close();
+    fs.symlinkSync(db, linked);
+    windowsOpen(linked).close();
+    expect(exec).toHaveBeenCalledTimes(3);
+    const filesFrame = String((exec.mock.calls[2][2] as { input: string }).input);
+    expect(JSON.parse(Buffer.from(filesFrame.trim(), 'base64').toString('utf8'))).toEqual({ paths: [db], readOnly: false });
+    fs.writeFileSync(external, 'keep external file unchanged');
+    fs.unlinkSync(linked);
+    fs.symlinkSync(external, linked);
+    expect(() => windowsOpen(linked)).toThrow('Message files must remain in their owner-private directory.');
+    expect(exec).toHaveBeenCalledTimes(4);
+    expect(fs.readFileSync(external, 'utf8')).toBe('keep external file unchanged');
+  });
 });
 
 describe('conversation message store', () => {

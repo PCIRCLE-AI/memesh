@@ -12,7 +12,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { MemeshDatabase } from './sqlite.js';
 import { databaseFiles, guardDatabaseFiles, requirePrivateWritableDirectory, removeGroupAndOtherAccess } from './file-mode.js';
-import { makeWindowsPathsPrivate } from './windows-permissions.js';
+import { makeWindowsMessageStorePrivate, makeWindowsPathsPrivate } from './windows-permissions.js';
 import { getDbPath, getMemeshDirFromDbPath } from './core-paths.js';
 import { readPublicNetworkContext } from './public-network-context.js';
 import { assertLegacyDestinationIsDifferent, assertLegacyPathsAreDifferent, assertLegacyConversationArchiveSchema, importLegacyConversationMessages, retireLegacyConversationTables, legacyConversationArchiveFiles, LEGACY_CONVERSATION_PREFIX } from './conversation-message-migration.js';
@@ -107,8 +107,10 @@ export class ConversationMessages {
                 assertLegacyDestinationIsDifferent(ownedSource, file);
             }
             fs.mkdirSync(path.dirname(file), { recursive: true, mode: 0o700 });
-            requirePrivateWritableDirectory(path.dirname(file), 'messages must remain owner-private');
-            if (process.platform === 'win32') {
+            if (process.platform !== 'win32') {
+                requirePrivateWritableDirectory(path.dirname(file), 'messages must remain owner-private');
+            }
+            else if (!makeWindowsMessageStorePrivate(file)) {
                 const directory = fs.realpathSync(path.dirname(file));
                 const files = databaseFiles(file);
                 for (const target of files) {
