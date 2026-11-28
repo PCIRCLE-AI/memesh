@@ -10,7 +10,6 @@ const REQUEST_DEADLINE_MS = 2_000;
 const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
-const STARTUP_LOCK_STALE_MS = 30_000;
 const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 export function controlPath(dataDir) {
     if (process.platform === 'win32') {
@@ -169,53 +168,92 @@ export function takeOverStaleLock(lock, judged) {
         fs.rmSync(aside, { force: true });
     }
 }
-async function withStartupLock(dataDir, use) {
-    const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
-    const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
-    let mine;
-    for (;;) {
-        try {
-            const fd = fs.openSync(lock, 'wx', 0o600);
-            const { dev, ino } = fs.fstatSync(fd);
-            mine = { dev, ino };
-            fs.writeSync(fd, `${process.pid}\n`);
-            fs.closeSync(fd);
-            break;
-        }
-        catch (err) {
-            if (err.code !== 'EEXIST')
-                throw err;
-            const judged = identityOf(lock);
-            if (judged !== null && startupLockIsStale(lock)) {
-                takeOverStaleLock(lock, judged);
-                continue;
-            }
-            if (Date.now() >= giveUpAt)
-                throw new Error('Another network bridge is starting and did not finish.', { cause: err });
-            await new Promise((resolve) => setTimeout(resolve, 20));
-        }
-    }
+function removeStartupClaim(lock, owner) {
     try {
-        return await use(() => sameFile(identityOf(lock), mine));
+        fs.unlinkSync(path.join(lock, owner));
     }
-    finally {
-        if (sameFile(identityOf(lock), mine))
-            fs.rmSync(lock, { force: true });
+    catch (err) {
+        if (['ENOENT', 'ENOTDIR'].includes(err.code ?? ''))
+            return;
+        throw err;
+    }
+    removeEmptyStartupLock(lock);
+}
+function removeEmptyStartupLock(lock) {
+    try {
+        fs.rmdirSync(lock);
+    }
+    catch (err) {
+        if (!['ENOENT', 'ENOTEMPTY', 'EEXIST', 'ENOTDIR'].includes(err.code ?? ''))
+            throw err;
     }
 }
-function startupLockIsStale(lock) {
+function processIsGone(pid) {
     try {
-        const age = Date.now() - fs.statSync(lock).mtimeMs;
-        if (age >= STARTUP_LOCK_STALE_MS)
-            return true;
-        const raw = fs.readFileSync(lock, 'utf8').trim();
-        if (!/^[1-9][0-9]*$/.test(raw))
-            return age >= STARTUP_LOCK_EMPTY_STALE_MS;
-        process.kill(Number(raw), 0);
+        process.kill(pid, 0);
         return false;
     }
     catch (err) {
         return err.code === 'ESRCH';
+    }
+}
+function clearDeadStartupLock(lock) {
+    try {
+        if (fs.lstatSync(lock).isDirectory()) {
+            const owners = fs.readdirSync(lock);
+            if (owners.length === 0)
+                return removeEmptyStartupLock(lock);
+            const owner = owners.length === 1 ? owners[0] : '';
+            const match = /^([1-9][0-9]*)-[0-9a-f]{32}$/.exec(owner);
+            if (match && processIsGone(Number(match[1])))
+                removeStartupClaim(lock, owner);
+            return;
+        }
+        const judged = identityOf(lock);
+        const age = Date.now() - fs.statSync(lock).mtimeMs;
+        const raw = fs.readFileSync(lock, 'utf8').trim();
+        const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= STARTUP_LOCK_EMPTY_STALE_MS;
+        if (judged !== null && stale && sameFile(identityOf(lock), judged))
+            fs.unlinkSync(lock);
+    }
+    catch (err) {
+        const code = err.code;
+        if (code === 'EPERM' && fs.lstatSync(lock).isDirectory())
+            return;
+        if (!['ENOENT', 'ENOTDIR', 'EISDIR'].includes(code ?? ''))
+            throw err;
+    }
+}
+async function withStartupLock(dataDir, use) {
+    const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
+    const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+    const owner = `${process.pid}-${randomBytes(16).toString('hex')}`;
+    const prepared = fs.mkdtempSync(`${lock}.pending-`);
+    let acquired = false;
+    try {
+        fs.writeFileSync(path.join(prepared, owner), '', { mode: 0o600, flag: 'wx' });
+        for (;;) {
+            try {
+                fs.renameSync(prepared, lock);
+                acquired = true;
+                break;
+            }
+            catch (err) {
+                if (!['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EPERM', 'EACCES'].includes(err.code ?? ''))
+                    throw err;
+                clearDeadStartupLock(lock);
+                if (Date.now() >= giveUpAt)
+                    throw new Error('Another network bridge is starting and did not finish.', { cause: err });
+                await new Promise((resolve) => setTimeout(resolve, 20));
+            }
+        }
+        return await use(() => fs.existsSync(path.join(lock, owner)));
+    }
+    finally {
+        if (acquired)
+            removeStartupClaim(lock, owner);
+        else
+            fs.rmSync(prepared, { recursive: true, force: true });
     }
 }
 function listen(server, target) {

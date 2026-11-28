@@ -19,7 +19,6 @@ const REQUEST_DEADLINE_MS = 2_000;
 const REQUEST_MAX_BYTES = 512;
 const REPLY_MAX_BYTES = 8 * 1024;
 const STARTUP_LOCK_WAIT_MS = 5_000;
-const STARTUP_LOCK_STALE_MS = 30_000;
 /** A holder writes its pid right after creating the lock; one still empty after this never will. */
 const STARTUP_LOCK_EMPTY_STALE_MS = 1_500;
 
@@ -203,51 +202,82 @@ export function takeOverStaleLock(lock: string, judged: FileIdentity): void {
   }
 }
 
-/** Only one starter may judge and replace a stale socket at a time, or one could remove another's fresh one. */
-async function withStartupLock<T>(dataDir: string, use: (holdsLock: () => boolean) => Promise<T>): Promise<T> {
-  const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
-  const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
-  let mine: FileIdentity;
-  for (;;) {
-    try {
-      // The identity comes from the open file: a starter clearing a stale lock can
-      // have this one moved aside for an instant, so the path is not reliable yet.
-      const fd = fs.openSync(lock, 'wx', 0o600);
-      const { dev, ino } = fs.fstatSync(fd);
-      mine = { dev, ino };
-      fs.writeSync(fd, `${process.pid}\n`);
-      fs.closeSync(fd);
-      break;
-    } catch (err) {
-      if ((err as NodeJS.ErrnoException).code !== 'EEXIST') throw err;
-      const judged = identityOf(lock);
-      if (judged !== null && startupLockIsStale(lock)) {
-        takeOverStaleLock(lock, judged);
-        continue;
-      }
-      if (Date.now() >= giveUpAt) throw new Error('Another network bridge is starting and did not finish.', { cause: err });
-      await new Promise((resolve) => setTimeout(resolve, 20));
-    }
-  }
+function removeStartupClaim(lock: string, owner: string): void {
   try {
-    return await use(() => sameFile(identityOf(lock), mine));
-  } finally {
-    if (sameFile(identityOf(lock), mine)) fs.rmSync(lock, { force: true });
+    fs.unlinkSync(path.join(lock, owner));
+  } catch (err) {
+    if (['ENOENT', 'ENOTDIR'].includes((err as NodeJS.ErrnoException).code ?? '')) return;
+    throw err;
+  }
+  removeEmptyStartupLock(lock);
+}
+
+function removeEmptyStartupLock(lock: string): void {
+  try {
+    fs.rmdirSync(lock);
+  } catch (err) {
+    if (!['ENOENT', 'ENOTEMPTY', 'EEXIST', 'ENOTDIR'].includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
   }
 }
 
-/** Held by a process that is gone, or for longer than any start takes. Only the holder's existence is asked. */
-function startupLockIsStale(lock: string): boolean {
+function processIsGone(pid: number): boolean {
   try {
-    const age = Date.now() - fs.statSync(lock).mtimeMs;
-    if (age >= STARTUP_LOCK_STALE_MS) return true;
-    const raw = fs.readFileSync(lock, 'utf8').trim();
-    // Empty or not a pid: Number('') is 0, and kill(0) would ask about this whole process group.
-    if (!/^[1-9][0-9]*$/.test(raw)) return age >= STARTUP_LOCK_EMPTY_STALE_MS;
-    process.kill(Number(raw), 0);
+    process.kill(pid, 0);
     return false;
   } catch (err) {
     return (err as NodeJS.ErrnoException).code === 'ESRCH';
+  }
+}
+
+function clearDeadStartupLock(lock: string): void {
+  try {
+    if (fs.lstatSync(lock).isDirectory()) {
+      const owners = fs.readdirSync(lock);
+      if (owners.length === 0) return removeEmptyStartupLock(lock);
+      const owner = owners.length === 1 ? owners[0] : '';
+      const match = /^([1-9][0-9]*)-[0-9a-f]{32}$/.exec(owner);
+      if (match && processIsGone(Number(match[1]))) removeStartupClaim(lock, owner);
+      return;
+    }
+    const judged = identityOf(lock);
+    const age = Date.now() - fs.statSync(lock).mtimeMs;
+    const raw = fs.readFileSync(lock, 'utf8').trim();
+    const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= STARTUP_LOCK_EMPTY_STALE_MS;
+    // unlink cannot move a new directory claim aside, unlike the legacy rename protocol.
+    if (judged !== null && stale && sameFile(identityOf(lock), judged)) fs.unlinkSync(lock);
+  } catch (err) {
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code === 'EPERM' && fs.lstatSync(lock).isDirectory()) return;
+    if (!['ENOENT', 'ENOTDIR', 'EISDIR'].includes(code ?? '')) throw err;
+  }
+}
+
+/** Only one starter may judge and replace a stale socket at a time. */
+async function withStartupLock<T>(dataDir: string, use: (holdsLock: () => boolean) => Promise<T>): Promise<T> {
+  const lock = path.join(networkDir(dataDir), 'bridge.sock.startup.lock');
+  const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
+  const owner = `${process.pid}-${randomBytes(16).toString('hex')}`;
+  const prepared = fs.mkdtempSync(`${lock}.pending-`);
+  let acquired = false;
+  try {
+    fs.writeFileSync(path.join(prepared, owner), '', { mode: 0o600, flag: 'wx' });
+    for (;;) {
+      try {
+        // A published lock is never empty: rename cannot replace another live claim.
+        fs.renameSync(prepared, lock);
+        acquired = true;
+        break;
+      } catch (err) {
+        if (!['EEXIST', 'ENOTEMPTY', 'ENOTDIR', 'EISDIR', 'EPERM', 'EACCES'].includes((err as NodeJS.ErrnoException).code ?? '')) throw err;
+        clearDeadStartupLock(lock);
+        if (Date.now() >= giveUpAt) throw new Error('Another network bridge is starting and did not finish.', { cause: err });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      }
+    }
+    return await use(() => fs.existsSync(path.join(lock, owner)));
+  } finally {
+    if (acquired) removeStartupClaim(lock, owner);
+    else fs.rmSync(prepared, { recursive: true, force: true });
   }
 }
 

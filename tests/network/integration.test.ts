@@ -677,7 +677,8 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
         }
         if (Date.now() - started > settleMs) {
           // Report how late it was, and what it looked like, rather than only that it was late.
-          const lockText = fs.existsSync(lock) ? fs.readFileSync(lock, 'utf8').trim() : 'none';
+          const lockText = !fs.existsSync(lock) ? 'none' : fs.lstatSync(lock).isDirectory()
+            ? fs.readdirSync(lock).join(',') : fs.readFileSync(lock, 'utf8').trim();
           while (Date.now() - started < 20_000 && !(await probeBridge(ctx.dataDir, 500) as { ready?: boolean }).ready) {
             await new Promise((resolve) => setTimeout(resolve, 50));
           }
@@ -687,7 +688,7 @@ describe.skipIf(!supported || process.platform === 'win32')('two machines, relay
         await new Promise((resolve) => setTimeout(resolve, 20));
       }
       if (holder !== null) settled++;
-      // Losing is exit 3. Anything else means two got as far as holding the socket, and the heartbeat had to clean up.
+      // A loser must exit 3; another ready holder cannot excuse an unexpected exit.
       const held = children.flatMap((child, index) => child.pid !== holder && child.exitCode !== EXIT_ALREADY_RUNNING
         ? [{ pid: child.pid, exit: child.exitCode ?? child.signalCode, stderr: stderr[index] }] : []);
       if (held.length > 0) doubleHeld.push(`round ${round}: ${JSON.stringify(held)}`);

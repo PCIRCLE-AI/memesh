@@ -207,6 +207,8 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       if (held.kind === 'held') held.close();
 
       fs.writeFileSync(lock, `${process.pid}\n`, { mode: 0o600 });
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lock, old, old);
       await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
       fs.rmSync(lock);
     }, 20_000);
@@ -298,37 +300,29 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       removeStaleSocket(target, judged); // Already gone is fine.
     });
 
-    it('a lock moved aside for an instant by another starter is still recognised and released', async () => {
+    it('publishes a nonempty private startup lock and releases only its own claim', async () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
-      const realOpen = fs.openSync;
-      const realClose = fs.closeSync;
-      let aside = false;
-      // What a starter clearing a stale lock does: this lock is away as its owner looks at it.
-      const open = vi.spyOn(fs, 'openSync').mockImplementation(((file: string, flags: string, mode: number) => {
-        const fd = realOpen(file, flags, mode);
-        if (file === lock) {
-          fs.renameSync(lock, `${lock}.aside`);
-          aside = true;
+      const realRename = fs.renameSync;
+      let published = false;
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (to === lock) {
+          const claims = fs.readdirSync(from);
+          expect(claims).toHaveLength(1);
+          expect(claims[0]).toMatch(new RegExp(`^${process.pid}-[0-9a-f]{32}$`));
+          expect(fs.statSync(from).mode & 0o777).toBe(0o700);
+          published = true;
         }
-        return fd;
-      }) as typeof fs.openSync);
-      const close = vi.spyOn(fs, 'closeSync').mockImplementation(((fd: number) => {
-        realClose(fd);
-        if (aside) {
-          fs.renameSync(`${lock}.aside`, lock);
-          aside = false;
-        }
-      }) as typeof fs.closeSync);
+        realRename(from, to);
+      });
       try {
         const held = await holdControlSocket(ctx.dataDir, handlers);
         expect(held.kind).toBe('held');
         if (held.kind === 'held') held.close();
       } finally {
-        open.mockRestore();
-        close.mockRestore();
+        rename.mockRestore();
       }
-      // Left behind, it would name a live process and block every later start for 5 s.
-      expect(fs.existsSync(lock)).toBe(false);
+      expect(published).toBe(true);
+      expect(fs.readdirSync(path.dirname(lock)).filter((name) => name.includes('startup.lock'))).toEqual([]);
     });
 
     it('a starter that lost its startup lock does not touch the socket', async () => {
@@ -341,8 +335,9 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       const stat = vi.spyOn(fs, 'lstatSync').mockImplementation(((file: string) => {
         if (file === target && !done) {
           done = true;
-          fs.writeFileSync(`${lock}.other`, `${process.pid}\n`, { mode: 0o600 });
-          fs.renameSync(`${lock}.other`, lock);
+          fs.renameSync(lock, `${lock}.displaced`);
+          fs.mkdirSync(lock, { mode: 0o700 });
+          fs.writeFileSync(path.join(lock, `${process.pid}-${'a'.repeat(32)}`), '', { mode: 0o600 });
         }
         return realLstat(file);
       }) as typeof fs.lstatSync);
@@ -354,8 +349,38 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       expect(done).toBe(true);
       expect(fs.lstatSync(target).isSocket()).toBe(true);
       expect(fs.existsSync(lock)).toBe(true);
-      fs.rmSync(lock);
+      fs.rmSync(lock, { recursive: true });
     }, 20_000);
+
+    it('retries when a competing lock is released just after rename reports it in use', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      const realRename = fs.renameSync;
+      let released = false;
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        if (to === lock && !released) {
+          fs.mkdirSync(lock, { mode: 0o700 });
+          fs.writeFileSync(path.join(lock, `${process.pid}-${'c'.repeat(32)}`), '');
+          try {
+            realRename(from, to);
+          } catch (err) {
+            fs.rmSync(lock, { recursive: true });
+            released = true;
+            throw err;
+          }
+        }
+        realRename(from, to);
+      });
+      try {
+        const held = await holdControlSocket(ctx.dataDir, handlers);
+        if (held.kind !== 'held') throw new Error(held.kind);
+        expect(await probeBridge(ctx.dataDir)).toMatchObject({ kind: 'running', pid: process.pid });
+        held.close();
+      } finally {
+        rename.mockRestore();
+      }
+      expect(released).toBe(true);
+      expect(fs.existsSync(lock)).toBe(false);
+    });
 
     it('an empty startup lock older than a moment is stale: no wait for a starter that never wrote its pid', async () => {
       const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
@@ -395,6 +420,93 @@ describe.skipIf(process.platform === 'win32')('the bridge control socket', () =>
       expect(fs.readFileSync(lock, 'utf8')).toBe(`${process.pid}\n`);
       expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
       fs.rmSync(lock);
+    }, 20_000);
+
+    it('a stale-lock judge never opens an acquisition gap in a replacement lock', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      fs.writeFileSync(lock, `${2 ** 30}\n`, { mode: 0o600 });
+      const realRead = fs.readFileSync;
+      const realRename = fs.renameSync;
+      let fresh: ReturnType<typeof identityOf> = null;
+      let acquisitionGap = false;
+      const read = vi.spyOn(fs, 'readFileSync').mockImplementation(((file: fs.PathOrFileDescriptor, options?: unknown) => {
+        const result = realRead(file, options as BufferEncoding);
+        if (file === lock && fresh === null) {
+          fs.writeFileSync(`${lock}.fresh`, `${process.pid}\n`, { mode: 0o600 });
+          realRename(`${lock}.fresh`, lock);
+          fresh = identityOf(lock);
+        }
+        return result;
+      }) as typeof fs.readFileSync);
+      const rename = vi.spyOn(fs, 'renameSync').mockImplementation((from, to) => {
+        realRename(from, to);
+        if (from === lock && fresh !== null && !fs.existsSync(lock)) {
+          acquisitionGap = true;
+          // A third starter can acquire the canonical path while the live lock is aside.
+          fs.writeFileSync(lock, `${process.pid}\n`, { flag: 'wx', mode: 0o600 });
+        }
+      });
+      try {
+        await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
+      } finally {
+        read.mockRestore();
+        rename.mockRestore();
+      }
+      expect(acquisitionGap).toBe(false);
+      expect(identityOf(lock)).toEqual(fresh);
+      expect(fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
+    }, 20_000);
+
+    it('reclaims a dead generation and an empty orphan, but never an old live generation', async () => {
+      const lock = `${controlPath(ctx.dataDir)}.startup.lock`;
+      for (const deadOwner of [`${2 ** 30}-${'a'.repeat(32)}`, null]) {
+        fs.mkdirSync(lock, { mode: 0o700 });
+        if (deadOwner !== null) fs.writeFileSync(path.join(lock, deadOwner), '');
+        const held = await holdControlSocket(ctx.dataDir, handlers);
+        if (held.kind !== 'held') throw new Error(held.kind);
+        held.close();
+        await expect.poll(() => fs.existsSync(controlPath(ctx.dataDir))).toBe(false);
+        expect(fs.existsSync(lock)).toBe(false);
+      }
+      fs.mkdirSync(lock, { mode: 0o700 });
+      const live = `${process.pid}-${'b'.repeat(32)}`;
+      fs.writeFileSync(path.join(lock, live), '');
+      const old = new Date(Date.now() - 60_000);
+      fs.utimesSync(lock, old, old);
+      await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
+      expect(fs.readdirSync(lock)).toEqual([live]);
+    }, 20_000);
+
+    it('a delayed dead-generation cleanup cannot remove a fresh generation or its socket', async () => {
+      await leaveStaleSocket(ctx);
+      const target = controlPath(ctx.dataDir);
+      const socket = identityOf(target);
+      const lock = `${target}.startup.lock`;
+      const dead = `${2 ** 30}-${'a'.repeat(32)}`;
+      const fresh = `${process.pid}-${'b'.repeat(32)}`;
+      fs.mkdirSync(lock, { mode: 0o700 });
+      fs.writeFileSync(path.join(lock, dead), '');
+      const realRead = fs.readdirSync;
+      let swapped = false;
+      const read = vi.spyOn(fs, 'readdirSync').mockImplementation(((file: fs.PathLike, options?: unknown) => {
+        const result = realRead(file, options as undefined);
+        if (file === lock && !swapped) {
+          swapped = true;
+          fs.renameSync(lock, `${lock}.dead`);
+          fs.mkdirSync(`${lock}.fresh`, { mode: 0o700 });
+          fs.writeFileSync(path.join(`${lock}.fresh`, fresh), '');
+          fs.renameSync(`${lock}.fresh`, lock);
+        }
+        return result;
+      }) as typeof fs.readdirSync);
+      try {
+        await expect(holdControlSocket(ctx.dataDir, handlers)).rejects.toThrowError(/is starting/);
+      } finally {
+        read.mockRestore();
+      }
+      expect(swapped).toBe(true);
+      expect(fs.readdirSync(lock)).toEqual([fresh]);
+      expect(identityOf(target)).toEqual(socket);
     }, 20_000);
 
     it('a read error on the socket path is "unreadable", not "lost"', async () => {

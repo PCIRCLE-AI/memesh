@@ -2568,7 +2568,6 @@ var REQUEST_DEADLINE_MS = 2e3;
 var REQUEST_MAX_BYTES = 512;
 var REPLY_MAX_BYTES = 8 * 1024;
 var STARTUP_LOCK_WAIT_MS = 5e3;
-var STARTUP_LOCK_STALE_MS = 3e4;
 var STARTUP_LOCK_EMPTY_STALE_MS = 1500;
 function controlPath(dataDir2) {
   if (process.platform === "win32") {
@@ -2684,71 +2683,86 @@ function identityOf(file) {
   }
 }
 var sameFile = (a, b) => a !== null && b !== null && a.dev === b.dev && a.ino === b.ino;
-function takeOverStaleLock(lock, judged) {
-  const aside = `${lock}.stale-${process.pid}`;
+function removeStartupClaim(lock, owner) {
   try {
-    fs11.renameSync(lock, aside);
+    fs11.unlinkSync(path12.join(lock, owner));
   } catch (err) {
-    if (err.code === "ENOENT")
+    if (["ENOENT", "ENOTDIR"].includes(err.code ?? ""))
       return;
     throw err;
   }
+  removeEmptyStartupLock(lock);
+}
+function removeEmptyStartupLock(lock) {
   try {
-    if (sameFile(identityOf(aside), judged))
-      return;
-    fs11.linkSync(aside, lock);
+    fs11.rmdirSync(lock);
   } catch (err) {
-    if (err.code !== "EEXIST")
+    if (!["ENOENT", "ENOTEMPTY", "EEXIST", "ENOTDIR"].includes(err.code ?? ""))
       throw err;
-  } finally {
-    fs11.rmSync(aside, { force: true });
+  }
+}
+function processIsGone(pid) {
+  try {
+    process.kill(pid, 0);
+    return false;
+  } catch (err) {
+    return err.code === "ESRCH";
+  }
+}
+function clearDeadStartupLock(lock) {
+  try {
+    if (fs11.lstatSync(lock).isDirectory()) {
+      const owners = fs11.readdirSync(lock);
+      if (owners.length === 0)
+        return removeEmptyStartupLock(lock);
+      const owner = owners.length === 1 ? owners[0] : "";
+      const match = /^([1-9][0-9]*)-[0-9a-f]{32}$/.exec(owner);
+      if (match && processIsGone(Number(match[1])))
+        removeStartupClaim(lock, owner);
+      return;
+    }
+    const judged = identityOf(lock);
+    const age = Date.now() - fs11.statSync(lock).mtimeMs;
+    const raw = fs11.readFileSync(lock, "utf8").trim();
+    const stale = /^[1-9][0-9]*$/.test(raw) ? processIsGone(Number(raw)) : age >= STARTUP_LOCK_EMPTY_STALE_MS;
+    if (judged !== null && stale && sameFile(identityOf(lock), judged))
+      fs11.unlinkSync(lock);
+  } catch (err) {
+    const code = err.code;
+    if (code === "EPERM" && fs11.lstatSync(lock).isDirectory())
+      return;
+    if (!["ENOENT", "ENOTDIR", "EISDIR"].includes(code ?? ""))
+      throw err;
   }
 }
 async function withStartupLock(dataDir2, use) {
   const lock = path12.join(networkDir(dataDir2), "bridge.sock.startup.lock");
   const giveUpAt = Date.now() + STARTUP_LOCK_WAIT_MS;
-  let mine;
-  for (; ; ) {
-    try {
-      const fd = fs11.openSync(lock, "wx", 384);
-      const { dev, ino } = fs11.fstatSync(fd);
-      mine = { dev, ino };
-      fs11.writeSync(fd, `${process.pid}
-`);
-      fs11.closeSync(fd);
-      break;
-    } catch (err) {
-      if (err.code !== "EEXIST")
-        throw err;
-      const judged = identityOf(lock);
-      if (judged !== null && startupLockIsStale(lock)) {
-        takeOverStaleLock(lock, judged);
-        continue;
+  const owner = `${process.pid}-${randomBytes3(16).toString("hex")}`;
+  const prepared = fs11.mkdtempSync(`${lock}.pending-`);
+  let acquired = false;
+  try {
+    fs11.writeFileSync(path12.join(prepared, owner), "", { mode: 384, flag: "wx" });
+    for (; ; ) {
+      try {
+        fs11.renameSync(prepared, lock);
+        acquired = true;
+        break;
+      } catch (err) {
+        if (!["EEXIST", "ENOTEMPTY", "ENOTDIR", "EISDIR", "EPERM", "EACCES"].includes(err.code ?? ""))
+          throw err;
+        clearDeadStartupLock(lock);
+        if (Date.now() >= giveUpAt)
+          throw new Error("Another network bridge is starting and did not finish.", { cause: err });
+        await new Promise((resolve) => setTimeout(resolve, 20));
       }
-      if (Date.now() >= giveUpAt)
-        throw new Error("Another network bridge is starting and did not finish.", { cause: err });
-      await new Promise((resolve) => setTimeout(resolve, 20));
     }
-  }
-  try {
-    return await use(() => sameFile(identityOf(lock), mine));
+    return await use(() => fs11.existsSync(path12.join(lock, owner)));
   } finally {
-    if (sameFile(identityOf(lock), mine))
-      fs11.rmSync(lock, { force: true });
-  }
-}
-function startupLockIsStale(lock) {
-  try {
-    const age = Date.now() - fs11.statSync(lock).mtimeMs;
-    if (age >= STARTUP_LOCK_STALE_MS)
-      return true;
-    const raw = fs11.readFileSync(lock, "utf8").trim();
-    if (!/^[1-9][0-9]*$/.test(raw))
-      return age >= STARTUP_LOCK_EMPTY_STALE_MS;
-    process.kill(Number(raw), 0);
-    return false;
-  } catch (err) {
-    return err.code === "ESRCH";
+    if (acquired)
+      removeStartupClaim(lock, owner);
+    else
+      fs11.rmSync(prepared, { recursive: true, force: true });
   }
 }
 function listen(server, target) {
