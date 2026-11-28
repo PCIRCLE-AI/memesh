@@ -6,7 +6,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { npmSync, parsePackResult } from './lib/npm-bin.mjs';
-import { buildCredentialFreeBaseEnv } from './lib/isolated-env.mjs';
+import { buildCredentialFreeBaseEnv, withAccountHomePreload } from './lib/isolated-env.mjs';
 import { assertEveryPathProven, fetchPackument, selectUpgradePaths } from './lib/upgrade-matrix.mjs';
 
 // This is deliberately a narrow upgrade proof, not a second copy of
@@ -69,6 +69,7 @@ function isolatedNpmEnv({ home, memeshDir, prefix, cache, userconfig }) {
   const env = {
     ...buildCredentialFreeBaseEnv(process.env),
     HOME: home,
+    USERPROFILE: home,
     MEMESH_DIR: memeshDir,
     MEMESH_AUTO_CAPTURE: 'false',
     npm_config_prefix: prefix,
@@ -79,7 +80,7 @@ function isolatedNpmEnv({ home, memeshDir, prefix, cache, userconfig }) {
     npm_config_update_notifier: 'false',
   };
   delete env.MEMESH_DB_PATH;
-  return env;
+  return withAccountHomePreload(env);
 }
 
 function globalPackageRoot(prefix, env) {
@@ -123,9 +124,6 @@ function npmGlobalInstall(specifier, prefix, env, mustFail = false) {
 }
 
 async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline, fromVersion }) {
-  const npmCli = process.env.npm_execpath;
-  assert.ok(npmCli && path.isAbsolute(npmCli) && fs.existsSync(npmCli),
-    'npm_execpath must identify the npm CLI running this release gate');
   const stage = path.join(rowRoot, 'candidate-stage');
   npmSync(['install', '--prefix', stage, '--ignore-scripts', '--omit=dev', '--cache', env.npm_config_cache,
     '--userconfig', env.npm_config_userconfig, candidateTarball], {
@@ -141,6 +139,12 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
   const { runLocked } = await import(pathToFileURL(runner));
   const { runAutoUpdate, readAutoUpdateState, AUTO_UPDATE_REASONS } = await import(
     pathToFileURL(path.join(candidateRoot, 'dist', 'core', 'auto-update.js')));
+  const { npmInvocation } = await import(pathToFileURL(path.join(candidateRoot, 'dist', 'core', 'npm-launch.js')));
+  const npmLaunch = npmInvocation([]);
+  assert.ok(npmLaunch, 'the packed updater could not locate npm');
+  const npmCli = npmLaunch.args[0] ?? process.env.npm_execpath;
+  assert.ok(npmCli && path.isAbsolute(npmCli) && fs.existsSync(npmCli),
+    'the release gate needs an absolute npm CLI path');
 
   // The candidate is unpublished. Tags/provenance/main membership are explicit
   // fixtures, not registry acceptance. The packed automatic engine, lock, tar,
@@ -184,9 +188,10 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
     sleep: async () => { throw new Error('unexpected live host in isolated upgrade fixture'); },
     signerOf: () => signer, readTags: () => ({ latest: candidateVersion }),
     readInstalledVersion: () => JSON.parse(fs.readFileSync(path.join(baseline.packageRoot, 'package.json'), 'utf8')).version,
-    exec: (cmd, args, opts) => {
-      calls.push({ cmd, args });
-      if (cmd === 'npm') {
+    exec: (cmd, argv, opts) => {
+      calls.push({ cmd, args: argv });
+      if (cmd === npmLaunch.command && npmLaunch.args.every((arg, i) => argv[i] === arg)) {
+        const args = argv.slice(npmLaunch.args.length);
         if (args[0] === 'install' && !args.includes('-g')) {
           fs.writeFileSync(path.join(opts.cwd, 'package-lock.json'), JSON.stringify({ packages: { [`node_modules/${packageName}`]: { integrity } } }));
           return { status: 0, stdout: '', stderr: '' };
@@ -198,11 +203,11 @@ async function runCandidateAutoUpdate({ candidateTarball, candidateVersion, env,
         if (args[0] === 'audit') return { status: 0, stdout: auditFixture, stderr: '' };
         return npm(args, opts, args[0] === 'ci' && opts?.cwd === baseline.packageRoot && fixtureEnv.MEMESH_UPGRADE_FORCE_FAILURE === '1');
       }
-      if (cmd === process.execPath && args[0] === '-e' && args[2]?.startsWith('https://api.github.com/repos/PCIRCLE-AI/memesh/compare/')) {
+      if (cmd === process.execPath && argv[0] === '-e' && argv[2]?.startsWith('https://api.github.com/repos/PCIRCLE-AI/memesh/compare/')) {
         return { status: 0, stdout: `200\n${JSON.stringify({ status: 'ahead', merge_base_commit: { sha: fixtureCommit } })}`, stderr: '' };
       }
       assert.equal(cmd, 'tar', 'unexpected command in upgrade fixture');
-      const child = spawnSync(cmd, args, { cwd: opts?.cwd, env: fixtureEnv, encoding: 'utf8', timeout: processTimeoutMs });
+      const child = spawnSync(cmd, argv, { cwd: opts?.cwd, env: fixtureEnv, encoding: 'utf8', timeout: processTimeoutMs });
       return { status: child.status, stdout: child.stdout ?? '', stderr: child.stderr ?? '', startupError: child.error?.message };
     },
   };
@@ -314,7 +319,7 @@ function runMcp(serverPath, packageRoot, env, mode, requiredTools) {
  * memory, the binaries and the version readback to survive — then force the
  * upgrade's child-process boundary to fail and require it to say so.
  */
-async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cache, userconfig }) {
+async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, publishedLatest, cache, userconfig }) {
   const rowRoot = path.join(upgradeRoot, `from-${fromVersion}`);
   const home = path.join(rowRoot, 'home');
   const memeshDir = path.join(rowRoot, 'memesh-data');
@@ -336,6 +341,19 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
   const oldCliEntry = installedEntry(installed.packageRoot, 'dist/transports/cli/cli.js');
   const oldMcpEntry = installedEntry(installed.packageRoot, 'dist/mcp/server.js');
   assert.equal(run(process.execPath, [oldCliEntry, '--version'], { cwd: installed.packageRoot, env }).trim(), fromVersion);
+  if (process.platform === 'win32' && fromVersion === publishedLatest) {
+    const directNpm = spawnSync('npm', ['--version'], { env, encoding: 'utf8', timeout: processTimeoutMs });
+    console.log(`Windows direct npm launch: ${directNpm.error?.code ?? `exit ${directNpm.status}`}`);
+    const baseline = spawnSync(process.execPath, [oldCliEntry, 'update'], {
+      cwd: installed.packageRoot, env, encoding: 'utf8', timeout: processTimeoutMs,
+    });
+    assert.ifError(baseline.error);
+    const diagnostic = (baseline.stderr || baseline.stdout).trim();
+    assert.ok(baseline.status === 0 || baseline.status === 1, `published update CLI exited ${baseline.status}: ${diagnostic}`);
+    assert.equal(readInstalledPackage(prefix, env).packageJson.version, fromVersion,
+      'registry latest changed during the published CLI baseline');
+    console.log(`published Windows update observation: version=${fromVersion} exit=${baseline.status} ${diagnostic}`);
+  }
   runMcp(oldMcpEntry, installed.packageRoot, env, 'seed', ['remember', 'recall']);
   const retiredConfigMarker = crypto.randomBytes(32).toString('hex');
   const configPath = path.join(memeshDir, 'config.json');
@@ -357,12 +375,7 @@ async function proveUpgradePath({ fromVersion, candidateVersion, candidateTarbal
   const configModeBeforeUpgrade = configBeforeUpgrade.mode;
   console.log(`baseline: version=${installed.packageJson.version} package=${installed.packageRoot}`);
 
-  if (process.platform === 'win32') {
-    npmGlobalInstall(candidateTarball, prefix, env);
-    console.log('Windows: manual npm replacement only; automatic transaction is not exercised');
-  } else {
-    await runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline: installed, fromVersion });
-  }
+  await runCandidateAutoUpdate({ candidateTarball, candidateVersion, env, rowRoot, baseline: installed, fromVersion });
   installed = readInstalledPackage(prefix, env);
   assert.equal(installed.packageJson.version, candidateVersion,
     `npm did not replace the isolated global install with v${candidateVersion}`);
@@ -483,6 +496,7 @@ try {
   ].join('\n'));
   const packument = await fetchPackument(packageName, registry);
   const upgradePaths = selectUpgradePaths(packument, candidateVersion);
+  const publishedLatest = packument['dist-tags']?.latest;
   console.log(`matrix: candidate=${candidateVersion} registry=${registry} from=${upgradePaths.join(', ')}`);
 
   const packEnv = isolatedNpmEnv({
@@ -507,7 +521,7 @@ try {
   const proven = [];
   for (const fromVersion of upgradePaths) {
     console.log(`--- upgrade path: ${fromVersion} -> ${candidateVersion}`);
-    await proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, cache, userconfig });
+    await proveUpgradePath({ fromVersion, candidateVersion, candidateTarball, publishedLatest, cache, userconfig });
     proven.push(fromVersion);
   }
   assertEveryPathProven(upgradePaths, proven);

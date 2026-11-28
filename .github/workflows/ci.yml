@@ -133,6 +133,13 @@ jobs:
         id: build_source
         run: npm run build
 
+      - name: Windows packaged upgrade
+        if: ${{ runner.os == 'Windows' && matrix.node == '24.22.3' }}
+        env:
+          TEMP: ${{ runner.temp }}
+          TMP: ${{ runner.temp }}
+        run: npm run test:packaged:upgrade
+
       - name: Release gates (the same ones the publish path runs)
         id: release_gates
         # `npm run verify:release`, not a hand-listed copy of what it contains.
